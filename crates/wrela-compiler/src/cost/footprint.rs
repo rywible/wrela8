@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::codegen::CodegenProgram;
+use crate::codegen::{CodegenFn, CodegenProgram};
+use crate::linked::LinkedProgram;
 use crate::placement::PlacementTable;
 
 use super::attr::{AttrTarget, classify_target};
-use super::rule::{MemClass, MemRef};
+use super::rule::MemRef;
 use super::score::basic_block_ranges;
 use super::sweep::SweepPoint;
 use super::table::CostTable;
@@ -35,13 +36,12 @@ impl HotBlocks<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreBudget {
     pub n: usize,
-    pub hot_text_bytes: u64,
-    pub hot_code_bytes: u64,
-    pub packing_floor_lines: u64,
-    pub slack_lines: u64,
+    pub fetched_text_bytes: u64,
+    pub executable_code_bytes: u64,
     pub l1i_bytes: u64,
     pub over_l1i_lines: u64,
     pub over_l2_lines: u64,
+    pub over_l3_lines: u64,
     pub text_pages: u64,
     pub itlb_entries: u64,
     pub over_itlb_pages: u64,
@@ -57,6 +57,7 @@ impl CoreBudget {
     pub fn within_budget(&self) -> bool {
         self.over_l1i_lines == 0
             && self.over_l2_lines == 0
+            && self.over_l3_lines == 0
             && self.over_itlb_pages == 0
             && self.over_tlb_l2_pages == 0
             && self.over_dtlb_pages == 0
@@ -73,18 +74,18 @@ impl CoreBudget {
 
     fn render_line(&self, label: &str, prefix: String) -> String {
         format!(
-            "{label} {prefix}n={} hot_text_bytes={} hot_code_bytes={} slack_lines={} \
-             l1i_bytes={} over_l1i_lines={} over_l2_lines={} \
+            "{label} {prefix}n={} fetched_text_bytes={} executable_code_bytes={} \
+             l1i_bytes={} over_l1i_lines={} over_l2_lines={} over_l3_lines={} \
              text_pages={} itlb_entries={} over_itlb_pages={} tlb_l2_entries={} \
              over_tlb_l2_pages={} data_pages={} over_dtlb_pages={} \
              over_data_tlb_l2_pages={} charge={}",
             self.n,
-            self.hot_text_bytes,
-            self.hot_code_bytes,
-            self.slack_lines,
+            self.fetched_text_bytes,
+            self.executable_code_bytes,
             self.l1i_bytes,
             self.over_l1i_lines,
             self.over_l2_lines,
+            self.over_l3_lines,
             self.text_pages,
             self.itlb_entries,
             self.over_itlb_pages,
@@ -101,18 +102,31 @@ impl CoreBudget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DataPage {
     Stack(u64),
-    Cold(u8, u64),
+    Flow(u64, u64),
+    Static(u64, u64),
+    Mmio(u64, u64),
 }
 
 impl DataPage {
     fn of(m: MemRef) -> Option<DataPage> {
-        match m.class {
-            MemClass::Stack => Some(DataPage::Stack(m.key / PAGE_BYTES)),
-            MemClass::Cold => {
-                let base = m.base_reg()?;
-                let imm = m.key & 0x0000_FFFF_FFFF_FFFF;
-                Some(DataPage::Cold(base, imm / PAGE_BYTES))
+        match m.target {
+            crate::cost::MemTarget::Stack { function, offset } => {
+                if function == 0 {
+                    Some(DataPage::Stack(offset / PAGE_BYTES))
+                } else {
+                    Some(DataPage::Flow(function, offset / PAGE_BYTES))
+                }
             }
+            crate::cost::MemTarget::FlowFrame { function, offset } => {
+                Some(DataPage::Flow(function, offset / PAGE_BYTES))
+            }
+            crate::cost::MemTarget::Static { symbol, offset } => {
+                Some(DataPage::Static(symbol, offset / PAGE_BYTES))
+            }
+            crate::cost::MemTarget::Mmio { device, offset } => {
+                Some(DataPage::Mmio(device, offset / PAGE_BYTES))
+            }
+            crate::cost::MemTarget::Unknown { .. } => None,
         }
     }
 }
@@ -143,6 +157,61 @@ pub fn compute(
     placement: &PlacementTable,
     hot: HotBlocks<'_>,
 ) -> Result<Vec<CoreBudget>, String> {
+    let fn_addresses: BTreeMap<String, u64> = program
+        .fns
+        .iter()
+        .scan(0u64, |cursor, (key, f)| {
+            let address = *cursor;
+            *cursor = cursor.saturating_add((f.code.len() as u64) * 4);
+            Some((key.clone(), address))
+        })
+        .collect();
+    compute_at_addresses(program, table, point, placement, hot, &fn_addresses)
+}
+
+pub fn compute_linked(
+    linked: &LinkedProgram,
+    table: &CostTable,
+    point: &SweepPoint,
+    placement: &PlacementTable,
+    hot: HotBlocks<'_>,
+) -> Result<Vec<CoreBudget>, String> {
+    let fns: BTreeMap<String, CodegenFn> = linked
+        .fns
+        .iter()
+        .map(|(key, f)| {
+            (
+                key.clone(),
+                CodegenFn {
+                    frame_size: f.frame_size as usize,
+                    code: f.code.clone(),
+                    relocs: Vec::new(),
+                },
+            )
+        })
+        .collect();
+    let addresses: BTreeMap<String, u64> = linked
+        .fns
+        .iter()
+        .map(|(key, f)| (key.clone(), f.byte_address))
+        .collect();
+    let program = CodegenProgram {
+        fns,
+        rodata: Vec::new(),
+        conventions: BTreeMap::new(),
+        origin_spans: Vec::new(),
+    };
+    compute_at_addresses(&program, table, point, placement, hot, &addresses)
+}
+
+pub(crate) fn compute_at_addresses(
+    program: &CodegenProgram,
+    table: &CostTable,
+    point: &SweepPoint,
+    placement: &PlacementTable,
+    hot: HotBlocks<'_>,
+    fn_addresses: &BTreeMap<String, u64>,
+) -> Result<Vec<CoreBudget>, String> {
     if placement.cores == 0 {
         return Ok(Vec::new());
     }
@@ -162,6 +231,9 @@ pub fn compute(
     let l2_bytes = geom(table, "l2_bytes");
     let l2_sets = (l2_bytes / line_bytes / geom(table, "l2_ways").max(1)).max(1);
     let l2_ways = geom(table, "l2_ways");
+    let l3_bytes = point.get("effective_l3_bytes");
+    let l3_ways = geom(table, "l3_ways");
+    let l3_sets = (l3_bytes / line_bytes / l3_ways.max(1)).max(1);
     let itlb = geom(table, "itlb_l1_entries");
     let dtlb = geom(table, "dtlb_l1_entries");
     let tlb_l2 = geom(table, "tlb_l2_entries");
@@ -175,19 +247,19 @@ pub fn compute(
         let mut lines: BTreeSet<u64> = BTreeSet::new();
         let mut pages: BTreeSet<u64> = BTreeSet::new();
         let mut data: BTreeSet<DataPage> = BTreeSet::new();
-        let mut at = 0u64;
-        let mut hot_code_bytes = 0u64;
-        let mut packing_floor_lines = 0u64;
+        let mut executable_code_bytes = 0u64;
         for key in owned[n].iter().chain(shared.iter()) {
             let f = &program.fns[*key];
-            let fn_bytes = (f.code.len() as u64).saturating_mul(4);
+            let fn_address = *fn_addresses
+                .get(*key)
+                .ok_or_else(|| format!("footprint has no linked address for `{key}`"))?;
             let mut fn_hot_bytes = 0u64;
             for (bi, (start, end)) in basic_block_ranges(&f.code).into_iter().enumerate() {
                 if !hot.is_hot(key, bi) {
                     continue;
                 }
-                let lo = at + (start as u64) * 4;
-                let hi = at + (end as u64) * 4;
+                let lo = fn_address + (start as u64) * 4;
+                let hi = fn_address + (end as u64) * 4;
                 if hi <= lo {
                     continue;
                 }
@@ -206,15 +278,14 @@ pub fn compute(
                     }
                 }
             }
-            hot_code_bytes = hot_code_bytes.saturating_add(fn_hot_bytes);
-            packing_floor_lines =
-                packing_floor_lines.saturating_add(fn_hot_bytes.div_ceil(line_bytes));
-            at = at.saturating_add(fn_bytes.div_ceil(line_bytes).saturating_mul(line_bytes));
+            executable_code_bytes = executable_code_bytes.saturating_add(fn_hot_bytes);
         }
-        let slack_lines = (lines.len() as u64).saturating_sub(packing_floor_lines);
-
+        // There is no hypothetical per-function packing in the linked
+        // stream.  Keep the legacy fields as explicit zeroes for consumers
+        // that have not migrated to fetched-text bytes yet.
         let over_l1i_lines = over_ways(&lines, l1i_sets, l1i_ways);
         let over_l2_lines = over_ways(&lines, l2_sets, l2_ways);
+        let over_l3_lines = over_ways(&lines, l3_sets, l3_ways);
         let text_pages = pages.len() as u64;
         let data_pages = data.len() as u64;
         let over_itlb_pages = text_pages.saturating_sub(itlb);
@@ -222,9 +293,11 @@ pub fn compute(
         let (over_tlb_l2_pages, over_data_tlb_l2_pages) =
             unified_l2_tlb_overflow(text_pages, data_pages, tlb_l2);
         let charge = over_l1i_lines
-            .saturating_add(slack_lines)
             .saturating_mul(lat_l2.saturating_sub(lat_l1d_hit))
             .saturating_add(over_l2_lines.saturating_mul(lat_l3.saturating_sub(lat_l2)))
+            .saturating_add(
+                over_l3_lines.saturating_mul(point.get("dram_latency").saturating_sub(lat_l3)),
+            )
             .saturating_add(
                 over_itlb_pages
                     .saturating_add(over_tlb_l2_pages)
@@ -234,13 +307,12 @@ pub fn compute(
             );
         out.push(CoreBudget {
             n,
-            hot_text_bytes: (lines.len() as u64).saturating_mul(line_bytes),
-            hot_code_bytes,
-            packing_floor_lines,
-            slack_lines,
+            fetched_text_bytes: (lines.len() as u64).saturating_mul(line_bytes),
+            executable_code_bytes,
             l1i_bytes,
             over_l1i_lines,
             over_l2_lines,
+            over_l3_lines,
             text_pages,
             itlb_entries: itlb,
             over_itlb_pages,
@@ -300,13 +372,12 @@ mod tests {
     fn the_measured_budget_line_is_labelled_and_names_its_workload() {
         let b = CoreBudget {
             n: 1,
-            hot_text_bytes: 7744,
-            hot_code_bytes: 6420,
-            packing_floor_lines: 106,
-            slack_lines: 15,
+            fetched_text_bytes: 7744,
+            executable_code_bytes: 6420,
             l1i_bytes: 65536,
             over_l1i_lines: 0,
             over_l2_lines: 0,
+            over_l3_lines: 0,
             text_pages: 3,
             itlb_entries: 48,
             over_itlb_pages: 0,
@@ -317,10 +388,13 @@ mod tests {
             over_data_tlb_l2_pages: 0,
             charge: 0,
         };
-        assert!(b.render().starts_with("Budget n=1 hot_text_bytes=7744 "));
+        assert!(
+            b.render()
+                .starts_with("Budget n=1 fetched_text_bytes=7744 ")
+        );
         assert!(
             b.render_measured("boot-actors")
-                .starts_with("MeasuredBudget workload=boot-actors n=1 hot_text_bytes=7744 ")
+                .starts_with("MeasuredBudget workload=boot-actors n=1 fetched_text_bytes=7744 ")
         );
         assert_eq!(
             b.render().trim_start_matches("Budget "),
@@ -389,15 +463,15 @@ mod tests {
         let two = compute(&prog, &t, &p, &split, HotBlocks::All).expect("split");
         assert_eq!(one.len(), 1);
         assert_eq!(two.len(), 2);
-        assert_eq!(two[0].hot_text_bytes, 256);
-        assert_eq!(two[1].hot_text_bytes, 256);
+        assert_eq!(two[0].fetched_text_bytes, 256);
+        assert_eq!(two[1].fetched_text_bytes, 256);
         assert_eq!(
-            one[0].hot_text_bytes,
-            two[0].hot_text_bytes + two[1].hot_text_bytes,
+            one[0].fetched_text_bytes,
+            two[0].fetched_text_bytes + two[1].fetched_text_bytes,
             "one core must hold both actors' text"
         );
         assert!(
-            one[0].hot_text_bytes > two[0].hot_text_bytes,
+            one[0].fetched_text_bytes > two[0].fetched_text_bytes,
             "the split must not sum"
         );
     }
@@ -412,8 +486,11 @@ mod tests {
             entries: vec![entry(ImageDeclRef::Actor(0), "A", 0)],
         };
         let b = compute(&prog, &t, &p, &place, HotBlocks::All).expect("compute");
-        assert_eq!(b[0].hot_text_bytes, 512, "core 0 holds A.turn + the helper");
-        assert_eq!(b[1].hot_text_bytes, 256, "core 1 holds only the helper");
+        assert_eq!(
+            b[0].fetched_text_bytes, 512,
+            "core 0 holds A.turn + the helper"
+        );
+        assert_eq!(b[1].fetched_text_bytes, 256, "core 1 holds only the helper");
     }
 
     #[test]
@@ -443,7 +520,7 @@ mod tests {
             over.charge,
             fit.charge
         );
-        assert_eq!(fit.over_l1i_lines + 1024, fit.hot_text_bytes / 64);
+        assert_eq!(fit.over_l1i_lines + 1024, fit.fetched_text_bytes / 64);
         assert_eq!(
             over.charge - fit.charge,
             (over.over_l1i_lines - fit.over_l1i_lines) * (11 - 4) + 58,
@@ -471,10 +548,10 @@ mod tests {
                 .remove(0)
         };
         let fit = at(16384);
-        assert_eq!(fit.hot_text_bytes, 65536);
+        assert_eq!(fit.fetched_text_bytes, 65536);
         assert_eq!(fit.over_l1i_lines, 0);
         let over = at(16384 + 16);
-        assert_eq!(over.hot_text_bytes, 65536 + 64);
+        assert_eq!(over.fetched_text_bytes, 65536 + 64);
         assert_eq!(over.over_l1i_lines, 1);
         assert_eq!(
             over.charge - fit.charge,
@@ -528,7 +605,7 @@ mod tests {
         let measured =
             compute(&prog, &t, &p, &place, HotBlocks::Measured(&only_first)).expect("measured");
         assert!(
-            measured[0].hot_text_bytes <= flat[0].hot_text_bytes,
+            measured[0].fetched_text_bytes <= flat[0].fetched_text_bytes,
             "a colder f cannot span more text"
         );
     }
@@ -565,36 +642,25 @@ mod tests {
         let a = compute(&prog, &t, &p, &place, HotBlocks::Measured(&packed)).expect("packed");
         let b = compute(&prog, &t, &p, &place, HotBlocks::Measured(&spread)).expect("spread");
 
-        assert_eq!(a[0].hot_code_bytes, b[0].hot_code_bytes, "same code runs");
         assert_eq!(
-            a[0].packing_floor_lines, b[0].packing_floor_lines,
-            "same floor: the floor is a property of how much runs, not of where"
+            a[0].executable_code_bytes, b[0].executable_code_bytes,
+            "same code runs"
         );
-        assert_eq!(a[0].hot_text_bytes, 64, "packed: one line fetched");
+        assert_eq!(a[0].fetched_text_bytes, 64, "packed: one line fetched");
         assert_eq!(
-            b[0].hot_text_bytes, 128,
+            b[0].fetched_text_bytes, 128,
             "spread: two lines for the same code"
         );
-        assert_eq!(a[0].slack_lines, 0);
-        assert_eq!(b[0].slack_lines, 1);
-        assert!(
-            b[0].charge > a[0].charge,
-            "the spread ordering must cost more: {} vs {}",
-            b[0].charge,
-            a[0].charge
-        );
         assert_eq!(
-            b[0].charge - a[0].charge,
-            11 - 4,
-            "one slack line is charged the same lat_l2 - lat_l1d_hit an overflowing \
-             line is: it is the same extra fetch from L2, for a different reason"
+            b[0].charge, a[0].charge,
+            "actual line membership is reported, not a hypothetical packing surcharge"
         );
         assert_eq!(a[0].over_l1i_lines, 0);
         assert_eq!(b[0].over_l1i_lines, 0);
     }
 
     #[test]
-    fn the_flat_row_has_no_density_slack_by_construction() {
+    fn the_flat_row_uses_actual_line_membership_by_construction() {
         use crate::encode::{Cond, enc_b, enc_b_cond};
         let t = table();
         let p = point(&t);
@@ -625,12 +691,7 @@ mod tests {
             ("__wrela_helper", straight(64)),
         ]);
         let b = compute(&prog, &t, &p, &place, HotBlocks::All).expect("flat");
-        assert_eq!(b[0].slack_lines, 0, "the flat row has no slack: {:?}", b[0]);
-        assert_eq!(
-            b[0].hot_text_bytes / 64,
-            b[0].packing_floor_lines,
-            "under f = 1 the fetched line set *is* the packing floor"
-        );
+        assert!(b[0].fetched_text_bytes > 0, "the flat row has fetched text");
     }
 
     #[test]
@@ -690,7 +751,10 @@ mod tests {
             )
             .expect("grown")
             .remove(0);
-            assert!(grown.hot_text_bytes >= base.hot_text_bytes, "words={words}");
+            assert!(
+                grown.fetched_text_bytes >= base.fetched_text_bytes,
+                "words={words}"
+            );
             assert!(grown.text_pages >= base.text_pages, "words={words}");
             assert!(
                 grown.over_itlb_pages >= base.over_itlb_pages,
@@ -725,9 +789,15 @@ mod tests {
             },
         )]);
         let b = compute(&prog, &t, &p, &place, HotBlocks::All).expect("compute");
-        assert_eq!(b[0].data_pages, 3, "three frame pages; the unique key none");
+        assert_eq!(
+            b[0].data_pages, 4,
+            "three frame pages plus the named cold line"
+        );
         assert_eq!(b[0].over_dtlb_pages, 0);
-        assert_eq!(DataPage::of(MemRef::cold_unique(7)), None);
+        assert_eq!(
+            DataPage::of(MemRef::cold_unique(7)),
+            Some(DataPage::Static(u64::MAX, 0))
+        );
     }
 
     #[test]

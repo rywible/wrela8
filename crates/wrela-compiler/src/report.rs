@@ -298,6 +298,38 @@ pub fn render_exact_bytes_section(
     Ok(())
 }
 
+pub fn append_linked_cost_summary(
+    out: &mut String,
+    linked: &crate::linked::LinkedProgram,
+    placement: &PlacementTable,
+    ghz: f64,
+) -> Result<(), String> {
+    let table = cost::load_default()?;
+    let report = cost::score_linked_program(linked, &table, placement)?;
+    out.push_str(&format_cost_summary_scoped(
+        &report,
+        placement,
+        ghz,
+        "linked-image",
+        linked.executable_words(),
+        linked.executable_code_bytes(),
+        linked.rodata_bytes(),
+        linked.image_bytes,
+        None,
+    )?);
+    out.push_str(&format!(
+        "    Scope name=linked-image executable_words={} executable_code_bytes={} fetched_text_bytes={} image_bytes={} rodata_bytes={} sync_frame_max_bytes={} async_frame_total_bytes={}\n",
+        linked.executable_words(),
+        linked.executable_code_bytes(),
+        report.footprint.iter().map(|b| b.fetched_text_bytes).sum::<u64>(),
+        linked.image_bytes,
+        linked.rodata_bytes(),
+        linked.sync_frame_max_bytes,
+        linked.async_frame_total_bytes,
+    ));
+    Ok(())
+}
+
 pub fn append_cost_summary(
     out: &mut String,
     program: &CodegenProgram,
@@ -309,10 +341,15 @@ pub fn append_cost_summary(
     let mut report = cost::score_program(program, &table, placement)?;
     let attach = cost::WorkloadAttach::load_default_for(source, program, &table, placement)?;
     cost::attach_workloads(&mut report, &attach)?;
-    out.push_str(&format_cost_summary(
+    out.push_str(&format_cost_summary_scoped(
         &report,
         placement,
         ghz,
+        "closure",
+        report.total_words,
+        report.total_words.saturating_mul(4),
+        0,
+        0,
         Some(&attach),
     )?);
     Ok(())
@@ -324,14 +361,54 @@ pub fn format_cost_summary(
     ghz: f64,
     attach: Option<&cost::WorkloadAttach>,
 ) -> Result<String, String> {
+    format_cost_summary_scoped(
+        report,
+        placement,
+        ghz,
+        "closure",
+        report.total_words,
+        report.total_words.saturating_mul(4),
+        0,
+        0,
+        attach,
+    )
+}
+
+fn format_cost_summary_scoped(
+    report: &CostReport,
+    placement: &PlacementTable,
+    ghz: f64,
+    scope: &str,
+    executable_words: u64,
+    executable_code_bytes: u64,
+    rodata_bytes: u64,
+    image_bytes: u64,
+    attach: Option<&cost::WorkloadAttach>,
+) -> Result<String, String> {
     let app = report.owner_totals.get("app").copied().unwrap_or(0);
     let runtime = report.owner_totals.get("runtime").copied().unwrap_or(0);
     let driver = report.owner_totals.get("driver").copied().unwrap_or(0);
+    let fetched_text_bytes: u64 = report.footprint.iter().map(|b| b.fetched_text_bytes).sum();
     let mut header = format!(
-        "  Cost version={} digest={} total={} ghz={}",
+        "  Cost version={} scope={} digest={} total={} rank_cycles={} schedule_cycles={} footprint_cycles={} executable_words={} executable_code_bytes={} fetched_text_bytes={} rodata_bytes={} image_bytes={} sync_frame_max_bytes={} async_frame_total_bytes={} ghz={}",
         report.version,
+        scope,
         report.digest,
         report.total_proxy_cycles,
+        report.rank_cycles,
+        report.schedule_cycles,
+        report.footprint_cycles,
+        executable_words,
+        executable_code_bytes,
+        fetched_text_bytes,
+        rodata_bytes,
+        if scope == "closure" {
+            "n/a".to_string()
+        } else {
+            image_bytes.to_string()
+        },
+        report.sync_frame_max_bytes,
+        report.async_frame_total_bytes,
         cost::fmt_compact(ghz),
     );
     if let Some(wd) = &report.workloads_digest {
@@ -716,7 +793,12 @@ pub fn caller(a: u64) -> u64:
             dispatch_uops: 8,
             reorder_window: 128,
             total_proxy_cycles: 30,
+            schedule_cycles: 30,
+            footprint_cycles: 0,
+            rank_cycles: 30,
             total_words: 30,
+            sync_frame_max_bytes: 0,
+            async_frame_total_bytes: 0,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
                 ("runtime".to_string(), 12u64),
@@ -728,13 +810,12 @@ pub fn caller(a: u64) -> u64:
             workload_coverage: BTreeMap::new(),
             footprint: vec![cost::CoreBudget {
                 n: 0,
-                hot_text_bytes: 1216,
-                hot_code_bytes: 1200,
-                packing_floor_lines: 19,
-                slack_lines: 0,
+                fetched_text_bytes: 1216,
+                executable_code_bytes: 1200,
                 l1i_bytes: 65536,
                 over_l1i_lines: 0,
                 over_l2_lines: 0,
+                over_l3_lines: 0,
                 text_pages: 1,
                 itlb_entries: 48,
                 over_itlb_pages: 0,
@@ -751,13 +832,13 @@ pub fn caller(a: u64) -> u64:
                 .expect("format");
         assert_eq!(
             text,
-            "  Cost version=3 digest=deadbeef total=30 ghz=2.4 workloads_digest=wdigest\n\
+            "  Cost version=3 scope=closure digest=deadbeef total=30 rank_cycles=30 schedule_cycles=30 footprint_cycles=0 executable_words=30 executable_code_bytes=120 fetched_text_bytes=1216 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4 workloads_digest=wdigest\n\
                \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
-               \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a\n\
-               \x20   Budget n=0 hot_text_bytes=1216 hot_code_bytes=1200 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0\n\
+               \x20   Core n=0 proxy_cycles=0 max_entry_method_proxy_cycles=0\n\
+               \x20   Budget n=0 fetched_text_bytes=1216 executable_code_bytes=1200 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0\n\
                \x20   Shared proxy_cycles=0\n"
         );
     }
@@ -776,7 +857,12 @@ pub fn caller(a: u64) -> u64:
             dispatch_uops: 8,
             reorder_window: 128,
             total_proxy_cycles: 30,
+            schedule_cycles: 30,
+            footprint_cycles: 0,
+            rank_cycles: 30,
             total_words: 30,
+            sync_frame_max_bytes: 0,
+            async_frame_total_bytes: 0,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
                 ("runtime".to_string(), 12u64),
@@ -795,7 +881,7 @@ pub fn caller(a: u64) -> u64:
         let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ, None).expect("format");
         assert_eq!(
             text,
-            "  Cost version=3 digest=deadbeef total=30 ghz=2.4\n\
+            "  Cost version=3 scope=closure digest=deadbeef total=30 rank_cycles=30 schedule_cycles=30 footprint_cycles=0 executable_words=30 executable_code_bytes=120 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4\n\
                \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\

@@ -1,0 +1,14 @@
+module examples.check_frame_color_diamond
+
+@actor
+pub struct Choice:
+    value: u64
+
+    pub async fn choose(mut self, cond: bool) -> u64:
+        if cond:
+            left: u64 = 10
+            self.value = left
+        else:
+            right: u64 = 20
+            self.value = right
+        return self.value

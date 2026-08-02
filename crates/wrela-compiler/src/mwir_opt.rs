@@ -13,6 +13,7 @@ thread_local! {
     static CONST_PROP: Cell<bool> = const { Cell::new(false) };
     static GVN: Cell<bool> = const { Cell::new(false) };
     static DCE: Cell<bool> = const { Cell::new(false) };
+    static SROA: Cell<bool> = const { Cell::new(false) };
     static INLINE_RULE_ONE_ONLY: Cell<bool> = const { Cell::new(false) };
     static INLINED_SITES: Cell<usize> = const { Cell::new(0) };
     static INLINED_CALLEES_DELETED: Cell<usize> = const { Cell::new(0) };
@@ -67,18 +68,29 @@ pub fn dce() -> bool {
     DCE.with(|c| c.get())
 }
 
-pub fn optimize(
+pub fn set_sroa(enabled: bool) {
+    SROA.with(|c| c.set(enabled));
+}
+
+pub fn sroa() -> bool {
+    SROA.with(|c| c.get())
+}
+
+pub fn optimize_checked(
     mwir: &MwirProgram,
     flow: Option<&FlowWirProgram>,
     layout: &LayoutCtx,
-) -> Option<MwirProgram> {
-    if !(inlining() || const_prop() || gvn() || dce()) {
-        return None;
+) -> Result<Option<MwirProgram>, String> {
+    if !(inlining() || const_prop() || gvn() || dce() || sroa() || crate::lower::bounds_elide()) {
+        return Ok(None);
     }
     if !runtime_closure_is_known() {
-        return None;
+        return Ok(None);
     }
     let mut prog = mwir.clone();
+    if sroa() {
+        prog = crate::sroa::rewrite_program(&prog, layout)?.0;
+    }
     if inlining() && !inline_after_redundancy() {
         inline_program(&mut prog, flow, layout);
     }
@@ -99,7 +111,39 @@ pub fn optimize(
     if inlining() && inline_after_redundancy() {
         inline_program(&mut prog, flow, layout);
     }
-    Some(prog)
+    if crate::lower::bounds_elide() {
+        prog = crate::range::apply_program_proofs(&prog)?;
+    }
+    Ok(Some(prog))
+}
+
+/// Compatibility wrapper for analysis tests.  Production codegen uses
+/// `optimize_checked` so a malformed SROA rewrite or bounds proof fails closed
+/// rather than silently compiling the unoptimized program.
+pub fn optimize(
+    mwir: &MwirProgram,
+    flow: Option<&FlowWirProgram>,
+    layout: &LayoutCtx,
+) -> Option<MwirProgram> {
+    optimize_checked(mwir, flow, layout).ok().flatten()
+}
+
+/// Explicit maintainer-only dataflow transform.  The normal optimizer keeps
+/// this off until its linked cost oracle proves a product win.
+pub fn optimize_with_proofs(
+    program: &MwirProgram,
+    layout: &crate::mwir::LayoutCtx,
+    scalar_replace: bool,
+    bounds_prove: bool,
+) -> Result<MwirProgram, String> {
+    let mut out = program.clone();
+    if scalar_replace {
+        out = crate::sroa::rewrite_program(&out, layout)?.0;
+    }
+    if bounds_prove {
+        out = crate::range::apply_program_proofs(&out)?;
+    }
+    Ok(out)
 }
 
 pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
@@ -167,8 +211,14 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         Inst::IndexGet {
             dst, base, index, ..
         }
+        | Inst::IndexGetProven {
+            dst, base, index, ..
+        }
         | Inst::BytesIndexGet { dst, base, index }
         | Inst::PlacedIndexGet {
+            dst, base, index, ..
+        }
+        | Inst::PlacedIndexGetProven {
             dst, base, index, ..
         } => {
             f(dst);
@@ -178,7 +228,13 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         Inst::IndexSet {
             base, index, value, ..
         }
+        | Inst::IndexSetProven {
+            base, index, value, ..
+        }
         | Inst::PlacedIndexSet {
+            base, index, value, ..
+        }
+        | Inst::PlacedIndexSetProven {
             base, index, value, ..
         } => {
             f(base);
@@ -222,104 +278,17 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
 }
 
 fn def_of(inst: &Inst) -> Option<Temp> {
-    match inst {
-        Inst::ConstInt { dst, .. }
-        | Inst::ConstBool { dst, .. }
-        | Inst::ConstFloat { dst, .. }
-        | Inst::ConstChar { dst, .. }
-        | Inst::ConstUnit { dst }
-        | Inst::ConstText { dst, .. }
-        | Inst::Copy { dst, .. }
-        | Inst::MakeAggregate { dst, .. }
-        | Inst::FormatScalar { dst, .. }
-        | Inst::StringConcat { dst, .. }
-        | Inst::Project { dst, .. }
-        | Inst::IndexGet { dst, .. }
-        | Inst::PlacedIndexGet { dst, .. }
-        | Inst::BytesIndexGet { dst, .. }
-        | Inst::MakeEnum { dst, .. }
-        | Inst::EnumTag { dst, .. }
-        | Inst::EnumPayload { dst, .. }
-        | Inst::ArithChecked { dst, .. }
-        | Inst::ArithWrapping { dst, .. }
-        | Inst::DivRem { dst, .. }
-        | Inst::Shift { dst, .. }
-        | Inst::Bitwise { dst, .. }
-        | Inst::Compare { dst, .. }
-        | Inst::Neg { dst, .. }
-        | Inst::BitNot { dst, .. }
-        | Inst::Convert { dst, .. }
-        | Inst::Not { dst, .. }
-        | Inst::BoolAnd { dst, .. }
-        | Inst::Call { dst, .. }
-        | Inst::MmioRead { dst, .. }
-        | Inst::LoadIrqVector { dst, .. }
-        | Inst::InterruptCellLoadAcquire { dst, .. }
-        | Inst::InterruptCellSwapAcquire { dst, .. }
-        | Inst::InterruptCellFetchOrRelease { dst, .. }
-        | Inst::Now { dst }
-        | Inst::Entropy { dst, .. }
-        | Inst::MemLoad { dst, .. }
-        | Inst::PtrOffset { dst, .. }
-        | Inst::TurnAddrFromId { dst, .. } => Some(*dst),
-        Inst::SetField { .. }
-        | Inst::IndexSet { .. }
-        | Inst::PlacedIndexSet { .. }
-        | Inst::MemStore { .. }
-        | Inst::MmioWrite { .. }
-        | Inst::InterruptCellStoreRelease { .. }
-        | Inst::Dmb { .. }
-        | Inst::Wake { .. }
-        | Inst::SlotMapMint { .. }
-        | Inst::Jump { .. }
-        | Inst::JumpIfFalse { .. }
-        | Inst::Return { .. }
-        | Inst::Abort { .. }
-        | Inst::AssertFail { .. } => None,
-    }
+    crate::mwir_facts::inst_facts(inst).defs.first().copied()
 }
 
 fn clobbers(inst: &Inst, out: &mut Vec<Temp>) {
     out.clear();
-    if let Some(d) = def_of(inst) {
-        out.push(d);
-    }
-    match inst {
-        Inst::SetField { base, .. }
-        | Inst::IndexSet { base, .. }
-        | Inst::PlacedIndexSet { base, .. }
-        | Inst::MemStore { base, .. } => out.push(*base),
-        Inst::SlotMapMint { map } => out.push(*map),
-        Inst::Call { write_backs, .. } => {
-            for (_, t) in write_backs {
-                out.push(*t);
-            }
-        }
-        _ => {}
-    }
+    out.extend(crate::mwir_facts::inst_facts(inst).defs);
 }
 
 fn reads_of(inst: &Inst, out: &mut Vec<Temp>) {
     out.clear();
-    let def = def_of(inst);
-    let mut first = true;
-    let mut i = inst.clone();
-    visit_temps_mut(&mut i, &mut |t| {
-        if first && def.is_some() {
-            first = false;
-            return;
-        }
-        first = false;
-        out.push(*t);
-    });
-    match inst {
-        Inst::SetField { base, .. }
-        | Inst::IndexSet { base, .. }
-        | Inst::PlacedIndexSet { base, .. }
-        | Inst::MemStore { base, .. } => out.push(*base),
-        Inst::SlotMapMint { map } => out.push(*map),
-        _ => {}
-    }
+    out.extend(crate::mwir_facts::inst_facts(inst).uses);
 }
 
 fn target_of(inst: &Inst) -> Option<usize> {

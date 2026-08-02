@@ -308,12 +308,8 @@ mod tests {
         let code = || vec![cold_load(CostRule::LoadAcquire, 0)];
         let local = total("Foo.turn", code(), &single_core());
         let remote = total("Foo.turn", code(), &three_cores());
-        assert_eq!(local, 35, "one core: nothing can be remote");
-        assert_eq!(
-            remote,
-            35 + 312,
-            "peer core exists: snoop above the L3 path"
-        );
+        assert_eq!(local, 4, "one core: resolved loads use the L1 rank floor");
+        assert_eq!(remote, 4 + 312, "peer core adds the swept snoop cost");
         assert!(
             remote > local,
             "remote {remote} must exceed local {local} at equal reuse distance"
@@ -321,7 +317,7 @@ mod tests {
         let lo = pinned().with("snoop_cost", 0);
         assert_eq!(
             total_at("Foo.turn", code(), &three_cores(), &lo),
-            35,
+            4,
             "snoop_cost must reach the schedule through the sweep point"
         );
     }
@@ -408,8 +404,8 @@ mod tests {
             &one,
         );
         let with_dmb = total("f", vec![load(), word(CostRule::Barrier, None, &[])], &one);
-        assert_eq!(with_add, 35, "an independent ADD hides under the load");
-        assert_eq!(with_dmb, 36, "the barrier waits for the load to retire");
+        assert_eq!(with_add, 4, "an independent ADD hides under the load");
+        assert_eq!(with_dmb, 5, "the barrier waits for the load to retire");
         assert!(with_dmb > with_add);
         let after = total(
             "f",
@@ -422,7 +418,7 @@ mod tests {
         );
         assert_eq!(
             after,
-            1 + 35,
+            1 + 4,
             "the load cannot issue before the barrier retires"
         );
         let hi = pinned().with("dmb_cost", 64);
@@ -462,12 +458,12 @@ mod tests {
 
         assert_eq!(
             total("f", vec![load(), nzcv], &one),
-            35,
+            4,
             "a renamed-flag write does not fence: it hides under the load"
         );
         assert_eq!(
             total("f", vec![load(), msr.clone()], &one),
-            36,
+            5,
             "an in-order system access waits for the window to drain"
         );
 
@@ -648,6 +644,7 @@ mod tests {
         let mk = |key: &str, pairs: &[(&str, u64)]| FnCost {
             key: key.to_string(),
             owner: "runtime".to_string(),
+            frame_bytes: 0,
             proxy_cycles: 0,
             words: 0,
             terms: pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
@@ -663,7 +660,12 @@ mod tests {
             dispatch_uops: 8,
             reorder_window: 128,
             total_proxy_cycles: 0,
+            schedule_cycles: 0,
+            footprint_cycles: 0,
+            rank_cycles: 0,
             total_words: 0,
+            sync_frame_max_bytes: 0,
+            async_frame_total_bytes: 0,
             owner_totals: BTreeMap::new(),
             footprint: Vec::new(),
             fns: vec![

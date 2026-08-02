@@ -31,6 +31,7 @@ impl Fnv64 {
 
 pub mod ab;
 pub mod attr;
+pub mod audit;
 pub mod branch;
 pub mod bridge;
 pub mod compose;
@@ -52,6 +53,7 @@ pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
+pub use audit::{audit_program, audit_word};
 pub use branch::{BlockCounts, BlockObs, BranchSummary, BranchTerms, FRONTEND_SWEEP_DIM};
 pub use bridge::{BlockBridge, BridgedBlock, MeasuredBlocks, Resolved, make_key, split_key};
 pub use compose::{
@@ -62,22 +64,23 @@ pub use derive::{
     BlockClass, BlockRow, CallRow, DerivedTables, LayoutClasses, LoopRow, PartitionCheck,
     layout_classes,
 };
-pub use dump::{dump, dump_for_source};
-pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
+pub use dump::{dump, dump_for_source, dump_linked, dump_linked_for_source};
+pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES, compute_linked};
 pub use freq::{BlockFreq, MethodFreq, sibling_block_freq_path, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use mem::{LineId, MemLevel, MemState, MemVerdict};
 pub use oracles::{check_dimension_inventory, dimension_inventory_rows, inventory_rows};
 pub use owner::classify_owner;
-pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
+pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef, MemTarget};
 pub use score::{
     BranchBias, CostReport, CrossExtra, FnCost, basic_block_ranges, block_schedule_lengths,
-    block_schedule_lengths_with_counts, score_program, score_program_at, score_program_at_with_hot,
+    block_schedule_lengths_with_counts, score_linked_program, score_program, score_program_at,
+    score_program_at_with_hot,
 };
 pub use stage::{
     CostStageClosure, TextScope, codegen_cost_stage, codegen_cost_stage_with_block_layout,
-    codegen_cost_stage_with_placement, codegen_shipped_program, load_cost_stage_closure,
-    report_cost_stage_path, score_cost_stage_path,
+    codegen_cost_stage_with_placement, codegen_shipped_program, linked_shipped_program,
+    load_cost_stage_closure, report_cost_stage_path, score_cost_stage_path,
 };
 pub use sweep::{SweepPoint, endpoint_corners, record_reads};
 pub use table::{

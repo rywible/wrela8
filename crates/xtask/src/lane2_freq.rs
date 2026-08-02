@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bench::golden_test_image;
 use crate::golden::build_and_sign_vmm;
@@ -101,6 +101,21 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         .map_err(|e| format!("gen-lane2-freq: read {}: {e}", dump_path.display()))?;
     let hits = parse_lane3_dump(&snapshot_text)?;
 
+    // Rank only the function universe emitted by the shipped image.  Test
+    // runner, assertion formatting, and other harness-only blocks are
+    // measurement artifacts, not unresolved production work.
+    let case_dir = root().join(format!("tests/golden/{case}"));
+    let source = match std::fs::read_to_string(case_dir.join("root")) {
+        Ok(relative) => case_dir.join(relative.trim()),
+        Err(_) => case_dir.join("input.wr"),
+    };
+    let production: BTreeSet<String> = wrela_compiler::cost::linked_shipped_program(&source)?
+        .0
+        .fns
+        .keys()
+        .cloned()
+        .collect();
+
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for (id, n) in &hits {
         let key = key_of.get(id).ok_or_else(|| {
@@ -110,9 +125,18 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
                  (decision 1608)"
             )
         })?;
+        let (fn_key, _) = wrela_compiler::cost::split_key(key)?;
+        if !production.contains(fn_key) {
+            continue;
+        }
         if counts.insert(key.clone(), *n).is_some() {
             return Err(format!("gen-lane2-freq: duplicate key `{key}`"));
         }
+    }
+    if counts.is_empty() {
+        return Err(
+            "gen-lane2-freq: the measured window reached no shipped-image blocks".to_string(),
+        );
     }
 
     let transcript_line = transcript
@@ -142,18 +166,13 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
          # marker, so it is a bounded diagnostic and not the vector.\n\
          #\n\
          # Keys are `<fn_key>#<block_index>`, not Lane 2 ids: the `@test(runtime)` image\n\
-         # this was measured on assigns {ids_assigned} block ids, while the cost-stage\n\
-         # closure `wrela dump --stage=cost` scores assigns far fewer, and the two id\n\
-         # spaces are disjoint. The id -> key translation happened offline here, against\n\
-         # this image's own assignment map; `cost::bridge` resolves the key to a word-block\n\
-         # range in the scored program's own partition and fails closed on disagreement.\n\
-         #\n\
-         # Most of these keys name fns the scored closure does not contain (test harness,\n\
-         # boot init, unreached stdlib). Those are **uncovered** hits, charged at the\n\
-         # program maximum by `cost::compose` and never dropped (04 Section 5 coverage\n\
-         # honesty; freeze 1627 keeps the denominator the whole scored set).\n\
+         # this was measured on assigns {ids_assigned} block ids. Translation uses that\n\
+         # image's exact origin map, then removes test-harness-only keys by intersecting\n\
+         # with the separately compiled shipped-image function universe. Every committed\n\
+         # key must therefore resolve exactly in linked-image scoring; there is no\n\
+         # maximum-function fallback in the profitability gate.\n\
          workload={case}\n",
-        hits.len()
+        counts.len()
     ));
     for (key, n) in &counts {
         text.push_str(&format!("{key}={n}\n"));

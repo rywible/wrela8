@@ -16,7 +16,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -442,13 +442,19 @@ fn build_report(
                                         layout::render_layout_section(&mut text, &image_layout);
                                         let cost_source =
                                             file_paths.get(module.as_str()).map(|p| p.as_path());
-                                        report::append_cost_summary(
-                                            &mut text,
-                                            &codegen,
-                                            &placement,
-                                            ghz,
-                                            cost_source,
-                                        )
+                                        if let Some(linked) = image_layout.linked.as_ref() {
+                                            report::append_linked_cost_summary(
+                                                &mut text, linked, &placement, ghz,
+                                            )
+                                        } else {
+                                            report::append_cost_summary(
+                                                &mut text,
+                                                &codegen,
+                                                &placement,
+                                                ghz,
+                                                cost_source,
+                                            )
+                                        }
                                         .map_err(|e| {
                                             if e.ends_with('\n') {
                                                 format!("error[build]: {e}")
@@ -627,6 +633,88 @@ fn load_build_closure(
         }
     }
     Ok((checked.programs, file_paths, checked.modules))
+}
+
+fn run_cfg_stage(checked: &CheckedClosure) -> Result<String, String> {
+    let reachable =
+        lower::guest_reachable_keys_closure(&checked.programs, &lower::LowerOpts::default());
+    let opts = lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
+    };
+    let mut mwir_programs = Vec::with_capacity(checked.programs.len());
+    let mut flow_fns = BTreeMap::new();
+    for typed in checked.programs.values() {
+        mwir_programs.push(lower::lower_program_with(typed, &opts).map_err(|e| e.message.clone())?);
+        flow_fns.extend(
+            wrela_compiler::flowwir_lower::lower_program_with(typed, &opts)
+                .map_err(|e| e.message.clone())?
+                .fns,
+        );
+    }
+    let mwir = layout::merge_mwir_programs(mwir_programs);
+    let flow = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+    let mut out = wrela_compiler::liveness::dump_program(&mwir)?;
+    out.push_str(&wrela_compiler::flow_liveness::dump_program(&flow)?);
+    Ok(out)
+}
+
+fn run_frame_stage(checked: &CheckedClosure) -> Result<String, String> {
+    let reachable =
+        lower::guest_reachable_keys_closure(&checked.programs, &lower::LowerOpts::default());
+    let opts = lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
+    };
+    let mut flow_fns = BTreeMap::new();
+    for typed in checked.programs.values() {
+        flow_fns.extend(
+            wrela_compiler::flowwir_lower::lower_program_with(typed, &opts)
+                .map_err(|e| e.message.clone())?
+                .fns,
+        );
+    }
+    let flow = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+    let mut layout_ctx =
+        layout::merge_layout_ctx(&checked.modules).map_err(|e| e.message.clone())?;
+    layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &checked.programs);
+    wrela_compiler::frame_plan::dump_program(&flow, &layout_ctx)
+}
+
+fn run_mwir_opt_stage(checked: &CheckedClosure) -> Result<String, String> {
+    let reachable =
+        lower::guest_reachable_keys_closure(&checked.programs, &lower::LowerOpts::default());
+    let opts = lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
+    };
+    let mut mwir_programs = Vec::new();
+    let mut flow_fns = BTreeMap::new();
+    for typed in checked.programs.values() {
+        mwir_programs.push(lower::lower_program_with(typed, &opts).map_err(|e| e.message.clone())?);
+        flow_fns.extend(
+            wrela_compiler::flowwir_lower::lower_program_with(typed, &opts)
+                .map_err(|e| e.message.clone())?
+                .fns,
+        );
+    }
+    let mwir = layout::merge_mwir_programs(mwir_programs);
+    let flow = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
+    let mut layout_ctx =
+        layout::merge_layout_ctx(&checked.modules).map_err(|e| e.message.clone())?;
+    layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &checked.programs);
+    let mut out = wrela_compiler::sroa::dump_program(&mwir, &layout_ctx);
+    out.push_str(&wrela_compiler::sroa::dump_flow_program(
+        &flow,
+        &layout_ctx,
+    )?);
+    for (key, f) in &mwir.fns {
+        let analysis = wrela_compiler::range::analyze(f)?;
+        out.push_str(&format!("  range function {key}\n"));
+        out.push_str(&wrela_compiler::range::dump(f, &analysis));
+    }
+    out.push_str(&wrela_compiler::range::dump_flow_program(&flow)?);
+    Ok(out)
 }
 
 fn dump(args: &[String]) -> ExitCode {
@@ -897,6 +985,105 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
+        "relax" => {
+            let dump_start = Instant::now();
+            match wrela_compiler::cost::linked_shipped_program(Path::new(&path)) {
+                Ok((linked, _, scope)) if scope == wrela_compiler::cost::TextScope::Image => {
+                    match wrela_compiler::relax::relax_linked_immediates(&linked) {
+                        Ok((linked, dump)) => {
+                            match wrela_compiler::relax::relax_linked_addresses(&linked) {
+                                Ok((_, address_dump)) => print!("{dump}{address_dump}"),
+                                Err(e) => {
+                                    print_line_diagnostic(&format!("error[unimplemented]: {e}"))
+                                }
+                            }
+                        }
+                        Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                    }
+                }
+                Ok(_) => match wrela_compiler::cost::codegen_cost_stage(Path::new(&path)) {
+                    Ok(program) => match wrela_compiler::relax::relax_immediates(&program) {
+                        Ok(relaxed) => print!("{}", relaxed.dump),
+                        Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                    },
+                    Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                },
+                Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+            }
+            dump_time = dump_start.elapsed();
+        }
+        "cfg" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => match run_cfg_stage(&checked) {
+                            Ok(text) => print!("{text}"),
+                            Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                        },
+                        Err(()) => {}
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "mwir-opt" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => match run_mwir_opt_stage(&checked) {
+                            Ok(text) => print!("{text}"),
+                            Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                        },
+                        Err(()) => {}
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
+        "frame" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => match run_frame_stage(&checked) {
+                            Ok(text) => print!("{text}"),
+                            Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                        },
+                        Err(()) => {}
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
         "mwir" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -1092,31 +1279,48 @@ fn dump(args: &[String]) -> ExitCode {
                                                                     }
                                                                 }
                                                             };
-                                                            match wrela_compiler::cost::load_default()
+                                                            if checked.programs[&checked.root]
+                                                                .image_fn
+                                                                .is_some()
                                                             {
-                                                                Ok(table) => {
-                                                                    match wrela_compiler::cost::dump_for_source(
-                                                                        &codegen_program,
-                                                                        &table,
-                                                                        &placement,
-                                                                        ghz,
-                                                                        Some(Path::new(&path)),
-                                                                    ) {
-                                                                        Ok(text) => print!("{text}"),
-                                                                        Err(e) => {
-                                                                            print_line_diagnostic(
-                                                                                &format!(
-                                                                                    "error[unimplemented]: {e}"
-                                                                                ),
-                                                                            )
+                                                                match wrela_compiler::cost::linked_shipped_program(
+                                                                    Path::new(&path),
+                                                                ) {
+                                                                    Ok((linked, linked_place, _)) => {
+                                                                        match wrela_compiler::cost::load_default()
+                                                                        {
+                                                                            Ok(table) => match wrela_compiler::cost::dump_linked_for_source(
+                                                                                &linked,
+                                                                                &table,
+                                                                                &linked_place,
+                                                                                ghz,
+                                                                                Some(Path::new(&path)),
+                                                                            ) {
+                                                                                Ok(text) => print!("{text}"),
+                                                                                Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                                                                            },
+                                                                            Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
                                                                         }
                                                                     }
+                                                                    Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
                                                                 }
-                                                                Err(e) => print_line_diagnostic(
-                                                                    &format!(
-                                                                        "error[unimplemented]: {e}"
-                                                                    ),
-                                                                ),
+                                                            } else {
+                                                                match wrela_compiler::cost::load_default()
+                                                                {
+                                                                    Ok(table) => {
+                                                                        match wrela_compiler::cost::dump_for_source(
+                                                                            &codegen_program,
+                                                                            &table,
+                                                                            &placement,
+                                                                            ghz,
+                                                                            Some(Path::new(&path)),
+                                                                        ) {
+                                                                            Ok(text) => print!("{text}"),
+                                                                            Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                                                                        }
+                                                                    }
+                                                                    Err(e) => print_line_diagnostic(&format!("error[unimplemented]: {e}")),
+                                                                }
                                                             }
                                                         } else {
                                                             print!(

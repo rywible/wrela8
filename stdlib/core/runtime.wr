@@ -684,12 +684,25 @@ struct Lane2Counters:
 static LANE2: Lane2Counters
 
 pub fn __wrela_block_hit(id: usize):
-    if LANE2.enabled == 2:
+    if LANE2.enabled != 1:
         return
     if id >= BLOCK_POOL_COUNT:
         return
-    LANE2.enabled = 1
     LANE2.hits[id] = LANE2.hits[id] +% 1
+    return
+
+pub fn __wrela_lane2_begin():
+    LANE2.enabled = 2
+    i: usize = 0
+    @budget(bound=4096)
+    while i < BLOCK_POOL_COUNT:
+        LANE2.hits[i] = 0
+        i = i +% 1
+    LANE2.enabled = 1
+    return
+
+pub fn __wrela_lane2_end():
+    LANE2.enabled = 2
     return
 
 pub fn __wrela_lane2_dump():

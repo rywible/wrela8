@@ -110,6 +110,6 @@ Program
     0102: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded
-    1: offset=0x26 index 
+    1: offset=0x26 index\x20
     2: offset=0x2c  out of bounds (length 3)
     3: offset=0x45 arithmetic overflow in `+`

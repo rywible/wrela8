@@ -1,0 +1,25 @@
+module examples.check_flow_suspend_live
+
+struct Payload:
+    value: u64
+
+@actor
+pub struct Upstream:
+    value: u64
+
+    pub fn get(read self) -> Payload:
+        return Payload(value=self.value)
+
+@actor
+pub struct Store:
+    upstream: Actor[Upstream]
+
+    pub async fn run(mut self) -> u64:
+        durable: u64 = 40
+        fetched = await self.upstream.get()
+        @discard(reason="deliberate error-path collapse")
+        match fetched:
+            case .Ok(completion):
+                return durable + completion.value
+            case .Err(_):
+                return durable

@@ -59,10 +59,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=53644
-  Section name=rodata base=0x4050d1e0 size=512
-  Section name=abort base=0x4050d3e0 size=120
-  Section name=checkpoint base=0x4050d458 size=28
+  Section name=code base=0x40500050 size=52184
+  Section name=rodata base=0x4050cc28 size=484
+  Section name=abort base=0x4050ce0c size=120
+  Section name=checkpoint base=0x4050ce84 size=28
   Section name=rtdata base=0x40540000 size=248
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -158,14 +158,15 @@ ImageReport v0
   Actor name=Store mailbox=8 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=248
-  Cost version=3 digest=ed181b5abc4dd5d5 total=17705 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=17705
-    Owner name=app proxy_cycles=624
-    Owner name=runtime proxy_cycles=17081
+  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=9802 rank_cycles=9802 schedule_cycles=9802 footprint_cycles=0 executable_words=13103 executable_code_bytes=52412 fetched_text_bytes=52480 rodata_bytes=484 image_bytes=262392 sync_frame_max_bytes=1328 async_frame_total_bytes=0 ghz=2.4
+    Workload name=flat proxy_cycles=9802
+    Owner name=app proxy_cycles=382
+    Owner name=runtime proxy_cycles=9420
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=82 max_turn_proxy=41 turns_per_sec=58536585.3658536598 ms_per_turn_model=0.0000170833
-    Budget n=0 hot_text_bytes=67712 hot_code_bytes=52848 slack_lines=0 l1i_bytes=65536 over_l1i_lines=34 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=238
-    Shared proxy_cycles=17623
+    Core n=0 proxy_cycles=32 max_entry_method_proxy_cycles=10
+    Budget n=0 fetched_text_bytes=52480 executable_code_bytes=52412 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=13 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Shared proxy_cycles=9386
+    Scope name=linked-image executable_words=13103 executable_code_bytes=52412 fetched_text_bytes=52480 image_bytes=262392 rodata_bytes=484 sync_frame_max_bytes=1328 async_frame_total_bytes=0
   Convention fns=321 frameless=240 tail_calls=1
     Fn key=Store.get frame=16 residents=2 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=Store.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24
@@ -396,7 +397,7 @@ ImageReport v0
     Fn key=__wrela_abort frame=32 residents=13 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_abort_tail frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__wrela_abort_val frame=64 residents=19 regs=x0-x1,x4-x6 clobbers=all pool=20
-    Fn key=__wrela_block_hit frame=0 residents=14 regs=x4-x7 clobbers=all pool=18
+    Fn key=__wrela_block_hit frame=0 residents=12 regs=x0-x3 clobbers=all pool=21
     Fn key=__wrela_boot_call frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_call_method frame=16 residents=14 regs=x0-x6 clobbers=all pool=19
     Fn key=__wrela_child_poll frame=48 residents=65 regs=x0-x1,x4-x6 clobbers=all pool=18
@@ -482,8 +483,8 @@ ImageReport v0
     Fn key=__wrela_xsend_6 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
     Fn key=__wrela_xsend_7 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
     Fn key=__wrela_xsend_edge frame=0 residents=4 regs=x0-x2 clobbers=all pool=24
-    Fn key=append_failed_literal frame=16 residents=23 regs=x0,x4-x6 clobbers=all pool=18
-    Fn key=append_newline_literal frame=16 residents=5 regs=x0,x4-x6 clobbers=all pool=18
+    Fn key=append_failed_literal frame=16 residents=23 regs=x0-x3 clobbers=all pool=21
+    Fn key=append_newline_literal frame=16 residents=5 regs=x0-x3 clobbers=all pool=21
     Fn key=ascii_digit frame=0 residents=32 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
     Fn key=copy_bytes_range frame=32 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
     Fn key=copy_line_buf_range frame=0 residents=16 regs=x4-x8,x14-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=18

@@ -4,17 +4,27 @@ use std::path::{Path, PathBuf};
 use super::{Fnv64, repo_root};
 
 const WEIGHT_KEY: &str = "weight";
+const SOURCE_KEY: &str = "source";
 
 pub const FLAT_NAME: &str = "flat";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkloadSet {
     weights: BTreeMap<String, u64>,
+    sources: BTreeMap<String, PathBuf>,
 }
 
 impl WorkloadSet {
     pub fn weight(&self, name: &str) -> Option<u64> {
         self.weights.get(name).copied()
+    }
+
+    pub fn source(&self, name: &str) -> Option<&Path> {
+        self.sources.get(name).map(PathBuf::as_path)
+    }
+
+    pub fn source_path(&self, name: &str) -> Option<PathBuf> {
+        self.source(name).map(|path| repo_root().join(path))
     }
 
     pub fn flat_weight(&self) -> u64 {
@@ -42,7 +52,12 @@ impl WorkloadSet {
             if i > 0 {
                 h.write(b"\n");
             }
-            h.write(format!("{name}={weight}").as_bytes());
+            let source = self
+                .sources
+                .get(name)
+                .map(|path| path.to_string_lossy())
+                .unwrap_or_default();
+            h.write(format!("{name}={weight}@{source}").as_bytes());
         }
         format!("{:016x}", h.finish())
     }
@@ -67,7 +82,20 @@ pub fn load_from_path(path: &Path) -> Result<WorkloadSet, String> {
             path.display()
         )
     })?;
-    parse(&text).map_err(|e| format!("workloads {}: {e}", path.display()))
+    let set = parse(&text).map_err(|e| format!("workloads {}: {e}", path.display()))?;
+    for name in set.names().filter(|name| *name != FLAT_NAME) {
+        let source = set
+            .source_path(name)
+            .ok_or_else(|| format!("workloads {}: missing {name}.source", path.display()))?;
+        if !source.is_file() {
+            return Err(format!(
+                "workloads {}: {name}.source does not name a file: {}",
+                path.display(),
+                source.display()
+            ));
+        }
+    }
+    Ok(set)
 }
 
 pub fn parse(text: &str) -> Result<WorkloadSet, String> {
@@ -77,12 +105,13 @@ pub fn parse(text: &str) -> Result<WorkloadSet, String> {
         .ok_or_else(|| "root must be a table".to_string())?;
 
     let mut weights: BTreeMap<String, u64> = BTreeMap::new();
+    let mut sources: BTreeMap<String, PathBuf> = BTreeMap::new();
     for (name, val) in root {
         let tbl = val.as_table().ok_or_else(|| {
             format!("unknown key `{name}`: workload entries must be tables `[name]`")
         })?;
         for (key, _) in tbl {
-            if key != WEIGHT_KEY {
+            if key != WEIGHT_KEY && key != SOURCE_KEY {
                 return Err(format!("unknown key `{key}` in [{name}]"));
             }
         }
@@ -96,13 +125,35 @@ pub fn parse(text: &str) -> Result<WorkloadSet, String> {
             return Err(format!("{name}.weight must be >= 1, got {n}"));
         }
         weights.insert(name.clone(), n as u64);
+        match tbl.get(SOURCE_KEY) {
+            Some(value) => {
+                let source = value
+                    .as_str()
+                    .ok_or_else(|| format!("{name}.source must be a string"))?;
+                let path = PathBuf::from(source);
+                if path.is_absolute()
+                    || path
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    return Err(format!(
+                        "{name}.source must be a repository-relative path without `..`"
+                    ));
+                }
+                sources.insert(name.clone(), path);
+            }
+            None => {}
+        }
     }
 
     if !weights.contains_key(FLAT_NAME) {
         return Err("missing required `[flat]` workload".to_string());
     }
+    if sources.contains_key(FLAT_NAME) {
+        return Err("[flat] must not declare a source; it is the static ruler".to_string());
+    }
 
-    Ok(WorkloadSet { weights })
+    Ok(WorkloadSet { weights, sources })
 }
 
 #[cfg(test)]
@@ -114,6 +165,7 @@ mod tests {
 weight = 1
 [boot-actors]
 weight = 10
+source = "tests/golden/boot-actors/input.wr"
 "#;
 
     #[test]
@@ -122,6 +174,10 @@ weight = 10
         let b = parse(MINIMAL).expect("parse again");
         assert_eq!(a.flat_weight(), 1);
         assert_eq!(a.weight("boot-actors"), Some(10));
+        assert_eq!(
+            a.source("boot-actors"),
+            Some(Path::new("tests/golden/boot-actors/input.wr"))
+        );
         assert_eq!(a.len(), 2);
         assert_eq!(a.digest(), b.digest());
         assert_eq!(a.digest().len(), 16);
@@ -135,6 +191,7 @@ weight = 10
         let flipped = r#"
 [boot-actors]
 weight = 10
+source = "tests/golden/boot-actors/input.wr"
 [flat]
 weight = 1
 "#;
@@ -149,6 +206,7 @@ weight = 1
         let text = r#"
 [boot-actors]
 weight = 10
+source = "tests/golden/boot-actors/input.wr"
 "#;
         let err = parse(text).expect_err("missing flat");
         assert!(
@@ -215,6 +273,7 @@ weight = 0
         let w = load_default().expect("load bench/workloads.toml");
         assert_eq!(w.flat_weight(), 1);
         assert_eq!(w.weight("boot-actors"), Some(10));
+        assert!(w.source_path("boot-actors").unwrap().is_file());
         let again = load_default().expect("reload");
         assert_eq!(w.digest(), again.digest());
     }

@@ -435,19 +435,14 @@ fn resolve_callee_fn<'p>(
     }
 }
 
-fn literal_array_index_elide(idx_expr: &TypedExpr, len: usize) -> Result<Option<usize>, FlowError> {
-    if !crate::lower::bounds_elide() {
-        return Ok(None);
-    }
-    let TypedExprKind::Int(text) = &idx_expr.kind else {
-        return Ok(None);
-    };
-    let raw = value::parse_int_literal(text)
-        .ok_or_else(|| FlowError::internal("invalid integer literal text"))?;
-    let Ok(i) = usize::try_from(raw) else {
-        return Ok(None);
-    };
-    if i < len { Ok(Some(i)) } else { Ok(None) }
+fn literal_array_index_elide(
+    _idx_expr: &TypedExpr,
+    _len: usize,
+) -> Result<Option<usize>, FlowError> {
+    // The range pass creates the sole proof-carrying `Index*Proven` form.
+    // Keeping literals as indexed operations here prevents lowerer-specific
+    // check elision from surviving operand rewrites without revalidation.
+    Ok(None)
 }
 
 fn eval_array_len(ty: &Type) -> Result<usize, FlowError> {

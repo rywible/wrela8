@@ -1,0 +1,44 @@
+module examples.check_flow_state_regalloc
+
+@actor
+pub struct Counter:
+    value: u64
+
+    init(mut self, value: u64):
+        self.value = value
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Coordinator:
+    counter: Actor[Counter]
+
+    pub async fn run(mut self) -> u64:
+        durable: u64 = 40
+        result = await self.counter.get()
+        @discard(reason="deliberate error-path collapse")
+        match result:
+            case .Ok(value):
+                local = durable + value
+                return local
+            case .Err(_):
+                return durable
+
+@test(runtime)
+async fn flow_state_regs_runtime(coordinator: Actor[Coordinator]):
+    result = await coordinator.run()
+    @discard(reason="test handles both call outcomes")
+    match result:
+        case .Ok(value):
+            assert value == 42, "durable value must survive await"
+        case .Err(_):
+            assert false, "call must complete"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-flow-state-regalloc", target=Target.wrela_machine_v1)
+    counter = img.actor(Counter, value=2, mailbox=4)
+    coordinator = img.actor(Coordinator, counter=counter, mailbox=4)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

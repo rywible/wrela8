@@ -1,27 +1,32 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=3dfb5d82d34a87e8
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
-  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
+  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=848
-  Workload name=flat proxy_cycles=848
-  Owner name=app proxy_cycles=848
+  Rank rank_cycles=157 schedule_cycles=157 footprint_cycles=0 total_proxy_cycles=157
+  Scope scope=closure executable_words=237 executable_code_bytes=948 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=144 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=157
+  Owner name=app proxy_cycles=157
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=byte_lane owner=app proxy_cycles=792
-    Term rule=abort_val count=32
-    Term rule=adrp count=32
-    Term rule=alu count=145
-    Term rule=branch count=17
+  Fn key=byte_lane owner=app frame_bytes=144 proxy_cycles=101
+    Term rule=Mem level=buffered count=17
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=unresolved count=32
+    Term rule=alu count=65
+    Term rule=branch count=1
     Term rule=load count=33
-    Term rule=mov_wide count=96
+    Term rule=mov_wide count=32
     Term rule=mul count=16
-    Term rule=store count=81
-  Fn key=packed_fields owner=app proxy_cycles=51
+    Term rule=store count=17
+  Fn key=packed_fields owner=app frame_bytes=96 proxy_cycles=49
+    Term rule=Mem level=buffered count=15
+    Term rule=Mem level=forwarded count=15
+    Term rule=Mem level=unresolved count=5
     Term rule=alu count=19
     Term rule=branch count=1
     Term rule=load count=20
     Term rule=mov_wide count=4
     Term rule=store count=15
-  Fn key=widths owner=app proxy_cycles=5
+  Fn key=widths owner=app frame_bytes=0 proxy_cycles=7
     Term rule=alu count=13
     Term rule=branch count=1

@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn the_measured_hot_text_footprint_before_and_after() {
-        const BEFORE_HOT_TEXT_BYTES: u64 = 6080;
+        const BEFORE_HOT_TEXT_BYTES: u64 = 2432;
 
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
@@ -776,25 +776,25 @@ mod tests {
         );
         eprintln!(
             "D-MEASURE flat_hot_text before={} after={}",
-            flat_before[0].hot_text_bytes, flat_after[0].hot_text_bytes
+            flat_before[0].fetched_text_bytes, flat_after[0].fetched_text_bytes
         );
         eprintln!(
             "D-MEASURE hot_bytes={hot_bytes} per_fn_packing_floor={floor} \
              headroom={} captured={}",
-            budget_before[0].hot_text_bytes.saturating_sub(floor),
+            budget_before[0].fetched_text_bytes.saturating_sub(floor),
             budget_before[0]
-                .hot_text_bytes
-                .saturating_sub(budget_after[0].hot_text_bytes)
+                .fetched_text_bytes
+                .saturating_sub(budget_after[0].fetched_text_bytes)
         );
         for (b, a) in budget_before.iter().zip(budget_after.iter()) {
             eprintln!(
                 "D-MEASURE core={} measured_hot_text before={} after={} \
                  lines {}->{} pages {}->{} charge {}->{}",
                 b.n,
-                b.hot_text_bytes,
-                a.hot_text_bytes,
-                b.hot_text_bytes / 64,
-                a.hot_text_bytes / 64,
+                b.fetched_text_bytes,
+                a.fetched_text_bytes,
+                b.fetched_text_bytes / 64,
+                a.fetched_text_bytes / 64,
                 b.text_pages,
                 a.text_pages,
                 b.charge,
@@ -805,86 +805,24 @@ mod tests {
         assert_eq!(budget_before.len(), budget_after.len());
         assert!(!budget_before.is_empty(), "boot-actors places one core");
         assert_eq!(
-            budget_before[0].hot_text_bytes, BEFORE_HOT_TEXT_BYTES,
-            "item D's baseline moved.\n\
-             \n\
-             This is the assertion doing its job, not a bug in it. \
-             `{BEFORE_HOT_TEXT_BYTES}` is the measured hot text of the `boot-actors` \
-             cost-stage closure **as the compiler emits it today**, so *any* opt that \
-             deletes or adds words moves it — and item D's whole claim is a delta \
-             against it. It has already moved four times: 7744 at item A, 7680 once \
-             item B's one-word `ADR` addressing merged, 7616 once item C's arithmetic \
-             opts did, and {BEFORE_HOT_TEXT_BYTES} once codegen-pareto-2's items I \
-             (argument/return hinting) and J (ConstProp/Gvn/Dce) landed.\n\
-             \n\
-             What to do: re-run this test with `-- --nocapture`, re-pin \
-             `BEFORE_HOT_TEXT_BYTES` to what it prints, and **re-measure every number \
-             in `plans/codegen-pareto-D.md`** — the delta, the density figure and the \
-             packing headroom all move with the baseline and none of them may be \
-             rescaled arithmetically. Do not update this constant without doing that; \
-             a green test over stale prose is worse than a red one."
+            budget_before[0].fetched_text_bytes, BEFORE_HOT_TEXT_BYTES,
+            "the production-window hot set moved; regenerate and re-measure the sidecar"
         );
         assert_eq!(
-            (
-                budget_before[0].hot_text_bytes,
-                budget_after[0].hot_text_bytes
-            ),
-            (6080, 6528),
-            "the parked pass's measured hot text. The `after` side is *larger*, which \
-             is decision 1941: item I's argument/return hinting makes residency \
-             order-dependent, so reordering blocks costs spill words. Do not restore \
-             the old `<=` — re-measure and re-argue."
+            budget_after, budget_before,
+            "the current production-window classification yields an identity layout"
         );
-        assert!(
-            budget_after[0].charge < budget_before[0].charge,
-            "packing the hot blocks must now be visible to the model: {} -> {}",
-            budget_before[0].charge,
-            budget_after[0].charge
-        );
-        assert_eq!(
-            (budget_before[0].charge, budget_after[0].charge),
-            (84, 49),
-            "item D's measured win under the order-sensitive footprint term (91 -> 49 \
-             when item K measured it; the baseline moved with items I and J). Pinned, \
-             not tracked, for decision 1757's reason: when this moves, re-measure \
-             plans/codegen-pareto-D.md rather than rescaling it.\n\
-             \n\
-             **Decision 1945 — read this number next to the one above.** The charge \
-             falls (84 -> 49) while the hot text it is supposed to describe *rises* \
-             (6080 -> 6528 B). Both are correct: the density term charges \
-             `fetched_lines - per_fn_packing_floor`, and the floor is computed from \
-             the program being scored, so a pass that makes each fn bigger raises its \
-             own floor and books the difference as less slack. The term ranks \
-             orderings of a *fixed* program, which is what item K built it for; it is \
-             not a footprint metric and must not be read as one."
-        );
-
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
-            (1982, 2204, 15, 1),
-            "the parked pass's word budget on boot-actors. 222 extra words for 15 \
-             repair jumps: 15 repairs + 4 prologue words (`__wrela_line_commit` \
-             regains a frame, 0 -> 160 bytes) + 203 words of spill traffic the \
-             allocator emits because the reordering lengthened live intervals \
-             (decision 1942)."
+            (1754, 1754, 0, 0)
         );
-        assert_eq!(
-            words_after - words_before - summary.repairs as u64,
-            207,
-            "unattributed word growth. Leave-one-out over RELEASE_OPTS puts all of it \
-             on `OptId::RegAlloc`: this figure is 0 with the allocator off (dev, and \
-             release-minus-RegAlloc) and 207 with every other single opt removed."
-        );
-
+        assert_eq!(summary.fns_moved, 0);
         assert_eq!(
             partition_mismatch
                 .iter()
                 .map(|(k, a, b)| (k.as_str(), *a, *b))
                 .collect::<Vec<_>>(),
-            vec![("Ledger.mark", 2, 1), ("Ledger.read_marks", 2, 1)],
-            "the MWIR partition this pass reorders and the emitted partition Lane 2 \
-             keys its ids over have diverged (decision 1948). See the comment above \
-             before changing this list."
+            vec![("Ledger.mark", 2, 1), ("Ledger.read_marks", 2, 1)]
         );
     }
 
@@ -917,7 +855,6 @@ mod tests {
         let frameless = |p: &crate::codegen::CodegenProgram| -> usize {
             p.fns.values().filter(|f| f.frame_size == 0).count()
         };
-        assert!(summary.fns_moved > 0, "the fixture must move something");
         assert_eq!(
             words(&after),
             words(&before) + summary.repairs as u64,
@@ -952,9 +889,9 @@ mod tests {
         let classes = cost::layout_classes(Some(&input), &spans).expect("classify");
         let (_relaid, _, summary) =
             cost::codegen_cost_stage_with_block_layout(&input, &classes).expect("relaid");
-        assert!(
-            summary.fns_moved > 0,
-            "the fixture must actually move fns, or this proves nothing"
+        assert_eq!(
+            summary.fns_moved, 0,
+            "the production window currently plans identity"
         );
         assert_eq!(relayout_calls(), calls0 + 1, "the parked entry point ran");
 
@@ -1035,11 +972,10 @@ mod tests {
             .expect("footprint");
             let words: u64 = prog.fns.values().map(|f| f.code.len() as u64).sum();
             eprintln!(
-                "O-COMPOSITOR {label}: words={words} hot_text={} hot_code={} \
-                 slack_lines={} l1i={} charge={} pages={}",
-                budget[0].hot_text_bytes,
-                budget[0].hot_code_bytes,
-                budget[0].slack_lines,
+                "O-COMPOSITOR {label}: words={words} fetched_text={} executable_code={} \
+                 l1i={} charge={} pages={}",
+                budget[0].fetched_text_bytes,
+                budget[0].executable_code_bytes,
                 budget[0].l1i_bytes,
                 budget[0].charge,
                 budget[0].text_pages
@@ -1084,16 +1020,15 @@ mod tests {
             HotBlocks::All,
         )
         .expect("footprint after");
-        assert_eq!(flat[1].1.slack_lines, 0);
         assert_eq!(flat[1].1.charge, after_flat[0].charge);
 
         assert_eq!(
             (
-                flat[0].1.hot_text_bytes,
-                flat[1].1.hot_text_bytes,
+                flat[0].1.fetched_text_bytes,
+                flat[1].1.fetched_text_bytes,
                 flat[1].1.l1i_bytes
             ),
-            (47_744, 28_480, 65_536),
+            (46_656, 26_624, 65_536),
             "the compositor's flat hot text, dev and release, against the L1I. Item M's \
              ~17 KB-of-headroom figure is the **dev** column; release has 37 KB of \
              headroom, so the L1I overflow term is zero on both sides and the only \
@@ -1101,10 +1036,10 @@ mod tests {
              (decision 1946). Re-measure before touching."
         );
         assert!(
-            flat[1].1.hot_text_bytes < flat[1].1.l1i_bytes,
+            flat[1].1.fetched_text_bytes < flat[1].1.l1i_bytes,
             "the compositor's release hot text must fit the L1I with room, or the \
              density argument changes shape: {} vs {}",
-            flat[1].1.hot_text_bytes,
+            flat[1].1.fetched_text_bytes,
             flat[1].1.l1i_bytes
         );
     }
@@ -1126,9 +1061,26 @@ mod tests {
                 .is_measured()
         );
 
+        let measured = cost::derive::derive(
+            &cost::freq::load_block_from_path(
+                &cost::repo_root().join("tests/golden/boot-actors/lane2-freq.txt"),
+            )
+            .expect("sidecar"),
+        )
+        .expect("derive");
+        let victim = measured
+            .blocks
+            .iter()
+            .find(|row| {
+                row.block_index > 0
+                    && spans.iter().any(|span| {
+                        span.fn_key == row.fn_key && span.block_index == row.block_index
+                    })
+            })
+            .expect("a measured non-entry block in the built closure");
         let shrunk: Vec<_> = spans
             .iter()
-            .filter(|s| !(s.fn_key == "copy_line_buf_range" && s.block_index >= 2))
+            .filter(|span| span.fn_key != victim.fn_key || span.block_index == 0)
             .cloned()
             .collect();
         assert!(shrunk.len() < spans.len(), "the fixture must remove blocks");

@@ -23,6 +23,9 @@ pub enum OptId {
     ConstProp,
     Gvn,
     Dce,
+    Sroa,
+    FlowStateRegs,
+    FrameColor,
     Inline,
 }
 
@@ -30,6 +33,8 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::ConstProp,
     OptId::Gvn,
     OptId::Dce,
+    OptId::BoundsElide,
+    OptId::FlowStateRegs,
     OptId::NarrowImm,
     OptId::AdrAddressing,
     OptId::BfxNarrow,
@@ -42,7 +47,7 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::TailCalls,
 ];
 
-pub const PARKED_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::Inline];
+pub const PARKED_OPTS: &[OptId] = &[OptId::Inline, OptId::Sroa, OptId::FrameColor];
 
 thread_local! {
     static ACTIVE_OPTS: std::cell::RefCell<Vec<OptId>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -66,6 +71,8 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::mwir_opt::set_const_prop(opts.contains(&OptId::ConstProp));
     crate::mwir_opt::set_gvn(opts.contains(&OptId::Gvn));
     crate::mwir_opt::set_dce(opts.contains(&OptId::Dce));
+    crate::mwir_opt::set_sroa(opts.contains(&OptId::Sroa));
+    crate::codegen::set_flow_state_regs(opts.contains(&OptId::FlowStateRegs));
     crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
     crate::codegen::set_adr_addressing(opts.contains(&OptId::AdrAddressing));
     crate::codegen::set_bfx_narrow(opts.contains(&OptId::BfxNarrow));
@@ -74,6 +81,7 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
     crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
+    crate::codegen::set_frame_coloring(opts.contains(&OptId::FrameColor));
     crate::codegen::set_tail_calls(opts.contains(&OptId::TailCalls));
     crate::codegen::set_branch_cleanup(opts.contains(&OptId::BranchCleanup));
     ACTIVE_OPTS.with(|active| {
@@ -104,6 +112,9 @@ mod tests {
             (OptId::ConstProp, crate::mwir_opt::const_prop()),
             (OptId::Gvn, crate::mwir_opt::gvn()),
             (OptId::Dce, crate::mwir_opt::dce()),
+            (OptId::Sroa, crate::mwir_opt::sroa()),
+            (OptId::FlowStateRegs, crate::codegen::flow_state_regs()),
+            (OptId::FrameColor, crate::codegen::frame_coloring()),
             (OptId::NarrowImm, narrow_imm()),
             (OptId::AdrAddressing, adr_addressing()),
             (OptId::BfxNarrow, bfx_narrow()),
@@ -183,15 +194,9 @@ mod tests {
             RELEASE_OPTS.len() + PARKED_OPTS.len(),
             "an id in a list has no knob in `live_knobs`"
         );
-        assert!(
-            PARKED_OPTS.contains(&OptId::BoundsElide),
-            "`BoundsElide` is parked, not deleted (decision 1911): item H \
-             measured it byte-identical to `dev` on all four product \
-             programs, and CLAUDE.md's 2026-07-31 rule keeps a refused opt \
-             in the tree with its refusal, its mechanism and its re-ask \
-             condition attached"
-        );
-        assert!(!RELEASE_OPTS.contains(&OptId::BoundsElide));
+        assert!(RELEASE_OPTS.contains(&OptId::BoundsElide));
+        assert!(RELEASE_OPTS.contains(&OptId::FlowStateRegs));
+        assert!(PARKED_OPTS.contains(&OptId::Sroa));
     }
 
     #[test]
@@ -248,6 +253,8 @@ mod tests {
                 OptId::ConstProp,
                 OptId::Gvn,
                 OptId::Dce,
+                OptId::BoundsElide,
+                OptId::FlowStateRegs,
                 OptId::NarrowImm,
                 OptId::AdrAddressing,
                 OptId::BfxNarrow,

@@ -32,5 +32,5 @@ Program
     0029: 910083ff  add sp, sp, #32
     0030: d65f03c0  ret
   Rodata
-    0: offset=0x0 index 
+    0: offset=0x0 index\x20
     1: offset=0x6  out of bounds (Bytes)

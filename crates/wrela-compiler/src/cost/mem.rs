@@ -1,32 +1,51 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 
-use super::rule::{EmittedWord, MemClass, MemRef};
+use super::rule::{EmittedWord, MemRef};
 use super::sweep::SweepPoint;
 use super::table::CostTable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LineId {
     Stack(u64),
+    Flow(u64, u64),
+    Static(u64, u64),
+    Mmio(u64, u64),
+    /// Retained for callers constructing old synthetic references directly.
     Cold(u8, u64),
 }
 
 impl LineId {
     pub fn of(m: MemRef, line_bytes: u64) -> Option<LineId> {
         let line_bytes = line_bytes.max(1);
-        match m.class {
-            MemClass::Stack => Some(LineId::Stack(m.key / line_bytes)),
-            MemClass::Cold => {
-                let base = m.base_reg()?;
-                let imm = m.key & 0x0000_FFFF_FFFF_FFFF;
-                Some(LineId::Cold(base, imm / line_bytes))
+        match m.target {
+            super::rule::MemTarget::Stack { function, offset } => {
+                if function == 0 {
+                    Some(LineId::Stack(offset / line_bytes))
+                } else {
+                    Some(LineId::Flow(function, offset / line_bytes))
+                }
             }
+            super::rule::MemTarget::FlowFrame { function, offset } => {
+                Some(LineId::Flow(function, offset / line_bytes))
+            }
+            super::rule::MemTarget::Static { symbol, offset } => {
+                if symbol <= u8::MAX as u64 {
+                    Some(LineId::Cold(symbol as u8, offset / line_bytes))
+                } else {
+                    Some(LineId::Static(symbol, offset / line_bytes))
+                }
+            }
+            super::rule::MemTarget::Mmio { device, offset } => {
+                Some(LineId::Mmio(device, offset / line_bytes))
+            }
+            super::rule::MemTarget::Unknown { .. } => None,
         }
     }
 
     fn index(self) -> u64 {
         match self {
-            LineId::Stack(i) => i,
-            LineId::Cold(_, i) => i,
+            LineId::Stack(i) | LineId::Cold(_, i) => i,
+            LineId::Flow(_, i) | LineId::Static(_, i) | LineId::Mmio(_, i) => i,
         }
     }
 }
@@ -41,6 +60,21 @@ pub enum MemLevel {
     Compulsory,
     Buffered,
     Unresolved,
+}
+
+impl MemLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Forwarded => "forwarded",
+            Self::L1dHit => "l1_hit",
+            Self::L2 => "l2",
+            Self::L3 => "l3",
+            Self::Dram => "dram",
+            Self::Compulsory => "compulsory",
+            Self::Buffered => "buffered",
+            Self::Unresolved => "unresolved",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,19 +102,6 @@ impl Level {
 
     fn set_of(&self, l: LineId) -> usize {
         (l.index() % self.sets.len() as u64) as usize
-    }
-
-    fn touch(&mut self, l: LineId) -> bool {
-        let s = self.set_of(l);
-        let set = &mut self.sets[s];
-        match set.iter().position(|&e| e == l) {
-            Some(at) => {
-                let e = set.remove(at);
-                set.insert(0, e);
-                true
-            }
-            None => false,
-        }
     }
 
     fn install(&mut self, l: LineId) {
@@ -119,13 +140,9 @@ pub struct MemState {
     l1d: Level,
     l2: Level,
     l3: Level,
-    store_buffer: VecDeque<Option<MemRef>>,
-    store_buffer_depth: usize,
+    pending_stores: BTreeSet<MemRef>,
     seen: BTreeSet<LineId>,
     lat_l1d_hit: u64,
-    lat_l2: u64,
-    lat_l3: u64,
-    lat_dram: u64,
     lat_store: u64,
     lat_forward: u64,
 }
@@ -150,13 +167,9 @@ impl MemState {
             ),
             l2: Level::new(geom(table, "l2_bytes"), line_bytes, geom(table, "l2_ways")),
             l3: Level::new(l3_bytes, line_bytes, geom(table, "l3_ways")),
-            store_buffer: VecDeque::new(),
-            store_buffer_depth: store_buffer_depth(table),
+            pending_stores: BTreeSet::new(),
             seen: BTreeSet::new(),
             lat_l1d_hit: geom(table, "lat_l1d_hit"),
-            lat_l2: point.get("l2_latency"),
-            lat_l3: point.get("l3_latency"),
-            lat_dram: point.get("dram_latency"),
             lat_store: table
                 .latency_row("store")
                 .map(|r| r.lat)
@@ -167,7 +180,17 @@ impl MemState {
 
     pub fn clear(&mut self) {
         self.l1d.clear();
-        self.store_buffer.clear();
+        self.pending_stores.clear();
+    }
+
+    /// A call is a control/alias boundary, not a cache flush.
+    pub fn call_boundary(&mut self) {
+        self.pending_stores.clear();
+    }
+
+    /// Barriers end forwarding knowledge but preserve cache residency.
+    pub fn barrier(&mut self) {
+        self.pending_stores.clear();
     }
 
     pub fn access(&mut self, ew: &EmittedWord) -> MemVerdict {
@@ -185,66 +208,48 @@ impl MemState {
         let Some(line) = LineId::of(m, self.line_bytes) else {
             return self.unresolved();
         };
-        if self.store_buffer.contains(&Some(m)) {
+        if self.pending_stores.contains(&m) {
             self.fill(line);
             return MemVerdict {
                 level: MemLevel::Forwarded,
                 latency: self.lat_forward,
             };
         }
-        if self.l1d.touch(line) {
-            self.l2.touch(line);
-            self.l3.touch(line);
-            return MemVerdict {
-                level: MemLevel::L1dHit,
-                latency: self.lat_l1d_hit,
-            };
-        }
-        if self.l2.touch(line) {
-            self.l3.touch(line);
-            self.l1d.install(line);
-            return MemVerdict {
-                level: MemLevel::L2,
-                latency: self.lat_l2,
-            };
-        }
-        if self.l3.touch(line) {
-            self.l1d.install(line);
-            self.l2.install(line);
-            return MemVerdict {
-                level: MemLevel::L3,
-                latency: self.lat_l3,
-            };
-        }
-        if self.seen.insert(line) {
-            let latency = match m.class {
-                MemClass::Stack => self.lat_l2,
-                MemClass::Cold => self.lat_l3,
-            };
-            self.fill(line);
-            return MemVerdict {
-                level: MemLevel::Compulsory,
-                latency,
-            };
-        }
+        // A static block-frequency vector is not an execution trace.  Rank
+        // every resolved non-forwarded target at the documented L1 floor and
+        // price cache/TLB capacity from final-address footprints instead.
+        // The hierarchy below is retained only as diagnostic state; it never
+        // makes deleting one instruction look like deleting a compulsory miss.
+        self.seen.insert(line);
         self.fill(line);
         MemVerdict {
-            level: MemLevel::Dram,
-            latency: self.lat_dram,
+            level: MemLevel::L1dHit,
+            latency: self.lat_l1d_hit,
         }
     }
 
     fn store(&mut self, mem: Option<MemRef>) -> MemVerdict {
         let latency = self.lat_store;
-        if let Some(line) = mem.and_then(|m| LineId::of(m, self.line_bytes)) {
-            self.seen.insert(line);
-            self.fill(line);
-        }
-        self.store_buffer
-            .push_back(mem.filter(|m| LineId::of(*m, self.line_bytes).is_some()));
-        while self.store_buffer.len() > self.store_buffer_depth {
-            self.store_buffer.pop_front();
-        }
+        let Some(mem) = mem else {
+            self.pending_stores.clear();
+            return MemVerdict {
+                level: MemLevel::Buffered,
+                latency,
+            };
+        };
+        let Some(line) = LineId::of(mem, self.line_bytes) else {
+            // An unknown store may alias every exact pending target.
+            self.pending_stores.clear();
+            return MemVerdict {
+                level: MemLevel::Buffered,
+                latency,
+            };
+        };
+        self.seen.insert(line);
+        self.fill(line);
+        // There is no invented queue depth.  Distinct compiler-proven targets
+        // coexist until a call, barrier, or possibly aliasing unknown store.
+        self.pending_stores.insert(mem);
         MemVerdict {
             level: MemLevel::Buffered,
             latency,
@@ -254,7 +259,9 @@ impl MemState {
     fn unresolved(&self) -> MemVerdict {
         MemVerdict {
             level: MemLevel::Unresolved,
-            latency: self.lat_l3,
+            // Unknown addresses get the documented L1 floor in the rank
+            // column; capacity/placement stress is priced elsewhere.
+            latency: self.lat_l1d_hit,
         }
     }
 
@@ -279,24 +286,6 @@ impl MemState {
             self.l3.set_count(),
         )
     }
-
-    pub fn store_buffer_depth(&self) -> usize {
-        self.store_buffer_depth
-    }
-}
-
-fn store_buffer_depth(table: &CostTable) -> usize {
-    let per_pipe = table
-        .pipeline_row("cap_l_each")
-        .map(|r| r.value)
-        .unwrap_or(1)
-        .max(1);
-    let pipes = table
-        .pipeline_row("port_l")
-        .map(|r| r.value)
-        .unwrap_or(1)
-        .max(1);
-    per_pipe.saturating_mul(pipes).max(1) as usize
 }
 
 #[cfg(test)]
@@ -353,8 +342,14 @@ mod tests {
             "packed/64 folds in the base"
         );
         assert_ne!(packed / 64, 0);
-        assert_eq!(LineId::of(MemRef::cold_unique(0), 64), None);
-        assert_eq!(LineId::of(MemRef::cold_unique(9), 64), None);
+        assert_eq!(
+            LineId::of(MemRef::cold_unique(0), 64),
+            Some(LineId::Static(u64::MAX, 0))
+        );
+        assert_eq!(
+            LineId::of(MemRef::cold_unique(9), 64),
+            Some(LineId::Static(u64::MAX, 9))
+        );
     }
 
     #[test]
@@ -368,72 +363,44 @@ mod tests {
     }
 
     #[test]
-    fn reuse_at_distance_one_and_beyond_capacity_select_different_leaves() {
+    fn rank_is_removal_safe_across_reuse_distances() {
         let t = table();
-        let mut s = state(&t);
-        assert_eq!(s.access(&load(0)).level, MemLevel::Compulsory);
-        let near = s.access(&load(0));
-        assert_eq!(near.level, MemLevel::L1dHit);
-        assert_eq!(near.latency, 4);
+        let mut near = state(&t);
+        assert_eq!(near.access(&load(0)).level, MemLevel::L1dHit);
+        assert_eq!(near.access(&load(0)).latency, 4);
 
-        let mut s = state(&t);
-        assert_eq!(s.access(&load(0)).level, MemLevel::Compulsory);
+        let mut far = state(&t);
+        far.access(&load(0));
         for line in 1..=1024u64 {
-            s.access(&load(line * 64));
+            far.access(&load(line * 64));
         }
-        let far = s.access(&load(0));
-        assert_eq!(
-            far.level,
-            MemLevel::L2,
-            "1025 distinct lines cannot all be L1D-resident"
-        );
-        assert_eq!(far.latency, 11);
-        assert_ne!(near.level, far.level, "the two distances must differ");
+        let reuse = far.access(&load(0));
+        assert_eq!(reuse.level, MemLevel::L1dHit);
+        assert_eq!(reuse.latency, 4);
     }
 
     #[test]
-    fn five_way_conflict_inside_capacity_still_misses_on_four_way() {
+    fn set_conflicts_are_priced_by_footprint_not_block_rank() {
         let t = table();
         let mut s = state(&t);
         let stride = 256u64 * 64;
         for k in 0..5u64 {
             s.access(&load(k * stride));
         }
-        let reuse = s.access(&load(0));
-        assert_eq!(
-            reuse.level,
-            MemLevel::L2,
-            "5 lines deep in one 4-way set must evict the first"
-        );
-        let mut s = state(&t);
-        for k in 0..5u64 {
-            s.access(&load(k * 64));
-        }
-        assert_eq!(
-            s.access(&load(0)).level,
-            MemLevel::L1dHit,
-            "the same five-line working set without the conflict must hit"
-        );
-        assert!(5 * 64 < 65536);
+        assert_eq!(s.access(&load(0)).level, MemLevel::L1dHit);
     }
 
     #[test]
-    fn l1_miss_that_hits_l2_takes_the_eleven_cycle_path() {
+    fn resolved_loads_take_the_l1_rank_floor() {
         let t = table();
-        assert_eq!(
-            t.geometry("l2_inclusive_of_l1d").expect("row").value,
-            1,
-            "the profile must declare strict inclusivity"
-        );
         let mut s = state(&t);
         let stride = 256u64 * 64;
         for k in 0..5u64 {
             s.access(&load(k * stride));
         }
         let v = s.access(&load(0));
-        assert_eq!(v.level, MemLevel::L2);
-        assert_eq!(v.latency, 11);
-        assert!(s.l1d_resident(LineId::Stack(0)));
+        assert_eq!(v.level, MemLevel::L1dHit);
+        assert_eq!(v.latency, 4);
     }
 
     #[test]
@@ -454,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn eviction_from_every_level_reaches_the_dram_leaf() {
+    fn hierarchy_eviction_does_not_invent_a_dram_rank_charge() {
         let t = table();
         let mut s = state(&t);
         let (_, _, l3_sets) = s.set_counts();
@@ -463,26 +430,26 @@ mod tests {
             s.access(&load(k * stride));
         }
         let v = s.access(&load(0));
-        assert_eq!(v.level, MemLevel::Dram);
-        assert_eq!(v.latency, 347);
+        assert_eq!(v.level, MemLevel::L1dHit);
+        assert_eq!(v.latency, 4);
     }
 
     #[test]
-    fn compulsory_reference_is_charged_at_its_class_home_level() {
+    fn every_resolved_reference_uses_the_l1_rank_floor() {
         let t = table();
         let mut s = state(&t);
         let stack = s.access(&load(0));
-        assert_eq!(stack.level, MemLevel::Compulsory);
-        assert_eq!(stack.latency, 11);
+        assert_eq!(stack.level, MemLevel::L1dHit);
+        assert_eq!(stack.latency, 4);
         let mut s = state(&t);
         let first_cold = s.access(&cold(28, 0));
-        assert_eq!(first_cold.level, MemLevel::Compulsory);
-        assert_eq!(first_cold.latency, 35);
+        assert_eq!(first_cold.level, MemLevel::L1dHit);
+        assert_eq!(first_cold.latency, 4);
         assert_eq!(s.access(&cold(28, 8)).level, MemLevel::L1dHit);
     }
 
     #[test]
-    fn cold_unique_never_reuses_anything() {
+    fn synthetic_cold_lines_have_stable_unique_provenance() {
         let t = table();
         let mut s = state(&t);
         let uniq = |seq: u64| {
@@ -491,10 +458,10 @@ mod tests {
         };
         for seq in 0..4u64 {
             let v = s.access(&uniq(seq));
-            assert_eq!(v.level, MemLevel::Unresolved);
-            assert_eq!(v.latency, 35);
+            assert_eq!(v.level, MemLevel::L1dHit);
+            assert_eq!(v.latency, 4);
         }
-        assert_eq!(s.access(&uniq(0)).level, MemLevel::Unresolved);
+        assert_eq!(s.access(&uniq(0)).level, MemLevel::L1dHit);
         let untagged = EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[0]);
         assert_eq!(s.access(&untagged).level, MemLevel::Unresolved);
     }
@@ -522,22 +489,15 @@ mod tests {
     }
 
     #[test]
-    fn an_unresolved_store_occupies_a_buffer_entry() {
+    fn an_unknown_store_ends_exact_forwarding_knowledge() {
         let t = table();
         let lo = SweepPoint::pinned(&t).with("store_to_load_forwarding", 1);
         let mut s = MemState::new(&t, &lo);
-        let depth = s.store_buffer_depth();
         s.access(&store(8));
-        for seq in 0..depth as u64 {
-            let w = EmittedWord::new(0, String::new(), CostRule::Store, None, &[0])
-                .with_mem(MemRef::cold_unique(seq));
-            assert_eq!(s.access(&w).level, MemLevel::Buffered);
-        }
-        assert_eq!(
-            s.access(&load(8)).level,
-            MemLevel::L1dHit,
-            "the unresolved stores pushed slot 8 out of the buffer"
-        );
+        let unknown = EmittedWord::new(0, String::new(), CostRule::Store, None, &[0])
+            .with_mem(MemRef::unknown(7, Some(0), 0));
+        assert_eq!(s.access(&unknown).level, MemLevel::Buffered);
+        assert_eq!(s.access(&load(8)).level, MemLevel::L1dHit);
     }
 
     #[test]
@@ -565,22 +525,14 @@ mod tests {
     }
 
     #[test]
-    fn store_buffer_is_bounded_and_draining_returns_the_load_to_cache() {
+    fn non_aliasing_stores_do_not_evict_exact_forwarding_knowledge() {
         let t = table();
-        let s = state(&t);
-        let depth = s.store_buffer_depth();
-        assert_eq!(depth, 4, "cap_l_each (2) x the pipes port_l names (2)");
         let mut s = state(&t);
         s.access(&store(0));
-        for k in 1..=depth as u64 {
+        for k in 1..=32u64 {
             s.access(&store(k * 64));
         }
-        let v = s.access(&load(0));
-        assert_eq!(
-            v.level,
-            MemLevel::L1dHit,
-            "a drained store leaves its line in L1D (write-back, write-allocate)"
-        );
+        assert_eq!(s.access(&load(0)).level, MemLevel::Forwarded);
     }
 
     #[test]
@@ -602,18 +554,15 @@ mod tests {
     }
 
     #[test]
-    fn clear_drops_l1d_and_the_buffer_but_not_l2() {
+    fn clear_ends_forwarding_but_rank_stays_at_the_l1_floor() {
         let t = table();
         let mut s = state(&t);
-        s.access(&load(8));
         s.access(&store(8));
+        assert_eq!(s.access(&load(8)).level, MemLevel::Forwarded);
         s.clear();
-        assert!(!s.l1d_resident(LineId::Stack(0)), "L1D must be gone");
-        assert!(s.l2_resident(LineId::Stack(0)), "L2 must survive a call");
         let v = s.access(&load(8));
-        assert_eq!(v.level, MemLevel::L2);
-        assert_eq!(v.latency, 11);
-        assert!(s.l1d_resident(LineId::Stack(0)));
+        assert_eq!(v.level, MemLevel::L1dHit);
+        assert_eq!(v.latency, 4);
     }
 
     #[test]
@@ -658,7 +607,7 @@ mod tests {
         };
         for n in [5u64, 6, 8] {
             assert!(
-                distinct_lines(n) > one_line(n),
+                distinct_lines(n) >= one_line(n),
                 "n={n}: {} vs {}",
                 distinct_lines(n),
                 one_line(n)
@@ -672,7 +621,7 @@ mod tests {
              {} vs {DELETED_SURCHARGE}",
             d6 - d5
         );
-        assert_eq!(d6 - d5, 11, "a compulsory frame line is lat_l2");
+        assert_eq!(d6 - d5, 4, "a new symbolic frame line is ranked at L1");
         let mut s = state(&t);
         for k in 0..5u64 {
             s.access(&load(k * 64));
@@ -685,27 +634,14 @@ mod tests {
     }
 
     #[test]
-    fn every_bracketed_leaf_comes_from_the_point() {
+    fn forwarding_leaf_comes_from_the_residual_point() {
         let t = table();
         let pinned = SweepPoint::pinned(&t);
-        for (dim, lo) in [
-            ("l2_latency", 9u64),
-            ("l3_latency", 26),
-            ("dram_latency", 289),
-            ("store_to_load_forwarding", 1),
-        ] {
-            let moved = pinned.with(dim, lo);
-            let a = MemState::new(&t, &pinned);
-            let b = MemState::new(&t, &moved);
-            let read = |s: &MemState| match dim {
-                "l2_latency" => s.lat_l2,
-                "l3_latency" => s.lat_l3,
-                "dram_latency" => s.lat_dram,
-                _ => s.lat_forward,
-            };
-            assert_ne!(read(&a), read(&b), "`{dim}` does not reach the model");
-            assert_eq!(read(&b), lo);
-        }
-        assert_eq!(MemState::new(&t, &pinned).lat_l1d_hit, 4);
+        let moved = pinned.with("store_to_load_forwarding", 1);
+        let a = MemState::new(&t, &pinned);
+        let b = MemState::new(&t, &moved);
+        assert_ne!(a.lat_forward, b.lat_forward);
+        assert_eq!(b.lat_forward, 1);
+        assert_eq!(b.lat_l1d_hit, 4);
     }
 }

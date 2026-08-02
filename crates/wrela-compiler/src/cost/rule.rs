@@ -116,7 +116,7 @@ impl CostRule {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MemClass {
     Stack,
     Cold,
@@ -124,31 +124,103 @@ pub enum MemClass {
 
 pub const MEM_SP_REG: u8 = 31;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MemTarget {
+    Stack { function: u64, offset: u64 },
+    FlowFrame { function: u64, offset: u64 },
+    Static { symbol: u64, offset: u64 },
+    Mmio { device: u64, offset: u64 },
+    Unknown { site: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MemRef {
     pub class: MemClass,
+    /// Legacy encoded offset retained for stable dumps and table consumers.
     pub key: u64,
+    /// Compiler provenance.  The base GPR is deliberately stored separately
+    /// and is used only for dependency validation.
+    pub target: MemTarget,
+    pub base: Option<u8>,
 }
 
 impl MemRef {
     pub fn stack(offset: u64) -> MemRef {
+        MemRef::stack_in(0, offset)
+    }
+
+    pub fn stack_in(function: u64, offset: u64) -> MemRef {
         MemRef {
             class: MemClass::Stack,
             key: offset,
+            target: MemTarget::Stack { function, offset },
+            base: Some(MEM_SP_REG),
+        }
+    }
+
+    pub fn flow_frame(function: u64, offset: u64, base: u8) -> MemRef {
+        MemRef {
+            class: MemClass::Stack,
+            key: offset,
+            target: MemTarget::FlowFrame { function, offset },
+            base: Some(base),
+        }
+    }
+
+    pub fn static_ref(symbol: u64, offset: u64, base: u8) -> MemRef {
+        MemRef {
+            class: MemClass::Cold,
+            key: offset & 0x0000_FFFF_FFFF_FFFF,
+            target: MemTarget::Static { symbol, offset },
+            base: Some(base),
+        }
+    }
+
+    pub fn mmio(device: u64, offset: u64, base: u8) -> MemRef {
+        MemRef {
+            class: MemClass::Cold,
+            key: offset & 0x0000_FFFF_FFFF_FFFF,
+            target: MemTarget::Mmio { device, offset },
+            base: Some(base),
+        }
+    }
+
+    pub fn unknown(site: u64, base: Option<u8>, _offset: u64) -> MemRef {
+        MemRef {
+            class: MemClass::Cold,
+            key: (1u64 << 63) | (site & !(1u64 << 63)),
+            target: MemTarget::Unknown { site },
+            base,
         }
     }
 
     pub fn cold_stable(base_reg: u8, imm: u64) -> MemRef {
+        // This constructor is the explicit stable-target escape hatch used by
+        // cost tests and by lowering once it has a symbolic target.  Generic
+        // emitter sites convert this to an Unknown site in `push_mem` unless
+        // lowering supplied stronger provenance.
         MemRef {
             class: MemClass::Cold,
             key: ((base_reg as u64) << 48) | (imm & 0x0000_FFFF_FFFF_FFFF),
+            target: MemTarget::Static {
+                symbol: base_reg as u64,
+                offset: imm,
+            },
+            base: Some(base_reg),
         }
     }
 
     pub fn cold_unique(seq: u64) -> MemRef {
+        // A named synthetic cold line is useful for deterministic model tests;
+        // actual emitted unknown addresses use `unknown` through CodegenState.
         MemRef {
             class: MemClass::Cold,
             key: (1u64 << 63) | (seq & !(1u64 << 63)),
+            target: MemTarget::Static {
+                symbol: u64::MAX,
+                offset: seq.saturating_mul(64),
+            },
+            base: None,
         }
     }
 
@@ -156,21 +228,16 @@ impl MemRef {
         if base_reg == MEM_SP_REG {
             MemRef::stack(imm)
         } else {
-            MemRef::cold_stable(base_reg, imm)
+            MemRef::unknown(
+                ((base_reg as u64) << 48) | (imm & 0x0000_FFFF_FFFF_FFFF),
+                Some(base_reg),
+                imm,
+            )
         }
     }
 
     pub fn base_reg(self) -> Option<u8> {
-        match self.class {
-            MemClass::Stack => Some(MEM_SP_REG),
-            MemClass::Cold => {
-                if self.key & (1u64 << 63) != 0 {
-                    None
-                } else {
-                    Some((self.key >> 48) as u8)
-                }
-            }
-        }
+        self.base
     }
 
     pub fn require_base_in_srcs(self, srcs: &[u8]) -> Result<(), String> {
@@ -361,11 +428,12 @@ mod tests {
     }
 
     #[test]
-    fn non_sp_base_imm_is_cold_stable() {
+    fn non_sp_base_imm_is_unknown_until_lowering_provides_provenance() {
         let m = MemRef::for_base_imm(28, 16);
         assert_eq!(m.class, MemClass::Cold);
-        assert_eq!(m, MemRef::cold_stable(28, 16));
-        assert_eq!(m.key & (1u64 << 63), 0);
+        assert!(matches!(m.target, MemTarget::Unknown { .. }));
+        assert_eq!(m.base_reg(), Some(28));
+        assert_ne!(m, MemRef::cold_stable(28, 16));
     }
 
     #[test]

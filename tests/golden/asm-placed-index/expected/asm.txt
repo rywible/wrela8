@@ -58,5 +58,5 @@ Program
     0026: f9000164  str x4, [x11, #0]
     0027: d65f03c0  ret
   Rodata
-    0: offset=0x0 index 
+    0: offset=0x0 index\x20
     1: offset=0x6  out of bounds (length 4)

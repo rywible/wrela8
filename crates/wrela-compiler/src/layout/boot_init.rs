@@ -857,6 +857,7 @@ fn fill_checkpoint_irq_facts(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 pub struct BootCtx<'a> {
     pub graph: &'a ImageGraph,
     pub modules: &'a BTreeMap<String, Module>,

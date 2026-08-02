@@ -62,6 +62,8 @@ Module path=runtime
     field hits: [u64; BLOCK_POOL_COUNT]
   Static LANE2: Lane2Counters placed=0x40008800
   Fn __wrela_block_hit(id: read usize) -> unit
+  Fn __wrela_lane2_begin() -> unit
+  Fn __wrela_lane2_end() -> unit
   Fn __wrela_lane2_dump() -> unit
   Fn ascii_digit(d: read u64) -> u8
   Fn __wrela_fmt_dec(value: read u64, is_signed: read u64) -> u64

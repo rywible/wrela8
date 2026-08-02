@@ -1,0 +1,22 @@
+module examples.check_frame_color_flow
+
+@actor
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Coordinator:
+    counter: Actor[Counter]
+
+    pub async fn run(mut self) -> u64:
+        durable: u64 = 40
+        result = await self.counter.get()
+        @discard(reason="deliberate error-path collapse")
+        match result:
+            case .Ok(value):
+                return durable + value
+            case .Err(_):
+                return durable

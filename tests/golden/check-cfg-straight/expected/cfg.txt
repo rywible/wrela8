@@ -1,0 +1,10 @@
+CFG
+  function straight
+    b0 range=[0, 4) succ=[] pred=[] use=[t0] def=[t1,t2,t3] live_in=[t0] live_out=[]
+      i0000 before=[t0] after=[t0,t1]
+      i0001 before=[t0,t1] after=[t2]
+      i0002 before=[t2] after=[t3]
+      i0003 before=[t3] after=[]
+    b1 range=[4, 5) succ=[] pred=[] use=[] def=[] live_in=[] live_out=[]
+      i0004 before=[] after=[]
+FlowCFG

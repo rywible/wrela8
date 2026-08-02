@@ -286,17 +286,27 @@ mod tests {
     fn witness(dim: &str, point: &SweepPoint) -> u64 {
         let t = table();
         let one = single_core();
+        let footprint_lines = |lines: usize| {
+            let words = lines * 16;
+            let code = (0..words)
+                .map(|_| word(CostRule::Alu, Some(1), &[0, 0]))
+                .collect();
+            footprint::compute(
+                &program(&[("Foo.turn", code)]),
+                &t,
+                point,
+                &one,
+                HotBlocks::All,
+            )
+            .expect("footprint witness")
+            .iter()
+            .map(|budget| budget.charge)
+            .sum()
+        };
         match dim {
-            "l2_latency" => total_at(&prog("f", vec![load_stack(1, 0)]), &one, point),
-            "l3_latency" => total_at(&prog("f", vec![cold_load(CostRule::Load, 0)]), &one, point),
-            "dram_latency" | "effective_l3_bytes" => {
-                let mut code = Vec::new();
-                for k in 0..17u64 {
-                    code.push(load_stack(1, k * 65536));
-                }
-                code.push(load_stack(2, 0));
-                total_at(&prog("f", code), &one, point)
-            }
+            "l2_latency" => footprint_lines(1025),
+            "l3_latency" => footprint_lines(8193),
+            "dram_latency" | "effective_l3_bytes" => footprint_lines(16_385),
             "store_to_load_forwarding" => total_at(
                 &prog("f", vec![store_stack(0), load_stack(1, 0)]),
                 &one,
@@ -544,14 +554,10 @@ mod tests {
             load_stack(1, 8),
         ];
 
-        let mem_miss = vec![load_stack(1, 0), load_stack_after(2, 4096, 1)];
-        let mem_hit = vec![load_stack(1, 0), load_stack_after(2, 8, 1)];
-
-        let cases: [(&str, Vec<EmittedWord>, Vec<EmittedWord>); 4] = [
+        let cases: [(&str, Vec<EmittedWord>, Vec<EmittedWord>); 3] = [
             ("gpr", gpr_dep, gpr_ind),
             ("nzcv", flags_dep, flags_ind),
             ("sp", sp_dep, sp_ind),
-            ("mem-reuse", mem_miss, mem_hit),
         ];
         let mut lines = Vec::new();
         for (channel, dependent, independent) in cases {
@@ -906,7 +912,7 @@ mod tests {
         let budget = |bytes: u64| -> (u64, u64) {
             let prog = program(&[("Foo.turn", text_words(bytes))]);
             let b = footprint::compute(&prog, &t, &p, &one, HotBlocks::All).expect("footprint");
-            (b[0].charge, b[0].hot_text_bytes)
+            (b[0].charge, b[0].fetched_text_bytes)
         };
         let (under, under_bytes) = budget(60 * 1024);
         let (over, over_bytes) = budget(68 * 1024);
@@ -923,8 +929,13 @@ mod tests {
         let spread: Vec<u64> = (0..5).map(|k| k * 64).collect();
         let c = total_at(&prog("f", serial_loads(&conflict, true)), &one, &p);
         let n = total_at(&prog("f", serial_loads(&spread, true)), &one, &p);
-        lines.push(format!("  l1d-4way-conflict conflicting={c} vs spread={n}"));
-        assert!(c > n, "L1D associativity cliff is not live: {c} vs {n}");
+        lines.push(format!(
+            "  l1d-static-order  conflicting={c} vs spread={n} (rank-neutral)"
+        ));
+        assert_eq!(
+            c, n,
+            "a static block order must not be mistaken for a D-cache execution trace"
+        );
 
         let itlb = |pages: u64| -> (u64, u64) {
             let prog = program(&[("Foo.turn", text_words(pages * footprint::PAGE_BYTES))]);

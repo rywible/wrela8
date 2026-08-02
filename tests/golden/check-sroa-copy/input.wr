@@ -1,0 +1,15 @@
+module examples.check_sroa_copy
+
+struct Pair:
+    left: u64
+    right: u64
+
+fn copy_pair(a: u64, b: u64) -> u64:
+    source = Pair(left=a, right=b)
+    copied = source
+    copied.right = a
+    return copied.left + copied.right
+
+@test
+fn sroa_copy_result():
+    assert copy_pair(2, 3) == 4

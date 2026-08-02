@@ -1,0 +1,8 @@
+module examples.check_cfg_loop
+
+fn count(n: u64) -> u64:
+    i: u64 = 0
+    @budget(bound=100)
+    while i < n:
+        i = i +% 1
+    return i

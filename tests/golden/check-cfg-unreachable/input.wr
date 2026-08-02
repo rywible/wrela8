@@ -1,0 +1,7 @@
+module examples.check_cfg_unreachable
+
+fn choose(cond: bool) -> u64:
+    if cond:
+        return 1
+    return 2
+    return 3

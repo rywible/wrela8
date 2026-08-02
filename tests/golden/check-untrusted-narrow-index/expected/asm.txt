@@ -75,5 +75,5 @@ Program
     0072: 910183ff  add sp, sp, #96
     0073: d65f03c0  ret
   Rodata
-    0: offset=0x0 index 
+    0: offset=0x0 index\x20
     1: offset=0x6  out of bounds (length 4)

@@ -1,0 +1,9 @@
+module examples.check_cfg_diamond
+
+fn diamond(cond: bool) -> u64:
+    x: u64 = 10
+    if cond:
+        x = 20
+    else:
+        x = 30
+    return x

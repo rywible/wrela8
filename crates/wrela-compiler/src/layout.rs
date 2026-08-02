@@ -84,6 +84,7 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageLayout {
     pub blob: Vec<u8>,
+    pub linked: Option<crate::linked::LinkedProgram>,
     pub entry: u64,
     pub sections: Vec<Section>,
     pub runtime: Option<RuntimeTables>,
@@ -692,6 +693,73 @@ fn verify_conventions_after_layout(program: &CodegenProgram) -> Result<(), Layou
              measured clobber set."
         ))
     })
+}
+
+fn expand_rodata_adr_sites(
+    program: &CodegenProgram,
+    sites: &BTreeMap<String, BTreeSet<usize>>,
+) -> Result<CodegenProgram, LayoutError> {
+    let mut out = program.clone();
+    for (key, f) in &program.fns {
+        let Some(site_words) = sites.get(key) else {
+            continue;
+        };
+        let mut code = Vec::with_capacity(f.code.len() + site_words.len());
+        let mut old_to_new = vec![usize::MAX; f.code.len() + 1];
+        for (i, word) in f.code.iter().enumerate() {
+            old_to_new[i] = code.len();
+            if !site_words.contains(&i) {
+                code.push(word.clone());
+                continue;
+            }
+            if word.rule != crate::cost::CostRule::Adrp
+                || !(word.word & 0x9f00_0000 == 0x1000_0000
+                    || word.word & 0x9f00_0000 == 0x9000_0000)
+            {
+                return Err(LayoutError::new(format!(
+                    "cannot grow `RodataAdr` at `{key}[{i}]`: the site is not an ADR/ADRP word"
+                )));
+            }
+            let reg = (word.word & 0x1f) as u8;
+            let mut adrp = word.clone();
+            adrp.word = encode::enc_adrp(reg, 0);
+            adrp.text = adrp.text.replacen("adr ", "adrp ", 1);
+            code.push(adrp);
+            code.push(crate::cost::EmittedWord::new(
+                encode::enc_add_imm(reg, reg, 0, true),
+                format!("add x{reg}, x{reg}, #0"),
+                crate::cost::CostRule::Alu,
+                Some(reg),
+                &[reg],
+            ));
+        }
+        old_to_new[f.code.len()] = code.len();
+        let mut relocs = Vec::with_capacity(f.relocs.len());
+        for reloc in &f.relocs {
+            let old = crate::relax::reloc_word(reloc);
+            let Some(&new) = old_to_new.get(old) else {
+                return Err(LayoutError::new(format!(
+                    "relocation at `{key}[{old}]` is outside its function"
+                )));
+            };
+            if let Reloc::RodataAdr { byte_offset, .. } = reloc {
+                if site_words.contains(&old) {
+                    relocs.push(Reloc::Rodata {
+                        word_adrp: new,
+                        byte_offset: *byte_offset,
+                    });
+                    continue;
+                }
+            }
+            relocs.push(crate::relax::remap_reloc(reloc, new));
+        }
+        let output = out.fns.get_mut(key).ok_or_else(|| {
+            LayoutError::new(format!("missing function `{key}` while growing ADR"))
+        })?;
+        output.code = code;
+        output.relocs = relocs;
+    }
+    Ok(out)
 }
 
 fn patch_load_imm_words(words: &mut [u32], word: usize, value: u64) {
@@ -1664,6 +1732,14 @@ pub fn layout_program(
     program: &CodegenProgram,
     boot: Option<BootCtx>,
 ) -> Result<ImageLayout, LayoutError> {
+    layout_program_inner(program, boot)
+}
+
+fn layout_program_inner(
+    program: &CodegenProgram,
+    boot: Option<BootCtx>,
+) -> Result<ImageLayout, LayoutError> {
+    let _late_address_relax = crate::codegen::late_address_relax_guard();
     let image_base = machine_layout::IMAGE_BASE;
 
     let mut wiring: Option<RuntimeWiring> = match &boot {
@@ -1691,6 +1767,15 @@ pub fn layout_program(
     };
 
     verify_conventions_after_layout(program)?;
+
+    // Relax only self-contained, value-only sites before assigning final
+    // function bases.  The relaxation pass freezes any function with a
+    // relocation or control transfer, so every surviving relocation index is
+    // still local to an unchanged wide body.  All later section addresses and
+    // patches are then computed from this one final program.
+    let relaxed_program = crate::relax::relax_immediates(program)
+        .map_err(|e| LayoutError::new(format!("late immediate relaxation: {e}")))?;
+    let program = &relaxed_program.program;
 
     let entry_words = build_entry_stub();
 
@@ -1893,6 +1978,46 @@ pub fn layout_program(
             }
         }
     }
+    // ADR is the one-word short form of the existing two-word ADRP+ADD
+    // relocation.  If the final addresses prove it out of range, grow only
+    // a straight-line function and restart layout.  Restarting is important:
+    // the insertion moves every later function and therefore all later
+    // relocation PCs.  Functions containing local control transfers remain
+    // wide/fail-closed rather than leaving stale branch displacements.
+    let mut expand_adr = BTreeMap::<String, BTreeSet<usize>>::new();
+    if rodata_base.is_some() {
+        for (key, f) in &program.fns {
+            if f.code.iter().any(|word| {
+                matches!(
+                    word.rule,
+                    crate::cost::CostRule::Branch
+                        | crate::cost::CostRule::Call
+                        | crate::cost::CostRule::Abort
+                        | crate::cost::CostRule::AbortVal
+                )
+            }) {
+                continue;
+            }
+            let base = fn_word_base[key];
+            for reloc in &f.relocs {
+                let Reloc::RodataAdr { word, byte_offset } = reloc else {
+                    continue;
+                };
+                let rb = rodata_base.expect("checked above");
+                let pc = code_base + ((base + *word) as u64) * 4;
+                let target = rb + *byte_offset as u64;
+                let delta = target as i64 - pc as i64;
+                if !(-ADR_HALF_RANGE_BYTES..ADR_HALF_RANGE_BYTES).contains(&delta) {
+                    expand_adr.entry(key.clone()).or_default().insert(*word);
+                }
+            }
+        }
+    }
+    if !expand_adr.is_empty() {
+        let expanded = expand_rodata_adr_sites(program, &expand_adr)?;
+        return layout_program_inner(&expanded, boot);
+    }
+
     let empty_symbols = BTreeMap::new();
     let glue_symbols: &BTreeMap<String, usize> = &empty_symbols;
     let mut all_code_words = code_words;
@@ -2221,7 +2346,7 @@ pub fn layout_program(
     verify_device_windows(&sections, &device_regs)?;
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
-    let core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
+    let mut core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
         (Some(w), cb) if w.tables.cores > 1 => (1..w.tables.cores)
             .filter_map(|core| {
                 let key = crate::codegen::rt_secondary_core_entry_symbol(core);
@@ -2233,8 +2358,235 @@ pub fn layout_program(
         _ => Vec::new(),
     };
     let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
+
+    // Construct the one final-address representation used by cost and
+    // diagnostics.  Relocation patching changed only `word`, so all original
+    // EmittedWord metadata remains attached to the linked functions.
+    let entry_id = 0usize;
+    let code_id = 1usize;
+    let mut linked_sections = vec![
+        crate::linked::LinkedSection {
+            id: entry_id,
+            name: "entry".to_string(),
+            byte_address: entry_base,
+            executable: true,
+            code: crate::linked::synthetic_words(&entry_words, "__image_entry"),
+            raw_bytes: Vec::new(),
+            padding_before: 0,
+        },
+        crate::linked::LinkedSection {
+            id: code_id,
+            name: "code".to_string(),
+            byte_address: code_base,
+            executable: true,
+            code: Vec::new(),
+            raw_bytes: Vec::new(),
+            padding_before: code_base.saturating_sub(entry_base + entry_size),
+        },
+    ];
+    let mut linked_fns = BTreeMap::new();
+    let entry_code = crate::linked::synthetic_words(&entry_words, "__image_entry");
+    linked_fns.insert(
+        "__image_entry".to_string(),
+        crate::linked::LinkedFn {
+            key: "__image_entry".to_string(),
+            section: entry_id,
+            byte_address: entry_base,
+            origin_word_ranges: crate::linked::default_origin_ranges(&entry_code),
+            code: entry_code,
+            relocs: Vec::new(),
+            frame_size: 0,
+        },
+    );
+    for (key, f) in program.fns.iter() {
+        let base = *fn_word_base
+            .get(key)
+            .ok_or_else(|| LayoutError::new(format!("linked function `{key}` has no code base")))?;
+        let mut fn_code = f.code.clone();
+        crate::linked::complete_memory_metadata(key, &mut fn_code);
+        for (i, ew) in fn_code.iter_mut().enumerate() {
+            ew.word = all_code_words[base + i];
+        }
+        let address = code_base + (base as u64) * 4;
+        linked_sections[1].code.extend(fn_code.iter().cloned());
+        linked_fns.insert(
+            key.clone(),
+            crate::linked::LinkedFn {
+                key: key.clone(),
+                section: code_id,
+                byte_address: address,
+                origin_word_ranges: crate::linked::recorded_origin_ranges(
+                    &program.origin_spans,
+                    key,
+                    &fn_code,
+                ),
+                code: fn_code,
+                relocs: f.relocs.clone(),
+                frame_size: f.frame_size as u64,
+            },
+        );
+    }
+    let mut next_section = 2usize;
+    let mut add_exec = |key: &str, address: u64, words: &[u32], frame_size: u64| {
+        let id = next_section;
+        next_section += 1;
+        let code = crate::linked::synthetic_words(words, key);
+        linked_sections.push(crate::linked::LinkedSection {
+            id,
+            name: key.to_string(),
+            byte_address: address,
+            executable: true,
+            code: code.clone(),
+            raw_bytes: Vec::new(),
+            padding_before: 0,
+        });
+        linked_fns.insert(
+            key.to_string(),
+            crate::linked::LinkedFn {
+                key: key.to_string(),
+                section: id,
+                byte_address: address,
+                origin_word_ranges: crate::linked::default_origin_ranges(&code),
+                code,
+                relocs: Vec::new(),
+                frame_size,
+            },
+        );
+    };
+    add_exec(
+        "__image_abort_fixed",
+        abort_fixed_base,
+        &abort_fixed_words,
+        0,
+    );
+    add_exec("__image_abort_value", abort_val_base, &abort_val_words, 0);
+    add_exec(
+        "__image_checkpoint_vector",
+        checkpoint_base,
+        &checkpoint_words,
+        0,
+    );
+    if let Some(base) = rtcode_base {
+        add_exec("__image_rtcode", base, &rtcode_words, 0);
+    }
+    if let Some(rb) = rodata_base {
+        linked_sections.push(crate::linked::LinkedSection {
+            id: next_section,
+            name: "rodata".to_string(),
+            byte_address: rb,
+            executable: false,
+            code: Vec::new(),
+            raw_bytes: rodata_bytes.clone(),
+            padding_before: 0,
+        });
+        next_section += 1;
+    }
+    for section in &sections {
+        if matches!(
+            section.name,
+            "entry" | "code" | "rodata" | "abort" | "checkpoint" | "rtcode"
+        ) {
+            continue;
+        }
+        linked_sections.push(crate::linked::LinkedSection {
+            id: next_section,
+            name: section.name.to_string(),
+            byte_address: section.base,
+            executable: false,
+            code: Vec::new(),
+            raw_bytes: vec![0; section.size as usize],
+            padding_before: 0,
+        });
+        next_section += 1;
+    }
+    let mut linked =
+        crate::linked::LinkedProgram::from_parts(linked_sections, linked_fns, image_base)
+            .map_err(LayoutError::new)?;
+    let (relaxed_linked, _) = crate::relax::relax_linked_addresses(&linked)
+        .map_err(|e| LayoutError::new(format!("late address relaxation: {e}")))?;
+    linked = relaxed_linked;
+    if let Some(boot) = boot.as_ref() {
+        // Persistent Flow storage exists once per placed turn record, not once
+        // per async function.  Actor/driver records reserve the maximum frame
+        // of their methods; free async functions each own one record.
+        linked.async_frame_total_bytes =
+            runtime
+                .map(|tables| {
+                    tables
+                        .actors
+                        .iter()
+                        .map(|actor| {
+                            actor
+                                .frame_size
+                                .saturating_sub(crate::codegen::TURN_RECORD_SIZE)
+                        })
+                        .chain(tables.drivers.iter().filter_map(|driver| {
+                            driver.mailbox.as_ref().map(|mailbox| {
+                                mailbox
+                                    .frame_size
+                                    .saturating_sub(crate::codegen::TURN_RECORD_SIZE)
+                            })
+                        }))
+                        .chain(tables.free_turns.iter().map(|(_, bytes)| {
+                            bytes.saturating_sub(crate::codegen::TURN_RECORD_SIZE)
+                        }))
+                        .sum()
+                })
+                .unwrap_or(0);
+        linked.sync_frame_max_bytes = linked
+            .fns
+            .iter()
+            .filter(|(key, _)| !boot.flow.fns.contains_key(*key))
+            .map(|(_, f)| f.frame_size)
+            .max()
+            .unwrap_or(0);
+    }
+    for (core, address) in &mut core_entries {
+        let key = crate::codegen::rt_secondary_core_entry_symbol(*core);
+        if let Some(function) = linked.fns.get(&key) {
+            *address = function.byte_address;
+        }
+    }
+    crate::cost::audit::audit_linked(&linked).map_err(LayoutError::new)?;
+    let linked_blob = linked.serialize(image_base).map_err(LayoutError::new)?;
+    for section in &mut sections {
+        if let Some(linked_section) = linked
+            .sections
+            .iter()
+            .find(|candidate| candidate.name == section.name)
+        {
+            section.base = linked_section.byte_address;
+            section.size = linked_section.payload_bytes();
+            continue;
+        }
+        let aliases: &[&str] = match section.name {
+            "abort" => &["__image_abort_fixed", "__image_abort_value"],
+            "checkpoint" => &["__image_checkpoint_vector"],
+            "rtcode" => &["__image_rtcode"],
+            _ => &[],
+        };
+        let owned: Vec<&crate::linked::LinkedSection> = linked
+            .sections
+            .iter()
+            .filter(|candidate| aliases.contains(&candidate.name.as_str()))
+            .collect();
+        if !owned.is_empty() {
+            section.base = owned
+                .iter()
+                .map(|candidate| candidate.byte_address)
+                .min()
+                .unwrap();
+            section.size = owned
+                .iter()
+                .map(|candidate| candidate.payload_bytes())
+                .sum();
+        }
+    }
+    verify_section_sizes(&sections, image_base, linked_blob.len() as u64)?;
+
     Ok(ImageLayout {
-        blob,
+        blob: linked_blob,
+        linked: Some(linked),
         entry: entry_base,
         sections,
         runtime: runtime.cloned(),
@@ -2466,6 +2818,7 @@ pub fn lower_and_codegen_image(
         actor_method_index_tables(&live_modules, &layout_ctx).map_err(|e| e.message)?;
     let group_arena_capacity = count_with_group_sites(&live_modules);
     let enqueue_specs = mailbox_enqueue_specs(graph, &live_modules, &layout_ctx)?;
+    let _late_address_relax = crate::codegen::late_address_relax_guard();
     let program = crate::codegen::codegen_program_with_async(
         &mwir,
         &flow,
@@ -3924,6 +4277,50 @@ fn two():
     }
 
     #[test]
+    fn late_adr_growth_rewrites_the_reloc_and_shifts_following_words() {
+        let first = crate::cost::EmittedWord::new(
+            encode::enc_adr(9, 0),
+            "adr x9, rodata+0x0".into(),
+            crate::cost::CostRule::Adrp,
+            Some(9),
+            &[],
+        );
+        let second = crate::cost::EmittedWord::new(
+            encode::enc_movz(10, 1, 0, true),
+            "movz x10".into(),
+            crate::cost::CostRule::MovWide,
+            Some(10),
+            &[],
+        );
+        let second_word = second.word;
+        let program = CodegenProgram {
+            fns: BTreeMap::from([(
+                "f".into(),
+                crate::codegen::CodegenFn {
+                    frame_size: 0,
+                    code: vec![first, second],
+                    relocs: vec![Reloc::RodataAdr {
+                        word: 0,
+                        byte_offset: 0,
+                    }],
+                },
+            )]),
+            ..CodegenProgram::default()
+        };
+        let sites = BTreeMap::from([("f".into(), BTreeSet::from([0usize]))]);
+        let expanded = expand_rodata_adr_sites(&program, &sites).expect("grow");
+        assert_eq!(expanded.fns["f"].code.len(), 3);
+        assert!(matches!(
+            expanded.fns["f"].relocs.as_slice(),
+            [Reloc::Rodata {
+                word_adrp: 0,
+                byte_offset: 0
+            }]
+        ));
+        assert_eq!(expanded.fns["f"].code[2].word, second_word);
+    }
+
+    #[test]
     fn an_adr_addressed_image_lays_out_and_every_site_resolves_to_its_rodata_byte() {
         use crate::opts::{CompileMode, apply_mode};
 
@@ -4273,6 +4670,7 @@ fn two():
     fn only_device_reachable_pools_become_blkpool_windows() {
         let layout = ImageLayout {
             blob: Vec::new(),
+            linked: None,
             entry: 0x1000,
             sections: vec![Section {
                 name: "pooldata",

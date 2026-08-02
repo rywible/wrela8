@@ -1,0 +1,14 @@
+module examples.check_frame_color_loop
+
+@actor
+pub struct Looper:
+    value: u64
+
+    pub async fn count(mut self, n: u64) -> u64:
+        i: u64 = 0
+        one: u64 = 1
+        @budget(bound=100)
+        while i < n:
+            i = i + one
+        self.value = i
+        return self.value

@@ -5,8 +5,8 @@ use crate::placement::PlacementTable;
 
 use super::attr::attribute_cores;
 use super::compose::{WorkloadAttach, attach_workloads};
-use super::ghz::{self, fmt_compact};
-use super::score::{CostReport, score_program};
+use super::ghz::fmt_compact;
+use super::score::{CostReport, score_linked_program, score_program};
 use super::table::CostTable;
 use super::workload::FLAT_NAME;
 
@@ -19,7 +19,48 @@ pub fn dump(
 ) -> Result<String, String> {
     let mut report = score_program(program, table, placement)?;
     attach_workloads(&mut report, attach)?;
-    format_report(&report, placement, ghz, Some(attach))
+    format_report(&report, placement, ghz, Some(attach), true)
+}
+
+pub fn dump_linked(
+    linked: &crate::linked::LinkedProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    ghz: f64,
+) -> Result<String, String> {
+    dump_linked_for_source(linked, table, placement, ghz, None)
+}
+
+pub fn dump_linked_for_source(
+    linked: &crate::linked::LinkedProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    ghz: f64,
+    source: Option<&Path>,
+) -> Result<String, String> {
+    let mut report = score_linked_program(linked, table, placement)?;
+    let attach = WorkloadAttach::load_default_for_linked(source, linked, table, placement)?;
+    attach_workloads(&mut report, &attach)?;
+    let mut out = format_report(&report, placement, ghz, Some(&attach), false)?;
+    push_line(
+        &mut out,
+        1,
+        &format!(
+            "Scope scope=linked-image executable_words={} executable_code_bytes={} fetched_text_bytes={} image_bytes={} rodata_bytes={} sync_frame_max_bytes={} async_frame_total_bytes={}",
+            linked.executable_words(),
+            linked.executable_code_bytes(),
+            report
+                .footprint
+                .iter()
+                .map(|b| b.fetched_text_bytes)
+                .sum::<u64>(),
+            linked.image_bytes,
+            linked.rodata_bytes(),
+            linked.sync_frame_max_bytes,
+            linked.async_frame_total_bytes,
+        ),
+    );
+    Ok(out)
 }
 
 pub fn dump_for_source(
@@ -38,6 +79,7 @@ fn format_report(
     placement: &PlacementTable,
     ghz: f64,
     attach: Option<&WorkloadAttach>,
+    emit_closure_scope: bool,
 ) -> Result<String, String> {
     let mut out = String::new();
     let mut header = format!(
@@ -64,14 +106,35 @@ fn format_report(
     push_line(
         &mut out,
         1,
-        "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru",
+        "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru",
     );
     push_line(&mut out, 1, "Composition sum_of_fn_schedules=1");
     push_line(
         &mut out,
         1,
-        &format!("Total proxy_cycles={}", report.total_proxy_cycles),
+        &format!(
+            "Rank rank_cycles={} schedule_cycles={} footprint_cycles={} total_proxy_cycles={}",
+            report.rank_cycles,
+            report.schedule_cycles,
+            report.footprint_cycles,
+            report.total_proxy_cycles
+        ),
     );
+    if emit_closure_scope {
+        let fetched_text_bytes: u64 = report.footprint.iter().map(|b| b.fetched_text_bytes).sum();
+        let sync_frame_max_bytes = report.sync_frame_max_bytes;
+        push_line(
+            &mut out,
+            1,
+            &format!(
+                "Scope scope=closure executable_words={} executable_code_bytes={} fetched_text_bytes={} rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes={} async_frame_total_bytes=0",
+                report.total_words,
+                report.total_words.saturating_mul(4),
+                fetched_text_bytes,
+                sync_frame_max_bytes,
+            ),
+        );
+    }
     append_workload_rows(&mut out, 1, report, attach);
     for name in ["app", "runtime", "driver"] {
         let cycles = report.owner_totals.get(name).copied().unwrap_or(0);
@@ -87,8 +150,8 @@ fn format_report(
             &mut out,
             1,
             &format!(
-                "Fn key={} owner={} proxy_cycles={}",
-                f.key, f.owner, f.proxy_cycles
+                "Fn key={} owner={} frame_bytes={} proxy_cycles={}",
+                f.key, f.owner, f.frame_bytes, f.proxy_cycles
             ),
         );
         for (rule, count) in &f.terms {
@@ -156,20 +219,13 @@ pub(crate) fn append_core_block(
     }
     let attr = attribute_cores(report, placement)?;
     for c in &attr.cores {
-        let tps = match ghz::turns_per_sec(c.max_turn_proxy, ghz) {
-            Some(v) => fmt_compact(v),
-            None => "n/a".to_string(),
-        };
-        let mpt = match ghz::ms_per_turn(c.max_turn_proxy, ghz) {
-            Some(v) => fmt_compact(v),
-            None => "n/a".to_string(),
-        };
+        let _ = ghz;
         push_line(
             out,
             depth,
             &format!(
-                "Core n={} proxy_cycles={} max_turn_proxy={} turns_per_sec={} ms_per_turn_model={}",
-                c.n, c.proxy_cycles, c.max_turn_proxy, tps, mpt
+                "Core n={} proxy_cycles={} max_entry_method_proxy_cycles={}",
+                c.n, c.proxy_cycles, c.max_turn_proxy
             ),
         );
         if let Some(b) = report.footprint.iter().find(|b| b.n == c.n) {
@@ -225,6 +281,7 @@ mod tests {
         FnCost {
             key: key.to_string(),
             owner: "app".to_string(),
+            frame_bytes: 0,
             proxy_cycles: cycles,
             words: cycles,
             terms: BTreeMap::new(),
@@ -244,7 +301,12 @@ mod tests {
             dispatch_uops: 8,
             reorder_window: 128,
             total_proxy_cycles: total,
+            schedule_cycles: total,
+            footprint_cycles: 0,
+            rank_cycles: total,
             total_words: total,
+            sync_frame_max_bytes: 0,
+            async_frame_total_bytes: 0,
             owner_totals: BTreeMap::from([("app".to_string(), total)]),
             fns,
             workloads_digest: None,
@@ -288,7 +350,7 @@ mod tests {
             entries: Vec::new(),
             cores: 0,
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None, false).expect("ok");
         assert!(text.contains("workloads_digest="), "got:\n{text}");
         assert!(
             text.contains("Workload name=flat proxy_cycles=10"),
@@ -298,7 +360,7 @@ mod tests {
         assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
         assert!(text.contains(
-            "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat"
+            "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat"
         ));
         assert!(!text.contains("Core n="), "got:\n{text}");
         assert!(!text.contains("Shared proxy_cycles="), "got:\n{text}");
@@ -333,7 +395,7 @@ mod tests {
             entries: Vec::new(),
             cores: 0,
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None, false).expect("ok");
         assert!(
             text.contains("Workload name=flat proxy_cycles=921"),
             "got:\n{text}"
@@ -352,16 +414,18 @@ mod tests {
             cores: 1,
             entries: vec![entry(ImageDeclRef::Actor(0), "Foo", 0)],
         };
-        let at_24 = format_report(&report, &placement, 2.4, None).expect("ok");
-        let at_1 = format_report(&report, &placement, 1.0, None).expect("ok");
+        let at_24 = format_report(&report, &placement, 2.4, None, false).expect("ok");
+        let at_1 = format_report(&report, &placement, 1.0, None, false).expect("ok");
         assert!(at_24.contains("ghz=2.4"), "got:\n{at_24}");
         assert!(at_1.contains("ghz=1"), "got:\n{at_1}");
-        assert!(at_24.contains("turns_per_sec=1000000"), "got:\n{at_24}");
         assert!(
-            at_1.contains("turns_per_sec=416666.6666666667"),
+            at_24.contains("max_entry_method_proxy_cycles=2400"),
+            "got:\n{at_24}"
+        );
+        assert!(
+            at_1.contains("max_entry_method_proxy_cycles=2400"),
             "got:\n{at_1}"
         );
-        assert!(at_24.contains("ms_per_turn_model=0.001"), "got:\n{at_24}");
         assert!(at_1.contains("Placeable id=actor#0"));
         assert!(at_1.contains("method=Foo.hot"));
         assert!(at_24.contains("Shared proxy_cycles=0"));
@@ -374,9 +438,9 @@ mod tests {
             cores: 1,
             entries: vec![entry(ImageDeclRef::Actor(0), "Empty", 0)],
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None, false).expect("ok");
         assert!(
-            text.contains("turns_per_sec=n/a ms_per_turn_model=n/a"),
+            text.contains("max_entry_method_proxy_cycles=0"),
             "got:\n{text}"
         );
         assert!(text.contains("method=-"), "got:\n{text}");

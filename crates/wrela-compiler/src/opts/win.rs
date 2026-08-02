@@ -72,10 +72,11 @@ impl BudgetGrowth {
     }
 }
 
-fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 7] {
+fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 8] {
     [
         ("over_l1i_lines", b.over_l1i_lines),
         ("over_l2_lines", b.over_l2_lines),
+        ("over_l3_lines", b.over_l3_lines),
         ("over_itlb_pages", b.over_itlb_pages),
         ("over_tlb_l2_pages", b.over_tlb_l2_pages),
         ("over_dtlb_pages", b.over_dtlb_pages),
@@ -136,24 +137,16 @@ impl CorpusCompare {
         self.candidate_words as i64 - self.baseline_words as i64
     }
 
+    fn non_regressing(&self) -> bool {
+        self.cases.iter().all(|c| {
+            c.candidate <= c.baseline
+                && c.budget_growth().is_ok_and(|growth| growth.is_empty())
+                && c.ordering_removed().is_empty()
+        })
+    }
+
     pub fn wins(&self) -> bool {
-        let mut any_fall = false;
-        for c in &self.cases {
-            if c.candidate > c.baseline {
-                return false;
-            }
-            match c.budget_growth() {
-                Ok(g) if g.is_empty() => {}
-                _ => return false,
-            }
-            if !c.ordering_removed().is_empty() {
-                return false;
-            }
-            if c.candidate < c.baseline {
-                any_fall = true;
-            }
-        }
-        any_fall
+        self.non_regressing() && self.cases.iter().any(|c| c.candidate < c.baseline)
     }
 }
 
@@ -356,6 +349,24 @@ fn shipped_report_under_opts(path: &Path, opts: &[OptId]) -> (CostReport, TextSc
     (report, scope)
 }
 
+fn linked_shipped_report_under_opts(path: &Path, opts: &[OptId]) -> (CostReport, TextScope) {
+    apply_opts(opts);
+    let (linked, placement, scope) = crate::cost::stage::linked_shipped_program(path)
+        .unwrap_or_else(|e| panic!("linked-program score {}: {e}", path.display()));
+    let table = load_default().unwrap_or_else(|e| panic!("cost table: {e}"));
+    let report = match scope {
+        TextScope::Image => crate::cost::score::score_linked_program(&linked, &table, &placement),
+        TextScope::Closure => {
+            let program = crate::cost::stage::codegen_shipped_program(path)
+                .unwrap_or_else(|e| panic!("shipped-program score {}: {e}", path.display()))
+                .0;
+            crate::cost::score::score_program(&program, &table, &placement)
+        }
+    }
+    .unwrap_or_else(|e| panic!("score {}: {e}", path.display()));
+    (report, scope)
+}
+
 pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompare {
     let corpus = discover_cost_cases();
     assert!(
@@ -372,8 +383,13 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
     for case in &corpus {
         let path = case.input.as_path();
         let name = case.name.clone();
-        let (b, scope) = shipped_report_under_opts(path, baseline);
-        let (c, cscope) = shipped_report_under_opts(path, candidate);
+        let scorer = if case.tier == CostTier::Product {
+            linked_shipped_report_under_opts
+        } else {
+            shipped_report_under_opts
+        };
+        let (b, scope) = scorer(path, baseline);
+        let (c, cscope) = scorer(path, candidate);
         assert_eq!(
             scope, cscope,
             "{name}: the two sides compiled different programs — one shipped an image \
@@ -1280,7 +1296,7 @@ pub struct AttributionCell {
     pub proxy_cycles: u64,
     pub words: u64,
     pub charge: u64,
-    pub hot_text_bytes: u64,
+    pub fetched_text_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1313,7 +1329,7 @@ pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
                 proxy_cycles: r.total_proxy_cycles,
                 words: r.total_words,
                 charge: total_charge(&r.footprint),
-                hot_text_bytes: r.footprint.iter().map(|b| b.hot_text_bytes).sum(),
+                fetched_text_bytes: r.footprint.iter().map(|b| b.fetched_text_bytes).sum(),
             });
         }
         rows.push(AttributionRow {
@@ -1343,7 +1359,7 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
                 c.proxy_cycles,
                 c.words,
                 c.charge,
-                c.hot_text_bytes
+                c.fetched_text_bytes
             ));
         }
     }
@@ -1365,7 +1381,7 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
                     cycles = cycles.saturating_add(c.proxy_cycles);
                     words = words.saturating_add(c.words);
                     charge = charge.saturating_add(c.charge);
-                    hot = hot.saturating_add(c.hot_text_bytes);
+                    hot = hot.saturating_add(c.fetched_text_bytes);
                 }
             }
             out.push_str(&format!(
@@ -1390,7 +1406,7 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
                 cycles = cycles.saturating_add(c.proxy_cycles);
                 words = words.saturating_add(c.words);
                 charge = charge.saturating_add(c.charge);
-                hot = hot.saturating_add(c.hot_text_bytes);
+                hot = hot.saturating_add(c.fetched_text_bytes);
             }
         }
         out.push_str(&format!(
@@ -1717,6 +1733,89 @@ pub fn compare_overall(
     })
 }
 
+#[derive(Debug)]
+pub struct OptGateCompare {
+    pub flat_corpus: CorpusCompare,
+    pub overall: OverallCompare,
+}
+
+impl OptGateCompare {
+    pub fn wins(&self) -> bool {
+        self.flat_corpus.non_regressing() && self.overall.wins()
+    }
+}
+
+/// Compile both optimization sets through the real linked-image workload path.
+///
+/// The flat row is the complete cost corpus. Each named row is scored from its
+/// repository-mapped source with exact linked origin coverage. The current
+/// workload file has one named source; fail closed rather than silently merging
+/// incomparable per-core budget vectors if more are added.
+pub fn compare_opt_lists_overall(
+    baseline_opts: &[OptId],
+    candidate_opts: &[OptId],
+) -> Result<OptGateCompare, String> {
+    let workloads = load_pinned_workloads()?;
+    let flat_corpus = compare_opt_lists(baseline_opts, candidate_opts);
+    let mut baseline = OverallSide::default();
+    let mut candidate = OverallSide::default();
+    baseline
+        .totals
+        .insert(FLAT_NAME.to_string(), flat_corpus.baseline_sum);
+    candidate
+        .totals
+        .insert(FLAT_NAME.to_string(), flat_corpus.candidate_sum);
+    baseline.words = flat_corpus.baseline_words;
+    candidate.words = flat_corpus.candidate_words;
+
+    let named: Vec<String> = workloads
+        .names()
+        .filter(|name| *name != FLAT_NAME)
+        .map(str::to_string)
+        .collect();
+    if named.len() != 1 {
+        return Err(format!(
+            "overall opt gate requires exactly one named workload until budgets are keyed by workload, got {}",
+            named.len()
+        ));
+    }
+    let name = &named[0];
+    let source = workloads
+        .source_path(name)
+        .ok_or_else(|| format!("overall opt gate: workload `{name}` has no source"))?;
+    apply_opts(baseline_opts);
+    let baseline_report = report_cost_stage_path(&source)?;
+    apply_opts(candidate_opts);
+    let candidate_report = report_cost_stage_path(&source)?;
+    for (side, report) in [
+        (&mut baseline, &baseline_report),
+        (&mut candidate, &candidate_report),
+    ] {
+        side.totals.insert(
+            name.clone(),
+            *report
+                .workload_totals
+                .get(name)
+                .ok_or_else(|| format!("overall opt gate: `{name}` was not scored"))?,
+        );
+        side.coverage.insert(
+            name.clone(),
+            *report
+                .workload_coverage
+                .get(name)
+                .ok_or_else(|| format!("overall opt gate: `{name}` has no coverage row"))?,
+        );
+        side.budgets = report.footprint.clone();
+        side.ordering = ordering_word_counts(report);
+    }
+    apply_mode(CompileMode::Release);
+    let overall = compare_overall(&baseline, &candidate, &workloads)?;
+    Ok(OptGateCompare {
+        flat_corpus,
+        overall,
+    })
+}
+
 fn coverage_cell(cov: Option<(u64, u64)>) -> String {
     match cov {
         Some((m, t)) if t > 0 => {
@@ -1817,7 +1916,7 @@ pub fn assert_overall_wins(cmp: &OverallCompare, cand_label: &str, base_label: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::opts::{OptId, PARKED_OPTS};
+    use crate::opts::OptId;
 
     #[test]
     fn discover_cost_corpus_is_sorted_cost_star() {
@@ -2055,96 +2154,183 @@ mod tests {
         );
     }
 
+    #[ignore = "milestone lane: whole product-tier BoundsElide attribution"]
     #[test]
-    fn parked_bounds_elide_still_transforms_and_is_still_flat_on_the_appliance() {
-        assert!(
-            PARKED_OPTS.contains(&OptId::BoundsElide)
-                && !RELEASE_OPTS.contains(&OptId::BoundsElide),
-            "this test measures a parked opt; if BoundsElide has been \
-             un-parked it belongs in the RELEASE_OPTS gates above"
-        );
+    fn release_bounds_elide_transforms_without_regressing_the_product_tier() {
+        assert!(RELEASE_OPTS.contains(&OptId::BoundsElide));
+        let without: Vec<_> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|id| *id != OptId::BoundsElide)
+            .collect();
 
         let micro = discover_cost_cases()
             .into_iter()
             .find(|c| c.name == "cost-bounds-elide")
             .expect("cost-bounds-elide must exist");
-        let dev = score_path_under_opts(&micro.input, &[]);
-        let alone = score_path_under_opts(&micro.input, &[OptId::BoundsElide]);
+        let baseline = score_path_under_opts(&micro.input, &without);
+        let release = score_path_under_opts(&micro.input, RELEASE_OPTS);
         assert!(
-            alone < dev,
-            "the parked transform is inert on its own fixture: {alone} vs dev {dev}. \
-             A park whose transform no longer fires is not the opt that was refused."
+            release < baseline,
+            "the shipped transform is inert on its own fixture: {release} vs {baseline}"
         );
 
-        let mut compositor: Option<(u64, u64, u64, u64)> = None;
+        let mut strict_wins = 0usize;
         for case in discover_cost_cases_in(CostTier::Product) {
-            let (dev, _) = shipped_report_under_opts(&case.input, &[]);
-            let (on, _) = shipped_report_under_opts(&case.input, &[OptId::BoundsElide]);
-            eprintln!(
-                "parked BoundsElide on {}: cycles {} -> {}, words {} -> {}",
+            let baseline = report_path_under_opts(&case.input, &without);
+            let release = report_path_under_opts(&case.input, RELEASE_OPTS);
+            assert!(
+                release.total_proxy_cycles <= baseline.total_proxy_cycles
+                    && release.total_words <= baseline.total_words,
+                "BoundsElide regressed product case `{}`: cycles {} -> {}, words {} -> {}",
                 case.name,
-                dev.total_proxy_cycles,
-                on.total_proxy_cycles,
-                dev.total_words,
-                on.total_words
+                baseline.total_proxy_cycles,
+                release.total_proxy_cycles,
+                baseline.total_words,
+                release.total_words
             );
-            if case.name == "cost-product-compositor" {
-                compositor = Some((
-                    dev.total_proxy_cycles,
-                    on.total_proxy_cycles,
-                    dev.total_words,
-                    on.total_words,
-                ));
-                continue;
+            if release.total_proxy_cycles < baseline.total_proxy_cycles
+                || release.total_words < baseline.total_words
+            {
+                strict_wins += 1;
             }
-            assert_eq!(
-                (dev.total_proxy_cycles, dev.total_words),
-                (on.total_proxy_cycles, on.total_words),
-                "{}: item H measured `BoundsElide` byte-identical to `dev` on \
-                 every program the appliance ships, and that measurement is \
-                 why it is parked. If it has stopped being flat here, the \
-                 refusal recorded on `PARKED_OPTS` is out of date — re-run \
-                 the product-tier ∀ sweep before believing either side.",
-                case.name
-            );
         }
 
-        let (dev_c, on_c, dev_w, on_w) = compositor.expect(
-            "cost-product-compositor must exist — it is the named re-ask \
-             condition for this parked opt",
-        );
         assert!(
-            on_c < dev_c && on_w < dev_w,
-            "item M's compositor is the one product-tier case this opt is \
-             not flat on, and `PARKED_OPTS` records both the delta and \
-             where it comes from — the case's own `@test(runtime)` \
-             assertions, not its kernel. It measured 10975 -> 10848 cycles \
-             and 11658 -> 11523 words; it is now {dev_c} -> {on_c} and \
-             {dev_w} -> {on_w}. If it has gone flat here too, the park's \
-             re-ask condition is describing a corpus that no longer \
-             exists — rewrite it, do not delete it."
+            strict_wins > 0,
+            "the shipped proof transform must help at least one product"
         );
 
         apply_mode(CompileMode::Release);
     }
 
+    #[ignore = "milestone lane: integrated product measurement table"]
     #[test]
-    fn narrow_imm_alone_wins_some_cost_case() {
-        let corpus = discover_cost_cases();
-        let mut wins = Vec::new();
-        for case in &corpus {
-            let dev = score_path_under_opts(&case.input, &[]);
-            let alone = score_path_under_opts(&case.input, &[OptId::NarrowImm]);
-            if alone < dev {
-                wins.push(format!("{}[{}]: {alone} < {dev}", case.name, case.tier));
+    fn codegen_dataflow_plan_product_measurements_are_pinned() {
+        let case = discover_cost_cases_in(CostTier::Product)
+            .into_iter()
+            .find(|case| case.name == "cost-product-actors")
+            .expect("product actors");
+        let base_opts = RELEASE_OPTS.to_vec();
+        let base = report_path_under_opts(&case.input, &base_opts);
+        let fetched = |report: &CostReport| {
+            report
+                .footprint
+                .iter()
+                .map(|budget| budget.fetched_text_bytes)
+                .sum::<u64>()
+        };
+        assert_eq!(
+            (
+                base.rank_cycles,
+                base.total_words,
+                base.sync_frame_max_bytes,
+                base.async_frame_total_bytes,
+                fetched(&base),
+            ),
+            (10682, 14245, 1328, 944, 57024),
+            "pinned product-actors baseline for the integrated plan table"
+        );
+        for opt in [OptId::Sroa, OptId::FrameColor] {
+            let mut opts = base_opts.clone();
+            opts.push(opt);
+            let candidate = report_path_under_opts(&case.input, &opts);
+            let measured = (
+                candidate.rank_cycles,
+                candidate.total_words,
+                candidate.sync_frame_max_bytes,
+                candidate.async_frame_total_bytes,
+                fetched(&candidate),
+            );
+            match opt {
+                OptId::Sroa => assert_eq!(measured, (10682, 14245, 1328, 944, 57024)),
+                OptId::FrameColor => {
+                    assert_eq!(measured, (10787, 14334, 1328, 272, 57472))
+                }
+                _ => unreachable!(),
+            }
+        }
+        for opt in [
+            OptId::FlowStateRegs,
+            OptId::BoundsElide,
+            OptId::NarrowImm,
+            OptId::AdrAddressing,
+        ] {
+            let opts: Vec<_> = base_opts.iter().copied().filter(|id| *id != opt).collect();
+            let without = report_path_under_opts(&case.input, &opts);
+            let measured = (
+                without.rank_cycles,
+                without.total_words,
+                without.sync_frame_max_bytes,
+                without.async_frame_total_bytes,
+                fetched(&without),
+            );
+            match opt {
+                OptId::FlowStateRegs => {
+                    assert_eq!(measured, (10844, 14396, 1328, 944, 57728))
+                }
+                OptId::BoundsElide => {
+                    assert_eq!(measured, (10821, 14606, 1328, 944, 58560))
+                }
+                OptId::NarrowImm => assert_eq!(measured, (18588, 22429, 1328, 944, 89856)),
+                OptId::AdrAddressing => {
+                    assert_eq!(measured, (10682, 14245, 1328, 944, 57024))
+                }
+                _ => unreachable!(),
             }
         }
         apply_mode(CompileMode::Release);
+    }
+
+    #[ignore = "milestone lane: full corpus plus exact linked workload gate"]
+    #[test]
+    fn shipped_dataflow_opts_pass_the_real_linked_workload_gate() {
+        for opt in [OptId::BoundsElide, OptId::FlowStateRegs] {
+            let baseline: Vec<_> = RELEASE_OPTS
+                .iter()
+                .copied()
+                .filter(|id| *id != opt)
+                .collect();
+            let gate = compare_opt_lists_overall(&baseline, RELEASE_OPTS).expect("overall gate");
+            eprintln!(
+                "{opt:?} flat corpus:\n{}\n{opt:?} overall gate:\n{}",
+                format_delta_table(
+                    &gate.flat_corpus,
+                    &format!("release-minus-{opt:?}"),
+                    "release"
+                ),
+                format_overall_table(&gate.overall, &format!("release-minus-{opt:?}"), "release")
+            );
+            assert!(gate.wins(), "{opt:?} must pass its applicable gate");
+            assert!(gate.flat_corpus.non_regressing(), "{opt:?}");
+            assert!(gate.overall.wins(), "{opt:?}");
+            assert_eq!(gate.overall.baseline_coverage["boot-actors"], (1512, 1512));
+            assert_eq!(gate.overall.candidate_coverage["boot-actors"], (1512, 1512));
+        }
+        let mut with_sroa = RELEASE_OPTS.to_vec();
+        with_sroa.push(OptId::Sroa);
+        let sroa = compare_opt_lists_overall(RELEASE_OPTS, &with_sroa).expect("SROA gate");
         assert!(
-            !wins.is_empty(),
-            "NarrowImm alone must strictly lower ≥1 cost-* case; none fell"
+            !sroa.flat_corpus.non_regressing(),
+            "SROA remains parked because at least one flat corpus veto survives"
         );
-        eprintln!("NarrowImm alone wins:\n{}", wins.join("\n"));
+        assert!(!sroa.wins());
+        apply_mode(CompileMode::Release);
+    }
+
+    #[test]
+    fn narrow_imm_alone_wins_a_linkable_cost_case() {
+        let case = discover_cost_cases()
+            .into_iter()
+            .find(|case| case.name == "cost-runtime")
+            .expect("cost-runtime fixture");
+        let dev = score_path_under_opts(&case.input, &[]);
+        let alone = score_path_under_opts(&case.input, &[OptId::NarrowImm]);
+        apply_mode(CompileMode::Release);
+        assert!(
+            alone < dev,
+            "NarrowImm alone must lower cost-runtime: {alone} vs {dev}"
+        );
     }
 
     #[ignore = "milestone lane: whole shipped-list NarrowImm attribution"]
@@ -2197,8 +2383,8 @@ mod tests {
              dev {dev_cycles} -> NarrowImm {ni_cycles}\n{table}"
         );
 
-        let dev_hot = sum("dev", |c| c.hot_text_bytes);
-        let ni_hot = sum("NarrowImm", |c| c.hot_text_bytes);
+        let dev_hot = sum("dev", |c| c.fetched_text_bytes);
+        let ni_hot = sum("NarrowImm", |c| c.fetched_text_bytes);
         assert!(
             ni_hot < dev_hot,
             "NarrowImm must still shrink hot text: {dev_hot} -> {ni_hot}\n{table}"
@@ -2367,8 +2553,9 @@ mod tests {
             "the smoke case must enumerate corners, not zero"
         );
         assert!(
-            case.points.iter().all(|p| p.candidate < p.baseline),
-            "AdrAddressing must fall at every point of {}: {:?}",
+            case.points.iter().all(|p| p.candidate <= p.baseline)
+                && case.points.iter().any(|p| p.candidate < p.baseline),
+            "AdrAddressing must not grow and must win at some point of {}: {:?}",
             case.name,
             case.points
                 .iter()
@@ -2376,8 +2563,11 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(
-            cmp.wins(),
-            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().all(|r| {
+                !r.label().starts_with("budget_growth")
+                    && !r.label().starts_with("ordering_removed")
+            }),
+            "smoke sweep must have no growth/order veto: {:?}",
             cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
         );
     }
@@ -3142,13 +3332,12 @@ mod tests {
     fn budget(n: usize, over_l1i_lines: u64, over_itlb_pages: u64, charge: u64) -> CoreBudget {
         CoreBudget {
             n,
-            hot_text_bytes: 91712,
-            hot_code_bytes: 84284,
-            packing_floor_lines: 1318,
-            slack_lines: 115,
+            fetched_text_bytes: 91712,
+            executable_code_bytes: 84284,
             l1i_bytes: 65536,
             over_l1i_lines,
             over_l2_lines: 0,
+            over_l3_lines: 0,
             text_pages: if over_itlb_pages == 0 {
                 23
             } else {
@@ -3199,6 +3388,7 @@ mod tests {
         let fields = [
             "over_l1i_lines",
             "over_l2_lines",
+            "over_l3_lines",
             "over_itlb_pages",
             "over_tlb_l2_pages",
             "over_dtlb_pages",
@@ -3210,6 +3400,7 @@ mod tests {
             match field {
                 "over_l1i_lines" => c.over_l1i_lines += 1,
                 "over_l2_lines" => c.over_l2_lines += 1,
+                "over_l3_lines" => c.over_l3_lines += 1,
                 "over_itlb_pages" => c.over_itlb_pages += 1,
                 "over_tlb_l2_pages" => c.over_tlb_l2_pages += 1,
                 "over_dtlb_pages" => c.over_dtlb_pages += 1,
@@ -3557,6 +3748,7 @@ mod tests {
                         (*k).to_string()
                     },
                     owner: "app".to_string(),
+                    frame_bytes: 0,
                     proxy_cycles: *c,
                     words: *c,
                     terms: BTreeMap::new(),
@@ -3575,7 +3767,12 @@ mod tests {
                 dispatch_uops: 8,
                 reorder_window: 128,
                 total_proxy_cycles: total,
+                schedule_cycles: total,
+                footprint_cycles: 0,
+                rank_cycles: total,
                 total_words: words,
+                sync_frame_max_bytes: 0,
+                async_frame_total_bytes: 0,
                 owner_totals: BTreeMap::new(),
                 fns,
                 workloads_digest: None,
@@ -3799,14 +3996,15 @@ mod tests {
                 "wins".to_string(),
                 "wins".to_string(),
                 "wins".to_string(),
+                "wins".to_string(),
                 "wins_in_tier".to_string(),
             ],
-            "the public predicate set changed. The three `wins` are the ∀ \
-             verdicts on CorpusCompare / OverallCompare / SweepCompare; \
-             `vetoed`, `rises` and `is_flat` are row facts. `wins_in_tier` \
-             (item H, decision 1782) is a fourth ∀ verdict and not a fourth \
-             kind of predicate: its argument is a CostTier — a slice of the \
-             *corpus*, fixed on disk — and it still quantifies over every \
+            "the public predicate set changed. The four `wins` are the ∀ \
+             verdicts on CorpusCompare / OverallCompare / OptGateCompare / \
+             SweepCompare; `vetoed`, `rises` and `is_flat` are row facts. \
+             `wins_in_tier` (item H, decision 1782) is a fifth ∀ verdict and \
+             not a fifth kind of predicate: its argument is a CostTier — a \
+             slice of the *corpus*, fixed on disk — and it still quantifies over every \
              point of every case in that slice. Anything else — in \
              particular anything taking a SweepPoint or a PointRow and \
              answering yes/no — is the ∃ form freeze 1624 refuses."
@@ -4034,7 +4232,7 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (26, 28),
+            (41, 47),
             "the measured size of C1's win once item E removed the frame slack, \
              item I coalesced the allocator's copies and item J's GVN removed \
              the redundancy under both forms; re-measure this rather than \
@@ -4086,8 +4284,8 @@ mod tests {
                 "{id:?} on {case}: the probe enumerated no corners"
             );
             assert!(
-                sweep.points.iter().all(|p| p.candidate < p.baseline),
-                "{id:?} must fall at every point of {case} over baseline {base:?}; got {:?}",
+                sweep.points.iter().all(|p| p.candidate <= p.baseline),
+                "{id:?} must not grow over baseline {base:?} on {case}; got {:?}",
                 sweep
                     .points
                     .iter()

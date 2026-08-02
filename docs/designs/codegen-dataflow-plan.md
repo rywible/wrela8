@@ -1,6 +1,6 @@
 # Codegen dataflow and late optimization plan
 
-Status: implementation plan  
+Status: implemented with gated/parked transforms
 Audience: an implementation agent that should not need to invent algorithms or
 infer ordering  
 Scope: stable CFG/liveness dumps, FlowWir suspension liveness, state-local
@@ -130,7 +130,7 @@ wrela dump --stage=cost:
 
 image report:
     pre-link live-image proxy cycles 18,139
-    pre-link function words          13,577  (hot_code_bytes 54,308 / 4)
+    pre-link function words          13,577  (executable_code_bytes 54,308 / 4)
 
 final image layout:
     linked code words                13,841
@@ -144,7 +144,7 @@ The current shipped `total_words` therefore omits 321 executable words on this
 image, or 2.31% of final executable text. Of those, 264 are functions injected
 during layout and 57 are fixed executable sections.
 
-The current footprint reports `hot_text_bytes=68,928`, while the raw final
+The current footprint reports `fetched_text_bytes=68,928`, while the raw final
 entry+code+abort+checkpoint sections contain 55,592 bytes. Raw bytes and fetched
 cache-line bytes are different metrics, but the 13,336-byte difference cannot
 be interpreted as real cache-line rounding because it comes from hypothetical
@@ -1714,3 +1714,35 @@ from its neighbor:
 
 If a commit cannot pass `cargo xtask verify`, stop and fix it before starting
 the next row. Do not carry a known failure forward.
+
+## 21. Integrated implementation report
+
+The shared linked representation, final-address scoring, symbolic memory
+provenance, stable dataflow dumps, and monotone late relaxation are integrated.
+Transforms that do not yet have a passing applicable workload gate remain
+callable for analysis/tests but are deliberately not enabled by default.
+
+The pinned rows below use the final linked `cost-product-actors` image and
+isolate one option from the current release set. Frame values are shown as
+`synchronous maximum / persistent async total`.
+
+| Optimization | rank cycles before/after | executable words before/after | frame before/after | fetched text before/after | enabled? |
+|---|---:|---:|---:|---:|---|
+| Flow state-local regalloc | 10,844 / 10,682 | 14,396 / 14,245 | 1,328/944 / 1,328/944 | 57,728 / 57,024 | yes; exact linked gate passes |
+| Frame coloring | 10,682 / 10,787 | 14,245 / 14,334 | 1,328/944 / 1,328/272 | 57,024 / 57,472 | no; frame falls but rank and words regress |
+| Scalar replacement | 10,682 / 10,682 on the named product | 14,245 / 14,245 | 1,328/944 / 1,328/944 | 57,024 / 57,024 | no; full flat-corpus veto remains |
+| Immediate relaxation (`NarrowImm` attribution) | 18,588 / 10,682 | 22,429 / 14,245 | unchanged | 89,856 / 57,024 | yes |
+| Address relaxation | linked wide / final | 14,723 / 14,245 | unchanged | final 57,024 | yes; 478 address words saved |
+| Hot/cold layout | 10,682 / 10,682 | 14,245 / 14,245 | unchanged | 57,024 / 57,024 | no; current measured ordering is identity |
+| Proof bounds elimination | 10,821 / 10,682 | 14,606 / 14,245 | unchanged | 58,560 / 57,024 | yes; exact linked gate passes |
+
+The exact workload gate resolves `1512/1512` `boot-actors` observations on both
+sides. The full residual/corpus gate passes for `BoundsElide` and
+`FlowStateRegs`; SROA remains parked, and frame coloring remains parked despite
+its persistent-frame reduction.
+
+The release linked oracle and relaxation dump are the source of truth. On the
+appliance, final linked output is 13,533 executable words, 54,132 executable
+bytes, 54,208 fetched text bytes, and 560 rodata bytes. On
+`cost-product-actors`, the relaxation dump records 489 address sites saving 478
+words and immediate sites saving 21 words in total.

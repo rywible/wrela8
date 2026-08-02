@@ -1,17 +1,19 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=3dfb5d82d34a87e8
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
-  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
+  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=325
-  Workload name=flat proxy_cycles=325
-  Owner name=app proxy_cycles=325
+  Rank rank_cycles=347 schedule_cycles=347 footprint_cycles=0 total_proxy_cycles=347
+  Scope scope=closure executable_words=273 executable_code_bytes=1092 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=48 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=347
+  Owner name=app proxy_cycles=347
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=alu_chain owner=app proxy_cycles=7
+  Fn key=alu_chain owner=app frame_bytes=0 proxy_cycles=9
     Term rule=alu count=16
     Term rule=branch count=1
     Term rule=mov_wide count=5
-  Fn key=checked_mul owner=app proxy_cycles=87
+  Fn key=checked_mul owner=app frame_bytes=0 proxy_cycles=100
+    Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=29
@@ -20,7 +22,8 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mul count=6
     Term rule=mul_high count=6
     Term rule=store count=12
-  Fn key=div_chain owner=app proxy_cycles=134
+  Fn key=div_chain owner=app frame_bytes=0 proxy_cycles=135
+    Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=29
@@ -28,7 +31,8 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=11
     Term rule=store count=12
     Term rule=udiv count=6
-  Fn key=sdiv_chain owner=app proxy_cycles=92
+  Fn key=sdiv_chain owner=app frame_bytes=0 proxy_cycles=93
+    Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=26
@@ -36,7 +40,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=14
     Term rule=sdiv count=3
     Term rule=store count=12
-  Fn key=wrap_mul owner=app proxy_cycles=5
+  Fn key=wrap_mul owner=app frame_bytes=48 proxy_cycles=10
     Term rule=alu count=12
     Term rule=branch count=1
     Term rule=mul count=1

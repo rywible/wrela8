@@ -1,0 +1,18 @@
+CFG
+  function diamond
+    b0 range=[0, 3) succ=[b1,b2] pred=[] use=[t0] def=[t1,t2] live_in=[t0] live_out=[]
+      i0000 before=[t0] after=[t0,t1]
+      i0001 before=[t0,t1] after=[t0]
+      i0002 before=[t0] after=[]
+    b1 range=[3, 6) succ=[b3] pred=[b0] use=[] def=[t2,t3] live_in=[] live_out=[t2]
+      i0003 before=[] after=[t3]
+      i0004 before=[t3] after=[t2]
+      i0005 before=[t2] after=[t2]
+    b2 range=[6, 8) succ=[b3] pred=[b0] use=[] def=[t2,t4] live_in=[] live_out=[t2]
+      i0006 before=[] after=[t4]
+      i0007 before=[t4] after=[t2]
+    b3 range=[8, 9) succ=[] pred=[b1,b2] use=[t2] def=[] live_in=[t2] live_out=[]
+      i0008 before=[t2] after=[]
+    b4 range=[9, 10) succ=[] pred=[] use=[] def=[] live_in=[] live_out=[]
+      i0009 before=[] after=[]
+FlowCFG

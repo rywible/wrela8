@@ -77,7 +77,7 @@ total = 197
 "cost/bridge.rs" = 1
 
 [emitted_a64]
-encode_enc_site_total = 357
+encode_enc_site_total = 377
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -85,13 +85,15 @@ not_yet_migrated_sum_of_rows = 0
 unclassified_sum_of_rows = 23
 grand_total_sum_of_rows = 90
 backend_emitters = ["codegen.rs::emit_park_and_return", "codegen.rs::emit_one", "codegen.rs::emit_mem_addr", "codegen.rs::emit_mem_load", "codegen.rs::emit_mem_store", "codegen.rs::emit_format_scalar", "codegen.rs::emit_string_concat", "codegen.rs::emit_index_addr", "codegen.rs::emit_bytes_index_addr", "codegen.rs::emit_placed_index_addr", "codegen.rs::emit_arith_checked", "codegen.rs::emit_arith_wrapping", "codegen.rs::emit_div_rem", "codegen.rs::emit_shift", "codegen.rs::emit_convert", "codegen.rs::emit_prologue", "codegen.rs::emit_epilogue", "codegen.rs::emit_frame_teardown", "codegen.rs::emit_tail_call", "codegen.rs::emit_interrupt_cell_addr", "codegen.rs::emit_interrupt_cell_rmw", "codegen.rs::emit_async_entry", "codegen.rs::emit_async_epilogue", "codegen.rs::emit_group_create", "codegen.rs::emit_group_start", "codegen.rs::emit_group_close", "codegen.rs::emit_flow_op", "codegen.rs::emit_group_cancelled_flags", "codegen.rs::emit_async_cancelled_tail", "codegen.rs::emit_compose_group_join_result", "codegen.rs::emit_group_addr_from_temp", "codegen.rs::emit_await_suspend", "codegen.rs::emit_await_resume", "codegen.rs::emit_checkpoint_cancellation_test", "codegen.rs::emit_copy_staged_reply", "codegen.rs::emit_recompose_staged_result", "codegen.rs::emit_compose_staged_reply", "codegen.rs::emit_compose_from_reply_tag", "codegen.rs::emit_transition", "codegen.rs::emit_flat_entry", "codegen.rs::emit_flowwir_fn", "codegen.rs::emit_fn", "codegen.rs::emit_marshal_and_call", "codegen.rs::emit_send", "codegen.rs::emit_self_path", "codegen.rs::emit_now", "codegen.rs::push_turn_addr_from_id", "codegen.rs::emit_slotmap_mint_id"]
-non_inventory = ["codegen.rs::load_imm", "layout.rs::patch_bl", "layout.rs::patch_load_imm_words", "layout.rs::patch_adrp_add", "layout.rs::patch_adr", "codegen.rs::push_rodata_addr", "layout.rs::layout_program", "layout/harness.rs::emitted_a64_census_live_counts", "codegen.rs::emitted_a64_census_specialization_live_counts", "layout/harness.rs::build_checkpoint_and_vector_stub", "layout/harness.rs::build_checkpoint_and_vector_stub_ex", "layout/harness.rs::install_abort_tail_floor", "codegen.rs::emit_boot_init_call", "layout/harness.rs::inject_boot_init_fn", "layout/harness.rs::inject_rt_cross_core_fns", "layout/harness.rs::shift_reloc_words", "codegen.rs::emit_checkpoint_service_trampoline", "codegen.rs::emit_checkpoint_irq_call", "codegen.rs::emit_checkpoint_wake_call", "codegen.rs::emit_driver_state_call", "layout/harness.rs::inject_checkpoint_irq_fns", "codegen.rs::emit_method_call_stub", "layout/harness.rs::inject_rt_enqueue_and_dispatch_fns", "codegen.rs::emit_test_call_stub", "codegen.rs::emit_test_prefix_stub", "layout/harness.rs::inject_test_runner_fns"]
+non_inventory = ["codegen.rs::load_imm", "layout.rs::expand_rodata_adr_sites", "layout.rs::patch_bl", "layout.rs::patch_load_imm_words", "layout.rs::patch_adrp_add", "layout.rs::patch_adr", "codegen.rs::push_rodata_addr", "layout.rs::layout_program", "layout/harness.rs::emitted_a64_census_live_counts", "codegen.rs::emitted_a64_census_specialization_live_counts", "layout/harness.rs::build_checkpoint_and_vector_stub", "layout/harness.rs::build_checkpoint_and_vector_stub_ex", "layout/harness.rs::install_abort_tail_floor", "codegen.rs::emit_boot_init_call", "layout/harness.rs::inject_boot_init_fn", "layout/harness.rs::inject_rt_cross_core_fns", "layout/harness.rs::shift_reloc_words", "codegen.rs::emit_checkpoint_service_trampoline", "codegen.rs::emit_checkpoint_irq_call", "codegen.rs::emit_checkpoint_wake_call", "codegen.rs::emit_driver_state_call", "layout/harness.rs::inject_checkpoint_irq_fns", "codegen.rs::emit_method_call_stub", "layout/harness.rs::inject_rt_enqueue_and_dispatch_fns", "codegen.rs::emit_test_call_stub", "codegen.rs::emit_test_prefix_stub", "layout/harness.rs::inject_test_runner_fns"]
 wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
 "codegen.rs" = 318
-"layout.rs" = 9
+"layout.rs" = 11
 "layout/harness.rs" = 30
+"linked.rs" = 2
+"relax.rs" = 16
 
 [[emitted_a64.entries]]
 name = "push_halt"

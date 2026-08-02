@@ -4199,21 +4199,14 @@ fn lower_array_map_take(
 }
 
 fn literal_array_index_elide(
-    idx_expr: &TypedExpr,
-    len: usize,
+    _idx_expr: &TypedExpr,
+    _len: usize,
 ) -> Result<Option<usize>, LowerError> {
-    if !bounds_elide() {
-        return Ok(None);
-    }
-    let TypedExprKind::Int(text) = &idx_expr.kind else {
-        return Ok(None);
-    };
-    let raw = value::parse_int_literal(text)
-        .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
-    let Ok(i) = usize::try_from(raw) else {
-        return Ok(None);
-    };
-    if i < len { Ok(Some(i)) } else { Ok(None) }
+    // Bounds elimination is proof-carrying in optimized MWIR.  Lowering must
+    // not bypass that representation by turning a literal index directly into
+    // a field operation; the range pass handles literals through the same
+    // `Index*Proven` variants as every other proof.
+    Ok(None)
 }
 
 fn eval_array_len(ty: &Type) -> Result<usize, LowerError> {
@@ -4556,7 +4549,7 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
     }
 
     #[test]
-    fn parked_bounds_elide_still_elides_when_named() {
+    fn parked_bounds_elide_uses_the_shared_proof_marker_when_named() {
         let get = typed_program(
             "module examples.lower_bounds_elide_parked
 
@@ -4576,32 +4569,24 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
 
         let mwir = lower_program(&get).expect("must lower cleanly");
         let f = mwir.fns.get("at_zero").expect("fn lowered");
+        assert!(f.body.iter().any(|i| matches!(i, Inst::IndexGet { .. })));
+        let proven = crate::range::apply_program_proofs(&mwir).expect("literal proof");
         assert!(
-            f.body
+            proven.fns["at_zero"]
+                .body
                 .iter()
-                .any(|i| matches!(i, Inst::Project { index: 0, .. })),
-            "parked opt on: expected Project index=0, got {:?}",
-            f.body
-        );
-        assert!(
-            f.body.iter().all(|i| !matches!(i, Inst::IndexGet { .. })),
-            "parked opt on: must not emit IndexGet, got {:?}",
-            f.body
+                .any(|i| matches!(i, Inst::IndexGetProven { len: 4, .. }))
         );
 
         let mwir = lower_program(&set).expect("must lower cleanly");
         let f = mwir.fns.get("write_zero").expect("fn lowered");
+        assert!(f.body.iter().any(|i| matches!(i, Inst::IndexSet { .. })));
+        let proven = crate::range::apply_program_proofs(&mwir).expect("literal proof");
         assert!(
-            f.body
+            proven.fns["write_zero"]
+                .body
                 .iter()
-                .any(|i| matches!(i, Inst::SetField { index: 0, .. })),
-            "parked opt on: expected SetField index=0, got {:?}",
-            f.body
-        );
-        assert!(
-            f.body.iter().all(|i| !matches!(i, Inst::IndexSet { .. })),
-            "parked opt on: must not emit IndexSet, got {:?}",
-            f.body
+                .any(|i| matches!(i, Inst::IndexSetProven { len: 4, .. }))
         );
 
         let oob = typed_program(

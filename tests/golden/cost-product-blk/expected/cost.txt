@@ -1,47 +1,65 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=3dfb5d82d34a87e8
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
-  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
+  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=4002
-  Workload name=flat proxy_cycles=4002
-  Owner name=app proxy_cycles=3099
-  Owner name=runtime proxy_cycles=763
-  Owner name=driver proxy_cycles=140
-  Core n=0 proxy_cycles=1872 max_turn_proxy=1282 turns_per_sec=1872074.8829953198 ms_per_turn_model=0.0005341667
-  Budget n=0 hot_text_bytes=12032 hot_code_bytes=11312 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=7 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=2130
-  Placeable id=driver#0 type=BlkDriver core=0 turn_proxy=1282 method=BlkDriver.drain
-  Placeable id=driver#1 type=AuxDriver core=0 turn_proxy=41 method=AuxDriver.tag
-  Placeable id=actor#0 type=Ledger core=0 turn_proxy=72 method=Ledger.mark
-  Fn key=AuxDriver.init owner=app proxy_cycles=41
+  Rank rank_cycles=11079 schedule_cycles=11079 footprint_cycles=0 total_proxy_cycles=11079
+  Workload name=flat proxy_cycles=11079
+  Owner name=app proxy_cycles=1514
+  Owner name=runtime proxy_cycles=9515
+  Owner name=driver proxy_cycles=50
+  Core n=0 proxy_cycles=910 max_entry_method_proxy_cycles=625
+  Budget n=0 fetched_text_bytes=59840 executable_code_bytes=59700 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=15 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=9785
+  Placeable id=driver#0 type=BlkDriver core=0 turn_proxy=625 method=BlkDriver.drain
+  Placeable id=driver#1 type=AuxDriver core=0 turn_proxy=10 method=AuxDriver.tag
+  Placeable id=actor#0 type=Ledger core=0 turn_proxy=34 method=Ledger.mark
+  Fn key=AuxDriver.init owner=app frame_bytes=16 proxy_cycles=10
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=forwarded count=2
+    Term rule=Mem level=unresolved count=1
     Term rule=alu count=5
     Term rule=branch count=1
     Term rule=load count=3
     Term rule=store count=2
-  Fn key=AuxDriver.tag owner=app proxy_cycles=41
+  Fn key=AuxDriver.tag owner=app frame_bytes=16 proxy_cycles=10
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=alu count=3
     Term rule=branch count=1
     Term rule=load count=2
     Term rule=store count=1
-  Fn key=BlkDriver.drain owner=app proxy_cycles=1282
+  Fn key=BlkDriver.drain owner=app frame_bytes=736 proxy_cycles=625
+    Term rule=Mem level=buffered count=172
+    Term rule=Mem level=forwarded count=18
+    Term rule=Mem level=l1_hit count=52
+    Term rule=Mem level=unresolved count=50
     Term rule=abort count=24
     Term rule=adrp count=24
-    Term rule=alu count=315
+    Term rule=alu count=313
     Term rule=branch count=79
     Term rule=load count=119
     Term rule=load_acquire count=1
-    Term rule=mov_wide count=204
+    Term rule=mov_wide count=202
     Term rule=mul count=3
     Term rule=store count=171
     Term rule=store_release count=1
-  Fn key=BlkDriver.init owner=app proxy_cycles=255
-    Term rule=alu count=79
+  Fn key=BlkDriver.init owner=app frame_bytes=448 proxy_cycles=159
+    Term rule=Mem level=buffered count=88
+    Term rule=Mem level=forwarded count=11
+    Term rule=Mem level=l1_hit count=27
+    Term rule=Mem level=unresolved count=18
+    Term rule=alu count=77
     Term rule=branch count=7
     Term rule=load count=56
-    Term rule=mov_wide count=63
+    Term rule=mov_wide count=61
     Term rule=store count=87
     Term rule=store_release count=1
-  Fn key=BlkDriver.on_queue_irq owner=driver proxy_cycles=140
+  Fn key=BlkDriver.on_queue_irq owner=driver frame_bytes=128 proxy_cycles=50
+    Term rule=Mem level=buffered count=15
+    Term rule=Mem level=forwarded count=2
+    Term rule=Mem level=l1_hit count=2
+    Term rule=Mem level=unresolved count=13
     Term rule=alu count=9
     Term rule=branch count=3
     Term rule=load count=16
@@ -49,7 +67,11 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=7
     Term rule=store count=14
     Term rule=store_release count=1
-  Fn key=Ledger.mark owner=app proxy_cycles=72
+  Fn key=Ledger.mark owner=app frame_bytes=16 proxy_cycles=34
+    Term rule=Mem level=buffered count=6
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=abort count=2
     Term rule=adrp count=2
     Term rule=alu count=12
@@ -59,128 +81,1856 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mul count=1
     Term rule=mul_high count=1
     Term rule=store count=6
-  Fn key=Ledger.read_marks owner=app proxy_cycles=41
+  Fn key=Ledger.read_marks owner=app frame_bytes=16 proxy_cycles=10
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=alu count=3
     Term rule=branch count=1
     Term rule=load count=2
     Term rule=store count=1
-  Fn key=__wrela_abort owner=runtime proxy_cycles=69
+  Fn key=__boot_call_0 owner=app frame_bytes=16 proxy_cycles=22
+    Term rule=Mem level=buffered count=3
+    Term rule=Mem level=l1_hit count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=7
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=2
+    Term rule=mov_wide count=20
+    Term rule=store count=3
+  Fn key=__boot_call_1 owner=app frame_bytes=16 proxy_cycles=8
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=2
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=8
+    Term rule=store count=1
+  Fn key=__boot_call_10 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_11 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_12 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_13 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_14 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_15 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_16 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_17 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_18 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_19 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_2 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_20 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_21 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_22 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_23 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_24 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_25 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_26 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_27 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_28 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_29 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_3 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_30 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_31 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_4 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_5 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_6 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_7 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_8 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__boot_call_9 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__enqueue_0 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_1 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_10 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_11 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_12 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_13 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_14 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_15 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_16 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_17 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_18 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_19 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_2 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_20 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_21 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_22 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_23 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_24 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_25 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_26 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_27 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_28 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_29 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_3 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_30 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_31 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_4 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_5 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_6 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_7 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_8 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__enqueue_9 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__image_abort_fixed owner=app frame_bytes=0 proxy_cycles=8
+    Term rule=Mem level=buffered count=2
+    Term rule=mov_wide count=12
+    Term rule=store count=2
+    Term rule=system count=1
+  Fn key=__image_abort_value owner=app frame_bytes=0 proxy_cycles=8
+    Term rule=Mem level=buffered count=2
+    Term rule=mov_wide count=12
+    Term rule=store count=2
+    Term rule=system count=1
+  Fn key=__image_checkpoint_vector owner=app frame_bytes=0 proxy_cycles=6
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=2
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__image_entry owner=app frame_bytes=0 proxy_cycles=10
+    Term rule=Mem level=buffered count=2
+    Term rule=alu count=1
+    Term rule=mov_wide count=16
+    Term rule=store count=2
+    Term rule=system count=1
+  Fn key=__irq_call_0 owner=app frame_bytes=16 proxy_cycles=10
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=2
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=4
+    Term rule=store count=1
+  Fn key=__irq_call_1 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_2 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_3 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_4 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_5 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_6 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__irq_call_7 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__method_0 owner=runtime frame_bytes=16 proxy_cycles=11
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=5
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=4
+    Term rule=store count=1
+  Fn key=__method_1 owner=runtime frame_bytes=16 proxy_cycles=11
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=5
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=4
+    Term rule=store count=1
+  Fn key=__method_10 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_100 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_101 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_102 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_103 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_104 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_105 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_106 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_107 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_108 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_109 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_11 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_110 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_111 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_112 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_113 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_114 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_115 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_116 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_117 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_118 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_119 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_12 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_120 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_121 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_122 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_123 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_124 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_125 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_126 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_127 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_13 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_14 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_15 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_16 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_17 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_18 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_19 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_2 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_20 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_21 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_22 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_23 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_24 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_25 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_26 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_27 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_28 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_29 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_3 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_30 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_31 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_32 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_33 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_34 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_35 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_36 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_37 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_38 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_39 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_4 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_40 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_41 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_42 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_43 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_44 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_45 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_46 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_47 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_48 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_49 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_5 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_50 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_51 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_52 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_53 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_54 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_55 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_56 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_57 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_58 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_59 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_6 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_60 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_61 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_62 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_63 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_64 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_65 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_66 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_67 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_68 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_69 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_7 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_70 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_71 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_72 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_73 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_74 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_75 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_76 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_77 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_78 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_79 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_8 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_80 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_81 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_82 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_83 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_84 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_85 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_86 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_87 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_88 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_89 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_9 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_90 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_91 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_92 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_93 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_94 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_95 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_96 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_97 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_98 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__method_99 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_0 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_1 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_10 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_11 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_12 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_13 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_14 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_15 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_2 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_3 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_4 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_5 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_6 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_7 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_8 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__resume_9 owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+    Term rule=mov_wide count=1
+  Fn key=__wake_call_0 owner=app frame_bytes=16 proxy_cycles=10
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=2
+    Term rule=branch count=1
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=4
+    Term rule=store count=1
+  Fn key=__wake_call_1 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_2 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_3 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_4 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_5 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_6 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wake_call_7 owner=app frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wrela_abort owner=runtime frame_bytes=32 proxy_cycles=27
+    Term rule=Mem level=buffered count=8
+    Term rule=Mem level=l1_hit count=2
+    Term rule=Mem level=unresolved count=3
     Term rule=alu count=5
     Term rule=branch count=4
     Term rule=call count=6
     Term rule=load count=5
     Term rule=mov_wide count=4
     Term rule=store count=8
-  Fn key=__wrela_abort_tail owner=runtime proxy_cycles=2
+  Fn key=__wrela_abort_tail owner=runtime frame_bytes=0 proxy_cycles=2
     Term rule=branch count=2
-  Fn key=__wrela_abort_val owner=runtime proxy_cycles=81
+  Fn key=__wrela_abort_val owner=runtime frame_bytes=64 proxy_cycles=44
+    Term rule=Mem level=buffered count=14
+    Term rule=Mem level=l1_hit count=5
+    Term rule=Mem level=unresolved count=5
     Term rule=alu count=8
     Term rule=branch count=4
     Term rule=call count=9
     Term rule=load count=10
     Term rule=mov_wide count=4
     Term rule=store count=14
-  Fn key=__wrela_console_append_bytes owner=runtime proxy_cycles=70
+  Fn key=__wrela_block_hit owner=runtime frame_bytes=0 proxy_cycles=37
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=unresolved count=2
+    Term rule=alu count=11
+    Term rule=branch count=8
+    Term rule=load count=2
+    Term rule=mov_wide count=13
+    Term rule=mul count=2
+    Term rule=store count=1
+  Fn key=__wrela_boot_call owner=runtime frame_bytes=16 proxy_cycles=26
+    Term rule=Mem level=buffered count=3
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=10
+    Term rule=branch count=10
+    Term rule=load count=2
+    Term rule=mov_wide count=4
+    Term rule=store count=3
+  Fn key=__wrela_call_method owner=runtime frame_bytes=48 proxy_cycles=59
+    Term rule=Mem level=buffered count=9
+    Term rule=Mem level=l1_hit count=9
+    Term rule=abort count=2
+    Term rule=adrp count=2
+    Term rule=alu count=12
+    Term rule=branch count=15
+    Term rule=call count=2
+    Term rule=load count=9
+    Term rule=mov_wide count=9
+    Term rule=store count=9
+  Fn key=__wrela_child_poll owner=runtime frame_bytes=48 proxy_cycles=243
+    Term rule=Mem level=buffered count=50
+    Term rule=Mem level=forwarded count=2
+    Term rule=Mem level=l1_hit count=14
+    Term rule=Mem level=unresolved count=7
+    Term rule=abort_val count=10
+    Term rule=adrp count=20
+    Term rule=alu count=116
+    Term rule=branch count=36
+    Term rule=call count=4
+    Term rule=load count=23
+    Term rule=mov_wide count=94
+    Term rule=mul count=10
+    Term rule=store count=50
+  Fn key=__wrela_child_slot owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_child_store_result owner=runtime frame_bytes=0 proxy_cycles=68
+    Term rule=Mem level=buffered count=22
+    Term rule=abort count=1
+    Term rule=abort_val count=4
+    Term rule=adrp count=9
+    Term rule=alu count=46
+    Term rule=branch count=14
+    Term rule=mov_wide count=39
+    Term rule=mul count=4
+    Term rule=store count=22
+  Fn key=__wrela_child_turn_index owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_console_append_bytes owner=runtime frame_bytes=32 proxy_cycles=33
+    Term rule=Mem level=buffered count=4
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=Mem level=unresolved count=3
     Term rule=alu count=13
     Term rule=branch count=11
     Term rule=call count=1
     Term rule=load count=5
     Term rule=mov_wide count=7
     Term rule=store count=4
-  Fn key=__wrela_console_append_line_buf owner=runtime proxy_cycles=63
+  Fn key=__wrela_console_append_line_buf owner=runtime frame_bytes=16 proxy_cycles=27
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=l1_hit count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=alu count=11
     Term rule=branch count=8
     Term rule=call count=1
     Term rule=load count=2
     Term rule=mov_wide count=6
     Term rule=store count=2
-  Fn key=__wrela_fmt_dec owner=runtime proxy_cycles=326
+  Fn key=__wrela_deadline_poll owner=runtime frame_bytes=96 proxy_cycles=165
+    Term rule=Mem level=buffered count=35
+    Term rule=Mem level=forwarded count=9
+    Term rule=Mem level=l1_hit count=9
+    Term rule=Mem level=unresolved count=4
+    Term rule=abort count=2
+    Term rule=abort_val count=4
+    Term rule=adrp count=10
+    Term rule=alu count=69
+    Term rule=branch count=28
+    Term rule=load count=22
+    Term rule=mov_wide count=53
+    Term rule=mul count=4
+    Term rule=store count=35
+  Fn key=__wrela_deadline_scan owner=runtime frame_bytes=256 proxy_cycles=286
+    Term rule=Mem level=buffered count=79
+    Term rule=Mem level=forwarded count=24
+    Term rule=Mem level=l1_hit count=10
+    Term rule=Mem level=unresolved count=9
+    Term rule=abort count=3
+    Term rule=abort_val count=10
+    Term rule=adrp count=23
+    Term rule=alu count=130
+    Term rule=branch count=39
+    Term rule=load count=43
+    Term rule=mov_wide count=101
+    Term rule=mul count=10
+    Term rule=store count=79
+  Fn key=__wrela_deliver_reply owner=runtime frame_bytes=48 proxy_cycles=120
+    Term rule=Mem level=buffered count=34
+    Term rule=Mem level=forwarded count=2
+    Term rule=Mem level=l1_hit count=8
+    Term rule=Mem level=unresolved count=2
+    Term rule=abort count=1
+    Term rule=abort_val count=6
+    Term rule=adrp count=13
+    Term rule=alu count=76
+    Term rule=branch count=16
+    Term rule=call count=3
+    Term rule=load count=12
+    Term rule=mov_wide count=47
+    Term rule=mul count=5
+    Term rule=store count=34
+  Fn key=__wrela_drain_reply_count owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_drain_reply_edge owner=runtime frame_bytes=0 proxy_cycles=19
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_drain_request_count owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_drain_request_edge owner=runtime frame_bytes=0 proxy_cycles=19
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_enqueue_local owner=runtime frame_bytes=64 proxy_cycles=22
+    Term rule=Mem level=buffered count=7
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=7
+    Term rule=alu count=4
+    Term rule=branch count=2
+    Term rule=call count=2
+    Term rule=load count=8
+    Term rule=store count=7
+  Fn key=__wrela_enqueue_root owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_fmt_dec owner=runtime frame_bytes=48 proxy_cycles=225
+    Term rule=Mem level=buffered count=49
+    Term rule=Mem level=forwarded count=4
+    Term rule=Mem level=l1_hit count=8
+    Term rule=Mem level=unresolved count=2
     Term rule=abort count=4
-    Term rule=abort_val count=16
-    Term rule=adrp count=20
-    Term rule=alu count=102
-    Term rule=branch count=29
+    Term rule=abort_val count=7
+    Term rule=adrp count=18
+    Term rule=alu count=104
+    Term rule=branch count=28
     Term rule=call count=1
     Term rule=load count=14
-    Term rule=mov_wide count=83
+    Term rule=mov_wide count=79
     Term rule=mul count=8
-    Term rule=store count=53
+    Term rule=store count=49
     Term rule=udiv count=2
-  Fn key=__wrela_line_begin owner=runtime proxy_cycles=38
+  Fn key=__wrela_init_nwords owner=runtime frame_bytes=0 proxy_cycles=25
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=7
+    Term rule=branch count=10
+    Term rule=mov_wide count=7
+    Term rule=store count=2
+  Fn key=__wrela_init_store_word owner=runtime frame_bytes=0 proxy_cycles=46
+    Term rule=Mem level=buffered count=12
+    Term rule=abort count=1
+    Term rule=abort_val count=2
+    Term rule=adrp count=5
+    Term rule=alu count=25
+    Term rule=branch count=12
+    Term rule=mov_wide count=18
+    Term rule=mul count=2
+    Term rule=store count=12
+  Fn key=__wrela_invoke_xreply owner=runtime frame_bytes=32 proxy_cycles=132
+    Term rule=Mem level=buffered count=6
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=24
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=20
+    Term rule=branch count=28
+    Term rule=call count=8
+    Term rule=load count=25
+    Term rule=mov_wide count=10
+    Term rule=store count=6
+  Fn key=__wrela_irq_invoke owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_irq_mask owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_lane1_method_flat owner=runtime frame_bytes=144 proxy_cycles=66
+    Term rule=Mem level=buffered count=22
+    Term rule=Mem level=forwarded count=12
+    Term rule=Mem level=l1_hit count=10
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=14
+    Term rule=branch count=8
+    Term rule=call count=1
+    Term rule=load count=22
+    Term rule=mov_wide count=8
+    Term rule=store count=22
+  Fn key=__wrela_lane1_record_method owner=runtime frame_bytes=16 proxy_cycles=66
+    Term rule=Mem level=buffered count=12
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=2
+    Term rule=Mem level=unresolved count=2
+    Term rule=abort_val count=2
+    Term rule=adrp count=4
+    Term rule=alu count=30
+    Term rule=branch count=10
+    Term rule=call count=1
+    Term rule=load count=5
+    Term rule=mov_wide count=23
+    Term rule=mul count=3
+    Term rule=store count=12
+  Fn key=__wrela_line_begin owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=branch count=2
     Term rule=load count=1
     Term rule=mov_wide count=2
     Term rule=store count=1
-  Fn key=__wrela_line_commit owner=runtime proxy_cycles=112
+  Fn key=__wrela_line_commit owner=runtime frame_bytes=0 proxy_cycles=62
+    Term rule=Mem level=buffered count=15
+    Term rule=Mem level=unresolved count=3
     Term rule=abort count=1
-    Term rule=abort_val count=4
+    Term rule=abort_val count=2
     Term rule=adrp count=5
-    Term rule=alu count=28
+    Term rule=alu count=30
     Term rule=branch count=8
     Term rule=load count=3
     Term rule=mov_wide count=34
     Term rule=mul count=5
     Term rule=store count=15
-  Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=2
-    Term rule=branch count=2
-  Fn key=append_failed_literal owner=app proxy_cycles=93
-    Term rule=abort_val count=14
-    Term rule=adrp count=14
-    Term rule=alu count=53
-    Term rule=branch count=9
-    Term rule=call count=1
-    Term rule=load count=1
-    Term rule=mov_wide count=64
-    Term rule=mul count=7
-    Term rule=store count=36
-  Fn key=append_newline_literal owner=app proxy_cycles=27
-    Term rule=abort_val count=2
+  Fn key=__wrela_mb_capacity owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_mb_core owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_mb_get_count owner=runtime frame_bytes=0 proxy_cycles=365
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=unresolved count=32
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=67
+    Term rule=branch count=100
+    Term rule=load count=32
+    Term rule=mov_wide count=99
+    Term rule=store count=2
+  Fn key=__wrela_mb_get_head owner=runtime frame_bytes=0 proxy_cycles=359
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=unresolved count=32
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=67
+    Term rule=branch count=100
+    Term rule=load count=32
+    Term rule=mov_wide count=99
+    Term rule=store count=2
+  Fn key=__wrela_mb_get_tail owner=runtime frame_bytes=0 proxy_cycles=359
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=unresolved count=32
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=67
+    Term rule=branch count=100
+    Term rule=load count=32
+    Term rule=mov_wide count=99
+    Term rule=store count=2
+  Fn key=__wrela_mb_has_lineage owner=runtime frame_bytes=0 proxy_cycles=19
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_mb_load_word owner=runtime frame_bytes=0 proxy_cycles=717
+    Term rule=Mem level=buffered count=130
+    Term rule=Mem level=unresolved count=32
+    Term rule=abort count=1
+    Term rule=abort_val count=32
+    Term rule=adrp count=65
+    Term rule=alu count=324
+    Term rule=branch count=132
+    Term rule=load count=32
+    Term rule=mov_wide count=259
+    Term rule=mul count=32
+    Term rule=store count=130
+  Fn key=__wrela_mb_method_count owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_mb_set_count owner=runtime frame_bytes=0 proxy_cycles=269
+    Term rule=Mem level=buffered count=34
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=66
+    Term rule=branch count=100
+    Term rule=mov_wide count=98
+    Term rule=store count=34
+  Fn key=__wrela_mb_set_head owner=runtime frame_bytes=0 proxy_cycles=263
+    Term rule=Mem level=buffered count=34
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=66
+    Term rule=branch count=100
+    Term rule=mov_wide count=98
+    Term rule=store count=34
+  Fn key=__wrela_mb_set_tail owner=runtime frame_bytes=0 proxy_cycles=269
+    Term rule=Mem level=buffered count=34
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=66
+    Term rule=branch count=100
+    Term rule=mov_wide count=98
+    Term rule=store count=34
+  Fn key=__wrela_mb_slot_words owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_mb_state owner=runtime frame_bytes=0 proxy_cycles=20
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=6
+    Term rule=store count=2
+  Fn key=__wrela_mb_store_word owner=runtime frame_bytes=0 proxy_cycles=622
+    Term rule=Mem level=buffered count=162
+    Term rule=abort count=1
+    Term rule=abort_val count=32
+    Term rule=adrp count=65
+    Term rule=alu count=325
+    Term rule=branch count=132
+    Term rule=mov_wide count=258
+    Term rule=mul count=32
+    Term rule=store count=162
+  Fn key=__wrela_mb_turn_index owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_method_is_aggregate owner=runtime frame_bytes=0 proxy_cycles=36
+    Term rule=Mem level=buffered count=4
+    Term rule=abort count=2
     Term rule=adrp count=2
-    Term rule=alu count=11
-    Term rule=branch count=3
+    Term rule=alu count=10
+    Term rule=branch count=15
+    Term rule=mov_wide count=11
+    Term rule=store count=4
+  Fn key=__wrela_method_suspends owner=runtime frame_bytes=0 proxy_cycles=30
+    Term rule=Mem level=buffered count=4
+    Term rule=abort count=2
+    Term rule=adrp count=2
+    Term rule=alu count=10
+    Term rule=branch count=15
+    Term rule=mov_wide count=11
+    Term rule=store count=4
+  Fn key=__wrela_resume_child owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_ring_capacity owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_ring_dst_core owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_ring_slot_words owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_ring_src_core owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_ring_target_handle owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_rt_boot_init owner=runtime frame_bytes=288 proxy_cycles=133
+    Term rule=Mem level=buffered count=48
+    Term rule=Mem level=forwarded count=29
+    Term rule=Mem level=l1_hit count=15
+    Term rule=abort count=3
+    Term rule=adrp count=3
+    Term rule=alu count=26
+    Term rule=branch count=14
+    Term rule=call count=3
+    Term rule=load count=44
+    Term rule=mov_wide count=21
+    Term rule=store count=48
+  Fn key=__wrela_rt_checkpoint owner=runtime frame_bytes=800 proxy_cycles=423
+    Term rule=Mem level=buffered count=143
+    Term rule=Mem level=forwarded count=86
+    Term rule=Mem level=l1_hit count=26
+    Term rule=Mem level=unresolved count=5
+    Term rule=abort count=6
+    Term rule=abort_val count=4
+    Term rule=adrp count=14
+    Term rule=alu count=100
+    Term rule=branch count=56
+    Term rule=call count=5
+    Term rule=load count=117
+    Term rule=mov_wide count=104
+    Term rule=mul count=9
+    Term rule=store count=143
+  Fn key=__wrela_rt_drain owner=runtime frame_bytes=1328 proxy_cycles=728
+    Term rule=Mem level=buffered count=281
+    Term rule=Mem level=forwarded count=123
+    Term rule=Mem level=l1_hit count=89
+    Term rule=Mem level=unresolved count=12
+    Term rule=abort count=4
+    Term rule=abort_val count=22
+    Term rule=adrp count=48
+    Term rule=alu count=233
+    Term rule=barrier count=2
+    Term rule=branch count=53
+    Term rule=call count=9
+    Term rule=load count=224
+    Term rule=mov_wide count=205
+    Term rule=mul count=24
+    Term rule=store count=281
+  Fn key=__wrela_rt_enqueue owner=runtime frame_bytes=112 proxy_cycles=168
+    Term rule=Mem level=buffered count=21
+    Term rule=Mem level=forwarded count=4
+    Term rule=Mem level=l1_hit count=30
+    Term rule=Mem level=unresolved count=2
+    Term rule=abort count=1
+    Term rule=abort_val count=1
+    Term rule=adrp count=3
+    Term rule=alu count=46
+    Term rule=branch count=23
+    Term rule=call count=10
+    Term rule=load count=36
+    Term rule=mov_wide count=35
+    Term rule=mul count=3
+    Term rule=store count=21
+  Fn key=__wrela_rt_run_one owner=runtime frame_bytes=592 proxy_cycles=379
+    Term rule=Mem level=buffered count=124
+    Term rule=Mem level=forwarded count=57
+    Term rule=Mem level=l1_hit count=42
+    Term rule=Mem level=unresolved count=4
+    Term rule=abort count=3
+    Term rule=abort_val count=8
+    Term rule=adrp count=19
+    Term rule=alu count=117
+    Term rule=branch count=43
+    Term rule=call count=4
+    Term rule=load count=103
+    Term rule=mov_wide count=101
+    Term rule=mul count=8
+    Term rule=store count=124
+  Fn key=__wrela_rt_secondary_entry owner=runtime frame_bytes=128 proxy_cycles=88
+    Term rule=Mem level=buffered count=31
+    Term rule=Mem level=forwarded count=9
+    Term rule=Mem level=l1_hit count=9
+    Term rule=abort_val count=3
+    Term rule=adrp count=6
+    Term rule=alu count=31
+    Term rule=barrier count=1
+    Term rule=branch count=9
+    Term rule=call count=2
+    Term rule=load count=18
+    Term rule=mov_wide count=32
+    Term rule=mul count=3
+    Term rule=store count=31
+  Fn key=__wrela_rt_select owner=runtime frame_bytes=128 proxy_cycles=635
+    Term rule=Mem level=buffered count=126
+    Term rule=Mem level=forwarded count=5
+    Term rule=Mem level=l1_hit count=68
+    Term rule=Mem level=unresolved count=13
+    Term rule=abort count=2
+    Term rule=abort_val count=21
+    Term rule=adrp count=44
+    Term rule=alu count=269
+    Term rule=branch count=74
+    Term rule=call count=20
+    Term rule=load count=86
+    Term rule=mov_wide count=220
+    Term rule=mul count=24
+    Term rule=store count=126
+  Fn key=__wrela_rt_xreply owner=runtime frame_bytes=32 proxy_cycles=181
+    Term rule=Mem level=buffered count=42
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=11
+    Term rule=Mem level=unresolved count=4
+    Term rule=abort_val count=8
+    Term rule=adrp count=16
+    Term rule=alu count=89
+    Term rule=barrier count=1
+    Term rule=branch count=21
+    Term rule=call count=2
+    Term rule=load count=16
+    Term rule=mov_wide count=73
+    Term rule=mul count=10
+    Term rule=store count=42
+  Fn key=__wrela_rt_xsend owner=runtime frame_bytes=80 proxy_cycles=254
+    Term rule=Mem level=buffered count=64
+    Term rule=Mem level=forwarded count=2
+    Term rule=Mem level=l1_hit count=21
+    Term rule=Mem level=unresolved count=3
+    Term rule=abort count=1
+    Term rule=abort_val count=11
+    Term rule=adrp count=23
+    Term rule=alu count=131
+    Term rule=barrier count=1
+    Term rule=branch count=32
+    Term rule=call count=4
+    Term rule=load count=26
+    Term rule=mov_wide count=100
+    Term rule=mul count=12
+    Term rule=store count=64
+  Fn key=__wrela_runtime_probe owner=runtime frame_bytes=0 proxy_cycles=2
+    Term rule=branch count=2
+  Fn key=__wrela_select_count owner=runtime frame_bytes=0 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_select_root owner=runtime frame_bytes=0 proxy_cycles=24
+    Term rule=Mem level=buffered count=4
+    Term rule=abort count=2
+    Term rule=adrp count=2
+    Term rule=alu count=8
+    Term rule=branch count=12
+    Term rule=mov_wide count=9
+    Term rule=store count=4
+  Fn key=__wrela_try_drain owner=runtime frame_bytes=32 proxy_cycles=39
+    Term rule=Mem level=buffered count=3
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=4
+    Term rule=alu count=5
+    Term rule=branch count=5
+    Term rule=call count=3
+    Term rule=load count=5
+    Term rule=mov_wide count=2
+    Term rule=store count=3
+  Fn key=__wrela_try_enqueue owner=runtime frame_bytes=64 proxy_cycles=21
+    Term rule=Mem level=buffered count=7
+    Term rule=Mem level=l1_hit count=7
+    Term rule=alu count=6
+    Term rule=branch count=5
+    Term rule=call count=2
+    Term rule=load count=7
+    Term rule=mov_wide count=2
+    Term rule=store count=7
+  Fn key=__wrela_try_select owner=runtime frame_bytes=16 proxy_cycles=30
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=forwarded count=1
+    Term rule=Mem level=l1_hit count=2
+    Term rule=alu count=6
+    Term rule=branch count=5
+    Term rule=call count=2
+    Term rule=load count=3
+    Term rule=mov_wide count=2
+    Term rule=store count=2
+  Fn key=__wrela_vector0 owner=runtime frame_bytes=16 proxy_cycles=15
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=l1_hit count=1
+    Term rule=Mem level=unresolved count=1
+    Term rule=alu count=5
+    Term rule=branch count=4
+    Term rule=call count=1
+    Term rule=load count=2
+    Term rule=mov_wide count=5
+    Term rule=store count=2
+  Fn key=__wrela_wake_invoke owner=runtime frame_bytes=0 proxy_cycles=25
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=4
+    Term rule=branch count=7
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_xreply_0 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
     Term rule=call count=1
     Term rule=load count=1
-    Term rule=mov_wide count=10
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_1 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_2 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_3 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_4 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_5 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_6 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_7 owner=runtime frame_bytes=16 proxy_cycles=9
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xreply_edge owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=__wrela_xsend_0 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_1 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_2 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_3 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_4 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_5 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_6 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_7 owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Fn key=__wrela_xsend_edge owner=runtime frame_bytes=0 proxy_cycles=7
+    Term rule=Mem level=buffered count=2
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=2
+    Term rule=branch count=4
+    Term rule=mov_wide count=3
+    Term rule=store count=2
+  Fn key=append_failed_literal owner=app frame_bytes=16 proxy_cycles=43
+    Term rule=Mem level=buffered count=8
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=18
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=36
+    Term rule=mul count=7
+    Term rule=store count=8
+  Fn key=append_newline_literal owner=app frame_bytes=16 proxy_cycles=13
+    Term rule=Mem level=buffered count=2
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=6
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=6
     Term rule=mul count=1
-    Term rule=store count=6
-  Fn key=ascii_digit owner=app proxy_cycles=68
+    Term rule=store count=2
+  Fn key=ascii_digit owner=app frame_bytes=0 proxy_cycles=68
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
-  Fn key=blk_write_read_roundtrip owner=app proxy_cycles=921
+  Fn key=blk_write_read_roundtrip owner=app frame_bytes=560 proxy_cycles=261
+    Term rule=Mem level=buffered count=77
+    Term rule=Mem level=forwarded count=6
+    Term rule=Mem level=l1_hit count=23
+    Term rule=Mem level=unresolved count=13
     Term rule=abort count=7
     Term rule=adrp count=7
-    Term rule=alu count=43
+    Term rule=alu count=61
     Term rule=branch count=51
     Term rule=call count=9
-    Term rule=load count=81
+    Term rule=load count=42
     Term rule=mov_wide count=82
-    Term rule=store count=118
+    Term rule=store count=77
     Term rule=system count=1
-  Fn key=copy_bytes_range owner=app proxy_cycles=135
+  Fn key=copy_bytes_range owner=app frame_bytes=32 proxy_cycles=54
+    Term rule=Mem level=buffered count=14
+    Term rule=Mem level=l1_hit count=3
+    Term rule=Mem level=unresolved count=3
     Term rule=abort count=1
-    Term rule=abort_val count=4
+    Term rule=abort_val count=2
     Term rule=adrp count=5
-    Term rule=alu count=28
+    Term rule=alu count=30
     Term rule=branch count=8
     Term rule=load count=6
     Term rule=mov_wide count=16
     Term rule=mul count=1
     Term rule=store count=14
-  Fn key=copy_line_buf_range owner=app proxy_cycles=74
+  Fn key=copy_line_buf_range owner=app frame_bytes=0 proxy_cycles=44
+    Term rule=Mem level=buffered count=11
+    Term rule=Mem level=unresolved count=1
     Term rule=abort count=1
-    Term rule=abort_val count=4
+    Term rule=abort_val count=2
     Term rule=adrp count=5
-    Term rule=alu count=27
+    Term rule=alu count=29
     Term rule=branch count=8
     Term rule=load count=1
     Term rule=mov_wide count=20
     Term rule=mul count=2
     Term rule=store count=11
-  Fn key=finish_abort owner=app proxy_cycles=49
+  Fn key=finish_abort owner=app frame_bytes=16 proxy_cycles=13
+    Term rule=Mem level=buffered count=3
+    Term rule=Mem level=l1_hit count=1
+    Term rule=Mem level=unresolved count=1
     Term rule=alu count=3
     Term rule=branch count=2
     Term rule=call count=1
     Term rule=load count=2
     Term rule=mov_wide count=5
     Term rule=store count=3
+  Fn key=rt_boot_init 0 owner=runtime frame_bytes=288 proxy_cycles=133
+    Term rule=Mem level=buffered count=48
+    Term rule=Mem level=forwarded count=29
+    Term rule=Mem level=l1_hit count=15
+    Term rule=abort count=3
+    Term rule=adrp count=3
+    Term rule=alu count=26
+    Term rule=branch count=14
+    Term rule=call count=3
+    Term rule=load count=44
+    Term rule=mov_wide count=21
+    Term rule=store count=48
+  Fn key=rt_enqueue Ledger owner=runtime frame_bytes=16 proxy_cycles=12
+    Term rule=Mem level=buffered count=1
+    Term rule=Mem level=l1_hit count=1
+    Term rule=alu count=13
+    Term rule=branch count=2
+    Term rule=call count=1
+    Term rule=load count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=1
+  Scope scope=linked-image executable_words=14925 executable_code_bytes=59700 fetched_text_bytes=59840 image_bytes=266200 rodata_bytes=1563 sync_frame_max_bytes=1328 async_frame_total_bytes=560

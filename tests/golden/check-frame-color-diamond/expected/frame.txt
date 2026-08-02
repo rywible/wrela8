@@ -1,0 +1,15 @@
+Frame
+  function Choice.choose frame_size=48
+    temp t0 class=pinned home=slot0 states=[]
+    temp t1 class=pinned home=slot1 states=[]
+    temp t2 class=pinned home=slot2 states=[]
+    temp t3 class=state-local home=none states=[s0:x19]
+    temp t4 class=state-local home=none states=[s0:x19]
+    temp t5 class=state-local home=none states=[s0:x19]
+    temp t6 class=state-local home=none states=[s0:x19]
+    temp t7 class=state-local home=none states=[s0:x19]
+    temp t8 class=state-local home=none states=[s0:x19]
+    slot0 offset=24 size=8 align=8 occupants=[t0]
+    slot1 offset=32 size=8 align=8 occupants=[t1]
+    slot2 offset=40 size=8 align=8 occupants=[t2]
+    state s0 entry_load=[] await_flush=[] exit_flush=[]

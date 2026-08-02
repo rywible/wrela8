@@ -1,0 +1,13 @@
+module examples.check_sroa_struct
+
+struct Pair:
+    left: u64
+    right: u64
+
+fn add_pair(a: u64, b: u64) -> u64:
+    pair = Pair(left=a, right=b)
+    return pair.left + pair.right
+
+@test
+fn sroa_struct_result():
+    assert add_pair(2, 3) == 5

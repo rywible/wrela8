@@ -1326,6 +1326,7 @@ pub fn layout_test_image(
     let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
     Ok(ImageLayout {
         blob,
+        linked: None,
         entry: harness_base + (entry_start as u64) * 4,
         sections,
         runtime: runtime_tables,

@@ -1,5 +1,6 @@
-module examples.boot_actors
+module input
 
+from core.runtime import __wrela_lane2_begin, __wrela_lane2_end
 
 @actor
 pub struct Ledger:
@@ -54,19 +55,26 @@ pub struct Worker:
 
 @test(runtime)
 async fn turns(w: Actor[Worker]):
+    __wrela_lane2_begin()
+    slow_admitted = true
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send w.slow():
         case .Ok(_):
             pass
         case .Err(_):
-            assert false, "slow was not admitted"
+            slow_admitted = false
+    quick_admitted = true
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send w.quick():
         case .Ok(_):
             pass
         case .Err(_):
-            assert false, "quick was not admitted"
+            quick_admitted = false
     r = await w.report()
+    __wrela_lane2_end()
+
+    assert slow_admitted, "slow was not admitted"
+    assert quick_admitted, "quick was not admitted"
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(t):

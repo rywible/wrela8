@@ -138,8 +138,25 @@ impl BranchTerms {
             return Ok(out);
         }
         out.bias = bias_per_branch(fn_key, code, counts, &mut out.summary)?;
-        let fe = frontend_charges(code, table, point, &mut out.summary)?;
+        let fe = frontend_charges(code, table, point, &mut out.summary, 0)?;
         out.frontend = fe;
+        Ok(out)
+    }
+
+    pub fn compute_at_address(
+        fn_key: &str,
+        code: &[EmittedWord],
+        table: &CostTable,
+        point: &SweepPoint,
+        counts: &BlockCounts<'_>,
+        fn_address: u64,
+    ) -> Result<BranchTerms, String> {
+        let mut out = BranchTerms::default();
+        if code.is_empty() {
+            return Ok(out);
+        }
+        out.bias = bias_per_branch(fn_key, code, counts, &mut out.summary)?;
+        out.frontend = frontend_charges(code, table, point, &mut out.summary, fn_address)?;
         Ok(out)
     }
 
@@ -275,6 +292,7 @@ fn frontend_charges(
     table: &CostTable,
     point: &SweepPoint,
     summary: &mut BranchSummary,
+    fn_address: u64,
 ) -> Result<BTreeMap<usize, u64>, String> {
     let region = fetch_region_bytes(table)?;
     let max_branches = table
@@ -302,22 +320,33 @@ fn frontend_charges(
         }
     }
 
-    let residues = region / FN_ENTRY_ALIGN_BYTES;
-    let mut best: Option<(u64, u64, u64)> = None;
-    for step in 0..residues {
-        let r = step * FN_ENTRY_ALIGN_BYTES;
-        let excess = density_excess(&branches, r, region, max_branches);
-        let crossings = loop_crossings(&loops, r, region);
-        let total = excess.saturating_add(crossings);
-        let better = match best {
-            None => true,
-            Some((_, e, c)) => total > e.saturating_add(c),
-        };
-        if better {
-            best = Some((r, excess, crossings));
+    let (residue, excess, crossings) = if fn_address == 0 {
+        // Closure-only callers have no final address.  Preserve the old
+        // stress diagnostic there; linked scoring always supplies an address.
+        let residues = region / FN_ENTRY_ALIGN_BYTES;
+        let mut best: Option<(u64, u64, u64)> = None;
+        for step in 0..residues {
+            let r = step * FN_ENTRY_ALIGN_BYTES;
+            let excess = density_excess(&branches, r, region, max_branches);
+            let crossings = loop_crossings(&loops, r, region);
+            let total = excess.saturating_add(crossings);
+            let better = match best {
+                None => true,
+                Some((_, e, c)) => total > e.saturating_add(c),
+            };
+            if better {
+                best = Some((r, excess, crossings));
+            }
         }
-    }
-    let (residue, excess, crossings) = best.unwrap_or((0, 0, 0));
+        best.unwrap_or((0, 0, 0))
+    } else {
+        let residue = fn_address % region;
+        (
+            residue,
+            density_excess_at(&branches, fn_address, region, max_branches),
+            loop_crossings_at(&loops, fn_address, region),
+        )
+    };
     summary.worst_residue = residue;
     summary.dense_excess = excess;
     summary.loop_crossings = crossings;
@@ -368,6 +397,25 @@ fn loop_crossings(loops: &[(usize, usize)], r: u64, region: u64) -> u64 {
     loops
         .iter()
         .filter(|(i, t)| region_of(*i, r, region) != region_of(*t, r, region))
+        .count() as u64
+}
+
+fn density_excess_at(branches: &[usize], address: u64, region: u64, max_branches: u64) -> u64 {
+    let mut per: BTreeMap<u64, u64> = BTreeMap::new();
+    for &i in branches {
+        *per.entry((address + (i as u64) * WORD_BYTES) / region)
+            .or_insert(0) += 1;
+    }
+    per.values().map(|&c| c.saturating_sub(max_branches)).sum()
+}
+
+fn loop_crossings_at(loops: &[(usize, usize)], address: u64, region: u64) -> u64 {
+    loops
+        .iter()
+        .filter(|(i, t)| {
+            (address + (*i as u64) * WORD_BYTES) / region
+                != (address + (*t as u64) * WORD_BYTES) / region
+        })
         .count() as u64
 }
 

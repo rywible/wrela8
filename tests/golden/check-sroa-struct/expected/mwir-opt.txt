@@ -1,0 +1,12 @@
+MWIR-OPT
+  function add_pair
+sroa t2 candidate leaves=[.0:u64,.1:u64]
+sroa t3 candidate leaves=[.0:u64,.1:u64]
+  range function add_pair
+at=0 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=bottom,t3=bottom,t4=bottom,t5=bottom,t6=bottom]
+at=1 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=top,t3=bottom,t4=bottom,t5=bottom,t6=bottom]
+at=2 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=top,t3=top,t4=bottom,t5=bottom,t6=bottom]
+at=3 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=top,t3=top,t4=[0,18446744073709551615],t5=bottom,t6=bottom]
+at=4 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=top,t3=top,t4=[0,18446744073709551615],t5=[0,18446744073709551615],t6=bottom]
+at=5 ranges=[t0=[0,18446744073709551615],t1=[0,18446744073709551615],t2=top,t3=top,t4=[0,18446744073709551615],t5=[0,18446744073709551615],t6=top]
+at=6 ranges=[t0=bottom,t1=bottom,t2=bottom,t3=bottom,t4=bottom,t5=bottom,t6=bottom]

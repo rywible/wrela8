@@ -1,0 +1,31 @@
+module examples.check_flow_state_regalloc_pressure
+
+@actor
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Coordinator:
+    counter: Actor[Counter]
+
+    pub async fn run(mut self) -> u64:
+        a0: u64 = 0
+        a1: u64 = 1
+        a2: u64 = 2
+        a3: u64 = 3
+        a4: u64 = 4
+        a5: u64 = 5
+        a6: u64 = 6
+        a7: u64 = 7
+        a8: u64 = 8
+        a9: u64 = 9
+        result = await self.counter.get()
+        @discard(reason="deliberate error-path collapse")
+        match result:
+            case .Ok(value):
+                return value + a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9
+            case .Err(_):
+                return a0

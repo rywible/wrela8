@@ -24,6 +24,7 @@ thread_local! {
     static BLOCK_COUNT: Cell<bool> = const { Cell::new(false) };
     static NEXT_BLOCK_ID: Cell<u32> = const { Cell::new(0) };
     static BLOCK_BRIDGE: Cell<bool> = const { Cell::new(false) };
+    static LATE_ADDRESS_RELAX: Cell<bool> = const { Cell::new(false) };
     static BLOCK_SPANS: RefCell<Vec<BlockSpan>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -59,6 +60,14 @@ fn block_bridge() -> bool {
 
 pub fn block_spans() -> Vec<BlockSpan> {
     BLOCK_SPANS.with(|s| s.borrow().clone())
+}
+
+pub(crate) fn replace_block_spans(spans: Vec<BlockSpan>) {
+    BLOCK_SPANS.with(|stored| *stored.borrow_mut() = spans);
+}
+
+pub(crate) fn block_bridge_enabled() -> bool {
+    block_bridge()
 }
 
 fn record_block_span(fn_key: &str, block_index: u32, id: u32, word_start: usize, word_end: usize) {
@@ -100,7 +109,11 @@ pub fn block_count_enabled() -> bool {
 const BLOCK_HIT_KEY: &str = "__wrela_block_hit";
 
 fn block_count_instruments(key: &str) -> bool {
-    block_ids_active() && key != BLOCK_HIT_KEY
+    block_ids_active()
+        && !matches!(
+            key,
+            BLOCK_HIT_KEY | "__wrela_lane2_begin" | "__wrela_lane2_end"
+        )
 }
 
 pub fn block_ids_assigned() -> u32 {
@@ -129,6 +142,29 @@ pub fn set_adr_addressing(enabled: bool) {
 
 pub(crate) fn adr_addressing() -> bool {
     ADR_ADDRESSING.with(|c| c.get())
+}
+
+pub struct LateAddressRelaxGuard {
+    previous: bool,
+}
+
+impl Drop for LateAddressRelaxGuard {
+    fn drop(&mut self) {
+        LATE_ADDRESS_RELAX.with(|c| c.set(self.previous));
+    }
+}
+
+pub fn late_address_relax_guard() -> LateAddressRelaxGuard {
+    let previous = LATE_ADDRESS_RELAX.with(|c| {
+        let previous = c.get();
+        c.set(true);
+        previous
+    });
+    LateAddressRelaxGuard { previous }
+}
+
+fn late_address_relax() -> bool {
+    LATE_ADDRESS_RELAX.with(|c| c.get())
 }
 
 thread_local! {
@@ -180,6 +216,27 @@ pub fn set_frameless_fns(enabled: bool) {
 
 pub(crate) fn frameless_fns() -> bool {
     FRAMELESS_FNS.with(|c| c.get())
+}
+
+thread_local! {
+    static FRAME_COLORING: Cell<bool> = const { Cell::new(false) };
+    static FLOW_STATE_REGS: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn set_frame_coloring(enabled: bool) {
+    FRAME_COLORING.with(|c| c.set(enabled));
+}
+
+pub(crate) fn frame_coloring() -> bool {
+    FRAME_COLORING.with(|c| c.get())
+}
+
+pub fn set_flow_state_regs(enabled: bool) {
+    FLOW_STATE_REGS.with(|c| c.set(enabled));
+}
+
+pub(crate) fn flow_state_regs() -> bool {
+    FLOW_STATE_REGS.with(|c| c.get())
 }
 
 thread_local! {
@@ -244,6 +301,15 @@ fn reg_name(r: u8) -> String {
         X_LR => "lr".to_string(),
         _ => format!("x{r}"),
     }
+}
+
+fn stable_symbol_id(key: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,6 +462,12 @@ pub struct CodegenProgram {
     pub fns: BTreeMap<String, CodegenFn>,
     pub rodata: Vec<Vec<u8>>,
     pub conventions: BTreeMap<String, regalloc::Convention>,
+    /// Emitted block provenance owned by this exact program instance.
+    ///
+    /// The thread-local bridge remains as a compatibility view for legacy
+    /// callers, but linking and relaxation must never consult that mutable
+    /// view: another compilation may have replaced it.
+    pub origin_spans: Vec<BlockSpan>,
 }
 
 struct RodataPool {
@@ -555,6 +627,11 @@ const VIRT_SLOT_BASE: usize = 1 << 20;
 pub const FRAME_SP_ALIGN_BYTES: u64 = 16;
 
 pub const FRAME_SLOT_BYTES: u64 = 8;
+
+// Below eight L1D lines the LR spill removal is monotone in the rank model;
+// larger symbolic frames can change residency enough that deleting an
+// equal-sized spill is not a win.
+const FRAME_SPILL_MODEL_GUARD_BYTES: usize = 8 * 64;
 
 fn round_up_16(n: usize) -> usize {
     let a = FRAME_SP_ALIGN_BYTES as usize;
@@ -735,6 +812,13 @@ fn enum_payload_offset(
     })
 }
 
+#[derive(Clone)]
+struct FlowRegCache {
+    regs: Vec<Option<u8>>,
+    durable: Vec<bool>,
+    dirty: Vec<bool>,
+}
+
 struct FnCtx<'a> {
     frame: &'a Frame,
     layout: &'a LayoutCtx,
@@ -744,12 +828,14 @@ struct FnCtx<'a> {
     relocs: Vec<Reloc>,
     slot_base: u8,
     slot_bias: usize,
+    mem_function: u64,
     cold_seq: u64,
     slot_accesses: Vec<(usize, regalloc::Touch, usize, u8)>,
     resident_misuse: Option<String>,
     home_mask: u32,
     home_def_ok: Option<u8>,
     elide_branch: bool,
+    flow_cache: Option<FlowRegCache>,
 }
 
 fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
@@ -793,10 +879,13 @@ fn memref_is_unique_cold(m: &MemRef) -> bool {
 fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
     if memref_is_unique_cold(m) {
         None
-    } else if m.class == MemClass::Stack {
-        Some(MEM_SP_REG)
     } else {
-        Some(((m.key >> 48) & 0xFF) as u8)
+        match m.target {
+            crate::cost::MemTarget::Stack { .. } => Some(MEM_SP_REG),
+            crate::cost::MemTarget::FlowFrame { .. } => m.base,
+            _ if m.class == MemClass::Stack => Some(MEM_SP_REG),
+            _ => Some(((m.key >> 48) & 0xFF) as u8),
+        }
     }
 }
 
@@ -899,6 +988,19 @@ impl<'a> FnCtx<'a> {
     ) {
         let mem = match mem {
             None if rule.is_load() || rule.is_store() => Some(self.alloc_unique_cold()),
+            Some(m)
+                if m.class == MemClass::Cold
+                    && m.base_reg().is_some()
+                    && matches!(m.target, crate::cost::MemTarget::Unknown { .. }) =>
+            {
+                // A scratch GPR plus an immediate is not a stable address
+                // identity.  Unless a stronger symbolic target was attached,
+                // assign this emitted site its own unknown provenance while
+                // retaining the base GPR for dependency validation.
+                let site = self.cold_seq;
+                self.cold_seq = self.cold_seq.wrapping_add(1);
+                Some(MemRef::unknown(site, m.base_reg(), m.key))
+            }
             m => m,
         };
         check_push_shape(rule, dst, srcs, mem.as_ref());
@@ -911,11 +1013,19 @@ impl<'a> FnCtx<'a> {
     fn alloc_unique_cold(&mut self) -> MemRef {
         let seq = self.cold_seq;
         self.cold_seq = self.cold_seq.wrapping_add(1);
-        MemRef::cold_unique(seq)
+        MemRef::unknown(seq, None, 0)
     }
 
     fn cur_word(&self) -> usize {
         self.words.len()
+    }
+
+    fn mem_ref(&self, base: u8, offset: u64) -> MemRef {
+        if base == X_FRAME {
+            MemRef::flow_frame(self.mem_function, offset, base)
+        } else {
+            MemRef::for_base_imm(base, offset)
+        }
     }
 
     fn mov_reg(&mut self, dst: u8, src: u8) {
@@ -943,7 +1053,87 @@ impl<'a> FnCtx<'a> {
         }
     }
 
+    fn flow_reg_at(&self, off: usize) -> Option<(usize, u8)> {
+        let cache = self.flow_cache.as_ref()?;
+        let (temp, at_base) = self.frame.temp_at_offset(off)?;
+        if !at_base || self.frame.temp_size[temp] > FRAME_SLOT_BYTES as usize {
+            return None;
+        }
+        cache
+            .regs
+            .get(temp)
+            .copied()
+            .flatten()
+            .map(|reg| (temp, reg))
+    }
+
+    fn begin_flow_state(
+        &mut self,
+        assignment: &crate::frame_plan::StateAssignment,
+        homes: &[crate::frame_plan::Home],
+    ) {
+        self.end_flow_state();
+        let durable: Vec<bool> = homes
+            .iter()
+            .map(|home| !matches!(home, crate::frame_plan::Home::None))
+            .collect();
+        self.flow_cache = Some(FlowRegCache {
+            regs: assignment.temp_regs.clone(),
+            durable,
+            dirty: vec![false; assignment.temp_regs.len()],
+        });
+        for reg in assignment.temp_regs.iter().flatten() {
+            self.home_mask |= 1u32 << (*reg & 31);
+        }
+        for &temp in &assignment.live_in_loads {
+            let Some(reg) = assignment.temp_regs.get(temp.0).copied().flatten() else {
+                self.note_alloc_divergence(&format!(
+                    "Flow state s{} entry-loads unassigned temp {temp}",
+                    assignment.state
+                ));
+                continue;
+            };
+            self.home_def_ok = Some(reg);
+            self.load_slot_raw(reg, self.frame.off(temp));
+            self.home_def_ok = None;
+        }
+    }
+
+    fn flush_flow_temps(&mut self, temps: &[Temp]) {
+        for &temp in temps {
+            let Some(cache) = self.flow_cache.as_ref() else {
+                return;
+            };
+            let Some(reg) = cache.regs.get(temp.0).copied().flatten() else {
+                continue;
+            };
+            if !cache.durable.get(temp.0).copied().unwrap_or(false) {
+                self.note_alloc_divergence(&format!(
+                    "Flow barrier tries to flush register-only temp {temp}"
+                ));
+                continue;
+            }
+            if cache.dirty.get(temp.0).copied().unwrap_or(false) {
+                self.store_slot_raw(reg, self.frame.off(temp));
+                if let Some(cache) = self.flow_cache.as_mut() {
+                    cache.dirty[temp.0] = false;
+                }
+            }
+        }
+    }
+
+    fn end_flow_state(&mut self) {
+        self.flow_cache = None;
+        self.home_mask = self.frame.home_mask();
+        self.home_def_ok = None;
+    }
+
     fn use_slot(&mut self, scratch: u8, off: usize) -> u8 {
+        if let Some((_, reg)) = self.flow_reg_at(off) {
+            self.slot_accesses
+                .push((off, regalloc::Touch::Read, self.words.len(), scratch));
+            return reg;
+        }
         if let Some(home) = self.frame.reg_at(off) {
             self.slot_accesses
                 .push((off, regalloc::Touch::Read, self.words.len(), scratch));
@@ -954,6 +1144,13 @@ impl<'a> FnCtx<'a> {
     }
 
     fn def_reg(&mut self, scratch: u8, off: usize) -> u8 {
+        if let Some((temp, reg)) = self.flow_reg_at(off) {
+            self.home_def_ok = Some(reg);
+            if let Some(cache) = self.flow_cache.as_mut() {
+                cache.dirty[temp] = true;
+            }
+            return reg;
+        }
         match self.frame.reg_at(off) {
             Some(home) => {
                 self.home_def_ok = Some(home);
@@ -964,6 +1161,16 @@ impl<'a> FnCtx<'a> {
     }
 
     fn load_slot(&mut self, reg: u8, off: usize) {
+        if let Some((_, cached)) = self.flow_reg_at(off) {
+            self.slot_accesses
+                .push((off, regalloc::Touch::Read, self.words.len(), reg));
+            self.mov_reg(reg, cached);
+            return;
+        }
+        self.load_slot_raw(reg, off);
+    }
+
+    fn load_slot_raw(&mut self, reg: u8, off: usize) {
         self.slot_accesses
             .push((off, regalloc::Touch::Read, self.words.len(), reg));
         if let Some(home) = self.frame.reg_at(off) {
@@ -976,7 +1183,7 @@ impl<'a> FnCtx<'a> {
         }
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        let mem = MemRef::for_base_imm(base, off as u64);
+        let mem = self.mem_ref(base, off as u64);
         self.push_mem(
             encode::enc_ldr_x_imm(reg, base, off),
             format!("ldr {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
@@ -988,6 +1195,21 @@ impl<'a> FnCtx<'a> {
     }
 
     fn store_slot(&mut self, reg: u8, off: usize) {
+        if let Some((temp, cached)) = self.flow_reg_at(off) {
+            self.slot_accesses
+                .push((off, regalloc::Touch::Write, self.words.len(), reg));
+            self.home_def_ok = Some(cached);
+            self.mov_reg(cached, reg);
+            self.home_def_ok = None;
+            if let Some(cache) = self.flow_cache.as_mut() {
+                cache.dirty[temp] = true;
+            }
+            return;
+        }
+        self.store_slot_raw(reg, off);
+    }
+
+    fn store_slot_raw(&mut self, reg: u8, off: usize) {
         self.slot_accesses
             .push((off, regalloc::Touch::Write, self.words.len(), reg));
         if let Some(home) = self.frame.reg_at(off) {
@@ -1003,7 +1225,7 @@ impl<'a> FnCtx<'a> {
         }
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        let mem = MemRef::for_base_imm(base, off as u64);
+        let mem = self.mem_ref(base, off as u64);
         self.push_mem(
             encode::enc_str_x_imm(reg, base, off),
             format!("str {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
@@ -1016,7 +1238,7 @@ impl<'a> FnCtx<'a> {
 
     fn load_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        let mem = MemRef::for_base_imm(base_reg, byte_off as u64);
+        let mem = self.mem_ref(base_reg, byte_off as u64);
         self.push_mem(
             encode::enc_ldr_x_imm(reg, base_reg, byte_off),
             format!(
@@ -1033,7 +1255,7 @@ impl<'a> FnCtx<'a> {
 
     fn store_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        let mem = MemRef::for_base_imm(base_reg, byte_off as u64);
+        let mem = self.mem_ref(base_reg, byte_off as u64);
         self.push_mem(
             encode::enc_str_x_imm(reg, base_reg, byte_off),
             format!(
@@ -1049,7 +1271,7 @@ impl<'a> FnCtx<'a> {
     }
 
     fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
-        let mem = MemRef::for_base_imm(rn, byte_off as u64);
+        let mem = self.mem_ref(rn, byte_off as u64);
         self.push_mem(
             encode::enc_ldrb_imm(rt, rn, byte_off),
             format!("ldrb w{rt}, [{}, #{byte_off}]", reg_name(rn)),
@@ -1100,7 +1322,7 @@ impl<'a> FnCtx<'a> {
                 format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
                 CostRule::MovWide,
                 Some(reg),
-                &[],
+                &[reg],
             );
         }
     }
@@ -1209,7 +1431,7 @@ impl<'a> FnCtx<'a> {
                 format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
                 CostRule::MovWide,
                 Some(reg),
-                &[],
+                &[reg],
             );
         }
     }
@@ -1311,7 +1533,7 @@ impl<'a> FnCtx<'a> {
     fn load_rodata_addr(&mut self, reg: u8, data_index: usize) {
         let byte_offset = self.rodata.byte_offset(data_index);
         let word_adrp = self.cur_word();
-        if adr_addressing() {
+        if adr_addressing() && !late_address_relax() {
             self.push(
                 encode::enc_adr(reg, 0),
                 format!("adr {}, rodata+{byte_offset:#x}", reg_name(reg)),
@@ -1462,7 +1684,7 @@ impl<'a> FnCtx<'a> {
         self.push(
             encode::enc_sub_imm(31, 31, 32, true),
             "sub sp, sp, #32  ; abort_val prefix+suffix Bytes".to_string(),
-            CostRule::AbortVal,
+            CostRule::Alu,
             Some(31),
             &[31],
         );
@@ -1798,7 +2020,14 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             base,
             index,
             len,
+        }
+        | Inst::IndexGetProven {
+            dst,
+            base,
+            index,
+            len,
         } => {
+            let proven = matches!(inst, Inst::IndexGetProven { .. });
             let base_ty = f.temp_types[base.0].clone();
             let elem_ty = array_elem_type(&base_ty)?;
             let elem_size =
@@ -1810,6 +2039,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 *len,
                 elem_size,
                 X_C,
+                !proven,
             );
             let dst_off = ctx.frame.off(*dst);
             let mut w = 0;
@@ -1825,7 +2055,14 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             index,
             value,
             len,
+        }
+        | Inst::IndexSetProven {
+            base,
+            index,
+            value,
+            len,
         } => {
+            let proven = matches!(inst, Inst::IndexSetProven { .. });
             let base_ty = f.temp_types[base.0].clone();
             let elem_ty = array_elem_type(&base_ty)?;
             let elem_size =
@@ -1837,6 +2074,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 *len,
                 elem_size,
                 X_C,
+                !proven,
             );
             let val_off = ctx.frame.off(*value);
             let mut w = 0;
@@ -1854,7 +2092,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             len,
             elem_stride,
             ty,
+        }
+        | Inst::PlacedIndexGetProven {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            ty,
         } => {
+            let proven = matches!(inst, Inst::PlacedIndexGetProven { .. });
             emit_placed_index_addr(
                 ctx,
                 ctx.frame.off(*base),
@@ -1863,6 +2111,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 *len,
                 *elem_stride,
                 X_C,
+                !proven,
             );
             let width = mmio_access_width(ty, 0)?;
             let dst_off = ctx.frame.off(*dst);
@@ -1895,7 +2144,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             len,
             elem_stride,
             ty,
+        }
+        | Inst::PlacedIndexSetProven {
+            base,
+            field_offset,
+            index,
+            value,
+            len,
+            elem_stride,
+            ty,
         } => {
+            let proven = matches!(inst, Inst::PlacedIndexSetProven { .. });
             emit_placed_index_addr(
                 ctx,
                 ctx.frame.off(*base),
@@ -1904,6 +2163,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 *len,
                 *elem_stride,
                 X_C,
+                !proven,
             );
             let width = mmio_access_width(ty, 0)?;
             let v = ctx.use_slot(X_B, ctx.frame.off(*value));
@@ -3073,18 +3333,21 @@ fn emit_index_addr(
     len: usize,
     elem_size: usize,
     out_reg: u8,
+    checked: bool,
 ) {
     let x_a = ctx.use_slot(X_A, index_off);
-    ctx.load_imm(X_B, len as i64);
-    ctx.cmp_reg(x_a, X_B);
-    let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
-    ctx.abort_val(
-        "index ",
-        x_a,
-        false,
-        &format!(" out of bounds (length {len})"),
-    );
-    ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    if checked {
+        ctx.load_imm(X_B, len as i64);
+        ctx.cmp_reg(x_a, X_B);
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
+        ctx.abort_val(
+            "index ",
+            x_a,
+            false,
+            &format!(" out of bounds (length {len})"),
+        );
+        ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    }
     ctx.addr_of_slot(out_reg, base_off);
     ctx.load_imm(X_D, elem_size as i64);
     ctx.mul_reg(X_E, x_a, X_D);
@@ -3116,18 +3379,21 @@ fn emit_placed_index_addr(
     len: usize,
     elem_stride: u64,
     out_reg: u8,
+    checked: bool,
 ) {
     let x_a = ctx.use_slot(X_A, index_off);
-    ctx.load_imm(X_B, len as i64);
-    ctx.cmp_reg(x_a, X_B);
-    let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
-    ctx.abort_val(
-        "index ",
-        x_a,
-        false,
-        &format!(" out of bounds (length {len})"),
-    );
-    ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    if checked {
+        ctx.load_imm(X_B, len as i64);
+        ctx.cmp_reg(x_a, X_B);
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
+        ctx.abort_val(
+            "index ",
+            x_a,
+            false,
+            &format!(" out of bounds (length {len})"),
+        );
+        ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
+    }
     ctx.load_slot(out_reg, base_off);
     if field_offset != 0 {
         ctx.load_imm(X_D, field_offset as i64);
@@ -3315,8 +3581,8 @@ fn emit_arith_wrapping(
                 encode::enc_mul(x_c, x_a, x_b, false),
                 format!("mul w{x_c}, w{x_a}, w{x_b}"),
                 CostRule::MulW,
-                None,
-                &[],
+                Some(x_c),
+                &[x_a, x_b],
             );
             ctx.narrow_to_width(x_c, bits, signed);
             ctx.store_slot(x_c, dst_off);
@@ -3339,8 +3605,8 @@ fn emit_arith_wrapping(
             reg_name(x_b)
         ),
         rule,
-        None,
-        &[],
+        Some(x_c),
+        &[x_a, x_b],
     );
     ctx.narrow_to_width(x_c, bits, signed);
     ctx.store_slot(x_c, dst_off);
@@ -4062,12 +4328,14 @@ fn probe_fn_facts(
             relocs: Vec::new(),
             slot_base: X_SP,
             slot_bias: 0,
+            mem_function: 0,
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
             home_mask: frame.home_mask(),
             home_def_ok: None,
             elide_branch: false,
+            flow_cache: None,
         };
         emit_prologue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -4083,12 +4351,14 @@ fn probe_fn_facts(
             relocs: Vec::new(),
             slot_base: X_SP,
             slot_bias: 0,
+            mem_function: 0,
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
             home_mask: frame.home_mask(),
             home_def_ok: None,
             elide_branch: false,
+            flow_cache: None,
         };
         emit_body_inst(i, f, &mut ctx, plan, block_ids, &no_elision)?;
         points.push(finish(ctx));
@@ -4104,12 +4374,14 @@ fn probe_fn_facts(
             relocs: Vec::new(),
             slot_base: X_SP,
             slot_bias: 0,
+            mem_function: 0,
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
             home_mask: frame.home_mask(),
             home_def_ok: None,
             elide_branch: false,
+            flow_cache: None,
         };
         emit_epilogue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -4378,6 +4650,7 @@ fn prepare_sync_fns(
 > {
     let mut prepared: BTreeMap<String, PreparedFn> = BTreeMap::new();
     for (key, f) in &mwir.fns {
+        crate::range::validate_proven_sites(f).map_err(CodegenError::internal)?;
         prepared.insert(key.clone(), prepare_fn(key, f, layout, rodata)?);
     }
     let inputs: BTreeMap<String, regalloc::FnInput> = prepared
@@ -4406,7 +4679,7 @@ fn emit_fn(
         None => &prepared.assign,
     };
     let save_lr = !frameless_fns() || prepared.has_returning_call != Some(false);
-    let frame = build_frame(
+    let mut frame = build_frame(
         f,
         layout,
         0,
@@ -4415,6 +4688,17 @@ fn emit_fn(
         assign,
         save_lr,
     )?;
+    if frameless_fns() && !save_lr {
+        // Do not pay a ranking-model regression merely to delete a spill that
+        // does not change the rounded frame footprint.  On frames spanning
+        // eight or more cache lines the extra spill can warm a symbolic stack
+        // line and alter the schedule; retaining it is the conservative,
+        // monotone choice there.
+        let saved_frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, assign, true)?;
+        if saved_frame.size == frame.size && frame.size >= FRAME_SPILL_MODEL_GUARD_BYTES {
+            frame = saved_frame;
+        }
+    }
 
     let no_tails = TailPlan::none(f.body.len());
     let plan: &TailPlan = if frame.lr_saved {
@@ -4435,12 +4719,14 @@ fn emit_fn(
         relocs: Vec::new(),
         slot_base: X_SP,
         slot_bias: 0,
+        mem_function: 0,
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
         home_mask: frame.home_mask(),
         home_def_ok: None,
         elide_branch: false,
+        flow_cache: None,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -4457,12 +4743,14 @@ fn emit_fn(
             relocs: Vec::new(),
             slot_base: X_SP,
             slot_bias: 0,
+            mem_function: 0,
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
             home_mask: frame.home_mask(),
             home_def_ok: None,
             elide_branch: false,
+            flow_cache: None,
         };
         emit_body_inst(i, f, &mut probe, plan, block_ids, &elide)?;
         counts.push(probe.words.len());
@@ -4484,12 +4772,14 @@ fn emit_fn(
         relocs: Vec::new(),
         slot_base: X_SP,
         slot_bias: 0,
+        mem_function: 0,
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
         home_mask: frame.home_mask(),
         home_def_ok: None,
         elide_branch: false,
+        flow_cache: None,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -4856,7 +5146,7 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         temp_types,
         body: Vec::new(),
     };
-    let frame = build_frame(
+    let mut frame = build_frame(
         &synthetic,
         layout,
         flow_reply_stage_size(f, layout)?,
@@ -4865,7 +5155,74 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         &regalloc::Assignment::none(synthetic.temp_types.len()),
         true,
     )?;
+    if frame_coloring() {
+        let analysis = crate::flow_liveness::analyze(f).map_err(CodegenError::internal)?;
+        let plan =
+            crate::frame_plan::plan_flow(f, &analysis, layout).map_err(CodegenError::internal)?;
+        let plan = crate::frame_color::materialize_all_homes(f, &plan, layout)
+            .map_err(CodegenError::internal)?;
+        let plan =
+            crate::frame_color::color_flow(f, &analysis, &plan).map_err(CodegenError::internal)?;
+        crate::frame_plan::validate(f, &analysis, &plan).map_err(CodegenError::internal)?;
+        apply_flow_frame_plan(&mut frame, &plan, state_temp)?;
+    }
     Ok((frame, state_temp))
+}
+
+fn apply_flow_frame_plan(
+    frame: &mut Frame,
+    plan: &crate::frame_plan::FramePlan,
+    state_temp: Temp,
+) -> Result<(), CodegenError> {
+    let old_temp_end = frame
+        .temp_offset
+        .iter()
+        .zip(&frame.temp_size)
+        .map(|(offset, size)| offset.saturating_add(*size))
+        .max()
+        .unwrap_or(0);
+    let state_offset = plan.frame_size as usize;
+    let new_temp_end = state_offset
+        .checked_add(frame.temp_size[state_temp.0])
+        .ok_or_else(|| CodegenError::internal("colored Flow state slot overflow"))?;
+    let shift = |offset: usize| new_temp_end.saturating_add(offset.saturating_sub(old_temp_end));
+    let mut offsets = Vec::with_capacity(plan.homes.len());
+    for (i, home) in plan.homes.iter().enumerate() {
+        let offset = match home {
+            crate::frame_plan::Home::Pinned { offset } => *offset as usize,
+            crate::frame_plan::Home::Frame { slot } => {
+                plan.slots
+                    .get(*slot)
+                    .ok_or_else(|| {
+                        CodegenError::internal(format!("frame plan slot {slot} missing"))
+                    })?
+                    .offset as usize
+            }
+            crate::frame_plan::Home::None => {
+                return Err(CodegenError::internal(format!(
+                    "colored Flow temp t{i} has no frame home"
+                )));
+            }
+        };
+        offsets.push(offset);
+    }
+    offsets.push(state_offset);
+    frame.temp_offset = offsets;
+    frame.self_ptr_off = frame.self_ptr_off.map(shift);
+    for (_, offset) in &mut frame.mut_param_ptr_offs {
+        *offset = shift(*offset);
+    }
+    frame.ret_ptr_off = frame.ret_ptr_off.map(shift);
+    frame.reply_stage_off = frame.reply_stage_off.map(shift);
+    frame.entropy_scratch_off = frame.entropy_scratch_off.map(shift);
+    frame.lr_off = shift(frame.lr_off);
+    frame.size = shift(frame.size).max(new_temp_end).div_ceil(16) * 16;
+    if frame.size + TURN_RECORD_SIZE as usize > 4095 {
+        return Err(CodegenError::unimplemented(
+            "colored Flow frame exceeds the immediate offset range",
+        ));
+    }
+    Ok(())
 }
 
 fn flow_entropy_scratch_size(f: &FlowWirFn) -> usize {
@@ -6968,10 +7325,19 @@ fn emit_transition(
     fn_key: &str,
     state_temp: Temp,
     state_flat_base: &[usize],
+    assignment: Option<&crate::frame_plan::StateAssignment>,
 ) -> Result<(), CodegenError> {
     match t {
-        Transition::Return(value) => emit_one(&Inst::Return { value: *value }, f, ctx),
+        Transition::Return(value) => {
+            let result = emit_one(&Inst::Return { value: *value }, f, ctx);
+            ctx.end_flow_state();
+            result
+        }
         Transition::Jump(target_state) => {
+            if let Some(assignment) = assignment {
+                ctx.flush_flow_temps(&assignment.exit_flushes);
+            }
+            ctx.end_flow_state();
             let target_flat = state_flat_base[*target_state];
             if target_flat <= flat_idx {
                 ctx.checkpoint();
@@ -6985,31 +7351,43 @@ fn emit_transition(
             then_state,
             else_state,
         } => {
+            if let Some(assignment) = assignment {
+                ctx.flush_flow_temps(&assignment.exit_flushes);
+            }
             ctx.load_slot(X_A, ctx.frame.off(*cond_temp));
+            ctx.end_flow_state();
             ctx.cbz(X_A, state_flat_base[*else_state]);
             ctx.b_unconditional(state_flat_base[*then_state]);
             Ok(())
         }
         Transition::Abort { msg } => {
             ctx.abort_fixed(msg);
+            ctx.end_flow_state();
             Ok(())
         }
         Transition::Await {
             what,
             resume_state,
             result_temp,
-        } => emit_await_suspend(
-            what,
-            *resume_state,
-            *result_temp,
-            f,
-            ctx,
-            method_index,
-            gctx,
-            fn_key,
-            state_temp,
-            state_flat_base,
-        ),
+        } => {
+            if let Some(assignment) = assignment {
+                ctx.flush_flow_temps(&assignment.await_flushes);
+            }
+            let result = emit_await_suspend(
+                what,
+                *resume_state,
+                *result_temp,
+                f,
+                ctx,
+                method_index,
+                gctx,
+                fn_key,
+                state_temp,
+                state_flat_base,
+            );
+            ctx.end_flow_state();
+            result
+        }
     }
 }
 
@@ -7025,6 +7403,7 @@ fn emit_flat_entry(
     fn_key: &str,
     state_temp: Temp,
     state_flat_base: &[usize],
+    assignment: Option<&crate::frame_plan::StateAssignment>,
 ) -> Result<(), CodegenError> {
     match entry {
         FlatEntry::Op(op) => emit_flow_op(op, f, ctx, method_index, gctx, fn_key),
@@ -7038,6 +7417,7 @@ fn emit_flat_entry(
             fn_key,
             state_temp,
             state_flat_base,
+            assignment,
         ),
         FlatEntry::AwaitResume {
             resume_state,
@@ -7064,6 +7444,15 @@ fn emit_flowwir_fn(
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
 ) -> Result<CodegenFn, CodegenError> {
+    crate::range::validate_flow_proven_sites(f).map_err(CodegenError::internal)?;
+    let flow_analysis = crate::flow_liveness::analyze(f).map_err(CodegenError::internal)?;
+    let flow_plan =
+        crate::frame_plan::plan_flow(f, &flow_analysis, layout).map_err(CodegenError::internal)?;
+    // Run coloring validation on every production Flow body.  Its physical
+    // offsets affect emission only under the separate FrameColor knob; the
+    // state-local cache consumes register/barrier facts independently.
+    crate::frame_color::color_flow(f, &flow_analysis, &flow_plan)
+        .map_err(CodegenError::internal)?;
     if is_aggregate(&f.ret) && f.receiver.is_none() {
         return Err(CodegenError::unimplemented(
             "a free (non-method) async fn returning an aggregate — a `@test(runtime)` root's own \
@@ -7105,12 +7494,14 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        mem_function: stable_symbol_id(fn_key),
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
         home_mask: frame.home_mask(),
         home_def_ok: None,
         elide_branch: false,
+        flow_cache: None,
     };
     emit_async_entry(
         &synthetic,
@@ -7121,29 +7512,46 @@ fn emit_flowwir_fn(
     )?;
     let prologue_len = probe_pro.words.len();
     let elide = flat_branch_elision(&flat, &state_flat_base);
+    let state_of = |i: usize| {
+        state_flat_base
+            .partition_point(|base| *base <= i)
+            .saturating_sub(1)
+    };
+    // Probe the complete body in source order.  Per-entry probe contexts lose
+    // state-cache dirtiness and therefore compute wrong branch word offsets
+    // as soon as a load/store is elided across two entries.
+    let mut probe = FnCtx {
+        frame: &frame,
+        layout,
+        rodata,
+        word_offsets: &dummy_targets,
+        words: Vec::new(),
+        relocs: Vec::new(),
+        slot_base: X_FRAME,
+        slot_bias: TURN_RECORD_SIZE as usize,
+        mem_function: stable_symbol_id(fn_key),
+        cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
+        elide_branch: false,
+        flow_cache: None,
+    };
     let mut counts = Vec::with_capacity(total);
     for (i, entry) in flat.iter().enumerate() {
-        let mut probe = FnCtx {
-            frame: &frame,
-            layout,
-            rodata,
-            word_offsets: &dummy_targets,
-            words: Vec::new(),
-            relocs: Vec::new(),
-            slot_base: X_FRAME,
-            slot_bias: TURN_RECORD_SIZE as usize,
-            cold_seq: 0,
-            slot_accesses: Vec::new(),
-            resident_misuse: None,
-            home_mask: frame.home_mask(),
-            home_def_ok: None,
-            elide_branch: elide[i],
-        };
+        let before = probe.words.len();
+        let state = state_of(i);
+        let assignment = flow_state_regs().then(|| &flow_plan.states[state]);
+        if flow_state_regs() && state_flat_base[state] == i {
+            probe.begin_flow_state(&flow_plan.states[state], &flow_plan.homes);
+        }
         if let Some(id) = block_ids[i] {
             if block_count() {
                 probe.emit_block_hit(id);
             }
         }
+        probe.elide_branch = elide[i];
         emit_flat_entry(
             entry,
             i,
@@ -7154,9 +7562,17 @@ fn emit_flowwir_fn(
             fn_key,
             state_temp,
             &state_flat_base,
+            assignment,
         )?;
-        counts.push(probe.words.len());
+        probe.elide_branch = false;
+        counts.push(probe.words.len() - before);
     }
+    if let Some(what) = probe.resident_misuse.take() {
+        return Err(CodegenError::internal(format!(
+            "Flow state allocation diverged while probing `{fn_key}`: {what}"
+        )));
+    }
+    drop(probe);
     let mut word_offsets = vec![0usize; total + 2];
     let mut acc = prologue_len;
     for (i, c) in counts.iter().enumerate() {
@@ -7174,12 +7590,14 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        mem_function: stable_symbol_id(fn_key),
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
         home_mask: frame.home_mask(),
         home_def_ok: None,
         elide_branch: false,
+        flow_cache: None,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -7193,16 +7611,24 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        mem_function: stable_symbol_id(fn_key),
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
         home_mask: frame.home_mask(),
         home_def_ok: None,
         elide_branch: false,
+        flow_cache: None,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
     for (i, entry) in flat.iter().enumerate() {
+        debug_assert_eq!(ctx.words.len(), word_offsets[i], "Flow entry {i} start");
+        let state = state_of(i);
+        let assignment = flow_state_regs().then(|| &flow_plan.states[state]);
+        if flow_state_regs() && state_flat_base[state] == i {
+            ctx.begin_flow_state(&flow_plan.states[state], &flow_plan.homes);
+        }
         if let Some(id) = block_ids[i] {
             if block_count() {
                 ctx.emit_block_hit(id);
@@ -7219,8 +7645,19 @@ fn emit_flowwir_fn(
             fn_key,
             state_temp,
             &state_flat_base,
+            assignment,
         )?;
         ctx.elide_branch = false;
+        debug_assert_eq!(
+            ctx.words.len() - word_offsets[i],
+            counts[i],
+            "Flow entry {i} width"
+        );
+    }
+    if let Some(what) = ctx.resident_misuse.take() {
+        return Err(CodegenError::internal(format!(
+            "Flow state allocation diverged in `{fn_key}`: {what}"
+        )));
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[total]);
     emit_async_epilogue(&synthetic, &mut ctx)?;
@@ -7362,6 +7799,15 @@ pub fn async_frame_sizes(
     flow: &FlowWirProgram,
     layout: &LayoutCtx,
 ) -> Result<BTreeMap<String, u64>, CodegenError> {
+    let transformed;
+    let flow = if crate::mwir_opt::sroa() {
+        transformed = crate::sroa::rewrite_flow_program(flow, layout)
+            .map_err(CodegenError::internal)?
+            .0;
+        &transformed
+    } else {
+        flow
+    };
     let mut out = BTreeMap::new();
     for (key, f) in &flow.fns {
         let (frame, _) = build_frame_flow(f, layout)?;
@@ -7399,7 +7845,7 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[],
+            &[reg],
         );
         push(
             words,
@@ -7407,7 +7853,7 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[],
+            &[reg],
         );
         push(
             words,
@@ -7415,7 +7861,7 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[],
+            &[reg],
         );
     };
     let n = n_cores.max(1);
@@ -7452,7 +7898,7 @@ fn push_rodata_addr(
     off_text: &str,
 ) {
     let word = words.len();
-    if adr_addressing() {
+    if adr_addressing() && !late_address_relax() {
         push(
             words,
             encode::enc_adr(reg, 0),
@@ -7509,7 +7955,7 @@ fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
         format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
         CostRule::MovWide,
         Some(reg),
-        &[],
+        &[reg],
     );
     push(
         words,
@@ -7517,7 +7963,7 @@ fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
         format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
         CostRule::MovWide,
         Some(reg),
-        &[],
+        &[reg],
     );
     push(
         words,
@@ -7525,7 +7971,7 @@ fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
         format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
         CostRule::MovWide,
         Some(reg),
-        &[],
+        &[reg],
     );
 }
 
@@ -8309,7 +8755,22 @@ pub fn codegen_program_with_async(
     group_arena_capacity: u64,
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
-    let optimized = crate::mwir_opt::optimize(mwir, Some(flow), layout);
+    let mut transformed_flow = None;
+    if crate::mwir_opt::sroa() {
+        transformed_flow = Some(
+            crate::sroa::rewrite_flow_program(flow, layout)
+                .map_err(CodegenError::internal)?
+                .0,
+        );
+    }
+    if crate::lower::bounds_elide() {
+        let input = transformed_flow.as_ref().unwrap_or(flow);
+        transformed_flow =
+            Some(crate::range::apply_flow_program_proofs(input).map_err(CodegenError::internal)?);
+    }
+    let flow = transformed_flow.as_ref().unwrap_or(flow);
+    let optimized = crate::mwir_opt::optimize_checked(mwir, Some(flow), layout)
+        .map_err(CodegenError::internal)?;
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
@@ -8350,8 +8811,10 @@ pub fn codegen_program_with_async(
         fns,
         rodata: rodata.entries,
         conventions,
+        origin_spans: block_spans(),
     };
     verify_conventions(&out).map_err(CodegenError::internal)?;
+    crate::cost::audit::audit_program(&out).map_err(CodegenError::internal)?;
     Ok(out)
 }
 
@@ -8359,7 +8822,8 @@ pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
-    let optimized = crate::mwir_opt::optimize(mwir, None, layout);
+    let optimized =
+        crate::mwir_opt::optimize_checked(mwir, None, layout).map_err(CodegenError::internal)?;
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
@@ -8386,8 +8850,10 @@ pub fn codegen_program(
         fns,
         rodata: rodata.entries,
         conventions,
+        origin_spans: block_spans(),
     };
     verify_conventions(&out).map_err(CodegenError::internal)?;
+    crate::cost::audit::audit_program(&out).map_err(CodegenError::internal)?;
     Ok(out)
 }
 
@@ -8438,6 +8904,11 @@ fn render_bytes(bytes: &[u8]) -> String {
             '\n' => out.push_str("\\n"),
             other => out.push(other),
         }
+    }
+    let trailing_spaces = out.bytes().rev().take_while(|byte| *byte == b' ').count();
+    out.truncate(out.len() - trailing_spaces);
+    for _ in 0..trailing_spaces {
+        out.push_str("\\x20");
     }
     out
 }
@@ -8704,6 +9175,12 @@ mod tests {
     }
 
     #[test]
+    fn rodata_dump_escapes_trailing_spaces() {
+        assert_eq!(render_bytes(b"index "), "index\\x20");
+        assert_eq!(render_bytes(b"middle space"), "middle space");
+    }
+
+    #[test]
     fn block_id_pool_exhaustion_is_a_fail_closed_error() {
         set_block_count(true);
         NEXT_BLOCK_ID.with(|c| c.set((crate::rtconfig::BLOCK_POOL_COUNT - 1) as u32));
@@ -8795,6 +9272,208 @@ mod tests {
         assert_eq!(frame.ret_ptr_off, Some(24));
         assert_eq!(frame.lr_off, 32);
         assert_eq!(frame.size, 48);
+    }
+
+    #[test]
+    fn parked_frame_coloring_can_materialize_a_flow_frame() {
+        let f = FlowWirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::Unit,
+            frame: crate::flowwir::FrameLayout {
+                temp_types: vec![Type::U64],
+                lineage_group_slot: Temp(0),
+                lineage_deadline_slot: Temp(0),
+            },
+            states: vec![crate::flowwir::State {
+                ops: vec![FlowInst::Mwir(Inst::ConstInt {
+                    dst: Temp(0),
+                    ty: Type::U64,
+                    value: 1,
+                })],
+                transition: Transition::Return(None),
+            }],
+        };
+        let old = frame_coloring();
+        set_frame_coloring(true);
+        let result = build_frame_flow(&f, &LayoutCtx::default());
+        set_frame_coloring(old);
+        let (frame, _) = result.expect("materialized Flow frame");
+        assert_eq!(frame.temp_offset.len(), 2, "temp plus dispatch state");
+        assert!(frame.size >= 16);
+
+        set_frame_coloring(true);
+        let program = codegen_program_with_async(
+            &MwirProgram::default(),
+            &FlowWirProgram {
+                fns: BTreeMap::from([(String::from("flow"), f)]),
+            },
+            &LayoutCtx::default(),
+            &BTreeMap::new(),
+            0,
+            &[],
+        )
+        .expect("full Flow emission with colored homes");
+        set_frame_coloring(old);
+        assert!(!program.fns["flow"].code.is_empty());
+    }
+
+    #[test]
+    fn parked_flow_state_regs_flush_before_await_and_reload_on_resume() {
+        let flow = FlowWirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::U64,
+            frame: crate::flowwir::FrameLayout {
+                temp_types: vec![
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                    Type::U64,
+                ],
+                lineage_group_slot: Temp(4),
+                lineage_deadline_slot: Temp(5),
+            },
+            states: vec![
+                crate::flowwir::State {
+                    ops: vec![
+                        FlowInst::Mwir(Inst::ConstInt {
+                            dst: Temp(0),
+                            ty: Type::U64,
+                            value: 40,
+                        }),
+                        FlowInst::Mwir(Inst::ConstInt {
+                            dst: Temp(1),
+                            ty: Type::U64,
+                            value: 0,
+                        }),
+                    ],
+                    transition: Transition::Await {
+                        what: AwaitKind::Receipt {
+                            receipt_temp: Temp(1),
+                        },
+                        resume_state: 1,
+                        result_temp: Temp(2),
+                    },
+                },
+                crate::flowwir::State {
+                    ops: vec![
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(3),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(0),
+                            rhs: Temp(2),
+                        }),
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(6),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(3),
+                            rhs: Temp(0),
+                        }),
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(7),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(6),
+                            rhs: Temp(0),
+                        }),
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(8),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(7),
+                            rhs: Temp(0),
+                        }),
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(9),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(8),
+                            rhs: Temp(0),
+                        }),
+                        FlowInst::Mwir(Inst::ArithWrapping {
+                            dst: Temp(10),
+                            op: BinOp::AddW,
+                            ty: Type::U64,
+                            lhs: Temp(9),
+                            rhs: Temp(0),
+                        }),
+                    ],
+                    transition: Transition::Return(Some(Temp(10))),
+                },
+            ],
+        };
+        let compile = |enabled| {
+            set_flow_state_regs(enabled);
+            codegen_program_with_async(
+                &MwirProgram::default(),
+                &FlowWirProgram {
+                    fns: BTreeMap::from([(String::from("flow"), flow.clone())]),
+                },
+                &LayoutCtx::default(),
+                &BTreeMap::new(),
+                0,
+                &[],
+            )
+            .expect("Flow emission")
+        };
+        let old = flow_state_regs();
+        let plain = compile(false);
+        let cached = compile(true);
+        set_flow_state_regs(old);
+
+        let code = &cached.fns["flow"].code;
+        let flush = code
+            .iter()
+            .position(|word| word.text.starts_with("str x19, [x28"))
+            .expect("persistent t0 must flush from its state register");
+        let park = code
+            .iter()
+            .position(|word| word.text == "ret")
+            .expect("await park returns to dispatch");
+        assert!(flush < park, "flush must precede suspension");
+        assert!(
+            code.iter()
+                .skip(park + 1)
+                .any(|word| word.text.starts_with("ldr x19, [x28")),
+            "the resumed state must reload persistent t0"
+        );
+        let memory_words = |program: &CodegenProgram| {
+            program.fns["flow"]
+                .code
+                .iter()
+                .filter(|word| word.rule.is_load() || word.rule.is_store())
+                .count()
+        };
+        assert_eq!(
+            (memory_words(&plain), memory_words(&cached)),
+            (43, 24),
+            "state caching removes exactly nineteen frame accesses while retaining flush/reload"
+        );
+        crate::cost::audit::audit_program(&cached).expect("cached metadata audit");
+        let table = crate::cost::load_default().expect("cost table");
+        let placement = crate::placement::PlacementTable::default();
+        let linked_plain = crate::linked::link_wide(&plain, 0).expect("link plain");
+        let linked_cached = crate::linked::link_wide(&cached, 0).expect("link cached");
+        let plain_cycles = crate::cost::score_linked_program(&linked_plain, &table, &placement)
+            .expect("score plain")
+            .rank_cycles;
+        let cached_cycles = crate::cost::score_linked_program(&linked_cached, &table, &placement)
+            .expect("score cached")
+            .rank_cycles;
+        assert!(
+            cached_cycles < plain_cycles,
+            "{cached_cycles} vs {plain_cycles}"
+        );
     }
 
     #[test]
@@ -9759,7 +10438,7 @@ pub fn r(a: u64, b: u64) -> u64:
         assert_ne!(u0.key & (1u64 << 63), 0);
         let stable = MemRef::for_base_imm(X_A, 0);
         assert_eq!(stable.class, crate::cost::MemClass::Cold);
-        assert_eq!(stable.key & (1u64 << 63), 0);
+        assert_ne!(stable.key & (1u64 << 63), 0);
     }
 
     #[test]
@@ -9838,11 +10517,11 @@ pub fn r(a: u64, b: u64) -> u64:
     fn push_shape_untagged_load_store_helpers_unique() {
         assert!(memref_is_unique_cold(&MemRef::cold_unique(0)));
         assert!(!memref_is_unique_cold(&MemRef::stack(0)));
-        assert!(!memref_is_unique_cold(&MemRef::for_base_imm(X_A, 0)));
+        assert!(memref_is_unique_cold(&MemRef::for_base_imm(X_A, 0)));
         assert_eq!(memref_nonunique_base(&MemRef::stack(24)), Some(MEM_SP_REG));
         assert_eq!(
             memref_nonunique_base(&MemRef::for_base_imm(X_FRAME, 8)),
-            Some(X_FRAME)
+            None
         );
         assert_eq!(memref_nonunique_base(&MemRef::cold_unique(1)), None);
     }

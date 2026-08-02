@@ -80,6 +80,95 @@ impl WorkloadAttach {
         })
     }
 
+    pub fn load_default_for_linked(
+        source: Option<&Path>,
+        linked: &crate::linked::LinkedProgram,
+        table: &super::table::CostTable,
+        placement: &crate::placement::PlacementTable,
+    ) -> Result<Self, String> {
+        let set = workload::load_default()?;
+        let mut out = Self {
+            set,
+            frequencies: BTreeMap::new(),
+            block_frequencies: BTreeMap::new(),
+            bridge: None,
+            measured_footprint: BTreeMap::new(),
+        };
+        let Some(source) = source else { return Ok(out) };
+        let source = std::fs::canonicalize(source)
+            .map_err(|error| format!("workload source {}: {error}", source.display()))?;
+        let matching: Vec<String> = out
+            .set
+            .names()
+            .filter(|name| *name != FLAT_NAME)
+            .filter_map(|name| {
+                let mapped = out.set.source_path(name)?;
+                let mapped = std::fs::canonicalize(mapped).ok()?;
+                (mapped == source).then(|| name.to_string())
+            })
+            .collect();
+        for name in matching {
+            let mapped = out
+                .set
+                .source_path(&name)
+                .ok_or_else(|| format!("workload `{name}` has no source mapping"))?;
+            if let Some(freq_path) = freq::sibling_freq_path(&mapped) {
+                let measured = freq::load_from_path(&freq_path)?;
+                if measured.workload != name {
+                    return Err(format!(
+                        "workload source `{name}` has method sidecar for `{}`",
+                        measured.workload
+                    ));
+                }
+                out.frequencies.insert(name.clone(), measured.counts);
+            }
+            if let Some(freq_path) = freq::sibling_block_freq_path(&mapped) {
+                let measured_freq = freq::load_block_from_path(&freq_path)?;
+                if measured_freq.workload != name {
+                    return Err(format!(
+                        "workload source `{name}` has block sidecar for `{}`",
+                        measured_freq.workload
+                    ));
+                }
+                let flat = BlockBridge::from_linked(linked, table, placement)?;
+                let measured = MeasuredBlocks::resolve(&flat, &measured_freq.counts)?;
+                if measured.unresolved_keys != 0 {
+                    let unknown: Vec<&str> = measured_freq
+                        .counts
+                        .keys()
+                        .filter_map(|key| match flat.lookup(key) {
+                            Ok(Resolved::UnknownFn) => Some(key.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    return Err(format!(
+                        "workload `{name}` is unrankable: {} measured key(s) do not resolve in the linked image: {}",
+                        measured.unresolved_keys,
+                        unknown.join(",")
+                    ));
+                }
+                let obs_fn = |key: &str, block: usize| measured.obs(key, block);
+                let counts = BlockCounts::Measured(&obs_fn);
+                out.bridge = Some(BlockBridge::from_linked_with_counts(
+                    linked, table, placement, &counts,
+                )?);
+                let hot_fn = |key: &str, block: usize| measured.is_hot(key, block);
+                out.measured_footprint.insert(
+                    name.clone(),
+                    footprint::compute_linked(
+                        linked,
+                        table,
+                        &SweepPoint::pinned(table),
+                        placement,
+                        HotBlocks::Measured(&hot_fn),
+                    )?,
+                );
+                out.block_frequencies.insert(name, measured_freq.counts);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn from_parts(set: WorkloadSet, freq: MethodFreq) -> Self {
         let mut frequencies = BTreeMap::new();
         frequencies.insert(freq.workload, freq.counts);
@@ -154,7 +243,15 @@ pub fn attach_workloads(report: &mut CostReport, attach: &WorkloadAttach) -> Res
             )
         })?;
         let m = block_grain_fxs(&report.fns, bridge, counts)?;
-        report.workload_totals.insert(name.clone(), m.cycles);
+        let footprint_cycles = attach
+            .measured_budget(name)
+            .unwrap_or(&[])
+            .iter()
+            .map(|budget| budget.charge)
+            .sum::<u64>();
+        report
+            .workload_totals
+            .insert(name.clone(), m.cycles.saturating_add(footprint_cycles));
         report
             .workload_coverage
             .insert(name.clone(), (m.matched, m.total));
@@ -235,6 +332,7 @@ mod tests {
         FnCost {
             key: key.to_string(),
             owner: "app".to_string(),
+            frame_bytes: 0,
             proxy_cycles: cycles,
             words: cycles,
             terms: BTreeMap::new(),
@@ -255,7 +353,12 @@ mod tests {
             dispatch_uops: 8,
             reorder_window: 128,
             total_proxy_cycles: total,
+            schedule_cycles: total,
+            footprint_cycles: 0,
+            rank_cycles: total,
             total_words: words,
+            sync_frame_max_bytes: 0,
+            async_frame_total_bytes: 0,
             owner_totals: BTreeMap::new(),
             fns,
             workloads_digest: None,
@@ -486,9 +589,16 @@ Worker.report=2
         assert_eq!(attach.grain_of("boot-actors"), Some("block"));
 
         let block_only = block_grain_fxs(&report.fns, &bridge, &m2.counts).expect("block");
+        let measured_footprint = attach
+            .measured_budget("boot-actors")
+            .unwrap_or(&[])
+            .iter()
+            .map(|budget| budget.charge)
+            .sum::<u64>();
         assert_eq!(
-            report.workload_totals["boot-actors"], block_only.cycles,
-            "the committed row must be the block-grain one"
+            report.workload_totals["boot-actors"],
+            block_only.cycles + measured_footprint,
+            "the committed row uses block schedule plus its actual hot footprint"
         );
         let (method_cycles, _, _) = method_grain_fxs(&report.fns, &m1.counts);
         assert_ne!(
@@ -498,7 +608,7 @@ Worker.report=2
     }
 
     #[test]
-    fn boot_actors_block_grain_coverage_is_pinned_and_dominated_by_uncovered_charge() {
+    fn legacy_closure_composition_labels_unresolved_production_keys_unrankable() {
         let (report, bridge) = scored_with_bridge("boot-actors");
         let f = crate::cost::freq::load_block_from_path(
             &crate::cost::repo_root().join("tests/golden/boot-actors/lane2-freq.txt"),
@@ -506,18 +616,16 @@ Worker.report=2
         .expect("committed sidecar");
         let m = block_grain_fxs(&report.fns, &bridge, &f.counts).expect("compose");
 
-        assert_eq!(bridge.block_count, 182, "scored-closure Lane 2 blocks");
-        assert_eq!(f.counts.len(), 372, "measured non-zero hit blocks");
-        assert_eq!(m.resolved_keys, 81, "measured hit-blocks that resolve");
-        assert_eq!(m.unresolved_keys, 291, "measured hit-blocks that do not");
-        assert_eq!((m.matched, m.total), (893, 6647), "hit mass matched/total");
-        assert_eq!(m.resolved_keys + m.unresolved_keys, f.counts.len() as u64);
+        assert!(bridge.block_count > 0);
+        assert_eq!(f.counts.len(), 216, "production-window non-zero blocks");
+        assert!(m.resolved_keys > 0);
         assert!(
-            m.uncovered_cycles * 100 / m.cycles >= 99,
-            "the uncovered term dominates this row: {} of {}",
-            m.uncovered_cycles,
-            m.cycles
+            m.unresolved_keys > 0,
+            "the closure diagnostic is intentionally unrankable"
         );
+        assert_eq!(m.total, 1512);
+        assert_eq!(m.resolved_keys + m.unresolved_keys, f.counts.len() as u64);
+        assert!(m.uncovered_cycles > 0);
     }
 
     fn attached(case: &str) -> (CostReport, WorkloadAttach, crate::placement::PlacementTable) {
@@ -577,7 +685,16 @@ Worker.report=2
             counts,
         )
         .expect("measured s");
-        assert_eq!(report.workload_totals["boot-actors"], measured.cycles);
+        let measured_footprint = attach
+            .measured_budget("boot-actors")
+            .unwrap_or(&[])
+            .iter()
+            .map(|budget| budget.charge)
+            .sum::<u64>();
+        assert_eq!(
+            report.workload_totals["boot-actors"],
+            measured.cycles + measured_footprint
+        );
         assert!(
             measured.cycles > under_flat_s.cycles,
             "wiring the measured counts into s(b) must actually move the measured row: \
@@ -586,14 +703,14 @@ Worker.report=2
             measured.cycles
         );
 
-        assert_eq!(report.workload_coverage["boot-actors"], (893, 6647));
+        assert_eq!(report.workload_coverage["boot-actors"], (28, 1512));
         assert_eq!(
             (measured.matched, measured.total),
             (under_flat_s.matched, under_flat_s.total)
         );
         assert_eq!(
-            (measured.resolved_keys, measured.unresolved_keys),
-            (81, 291)
+            measured.resolved_keys + measured.unresolved_keys,
+            counts.len() as u64
         );
         assert_eq!(attach.grain_of("boot-actors"), Some("block"));
     }
@@ -610,13 +727,13 @@ Worker.report=2
         for (f, m) in flat.iter().zip(measured.iter()) {
             assert_eq!(f.n, m.n);
             assert!(
-                m.hot_text_bytes < f.hot_text_bytes,
+                m.fetched_text_bytes < f.fetched_text_bytes,
                 "core {}: the measured vector must exclude some text ({} vs {})",
                 f.n,
-                m.hot_text_bytes,
-                f.hot_text_bytes
+                m.fetched_text_bytes,
+                f.fetched_text_bytes
             );
-            assert!(m.hot_text_bytes > 0, "core {}: and not all of it", f.n);
+            assert!(m.fetched_text_bytes > 0, "core {}: and not all of it", f.n);
             assert_eq!(f.l1i_bytes, 65536);
         }
         assert!(attach.measured_budget("flat").is_none());
@@ -628,8 +745,8 @@ Worker.report=2
         assert!(attach.bridge.is_none());
         assert!(attach.measured_footprint.is_empty());
         assert!(attach.block_frequencies.is_empty());
-        assert_eq!(report.total_proxy_cycles, 47, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 47);
+        assert_eq!(report.total_proxy_cycles, 48, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 48);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 

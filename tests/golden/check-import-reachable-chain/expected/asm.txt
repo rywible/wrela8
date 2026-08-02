@@ -254,294 +254,276 @@ Program
     0041: f90003e9  str x9, [sp, #0]
     0042: f94003e9  ldr x9, [sp, #0]
     0043: f90007e9  str x9, [sp, #8]
-    0044: b40003e6  cbz x6, #124
+    0044: b40001a6  cbz x6, #52
     0045: d28005a6  movz x6, #0x2d
     0046: d2804307  movz x7, #0x218
     0047: f2a80007  movk x7, #0x4000, lsl #16
     0048: d2800008  movz x8, #0x0
-    0049: d28002aa  movz x10, #0x15
-    0050: eb0a011f  cmp x8, x10
-    0051: 54000203  b.cc #64
-    0052: aa0803ea  mov x10, x8
-    0053: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0054: 10000009  adr x9, rodata+0x48
-    0055: f90003e9  str x9, [sp]  ; prefix.base
-    0056: d28000c9  movz x9, #0x6
-    0057: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0058: 10000009  adr x9, rodata+0x4e
-    0059: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0060: d2800349  movz x9, #0x1a
-    0061: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0062: 910003e0  add x0, sp, #0  ; *prefix
-    0063: aa0a03e1  mov x1, x10
-    0064: d2800002  movz x2, #0x0
-    0065: 910043e3  add x3, sp, #16  ; *suffix
-    0066: 94000000  bl <__wrela_abort_val>
-    0067: aa0703eb  mov x11, x7
-    0068: d280002c  movz x12, #0x1
-    0069: 9b0c7d0d  mul x13, x8, x12
-    0070: 8b0d016b  add x11, x11, x13
-    0071: 39000166  strb w6, [x11, #0]
-    0072: d2800026  movz x6, #0x1
-    0073: f90007e6  str x6, [sp, #8]
-    0074: 14000001  b #4
-    0075: f94007e6  ldr x6, [sp, #8]
-    0076: d2800007  movz x7, #0x0
-    0077: eb0700bf  cmp x5, x7
-    0078: 9a9f17e8  cset x8, eq
-    0079: b4000448  cbz x8, #136
-    0080: d2800607  movz x7, #0x30
-    0081: d2804308  movz x8, #0x218
-    0082: f2a80008  movk x8, #0x4000, lsl #16
-    0083: f94007e9  ldr x9, [sp, #8]
-    0084: d28002aa  movz x10, #0x15
-    0085: eb0a013f  cmp x9, x10
-    0086: 54000203  b.cc #64
-    0087: aa0903ea  mov x10, x9
-    0088: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0089: 10000009  adr x9, rodata+0x48
-    0090: f90003e9  str x9, [sp]  ; prefix.base
-    0091: d28000c9  movz x9, #0x6
-    0092: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0093: 10000009  adr x9, rodata+0x4e
-    0094: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0095: d2800349  movz x9, #0x1a
-    0096: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0097: 910003e0  add x0, sp, #0  ; *prefix
-    0098: aa0a03e1  mov x1, x10
-    0099: d2800002  movz x2, #0x0
-    0100: 910043e3  add x3, sp, #16  ; *suffix
-    0101: 94000000  bl <__wrela_abort_val>
-    0102: aa0803eb  mov x11, x8
-    0103: d280002c  movz x12, #0x1
-    0104: 9b0c7d2d  mul x13, x9, x12
-    0105: 8b0d016b  add x11, x11, x13
-    0106: 39000167  strb w7, [x11, #0]
-    0107: d2800027  movz x7, #0x1
-    0108: f94007e9  ldr x9, [sp, #8]
-    0109: 8b070120  add x0, x9, x7
-    0110: aa0003e0  mov x0, x0
-    0111: 140000da  b #872
-    0112: 14000001  b #4
-    0113: d2800007  movz x7, #0x0
-    0114: d2800008  movz x8, #0x0
-    0115: eb0800bf  cmp x5, x8
-    0116: 9a9f07ef  cset x15, ne
-    0117: b400094f  cbz x15, #296
-    0118: d2800030  movz x16, #0x1
-    0119: 8b1000f1  add x17, x7, x16
-    0120: aa1103e7  mov x7, x17
-    0121: d2800293  movz x19, #0x14
-    0122: eb1300ff  cmp x7, x19
-    0123: 9a9fc7f4  cset x20, le
-    0124: b4000054  cbz x20, #8
-    0125: 14000008  b #32
-    0126: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0127: 10000009  adr x9, rodata+0x68
-    0128: f90003e9  str x9, [sp]  ; Bytes.base
-    0129: d28004c9  movz x9, #0x26
-    0130: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0131: 910003e0  add x0, sp, #0  ; *Bytes
-    0132: 94000000  bl <__wrela_abort>
-    0133: d2800155  movz x21, #0xa
-    0134: eb1f02bf  cmp x21, xzr
-    0135: 54000101  b.ne #32
-    0136: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0137: 10000009  adr x9, rodata+0x8e
-    0138: f90003e9  str x9, [sp]  ; Bytes.base
-    0139: d2800229  movz x9, #0x11
-    0140: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0141: 910003e0  add x0, sp, #0  ; *Bytes
-    0142: 94000000  bl <__wrela_abort>
-    0143: 9ad508b6  udiv x22, x5, x21
-    0144: 9b1596d6  msub x22, x22, x21, x5
-    0145: aa1603e0  mov x0, x22
-    0146: 94000000  bl <ascii_digit>
-    0147: aa0003f7  mov x23, x0
-    0148: d2804318  movz x24, #0x218
-    0149: f2a80018  movk x24, #0x4000, lsl #16
-    0150: f94007e9  ldr x9, [sp, #8]
-    0151: d28002aa  movz x10, #0x15
-    0152: eb0a013f  cmp x9, x10
-    0153: 54000203  b.cc #64
-    0154: aa0903ea  mov x10, x9
-    0155: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0156: 10000009  adr x9, rodata+0x48
-    0157: f90003e9  str x9, [sp]  ; prefix.base
-    0158: d28000c9  movz x9, #0x6
-    0159: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0160: 10000009  adr x9, rodata+0x4e
-    0161: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0162: d2800349  movz x9, #0x1a
-    0163: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0164: 910003e0  add x0, sp, #0  ; *prefix
-    0165: aa0a03e1  mov x1, x10
-    0166: d2800002  movz x2, #0x0
-    0167: 910043e3  add x3, sp, #16  ; *suffix
-    0168: 94000000  bl <__wrela_abort_val>
-    0169: aa1803eb  mov x11, x24
-    0170: d280002c  movz x12, #0x1
-    0171: 9b0c7d2d  mul x13, x9, x12
-    0172: 8b0d016b  add x11, x11, x13
-    0173: 39000177  strb w23, [x11, #0]
-    0174: d2800159  movz x25, #0xa
-    0175: eb1f033f  cmp x25, xzr
-    0176: 54000101  b.ne #32
-    0177: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0178: 10000009  adr x9, rodata+0x9f
-    0179: f90003e9  str x9, [sp]  ; Bytes.base
-    0180: d2800209  movz x9, #0x10
-    0181: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0182: 910003e0  add x0, sp, #0  ; *Bytes
-    0183: 94000000  bl <__wrela_abort>
-    0184: 9ad908ba  udiv x26, x5, x25
-    0185: aa1a03e5  mov x5, x26
-    0186: d280003b  movz x27, #0x1
-    0187: f94007e9  ldr x9, [sp, #8]
-    0188: 8b1b0124  add x4, x9, x27
-    0189: f90007e4  str x4, [sp, #8]
-    0190: 17ffffb4  b #-304
-    0191: d2800024  movz x4, #0x1
-    0192: f94007e9  ldr x9, [sp, #8]
-    0193: cb040125  sub x5, x9, x4
-    0194: d2800004  movz x4, #0x0
-    0195: eb0500df  cmp x6, x5
-    0196: 9a9fa7e7  cset x7, lt
-    0197: b4000fe7  cbz x7, #508
-    0198: d2800028  movz x8, #0x1
-    0199: 8b08008f  add x15, x4, x8
-    0200: aa0f03e4  mov x4, x15
-    0201: d2800150  movz x16, #0xa
-    0202: eb10009f  cmp x4, x16
-    0203: 9a9fc7f1  cset x17, le
-    0204: b4000051  cbz x17, #8
-    0205: 14000008  b #32
-    0206: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0207: 10000009  adr x9, rodata+0x68
-    0208: f90003e9  str x9, [sp]  ; Bytes.base
-    0209: d28004c9  movz x9, #0x26
-    0210: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0211: 910003e0  add x0, sp, #0  ; *Bytes
-    0212: 94000000  bl <__wrela_abort>
-    0213: d2804313  movz x19, #0x218
-    0214: f2a80013  movk x19, #0x4000, lsl #16
-    0215: d28002aa  movz x10, #0x15
-    0216: eb0a00df  cmp x6, x10
-    0217: 54000203  b.cc #64
-    0218: aa0603ea  mov x10, x6
-    0219: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0220: 10000009  adr x9, rodata+0x48
-    0221: f90003e9  str x9, [sp]  ; prefix.base
-    0222: d28000c9  movz x9, #0x6
-    0223: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0224: 10000009  adr x9, rodata+0x4e
-    0225: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0226: d2800349  movz x9, #0x1a
-    0227: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0228: 910003e0  add x0, sp, #0  ; *prefix
-    0229: aa0a03e1  mov x1, x10
-    0230: d2800002  movz x2, #0x0
-    0231: 910043e3  add x3, sp, #16  ; *suffix
-    0232: 94000000  bl <__wrela_abort_val>
-    0233: aa1303eb  mov x11, x19
-    0234: d280002c  movz x12, #0x1
-    0235: 9b0c7ccd  mul x13, x6, x12
-    0236: 8b0d016b  add x11, x11, x13
-    0237: 39400174  ldrb w20, [x11, #0]
-    0238: aa1403f5  mov x21, x20
-    0239: d2804316  movz x22, #0x218
-    0240: f2a80016  movk x22, #0x4000, lsl #16
-    0241: d28002aa  movz x10, #0x15
-    0242: eb0a00bf  cmp x5, x10
-    0243: 54000203  b.cc #64
-    0244: aa0503ea  mov x10, x5
-    0245: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0246: 10000009  adr x9, rodata+0x48
-    0247: f90003e9  str x9, [sp]  ; prefix.base
-    0248: d28000c9  movz x9, #0x6
-    0249: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0250: 10000009  adr x9, rodata+0x4e
-    0251: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0252: d2800349  movz x9, #0x1a
-    0253: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0254: 910003e0  add x0, sp, #0  ; *prefix
-    0255: aa0a03e1  mov x1, x10
-    0256: d2800002  movz x2, #0x0
-    0257: 910043e3  add x3, sp, #16  ; *suffix
-    0258: 94000000  bl <__wrela_abort_val>
-    0259: aa1603eb  mov x11, x22
-    0260: d280002c  movz x12, #0x1
-    0261: 9b0c7cad  mul x13, x5, x12
-    0262: 8b0d016b  add x11, x11, x13
-    0263: 39400177  ldrb w23, [x11, #0]
-    0264: d2804318  movz x24, #0x218
-    0265: f2a80018  movk x24, #0x4000, lsl #16
-    0266: d28002aa  movz x10, #0x15
-    0267: eb0a00df  cmp x6, x10
-    0268: 54000203  b.cc #64
-    0269: aa0603ea  mov x10, x6
-    0270: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0271: 10000009  adr x9, rodata+0x48
-    0272: f90003e9  str x9, [sp]  ; prefix.base
-    0273: d28000c9  movz x9, #0x6
-    0274: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0275: 10000009  adr x9, rodata+0x4e
-    0276: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0277: d2800349  movz x9, #0x1a
-    0278: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0279: 910003e0  add x0, sp, #0  ; *prefix
-    0280: aa0a03e1  mov x1, x10
-    0281: d2800002  movz x2, #0x0
-    0282: 910043e3  add x3, sp, #16  ; *suffix
-    0283: 94000000  bl <__wrela_abort_val>
-    0284: aa1803eb  mov x11, x24
-    0285: d280002c  movz x12, #0x1
-    0286: 9b0c7ccd  mul x13, x6, x12
-    0287: 8b0d016b  add x11, x11, x13
-    0288: 39000177  strb w23, [x11, #0]
-    0289: d2804319  movz x25, #0x218
-    0290: f2a80019  movk x25, #0x4000, lsl #16
-    0291: d28002aa  movz x10, #0x15
-    0292: eb0a00bf  cmp x5, x10
-    0293: 54000203  b.cc #64
-    0294: aa0503ea  mov x10, x5
-    0295: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0296: 10000009  adr x9, rodata+0x48
-    0297: f90003e9  str x9, [sp]  ; prefix.base
-    0298: d28000c9  movz x9, #0x6
-    0299: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0300: 10000009  adr x9, rodata+0x4e
-    0301: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0302: d2800349  movz x9, #0x1a
-    0303: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0304: 910003e0  add x0, sp, #0  ; *prefix
-    0305: aa0a03e1  mov x1, x10
-    0306: d2800002  movz x2, #0x0
-    0307: 910043e3  add x3, sp, #16  ; *suffix
-    0308: 94000000  bl <__wrela_abort_val>
-    0309: aa1903eb  mov x11, x25
-    0310: d280002c  movz x12, #0x1
-    0311: 9b0c7cad  mul x13, x5, x12
-    0312: 8b0d016b  add x11, x11, x13
-    0313: 39000175  strb w21, [x11, #0]
-    0314: d280003a  movz x26, #0x1
-    0315: 8b1a00db  add x27, x6, x26
-    0316: aa1b03e6  mov x6, x27
-    0317: d2800029  movz x9, #0x1
-    0318: f9000be9  str x9, [sp, #16]
-    0319: f9400bea  ldr x10, [sp, #16]
-    0320: cb0a00ab  sub x11, x5, x10
-    0321: f9000feb  str x11, [sp, #24]
-    0322: f9400fe5  ldr x5, [sp, #24]
-    0323: 17ffff80  b #-512
-    0324: f94007e9  ldr x9, [sp, #8]
-    0325: aa0903eb  mov x11, x9
-    0326: f90013eb  str x11, [sp, #32]
-    0327: f94013e0  ldr x0, [sp, #32]
-    0328: 14000001  b #4
-    0329: f94017fe  ldr lr, [sp, #40]
-    0330: 9100c3ff  add sp, sp, #48
-    0331: d65f03c0  ret
+    0049: aa0703eb  mov x11, x7
+    0050: d280002c  movz x12, #0x1
+    0051: 9b0c7d0d  mul x13, x8, x12
+    0052: 8b0d016b  add x11, x11, x13
+    0053: 39000166  strb w6, [x11, #0]
+    0054: d2800026  movz x6, #0x1
+    0055: f90007e6  str x6, [sp, #8]
+    0056: 14000001  b #4
+    0057: f94007e6  ldr x6, [sp, #8]
+    0058: d2800007  movz x7, #0x0
+    0059: eb0700bf  cmp x5, x7
+    0060: 9a9f17e8  cset x8, eq
+    0061: b4000448  cbz x8, #136
+    0062: d2800607  movz x7, #0x30
+    0063: d2804308  movz x8, #0x218
+    0064: f2a80008  movk x8, #0x4000, lsl #16
+    0065: f94007e9  ldr x9, [sp, #8]
+    0066: d28002aa  movz x10, #0x15
+    0067: eb0a013f  cmp x9, x10
+    0068: 54000203  b.cc #64
+    0069: aa0903ea  mov x10, x9
+    0070: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0071: 10000009  adr x9, rodata+0x48
+    0072: f90003e9  str x9, [sp]  ; prefix.base
+    0073: d28000c9  movz x9, #0x6
+    0074: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0075: 10000009  adr x9, rodata+0x4e
+    0076: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0077: d2800349  movz x9, #0x1a
+    0078: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0079: 910003e0  add x0, sp, #0  ; *prefix
+    0080: aa0a03e1  mov x1, x10
+    0081: d2800002  movz x2, #0x0
+    0082: 910043e3  add x3, sp, #16  ; *suffix
+    0083: 94000000  bl <__wrela_abort_val>
+    0084: aa0803eb  mov x11, x8
+    0085: d280002c  movz x12, #0x1
+    0086: 9b0c7d2d  mul x13, x9, x12
+    0087: 8b0d016b  add x11, x11, x13
+    0088: 39000167  strb w7, [x11, #0]
+    0089: d2800027  movz x7, #0x1
+    0090: f94007e9  ldr x9, [sp, #8]
+    0091: 8b070120  add x0, x9, x7
+    0092: aa0003e0  mov x0, x0
+    0093: 140000da  b #872
+    0094: 14000001  b #4
+    0095: d2800007  movz x7, #0x0
+    0096: d2800008  movz x8, #0x0
+    0097: eb0800bf  cmp x5, x8
+    0098: 9a9f07ef  cset x15, ne
+    0099: b400094f  cbz x15, #296
+    0100: d2800030  movz x16, #0x1
+    0101: 8b1000f1  add x17, x7, x16
+    0102: aa1103e7  mov x7, x17
+    0103: d2800293  movz x19, #0x14
+    0104: eb1300ff  cmp x7, x19
+    0105: 9a9fc7f4  cset x20, le
+    0106: b4000054  cbz x20, #8
+    0107: 14000008  b #32
+    0108: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0109: 10000009  adr x9, rodata+0x68
+    0110: f90003e9  str x9, [sp]  ; Bytes.base
+    0111: d28004c9  movz x9, #0x26
+    0112: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0113: 910003e0  add x0, sp, #0  ; *Bytes
+    0114: 94000000  bl <__wrela_abort>
+    0115: d2800155  movz x21, #0xa
+    0116: eb1f02bf  cmp x21, xzr
+    0117: 54000101  b.ne #32
+    0118: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0119: 10000009  adr x9, rodata+0x8e
+    0120: f90003e9  str x9, [sp]  ; Bytes.base
+    0121: d2800229  movz x9, #0x11
+    0122: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0123: 910003e0  add x0, sp, #0  ; *Bytes
+    0124: 94000000  bl <__wrela_abort>
+    0125: 9ad508b6  udiv x22, x5, x21
+    0126: 9b1596d6  msub x22, x22, x21, x5
+    0127: aa1603e0  mov x0, x22
+    0128: 94000000  bl <ascii_digit>
+    0129: aa0003f7  mov x23, x0
+    0130: d2804318  movz x24, #0x218
+    0131: f2a80018  movk x24, #0x4000, lsl #16
+    0132: f94007e9  ldr x9, [sp, #8]
+    0133: d28002aa  movz x10, #0x15
+    0134: eb0a013f  cmp x9, x10
+    0135: 54000203  b.cc #64
+    0136: aa0903ea  mov x10, x9
+    0137: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0138: 10000009  adr x9, rodata+0x48
+    0139: f90003e9  str x9, [sp]  ; prefix.base
+    0140: d28000c9  movz x9, #0x6
+    0141: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0142: 10000009  adr x9, rodata+0x4e
+    0143: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0144: d2800349  movz x9, #0x1a
+    0145: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0146: 910003e0  add x0, sp, #0  ; *prefix
+    0147: aa0a03e1  mov x1, x10
+    0148: d2800002  movz x2, #0x0
+    0149: 910043e3  add x3, sp, #16  ; *suffix
+    0150: 94000000  bl <__wrela_abort_val>
+    0151: aa1803eb  mov x11, x24
+    0152: d280002c  movz x12, #0x1
+    0153: 9b0c7d2d  mul x13, x9, x12
+    0154: 8b0d016b  add x11, x11, x13
+    0155: 39000177  strb w23, [x11, #0]
+    0156: d2800159  movz x25, #0xa
+    0157: eb1f033f  cmp x25, xzr
+    0158: 54000101  b.ne #32
+    0159: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0160: 10000009  adr x9, rodata+0x9f
+    0161: f90003e9  str x9, [sp]  ; Bytes.base
+    0162: d2800209  movz x9, #0x10
+    0163: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0164: 910003e0  add x0, sp, #0  ; *Bytes
+    0165: 94000000  bl <__wrela_abort>
+    0166: 9ad908ba  udiv x26, x5, x25
+    0167: aa1a03e5  mov x5, x26
+    0168: d280003b  movz x27, #0x1
+    0169: f94007e9  ldr x9, [sp, #8]
+    0170: 8b1b0124  add x4, x9, x27
+    0171: f90007e4  str x4, [sp, #8]
+    0172: 17ffffb4  b #-304
+    0173: d2800024  movz x4, #0x1
+    0174: f94007e9  ldr x9, [sp, #8]
+    0175: cb040125  sub x5, x9, x4
+    0176: d2800004  movz x4, #0x0
+    0177: eb0500df  cmp x6, x5
+    0178: 9a9fa7e7  cset x7, lt
+    0179: b4000fe7  cbz x7, #508
+    0180: d2800028  movz x8, #0x1
+    0181: 8b08008f  add x15, x4, x8
+    0182: aa0f03e4  mov x4, x15
+    0183: d2800150  movz x16, #0xa
+    0184: eb10009f  cmp x4, x16
+    0185: 9a9fc7f1  cset x17, le
+    0186: b4000051  cbz x17, #8
+    0187: 14000008  b #32
+    0188: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0189: 10000009  adr x9, rodata+0x68
+    0190: f90003e9  str x9, [sp]  ; Bytes.base
+    0191: d28004c9  movz x9, #0x26
+    0192: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0193: 910003e0  add x0, sp, #0  ; *Bytes
+    0194: 94000000  bl <__wrela_abort>
+    0195: d2804313  movz x19, #0x218
+    0196: f2a80013  movk x19, #0x4000, lsl #16
+    0197: d28002aa  movz x10, #0x15
+    0198: eb0a00df  cmp x6, x10
+    0199: 54000203  b.cc #64
+    0200: aa0603ea  mov x10, x6
+    0201: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0202: 10000009  adr x9, rodata+0x48
+    0203: f90003e9  str x9, [sp]  ; prefix.base
+    0204: d28000c9  movz x9, #0x6
+    0205: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0206: 10000009  adr x9, rodata+0x4e
+    0207: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0208: d2800349  movz x9, #0x1a
+    0209: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0210: 910003e0  add x0, sp, #0  ; *prefix
+    0211: aa0a03e1  mov x1, x10
+    0212: d2800002  movz x2, #0x0
+    0213: 910043e3  add x3, sp, #16  ; *suffix
+    0214: 94000000  bl <__wrela_abort_val>
+    0215: aa1303eb  mov x11, x19
+    0216: d280002c  movz x12, #0x1
+    0217: 9b0c7ccd  mul x13, x6, x12
+    0218: 8b0d016b  add x11, x11, x13
+    0219: 39400174  ldrb w20, [x11, #0]
+    0220: aa1403f5  mov x21, x20
+    0221: d2804316  movz x22, #0x218
+    0222: f2a80016  movk x22, #0x4000, lsl #16
+    0223: d28002aa  movz x10, #0x15
+    0224: eb0a00bf  cmp x5, x10
+    0225: 54000203  b.cc #64
+    0226: aa0503ea  mov x10, x5
+    0227: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0228: 10000009  adr x9, rodata+0x48
+    0229: f90003e9  str x9, [sp]  ; prefix.base
+    0230: d28000c9  movz x9, #0x6
+    0231: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0232: 10000009  adr x9, rodata+0x4e
+    0233: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0234: d2800349  movz x9, #0x1a
+    0235: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0236: 910003e0  add x0, sp, #0  ; *prefix
+    0237: aa0a03e1  mov x1, x10
+    0238: d2800002  movz x2, #0x0
+    0239: 910043e3  add x3, sp, #16  ; *suffix
+    0240: 94000000  bl <__wrela_abort_val>
+    0241: aa1603eb  mov x11, x22
+    0242: d280002c  movz x12, #0x1
+    0243: 9b0c7cad  mul x13, x5, x12
+    0244: 8b0d016b  add x11, x11, x13
+    0245: 39400177  ldrb w23, [x11, #0]
+    0246: d2804318  movz x24, #0x218
+    0247: f2a80018  movk x24, #0x4000, lsl #16
+    0248: d28002aa  movz x10, #0x15
+    0249: eb0a00df  cmp x6, x10
+    0250: 54000203  b.cc #64
+    0251: aa0603ea  mov x10, x6
+    0252: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0253: 10000009  adr x9, rodata+0x48
+    0254: f90003e9  str x9, [sp]  ; prefix.base
+    0255: d28000c9  movz x9, #0x6
+    0256: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0257: 10000009  adr x9, rodata+0x4e
+    0258: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0259: d2800349  movz x9, #0x1a
+    0260: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0261: 910003e0  add x0, sp, #0  ; *prefix
+    0262: aa0a03e1  mov x1, x10
+    0263: d2800002  movz x2, #0x0
+    0264: 910043e3  add x3, sp, #16  ; *suffix
+    0265: 94000000  bl <__wrela_abort_val>
+    0266: aa1803eb  mov x11, x24
+    0267: d280002c  movz x12, #0x1
+    0268: 9b0c7ccd  mul x13, x6, x12
+    0269: 8b0d016b  add x11, x11, x13
+    0270: 39000177  strb w23, [x11, #0]
+    0271: d2804319  movz x25, #0x218
+    0272: f2a80019  movk x25, #0x4000, lsl #16
+    0273: d28002aa  movz x10, #0x15
+    0274: eb0a00bf  cmp x5, x10
+    0275: 54000203  b.cc #64
+    0276: aa0503ea  mov x10, x5
+    0277: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0278: 10000009  adr x9, rodata+0x48
+    0279: f90003e9  str x9, [sp]  ; prefix.base
+    0280: d28000c9  movz x9, #0x6
+    0281: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0282: 10000009  adr x9, rodata+0x4e
+    0283: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0284: d2800349  movz x9, #0x1a
+    0285: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0286: 910003e0  add x0, sp, #0  ; *prefix
+    0287: aa0a03e1  mov x1, x10
+    0288: d2800002  movz x2, #0x0
+    0289: 910043e3  add x3, sp, #16  ; *suffix
+    0290: 94000000  bl <__wrela_abort_val>
+    0291: aa1903eb  mov x11, x25
+    0292: d280002c  movz x12, #0x1
+    0293: 9b0c7cad  mul x13, x5, x12
+    0294: 8b0d016b  add x11, x11, x13
+    0295: 39000175  strb w21, [x11, #0]
+    0296: d280003a  movz x26, #0x1
+    0297: 8b1a00db  add x27, x6, x26
+    0298: aa1b03e6  mov x6, x27
+    0299: d2800029  movz x9, #0x1
+    0300: f9000be9  str x9, [sp, #16]
+    0301: f9400bea  ldr x10, [sp, #16]
+    0302: cb0a00ab  sub x11, x5, x10
+    0303: f9000feb  str x11, [sp, #24]
+    0304: f9400fe5  ldr x5, [sp, #24]
+    0305: 17ffff80  b #-512
+    0306: f94007e9  ldr x9, [sp, #8]
+    0307: aa0903eb  mov x11, x9
+    0308: f90013eb  str x11, [sp, #32]
+    0309: f94013e0  ldr x0, [sp, #32]
+    0310: 14000001  b #4
+    0311: f94017fe  ldr lr, [sp, #40]
+    0312: 9100c3ff  add sp, sp, #48
+    0313: d65f03c0  ret
   Fn key=__wrela_line_begin frame=0 bytes
     0000: d2a80000  movz x0, #0x4000, lsl #16
     0001: f9402800  ldr x0, [x0, #80]
@@ -659,241 +641,97 @@ Program
   Fn key=append_failed_literal frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
-    0002: d28008c4  movz x4, #0x46
-    0003: d2804305  movz x5, #0x218
-    0004: f2a80005  movk x5, #0x4000, lsl #16
-    0005: d2800006  movz x6, #0x0
-    0006: d28002aa  movz x10, #0x15
-    0007: eb0a00df  cmp x6, x10
-    0008: 54000203  b.cc #64
-    0009: aa0603ea  mov x10, x6
-    0010: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0011: 10000009  adr x9, rodata+0x48
-    0012: f90003e9  str x9, [sp]  ; prefix.base
-    0013: d28000c9  movz x9, #0x6
-    0014: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0015: 10000009  adr x9, rodata+0x4e
-    0016: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0017: d2800349  movz x9, #0x1a
-    0018: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0019: 910003e0  add x0, sp, #0  ; *prefix
-    0020: aa0a03e1  mov x1, x10
-    0021: d2800002  movz x2, #0x0
-    0022: 910043e3  add x3, sp, #16  ; *suffix
-    0023: 94000000  bl <__wrela_abort_val>
-    0024: aa0503eb  mov x11, x5
+    0002: d28008c1  movz x1, #0x46
+    0003: d2804302  movz x2, #0x218
+    0004: f2a80002  movk x2, #0x4000, lsl #16
+    0005: d2800003  movz x3, #0x0
+    0006: aa0203eb  mov x11, x2
+    0007: d280002c  movz x12, #0x1
+    0008: 9b0c7c6d  mul x13, x3, x12
+    0009: 8b0d016b  add x11, x11, x13
+    0010: 39000161  strb w1, [x11, #0]
+    0011: d2800821  movz x1, #0x41
+    0012: d2804302  movz x2, #0x218
+    0013: f2a80002  movk x2, #0x4000, lsl #16
+    0014: d2800023  movz x3, #0x1
+    0015: aa0203eb  mov x11, x2
+    0016: d280002c  movz x12, #0x1
+    0017: 9b0c7c6d  mul x13, x3, x12
+    0018: 8b0d016b  add x11, x11, x13
+    0019: 39000161  strb w1, [x11, #0]
+    0020: d2800921  movz x1, #0x49
+    0021: d2804302  movz x2, #0x218
+    0022: f2a80002  movk x2, #0x4000, lsl #16
+    0023: d2800043  movz x3, #0x2
+    0024: aa0203eb  mov x11, x2
     0025: d280002c  movz x12, #0x1
-    0026: 9b0c7ccd  mul x13, x6, x12
+    0026: 9b0c7c6d  mul x13, x3, x12
     0027: 8b0d016b  add x11, x11, x13
-    0028: 39000164  strb w4, [x11, #0]
-    0029: d2800824  movz x4, #0x41
-    0030: d2804305  movz x5, #0x218
-    0031: f2a80005  movk x5, #0x4000, lsl #16
-    0032: d2800026  movz x6, #0x1
-    0033: d28002aa  movz x10, #0x15
-    0034: eb0a00df  cmp x6, x10
-    0035: 54000203  b.cc #64
-    0036: aa0603ea  mov x10, x6
-    0037: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0038: 10000009  adr x9, rodata+0x48
-    0039: f90003e9  str x9, [sp]  ; prefix.base
-    0040: d28000c9  movz x9, #0x6
-    0041: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0042: 10000009  adr x9, rodata+0x4e
-    0043: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0044: d2800349  movz x9, #0x1a
-    0045: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0046: 910003e0  add x0, sp, #0  ; *prefix
-    0047: aa0a03e1  mov x1, x10
-    0048: d2800002  movz x2, #0x0
-    0049: 910043e3  add x3, sp, #16  ; *suffix
-    0050: 94000000  bl <__wrela_abort_val>
-    0051: aa0503eb  mov x11, x5
+    0028: 39000161  strb w1, [x11, #0]
+    0029: d2800981  movz x1, #0x4c
+    0030: d2804302  movz x2, #0x218
+    0031: f2a80002  movk x2, #0x4000, lsl #16
+    0032: d2800063  movz x3, #0x3
+    0033: aa0203eb  mov x11, x2
+    0034: d280002c  movz x12, #0x1
+    0035: 9b0c7c6d  mul x13, x3, x12
+    0036: 8b0d016b  add x11, x11, x13
+    0037: 39000161  strb w1, [x11, #0]
+    0038: d28008a1  movz x1, #0x45
+    0039: d2804302  movz x2, #0x218
+    0040: f2a80002  movk x2, #0x4000, lsl #16
+    0041: d2800083  movz x3, #0x4
+    0042: aa0203eb  mov x11, x2
+    0043: d280002c  movz x12, #0x1
+    0044: 9b0c7c6d  mul x13, x3, x12
+    0045: 8b0d016b  add x11, x11, x13
+    0046: 39000161  strb w1, [x11, #0]
+    0047: d2800881  movz x1, #0x44
+    0048: d2804302  movz x2, #0x218
+    0049: f2a80002  movk x2, #0x4000, lsl #16
+    0050: d28000a3  movz x3, #0x5
+    0051: aa0203eb  mov x11, x2
     0052: d280002c  movz x12, #0x1
-    0053: 9b0c7ccd  mul x13, x6, x12
+    0053: 9b0c7c6d  mul x13, x3, x12
     0054: 8b0d016b  add x11, x11, x13
-    0055: 39000164  strb w4, [x11, #0]
-    0056: d2800924  movz x4, #0x49
-    0057: d2804305  movz x5, #0x218
-    0058: f2a80005  movk x5, #0x4000, lsl #16
-    0059: d2800046  movz x6, #0x2
-    0060: d28002aa  movz x10, #0x15
-    0061: eb0a00df  cmp x6, x10
-    0062: 54000203  b.cc #64
-    0063: aa0603ea  mov x10, x6
-    0064: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0065: 10000009  adr x9, rodata+0x48
-    0066: f90003e9  str x9, [sp]  ; prefix.base
-    0067: d28000c9  movz x9, #0x6
-    0068: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0069: 10000009  adr x9, rodata+0x4e
-    0070: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0071: d2800349  movz x9, #0x1a
-    0072: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0073: 910003e0  add x0, sp, #0  ; *prefix
-    0074: aa0a03e1  mov x1, x10
-    0075: d2800002  movz x2, #0x0
-    0076: 910043e3  add x3, sp, #16  ; *suffix
-    0077: 94000000  bl <__wrela_abort_val>
-    0078: aa0503eb  mov x11, x5
-    0079: d280002c  movz x12, #0x1
-    0080: 9b0c7ccd  mul x13, x6, x12
-    0081: 8b0d016b  add x11, x11, x13
-    0082: 39000164  strb w4, [x11, #0]
-    0083: d2800984  movz x4, #0x4c
-    0084: d2804305  movz x5, #0x218
-    0085: f2a80005  movk x5, #0x4000, lsl #16
-    0086: d2800066  movz x6, #0x3
-    0087: d28002aa  movz x10, #0x15
-    0088: eb0a00df  cmp x6, x10
-    0089: 54000203  b.cc #64
-    0090: aa0603ea  mov x10, x6
-    0091: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0092: 10000009  adr x9, rodata+0x48
-    0093: f90003e9  str x9, [sp]  ; prefix.base
-    0094: d28000c9  movz x9, #0x6
-    0095: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0096: 10000009  adr x9, rodata+0x4e
-    0097: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0098: d2800349  movz x9, #0x1a
-    0099: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0100: 910003e0  add x0, sp, #0  ; *prefix
-    0101: aa0a03e1  mov x1, x10
-    0102: d2800002  movz x2, #0x0
-    0103: 910043e3  add x3, sp, #16  ; *suffix
-    0104: 94000000  bl <__wrela_abort_val>
-    0105: aa0503eb  mov x11, x5
-    0106: d280002c  movz x12, #0x1
-    0107: 9b0c7ccd  mul x13, x6, x12
-    0108: 8b0d016b  add x11, x11, x13
-    0109: 39000164  strb w4, [x11, #0]
-    0110: d28008a4  movz x4, #0x45
-    0111: d2804305  movz x5, #0x218
-    0112: f2a80005  movk x5, #0x4000, lsl #16
-    0113: d2800086  movz x6, #0x4
-    0114: d28002aa  movz x10, #0x15
-    0115: eb0a00df  cmp x6, x10
-    0116: 54000203  b.cc #64
-    0117: aa0603ea  mov x10, x6
-    0118: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0119: 10000009  adr x9, rodata+0x48
-    0120: f90003e9  str x9, [sp]  ; prefix.base
-    0121: d28000c9  movz x9, #0x6
-    0122: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0123: 10000009  adr x9, rodata+0x4e
-    0124: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0125: d2800349  movz x9, #0x1a
-    0126: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0127: 910003e0  add x0, sp, #0  ; *prefix
-    0128: aa0a03e1  mov x1, x10
-    0129: d2800002  movz x2, #0x0
-    0130: 910043e3  add x3, sp, #16  ; *suffix
-    0131: 94000000  bl <__wrela_abort_val>
-    0132: aa0503eb  mov x11, x5
-    0133: d280002c  movz x12, #0x1
-    0134: 9b0c7ccd  mul x13, x6, x12
-    0135: 8b0d016b  add x11, x11, x13
-    0136: 39000164  strb w4, [x11, #0]
-    0137: d2800884  movz x4, #0x44
-    0138: d2804305  movz x5, #0x218
-    0139: f2a80005  movk x5, #0x4000, lsl #16
-    0140: d28000a6  movz x6, #0x5
-    0141: d28002aa  movz x10, #0x15
-    0142: eb0a00df  cmp x6, x10
-    0143: 54000203  b.cc #64
-    0144: aa0603ea  mov x10, x6
-    0145: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0146: 10000009  adr x9, rodata+0x48
-    0147: f90003e9  str x9, [sp]  ; prefix.base
-    0148: d28000c9  movz x9, #0x6
-    0149: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0150: 10000009  adr x9, rodata+0x4e
-    0151: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0152: d2800349  movz x9, #0x1a
-    0153: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0154: 910003e0  add x0, sp, #0  ; *prefix
-    0155: aa0a03e1  mov x1, x10
-    0156: d2800002  movz x2, #0x0
-    0157: 910043e3  add x3, sp, #16  ; *suffix
-    0158: 94000000  bl <__wrela_abort_val>
-    0159: aa0503eb  mov x11, x5
-    0160: d280002c  movz x12, #0x1
-    0161: 9b0c7ccd  mul x13, x6, x12
-    0162: 8b0d016b  add x11, x11, x13
-    0163: 39000164  strb w4, [x11, #0]
-    0164: d2800404  movz x4, #0x20
-    0165: d2804305  movz x5, #0x218
-    0166: f2a80005  movk x5, #0x4000, lsl #16
-    0167: d28000c6  movz x6, #0x6
-    0168: d28002aa  movz x10, #0x15
-    0169: eb0a00df  cmp x6, x10
-    0170: 54000203  b.cc #64
-    0171: aa0603ea  mov x10, x6
-    0172: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0173: 10000009  adr x9, rodata+0x48
-    0174: f90003e9  str x9, [sp]  ; prefix.base
-    0175: d28000c9  movz x9, #0x6
-    0176: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0177: 10000009  adr x9, rodata+0x4e
-    0178: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0179: d2800349  movz x9, #0x1a
-    0180: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0181: 910003e0  add x0, sp, #0  ; *prefix
-    0182: aa0a03e1  mov x1, x10
-    0183: d2800002  movz x2, #0x0
-    0184: 910043e3  add x3, sp, #16  ; *suffix
-    0185: 94000000  bl <__wrela_abort_val>
-    0186: aa0503eb  mov x11, x5
-    0187: d280002c  movz x12, #0x1
-    0188: 9b0c7ccd  mul x13, x6, x12
-    0189: 8b0d016b  add x11, x11, x13
-    0190: 39000164  strb w4, [x11, #0]
-    0191: d28000e0  movz x0, #0x7
-    0192: 94000000  bl <__wrela_console_append_line_buf>
-    0193: aa0003e4  mov x4, x0
-    0194: aa0403e0  mov x0, x4
-    0195: 14000001  b #4
-    0196: f94003fe  ldr lr, [sp, #0]
-    0197: 910043ff  add sp, sp, #16
-    0198: d65f03c0  ret
+    0055: 39000161  strb w1, [x11, #0]
+    0056: d2800401  movz x1, #0x20
+    0057: d2804302  movz x2, #0x218
+    0058: f2a80002  movk x2, #0x4000, lsl #16
+    0059: d28000c3  movz x3, #0x6
+    0060: aa0203eb  mov x11, x2
+    0061: d280002c  movz x12, #0x1
+    0062: 9b0c7c6d  mul x13, x3, x12
+    0063: 8b0d016b  add x11, x11, x13
+    0064: 39000161  strb w1, [x11, #0]
+    0065: d28000e0  movz x0, #0x7
+    0066: 94000000  bl <__wrela_console_append_line_buf>
+    0067: aa0003e1  mov x1, x0
+    0068: aa0103e0  mov x0, x1
+    0069: 14000001  b #4
+    0070: f94003fe  ldr lr, [sp, #0]
+    0071: 910043ff  add sp, sp, #16
+    0072: d65f03c0  ret
   Fn key=append_newline_literal frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
-    0002: d2800144  movz x4, #0xa
-    0003: d2804305  movz x5, #0x218
-    0004: f2a80005  movk x5, #0x4000, lsl #16
-    0005: d2800006  movz x6, #0x0
-    0006: d28002aa  movz x10, #0x15
-    0007: eb0a00df  cmp x6, x10
-    0008: 54000203  b.cc #64
-    0009: aa0603ea  mov x10, x6
-    0010: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0011: 10000009  adr x9, rodata+0x48
-    0012: f90003e9  str x9, [sp]  ; prefix.base
-    0013: d28000c9  movz x9, #0x6
-    0014: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0015: 10000009  adr x9, rodata+0x4e
-    0016: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0017: d2800349  movz x9, #0x1a
-    0018: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0019: 910003e0  add x0, sp, #0  ; *prefix
-    0020: aa0a03e1  mov x1, x10
-    0021: d2800002  movz x2, #0x0
-    0022: 910043e3  add x3, sp, #16  ; *suffix
-    0023: 94000000  bl <__wrela_abort_val>
-    0024: aa0503eb  mov x11, x5
-    0025: d280002c  movz x12, #0x1
-    0026: 9b0c7ccd  mul x13, x6, x12
-    0027: 8b0d016b  add x11, x11, x13
-    0028: 39000164  strb w4, [x11, #0]
-    0029: d2800020  movz x0, #0x1
-    0030: 94000000  bl <__wrela_console_append_line_buf>
-    0031: aa0003e4  mov x4, x0
-    0032: aa0403e0  mov x0, x4
-    0033: 14000001  b #4
-    0034: f94003fe  ldr lr, [sp, #0]
-    0035: 910043ff  add sp, sp, #16
-    0036: d65f03c0  ret
+    0002: d2800141  movz x1, #0xa
+    0003: d2804302  movz x2, #0x218
+    0004: f2a80002  movk x2, #0x4000, lsl #16
+    0005: d2800003  movz x3, #0x0
+    0006: aa0203eb  mov x11, x2
+    0007: d280002c  movz x12, #0x1
+    0008: 9b0c7c6d  mul x13, x3, x12
+    0009: 8b0d016b  add x11, x11, x13
+    0010: 39000161  strb w1, [x11, #0]
+    0011: d2800020  movz x0, #0x1
+    0012: 94000000  bl <__wrela_console_append_line_buf>
+    0013: aa0003e1  mov x1, x0
+    0014: aa0103e0  mov x0, x1
+    0015: 14000001  b #4
+    0016: f94003fe  ldr lr, [sp, #0]
+    0017: 910043ff  add sp, sp, #16
+    0018: d65f03c0  ret
   Fn key=ascii_digit frame=0 bytes
     0000: aa0003e1  mov x1, x0
     0001: d2800002  movz x2, #0x0
@@ -1199,9 +1037,9 @@ Program
     0017: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`
-    1: offset=0x1a shift count 
+    1: offset=0x1a shift count\x20
     2: offset=0x26  is out of range for a 64-bit type
-    3: offset=0x48 index 
+    3: offset=0x48 index\x20
     4: offset=0x4e  out of bounds (length 21)
     5: offset=0x68 assertion failed: loop budget exceeded
     6: offset=0x8e remainder by zero

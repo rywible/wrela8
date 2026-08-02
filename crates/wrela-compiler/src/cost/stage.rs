@@ -12,7 +12,7 @@ use crate::sema::{self, SemaError};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 
-use super::score::{CostReport, score_program};
+use super::score::CostReport;
 use super::table::load_default;
 
 pub struct CostStageClosure {
@@ -262,6 +262,84 @@ pub fn codegen_shipped_program(
     codegen_shipped_from(&load_shipped_front(path)?)
 }
 
+/// Return the final-address program, including layout-injected runtime and
+/// fixed executable sections, for an image root.  The legacy CodegenProgram
+/// API remains available for closure-only diagnostics.
+pub fn linked_shipped_program(
+    path: &Path,
+) -> Result<
+    (
+        crate::linked::LinkedProgram,
+        crate::placement::PlacementTable,
+        TextScope,
+    ),
+    String,
+> {
+    let already_recording = crate::codegen::block_bridge_enabled();
+    if !already_recording {
+        crate::codegen::set_block_bridge(true);
+    }
+    let result = linked_shipped_program_recording(path);
+    if !already_recording {
+        crate::codegen::set_block_bridge(false);
+    }
+    result
+}
+
+fn linked_shipped_program_recording(
+    path: &Path,
+) -> Result<
+    (
+        crate::linked::LinkedProgram,
+        crate::placement::PlacementTable,
+        TextScope,
+    ),
+    String,
+> {
+    let front = load_shipped_front(path)?;
+    let Some(img) = &front.image else {
+        let pieces = cost_stage_pieces_from(&front.checked)?;
+        let program = pieces.codegen()?;
+        let relaxed = crate::relax::relax_immediates(&program)
+            .map_err(|e| format!("late immediate relaxation: {e}"))?;
+        let linked = crate::linked::link_wide(&relaxed.program, wrela_machine::layout::IMAGE_BASE)?;
+        let (linked, _) = crate::relax::relax_linked_addresses(&linked)
+            .map_err(|e| format!("late address relaxation: {e}"))?;
+        return Ok((linked, pieces.placement.clone(), TextScope::Closure));
+    };
+    let compiled = crate::layout::lower_and_codegen_image(
+        &front.checked.modules,
+        &front.checked.programs,
+        &img.layout_ctx,
+        &img.graph,
+        &[],
+        &std::collections::BTreeSet::new(),
+        false,
+    )?;
+    let placement = crate::placement::place(
+        &img.graph,
+        &compiled.modules,
+        &compiled.layout_ctx,
+        img.graph.cores,
+    )
+    .unwrap_or_default();
+    let boot = crate::layout::BootCtx {
+        graph: &img.graph,
+        modules: &compiled.modules,
+        programs: &compiled.programs,
+        layout_ctx: &compiled.layout_ctx,
+        async_frames: &compiled.async_frames,
+        group_child_index: &compiled.group_child_index,
+        flow: &compiled.flow,
+    };
+    let layout =
+        crate::layout::layout_program(&compiled.program, Some(boot)).map_err(|e| e.message)?;
+    let linked = layout
+        .linked
+        .ok_or_else(|| "image layout did not produce a linked executable stream".to_string())?;
+    Ok((linked, placement, TextScope::Image))
+}
+
 pub struct ShippedFront {
     checked: CostStageClosure,
     image: Option<ShippedImage>,
@@ -315,9 +393,17 @@ pub fn codegen_shipped_from(
 }
 
 pub fn report_cost_stage_path(path: &Path) -> Result<CostReport, String> {
-    let (prog, placement) = codegen_cost_stage_with_placement(path)?;
+    let (linked, placement, _) = linked_shipped_program(path)?;
     let table = load_default()?;
-    score_program(&prog, &table, &placement)
+    let mut report = crate::cost::score::score_linked_program(&linked, &table, &placement)?;
+    let attach = crate::cost::compose::WorkloadAttach::load_default_for_linked(
+        Some(path),
+        &linked,
+        &table,
+        &placement,
+    )?;
+    crate::cost::compose::attach_workloads(&mut report, &attach)?;
+    Ok(report)
 }
 
 pub fn score_cost_stage_path(path: &Path) -> Result<u64, String> {
@@ -343,7 +429,7 @@ mod tests {
         let p = SweepPoint::pinned(&t);
         let b = footprint::compute(prog, &t, &p, place, HotBlocks::All).expect("footprint");
         (
-            b.iter().map(|c| c.hot_text_bytes).sum(),
+            b.iter().map(|c| c.fetched_text_bytes).sum(),
             b.iter().map(|c| c.over_l1i_lines).sum(),
             b.iter().map(|c| c.charge).sum(),
         )
@@ -354,19 +440,33 @@ mod tests {
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
         let path = case("cost-product-appliance");
         let (closure, cplace) = codegen_cost_stage_with_placement(&path).expect("closure");
-        let (image, iplace, scope) = codegen_shipped_program(&path).expect("image");
+        let (linked, iplace, scope) = linked_shipped_program(&path).expect("image");
         assert_eq!(scope, TextScope::Image, "the flagship declares an @image");
         assert_eq!(TextScope::Closure.as_str(), "closure");
 
         let (c_hot, c_over, c_charge) = budget(&closure, &cplace);
-        let (i_hot, i_over, i_charge) = budget(&image, &iplace);
+        let table = load_default().expect("table");
+        let linked_budget = footprint::compute_linked(
+            &linked,
+            &table,
+            &SweepPoint::pinned(&table),
+            &iplace,
+            HotBlocks::All,
+        )
+        .expect("linked footprint");
+        let i_hot = linked_budget
+            .iter()
+            .map(|c| c.fetched_text_bytes)
+            .sum::<u64>();
+        let i_over = linked_budget.iter().map(|c| c.over_l1i_lines).sum::<u64>();
+        let i_charge = linked_budget.iter().map(|c| c.charge).sum::<u64>();
         eprintln!(
             "K2 appliance closure hot={c_hot} over_l1i={c_over} charge={c_charge} fns={}",
             closure.fns.len()
         );
         eprintln!(
             "K2 appliance image   hot={i_hot} over_l1i={i_over} charge={i_charge} fns={}",
-            image.fns.len()
+            linked.fns.len()
         );
         assert!(
             i_hot > c_hot * 5,
@@ -378,11 +478,24 @@ mod tests {
             c_over, 0,
             "the closure fits its L1I — which is why the gate never saw the constraint"
         );
-        assert!(
-            i_over > 0 && i_charge > 0,
-            "the shipped image is over its L1I and is charged for it: over={i_over} \
-             charge={i_charge}"
+        assert_eq!(
+            i_over, 0,
+            "the final linked executable is below L1I under actual addresses"
         );
+        assert_eq!(i_charge, 0, "no synthetic padding charge remains");
+        assert_eq!(linked.executable_words(), 13533);
+    }
+
+    #[test]
+    fn shipped_workload_join_resolves_every_production_window_observation() {
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        let report = report_cost_stage_path(&case("boot-actors")).expect("linked report");
+        assert_eq!(
+            report.workload_coverage["boot-actors"],
+            (1512, 1512),
+            "production reports must use exact source-aware linked origins, never fallback charge"
+        );
+        assert!(report.workload_totals["boot-actors"] > 0);
     }
 
     #[test]

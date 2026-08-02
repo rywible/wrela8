@@ -101,7 +101,21 @@ pub enum Inst {
         index: Temp,
         len: usize,
     },
+    /// An index whose range analysis carries a checked, exact length proof.
+    /// Only the proof-producing pass may construct this variant.
+    IndexGetProven {
+        dst: Temp,
+        base: Temp,
+        index: Temp,
+        len: usize,
+    },
     IndexSet {
+        base: Temp,
+        index: Temp,
+        value: Temp,
+        len: usize,
+    },
+    IndexSetProven {
         base: Temp,
         index: Temp,
         value: Temp,
@@ -116,7 +130,25 @@ pub enum Inst {
         elem_stride: u64,
         ty: Type,
     },
+    PlacedIndexGetProven {
+        dst: Temp,
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        ty: Type,
+    },
     PlacedIndexSet {
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        value: Temp,
+        len: usize,
+        elem_stride: u64,
+        ty: Type,
+    },
+    PlacedIndexSetProven {
         base: Temp,
         field_offset: u64,
         index: Temp,
@@ -1067,9 +1099,23 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             len,
             elem_stride,
             ty,
+        }
+        | Inst::PlacedIndexGetProven {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            ty,
         } => format!(
-            "PlacedIndexGet dst={dst} base={base} field_offset={field_offset:#x} \
+            "{} dst={dst} base={base} field_offset={field_offset:#x} \
              index={index} len={len} elem_stride={elem_stride} ty={}",
+            if matches!(inst, Inst::PlacedIndexGetProven { .. }) {
+                "PlacedIndexGetProven"
+            } else {
+                "PlacedIndexGet"
+            },
             types::render_type(ty)
         ),
         Inst::PlacedIndexSet {
@@ -1080,9 +1126,23 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             len,
             elem_stride,
             ty,
+        }
+        | Inst::PlacedIndexSetProven {
+            base,
+            field_offset,
+            index,
+            value,
+            len,
+            elem_stride,
+            ty,
         } => format!(
-            "PlacedIndexSet base={base} field_offset={field_offset:#x} index={index} \
+            "{} base={base} field_offset={field_offset:#x} index={index} \
              value={value} len={len} elem_stride={elem_stride} ty={}",
+            if matches!(inst, Inst::PlacedIndexSetProven { .. }) {
+                "PlacedIndexSetProven"
+            } else {
+                "PlacedIndexSet"
+            },
             types::render_type(ty)
         ),
         Inst::BytesIndexGet { dst, base, index } => {
@@ -1177,16 +1237,42 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             base,
             index,
             len,
+        }
+        | Inst::IndexGetProven {
+            dst,
+            base,
+            index,
+            len,
         } => {
-            format!("IndexGet dst={dst} base={base} index={index} len={len}")
+            format!(
+                "{} dst={dst} base={base} index={index} len={len}",
+                if matches!(inst, Inst::IndexGetProven { .. }) {
+                    "IndexGetProven"
+                } else {
+                    "IndexGet"
+                }
+            )
         }
         Inst::IndexSet {
             base,
             index,
             value,
             len,
+        }
+        | Inst::IndexSetProven {
+            base,
+            index,
+            value,
+            len,
         } => {
-            format!("IndexSet base={base} index={index} value={value} len={len}")
+            format!(
+                "{} base={base} index={index} value={value} len={len}",
+                if matches!(inst, Inst::IndexSetProven { .. }) {
+                    "IndexSetProven"
+                } else {
+                    "IndexSet"
+                }
+            )
         }
         Inst::MakeEnum { dst, tag, payload } => {
             format!(

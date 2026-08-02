@@ -5,7 +5,7 @@ use crate::placement::PlacementTable;
 
 use super::branch::{BlockCounts, BranchTerms};
 use super::footprint::{self, CoreBudget, HotBlocks};
-use super::mem::MemState;
+use super::mem::{MemLevel, MemState};
 use super::owner::classify_owner;
 use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass};
 use super::sweep::SweepPoint;
@@ -15,6 +15,7 @@ use super::table::{CostTable, LatRow, pipe_range};
 pub struct FnCost {
     pub key: String,
     pub owner: String,
+    pub frame_bytes: u64,
     pub proxy_cycles: u64,
     pub words: u64,
     pub terms: BTreeMap<String, u64>,
@@ -32,7 +33,12 @@ pub struct CostReport {
     pub dispatch_uops: u64,
     pub reorder_window: u64,
     pub total_proxy_cycles: u64,
+    pub schedule_cycles: u64,
+    pub footprint_cycles: u64,
+    pub rank_cycles: u64,
     pub total_words: u64,
+    pub sync_frame_max_bytes: u64,
+    pub async_frame_total_bytes: u64,
     pub owner_totals: BTreeMap<String, u64>,
     pub fns: Vec<FnCost>,
     pub workloads_digest: Option<String>,
@@ -201,8 +207,8 @@ pub struct CrossExtra {
 
 pub use super::branch::BranchBias;
 
-fn mem_access_latency(ew: &EmittedWord, state: &mut MemState) -> u64 {
-    state.access(ew).latency
+fn mem_access(ew: &EmittedWord, state: &mut MemState) -> super::mem::MemVerdict {
+    state.access(ew)
 }
 
 fn crosscore_extra(
@@ -280,6 +286,97 @@ pub fn score_program(
     score_program_at(program, table, placement, &SweepPoint::pinned(table))
 }
 
+pub fn score_linked_program(
+    linked: &crate::linked::LinkedProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+) -> Result<CostReport, String> {
+    crate::cost::audit::audit_linked(linked)?;
+    let fn_words: u64 = linked.fns.values().map(|f| f.code.len() as u64).sum();
+    if fn_words != linked.executable_words() {
+        return Err(format!(
+            "linked cost word reconciliation failed: functions={fn_words} sections={}",
+            linked.executable_words()
+        ));
+    }
+    let fns: BTreeMap<String, CodegenFn> = linked
+        .fns
+        .iter()
+        .map(|(key, f)| {
+            (
+                key.clone(),
+                CodegenFn {
+                    frame_size: f.frame_size as usize,
+                    code: f.code.clone(),
+                    relocs: Vec::new(),
+                },
+            )
+        })
+        .collect();
+    let program = CodegenProgram {
+        fns,
+        rodata: Vec::new(),
+        conventions: BTreeMap::new(),
+        origin_spans: Vec::new(),
+    };
+    let point = SweepPoint::pinned(table);
+    let ctx = ScoreCtx::new(table)?;
+    let addresses: BTreeMap<String, u64> = linked
+        .fns
+        .iter()
+        .map(|(key, f)| (key.clone(), f.byte_address))
+        .collect();
+    let totals = score_program_core_with_addresses(
+        &program,
+        table,
+        placement,
+        &point,
+        &ctx,
+        HotBlocks::All,
+        BlockCounts::Flat,
+        true,
+        Some(&addresses),
+    )?;
+    for function in &totals.fns {
+        let counted_words: u64 = function
+            .terms
+            .iter()
+            .filter(|(rule, _)| CostRule::from_str(rule).is_some())
+            .map(|(_, count)| *count)
+            .sum();
+        if counted_words != function.words {
+            return Err(format!(
+                "linked cost terms for `{}` count {counted_words} instructions, expected {}",
+                function.key, function.words
+            ));
+        }
+    }
+    Ok(CostReport {
+        version: table.version,
+        digest: table.table_digest(),
+        provenance: table.provenance_digest(),
+        provenance_summary: table.provenance_summary(),
+        profile: table.profile_name().to_string(),
+        pipelines: table.pipelines(),
+        dispatch_mops: table.dispatch_mops(),
+        dispatch_uops: table.dispatch_uops(),
+        reorder_window: table.reorder_window(),
+        total_proxy_cycles: totals.total_proxy_cycles,
+        schedule_cycles: totals.schedule_cycles,
+        footprint_cycles: totals.footprint_cycles,
+        rank_cycles: totals.rank_cycles,
+        total_words: totals.total_words,
+        sync_frame_max_bytes: linked.sync_frame_max_bytes,
+        async_frame_total_bytes: linked.async_frame_total_bytes,
+        owner_totals: totals.owner_totals,
+        fns: totals.fns,
+        workloads_digest: None,
+        workload_totals: BTreeMap::new(),
+        workload_coverage: BTreeMap::new(),
+        footprint: totals.footprint,
+    })
+}
+
 pub fn score_program_at(
     program: &CodegenProgram,
     table: &CostTable,
@@ -318,7 +415,17 @@ pub fn score_program_at_with_hot(
         dispatch_uops: table.dispatch_uops(),
         reorder_window: table.reorder_window(),
         total_proxy_cycles: totals.total_proxy_cycles,
+        schedule_cycles: totals.schedule_cycles,
+        footprint_cycles: totals.footprint_cycles,
+        rank_cycles: totals.rank_cycles,
         total_words: totals.total_words,
+        sync_frame_max_bytes: program
+            .fns
+            .values()
+            .map(|f| f.frame_size as u64)
+            .max()
+            .unwrap_or(0),
+        async_frame_total_bytes: 0,
         owner_totals: totals.owner_totals,
         fns: totals.fns,
         workloads_digest: None,
@@ -416,6 +523,9 @@ impl ScoreCtx {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScoreTotals {
     pub total_proxy_cycles: u64,
+    pub schedule_cycles: u64,
+    pub footprint_cycles: u64,
+    pub rank_cycles: u64,
     pub total_words: u64,
     pub footprint: Vec<CoreBudget>,
     pub ordering: Option<super::crosscore::OrderingCounts>,
@@ -441,6 +551,9 @@ pub fn score_totals_at(
     )?;
     Ok(ScoreTotals {
         total_proxy_cycles: core.total_proxy_cycles,
+        schedule_cycles: core.schedule_cycles,
+        footprint_cycles: core.footprint_cycles,
+        rank_cycles: core.rank_cycles,
         total_words: core.total_words,
         footprint: core.footprint,
         ordering: want_ordering.then(|| super::crosscore::ordering_word_counts_of(&core.fns)),
@@ -449,6 +562,9 @@ pub fn score_totals_at(
 
 struct ProgramCore {
     total_proxy_cycles: u64,
+    schedule_cycles: u64,
+    footprint_cycles: u64,
+    rank_cycles: u64,
     total_words: u64,
     owner_totals: BTreeMap<String, u64>,
     fns: Vec<FnCost>,
@@ -466,6 +582,23 @@ fn score_program_core(
     counts: BlockCounts<'_>,
     want_fns: bool,
 ) -> Result<ProgramCore, String> {
+    score_program_core_with_addresses(
+        program, table, placement, point, ctx, hot, counts, want_fns, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_program_core_with_addresses(
+    program: &CodegenProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    point: &SweepPoint,
+    ctx: &ScoreCtx,
+    hot: HotBlocks<'_>,
+    counts: BlockCounts<'_>,
+    want_fns: bool,
+    addresses: Option<&BTreeMap<String, u64>>,
+) -> Result<ProgramCore, String> {
     let mut fns = Vec::with_capacity(if want_fns { program.fns.len() } else { 0 });
     let mut total_proxy_cycles = 0u64;
     let mut owner_totals = BTreeMap::from([
@@ -476,8 +609,10 @@ fn score_program_core(
 
     let mut total_words = 0u64;
     for (key, f) in &program.fns {
-        let (proxy_cycles, terms) =
-            score_fn(key, f, table, placement, point, ctx, &counts, want_fns)?;
+        let fn_address = addresses.and_then(|map| map.get(key).copied());
+        let (proxy_cycles, terms) = score_fn(
+            key, f, table, placement, point, ctx, &counts, want_fns, fn_address,
+        )?;
         let words = f.code.len() as u64;
         total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
         total_words = total_words.saturating_add(words);
@@ -487,6 +622,7 @@ fn score_program_core(
             fns.push(FnCost {
                 key: key.clone(),
                 owner,
+                frame_bytes: f.frame_size as u64,
                 proxy_cycles,
                 words,
                 terms,
@@ -494,12 +630,24 @@ fn score_program_core(
         }
     }
 
+    let footprint = match addresses {
+        Some(addresses) => {
+            footprint::compute_at_addresses(program, table, point, placement, hot, addresses)?
+        }
+        None => footprint::compute(program, table, point, placement, hot)?,
+    };
+    let schedule_cycles = total_proxy_cycles;
+    let footprint_cycles: u64 = footprint.iter().map(|b| b.charge).sum();
+    let rank_cycles = schedule_cycles.saturating_add(footprint_cycles);
     Ok(ProgramCore {
-        total_proxy_cycles,
+        total_proxy_cycles: rank_cycles,
+        schedule_cycles,
+        footprint_cycles,
+        rank_cycles,
         total_words,
         owner_totals,
         fns,
-        footprint: footprint::compute(program, table, point, placement, hot)?,
+        footprint,
     })
 }
 
@@ -580,12 +728,18 @@ fn score_fn(
     ctx: &ScoreCtx,
     counts: &BlockCounts<'_>,
     want_terms: bool,
+    fn_address: Option<u64>,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if f.code.is_empty() {
         return Ok((0, terms));
     }
-    let branch_terms = BranchTerms::compute(key, &f.code, table, point, counts)?;
+    let branch_terms = match fn_address {
+        Some(address) => {
+            BranchTerms::compute_at_address(key, &f.code, table, point, counts, address)?
+        }
+        None => BranchTerms::compute(key, &f.code, table, point, counts)?,
+    };
     let mut proxy_cycles = 0u64;
     for (start, end) in basic_block_ranges(&f.code) {
         let (s, block_terms) = score_words(
@@ -750,7 +904,19 @@ fn score_words(
                     branch_terms.bias_at(word_base + i),
                 ))
                 .saturating_add(branch_terms.frontend_at(word_base + i)),
-            r if r.is_load() || r.is_store() => mem_access_latency(ew, &mut mem),
+            r if r.is_load() || r.is_store() => {
+                let verdict = mem_access(ew, &mut mem);
+                if want_terms {
+                    let name = match verdict.level {
+                        MemLevel::L1dHit => "l1_hit",
+                        MemLevel::Forwarded => "forwarded",
+                        MemLevel::Unresolved => "unresolved",
+                        other => other.as_str(),
+                    };
+                    *terms.entry(format!("Mem level={name}")).or_insert(0) += 1;
+                }
+                verdict.latency
+            }
             _ => exec_lat,
         };
         lat = lat.saturating_add(cross.extra_cycles);
@@ -770,7 +936,10 @@ fn score_words(
         if ew.flags.writes() {
             flags_ready = finish;
         }
-        if ew.rule == CostRule::Branch {
+        if ew.rule == CostRule::Branch || ew.rule == CostRule::Call {
+            // A returning call is a control boundary for the caller.  Its
+            // dynamic callee schedule is composed separately, but following
+            // caller instructions cannot issue before the call completes.
             control_ready = finish;
         }
         if cross.serializes_window {
@@ -778,8 +947,10 @@ fn score_words(
         }
         max_retire = max_retire.max(finish);
 
-        if ew.rule == CostRule::Call || ew.dst == Some(MEM_SP_REG) {
-            mem.clear();
+        if ew.rule == CostRule::Call {
+            mem.call_boundary();
+        } else if ew.rule == CostRule::Barrier {
+            mem.barrier();
         }
     }
 
@@ -1021,7 +1192,11 @@ mod tests {
     #[test]
     fn two_loads_issue_in_one_cycle_but_not_three() {
         let two = prog("f", vec![load_cold_unique(1, 0), load_cold_unique(2, 1)]);
-        assert_eq!(total(&two), 35, "both at cycle 0, retire = lat_l3");
+        assert_eq!(
+            total(&two),
+            4,
+            "both resolved loads retire at the L1 rank floor"
+        );
         let three = prog(
             "f",
             vec![
@@ -1030,7 +1205,7 @@ mod tests {
                 load_cold_unique(3, 2),
             ],
         );
-        assert_eq!(total(&three), 36, "the third load waits a cycle for an AGU");
+        assert_eq!(total(&three), 5, "the third load waits a cycle for an AGU");
     }
 
     #[test]
@@ -1180,8 +1355,8 @@ mod tests {
         let across = prog("f", stream(129));
         assert_eq!(
             total(&across),
-            39,
-            "word 128 dispatches at retire[0] = 35, not at its natural cycle 32"
+            36,
+            "word 128 cannot cross the 128-entry reorder window"
         );
     }
 
@@ -1396,12 +1571,10 @@ mod tests {
                 load_stack_after(2, 8, 1),
             ],
         );
-        assert!(
-            total(&epoch) > total(&hit),
-            "the SP write must still clear the reuse window: epoch {} should \
-             exceed same-epoch reuse {}",
+        assert_eq!(
             total(&epoch),
-            total(&hit)
+            total(&hit),
+            "an SP write changes the frame identity but does not evict L1D"
         );
         let fresh_after_sp = prog(
             "f",
@@ -1756,8 +1929,16 @@ mod tests {
         let r = score(&p);
         assert_eq!(r.fns[0].words, 4);
         assert_eq!(r.total_words, 4);
-        let term_sum: u64 = r.fns[0].terms.values().sum();
-        assert_eq!(term_sum, r.fns[0].words, "Σ Terms must equal words");
+        let term_sum: u64 = r.fns[0]
+            .terms
+            .iter()
+            .filter(|(name, _)| !name.starts_with("Mem level="))
+            .map(|(_, count)| *count)
+            .sum();
+        assert_eq!(
+            term_sum, r.fns[0].words,
+            "Σ instruction terms must equal words"
+        );
     }
 
     #[test]
@@ -1777,9 +1958,9 @@ mod tests {
         }
         let one_line = total(&prog("f", chain(&[0, 8, 16, 24, 32, 40])));
         let six_lines = total(&prog("f", chain(&[0, 64, 128, 192, 256, 320])));
-        assert!(
-            six_lines > one_line,
-            "6 lines {six_lines} must exceed 6 offsets in 1 line {one_line}"
+        assert_eq!(
+            six_lines, one_line,
+            "frame homes start resident; cache capacity is priced by footprint, not a synthetic trace"
         );
         let five = total(&prog("f", chain(&[0, 64, 128, 192, 256])));
         let four = total(&prog("f", chain(&[0, 64, 128, 192])));
@@ -1788,7 +1969,11 @@ mod tests {
             five - four,
             "each extra line costs the same compulsory differential"
         );
-        assert_eq!(five - four, 11 + 1, "lat_l2 for the line plus its alu");
+        assert_eq!(
+            five - four,
+            5,
+            "one additional resident stack access and its dependency"
+        );
     }
 
     #[test]
@@ -1916,7 +2101,7 @@ mod tests {
                 load_cold_unique(2, 0),
             ],
         );
-        assert_eq!(total(&mixed), 35);
+        assert_eq!(total(&mixed), 4);
     }
 
     #[test]
@@ -1986,11 +2171,10 @@ mod tests {
             total(&same_line),
             "offsets 8 and 16 are one 64 B line"
         );
-        assert!(
-            total(&hit) < total(&other_line),
-            "stack hit schedule {} should beat another line {}",
+        assert_eq!(
             total(&hit),
-            total(&other_line)
+            total(&other_line),
+            "stack homes are initially resident; footprint capacity is separate"
         );
     }
 
@@ -2054,15 +2238,19 @@ mod tests {
             ],
         );
         assert!(
-            total(&after_call) > total(&hit),
-            "call-cleared reload {} should exceed hit {}",
+            total(&after_call) >= total(&hit),
+            "a call remains a control boundary but does not flush L1D: {} vs {}",
             total(&after_call),
             total(&hit)
+        );
+        assert_eq!(
+            score(&after_call).fns[0].terms.get("Mem level=l1_hit"),
+            score(&hit).fns[0].terms.get("Mem level=l1_hit")
         );
     }
 
     #[test]
-    fn cold_unique_always_misses() {
+    fn cold_unique_uses_the_same_removal_safe_rank_floor() {
         let two = prog(
             "f",
             vec![
@@ -2072,7 +2260,7 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert_eq!(total(&two), 72);
+        assert_eq!(total(&two), 10);
         let stack_hit = prog(
             "f",
             vec![
@@ -2082,22 +2270,21 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert!(
-            total(&two) > total(&stack_hit),
-            "cold unique miss {} should exceed stack hit {}",
+        assert_eq!(
             total(&two),
-            total(&stack_hit)
+            total(&stack_hit),
+            "resolved static and frame targets share the removal-safe L1 floor"
         );
     }
 
     #[test]
     fn missing_memref_is_cold_miss() {
         let untagged = prog("f", vec![word(CostRule::Load, Some(1), &[0])]);
-        assert_eq!(total(&untagged), 35);
+        assert_eq!(total(&untagged), 4);
     }
 
     #[test]
-    fn five_way_conflict_inside_capacity_costs_more_than_a_reuse() {
+    fn five_way_conflict_is_priced_only_by_the_footprint_term() {
         const SET_STRIDE: u64 = 256 * 64;
         let serial = |offsets: &[u64]| -> CodegenProgram {
             let mut code = Vec::new();
@@ -2117,14 +2304,9 @@ mod tests {
         let spread: Vec<u64> = (0..5).map(|k| k * 64).collect();
         let a = total(&serial(&conflict));
         let b = total(&serial(&spread));
-        assert!(
-            a > b,
-            "a 5-way conflict {a} must cost more than a spread working set {b}"
-        );
         assert_eq!(
-            a - b,
-            11 - 4,
-            "the reload takes lat_l2 instead of an L1 hit"
+            a, b,
+            "block rank must not infer a cache trace from static source order"
         );
     }
 
@@ -2145,7 +2327,7 @@ mod tests {
                 word(CostRule::Alu, Some(1), &[2, 2]),
             ],
         );
-        assert_eq!(total(&no_dep), 1);
+        assert_eq!(total(&no_dep), 2);
     }
 
     #[test]
@@ -2170,7 +2352,7 @@ mod tests {
             "f",
             vec![word(CostRule::Adrp, Some(1), &[]), load_cold_unique(2, 0)],
         );
-        assert_eq!(total(&mixed), 35);
+        assert_eq!(total(&mixed), 4);
         let two_adrp = prog(
             "f",
             vec![
@@ -2202,11 +2384,10 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert!(
-            total(&after_sp) > total(&hit),
-            "sp-cleared reload {} should exceed hit {}",
+        assert_eq!(
             total(&after_sp),
-            total(&hit)
+            total(&hit),
+            "SP adjustment does not flush the modeled data cache"
         );
     }
 
@@ -2233,11 +2414,10 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert!(
-            total(&after_sp) > total(&after_store),
-            "store→sp→reload miss {} should exceed store-only hit {}",
+        assert_eq!(
             total(&after_sp),
-            total(&after_store)
+            total(&after_store),
+            "SP adjustment does not evict a forwarded/cache-resident line"
         );
     }
 
