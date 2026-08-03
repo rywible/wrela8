@@ -632,19 +632,3 @@ kind = "ok"
 key = "19e016849751"
 loc = "docs/language/03-hardware.md:305"
 kind = "ok"
-
-[[corpus_sema.pins]]
-key = "1be8a747b2a3"
-loc = "docs/language/07-pixels.md:14"
-kind = "disagreement"
-why = """The Pixels contract deliberately presents the two permitted `@field` \
-signatures as alternatives with the same illustrative `world` name; compiling \
-the documentation block as one module therefore reports a duplicate declaration."""
-
-[[corpus_sema.pins]]
-key = "0ed1eebebbee"
-loc = "docs/language/07-pixels.md:25"
-kind = "disagreement"
-why = """`M` and `P` are specification metavariables in the canonical \
-`@material` signature, and the snippet intentionally omits concrete material \
-and parameter declarations plus the `core.render` import."""

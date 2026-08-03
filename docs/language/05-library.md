@@ -259,7 +259,32 @@ compiler-recognized intrinsics even when a package supplies their surface:
   restart-provision derivation.
 - `img.check_layout(f)` registers a `@layout_assert`.
 
-## 10. Naming
+## 10. Pixels source and renderer API
+
+The Pixels surface is owned normatively by
+[chapter 07](07-pixels.md). The standard library supplies the opaque field
+type and scalar bodies for its closed constructors, transforms, CSG,
+metadata, and bounded-deformation operations. The compiler recognizes the
+attributes `@field`, `@material`, `@range(min=..., max=...)`, and
+`@rate(max_delta=..., max_second_delta=...)` using the ordinary attribute
+syntax.
+
+Image construction recognizes `Image.renderer` as a sealed intrinsic. It
+returns `ImageDecl[Renderer[P]]`; only that standard renderer declaration may
+turn a generic actor type into `Actor[Renderer[P]]`. The public renderer value
+types are `RenderFrame[P]`, `RenderedFrame[P]`, `RenderError`,
+`SurfaceContext[M]`, `MaterialSample`, `Camera`, `CameraBounds`,
+`LightConfig`, `LightFrame`, `ScalarRange`, `RgbRange`, `AoConfig`,
+`ProbeConfig`, `RenderProfile`, and `ToneCurve`. Their ownership, validation,
+and fail-closed behavior are fixed by [07 §2](07-pixels.md#2-source-and-semantic-contract).
+
+`RenderProfile.AaaByteExact` is a closed build-time profile. Unsupported source
+is rejected with a Pixels diagnostic; the library may not route it to an
+uncertified runtime path. Generated renderer hot workloads follow the
+one-ISA instruction-selection obligation in
+[04 §5.1](04-compiler.md#51-pixels-compiler-data-and-one-isa-obligations).
+
+## 11. Naming
 
 Enum variants are CamelCase; functions are snake_case. Bounded-occupancy
 parameters are spelled `..N` in public signatures; exact extents stay `N`.

@@ -1,8 +1,12 @@
-# Pixels: the field renderer, after measurement
+# Pixels: historical field-renderer measurements
 
-**Status: DESIGN (2026-07-31).** The successor to
-[graphics.md](graphics.md) for the parts its §16 benchmark settled, and a
-correction to it where the measurements disagreed.
+**Status: HISTORICAL EVIDENCE (2026-07-31).** This document preserves the
+fieldprobe measurements and the unfavorable online-result history. It is not a
+language, compiler, runtime, performance, or implementation contract. The
+normative production contract is
+[language chapter 07](../language/07-pixels.md), and implementation ordering
+lives in the
+[Pixels implementation plan](WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md).
 
 graphics.md said: *"It is promoted to a normative chapter
 (`docs/language/07-pixels.md`) only after §16's benchmark returns, and only
@@ -11,13 +15,11 @@ for the parts the benchmark actually settles."* The benchmark has returned.
 output. §16.4's kill criterion is evaluated and **all three scenes
 survive**.
 
-This document is still not `docs/language/`. Two reasons: no measurement
-here ran on a Pi 5 (§16.1's M4-proxy caveat stands in full), and the single
-largest assumption underneath the headline result — that a packet-wide tape
-interpreter amortises its dispatch — was never measured at all. What has
-changed is that the *shape* of the design is now decided by evidence rather
-than by argument, and three things graphics.md was open to are now known to
-be dead ends.
+No measurement here ran on a Pi 5 (§16.1's M4-proxy caveat stands in full),
+and the single largest assumption underneath the headline result — that a
+packet-wide tape interpreter amortises its dispatch — was never measured. The
+data is retained as evidence, including rejected results; it does not validate
+the production renderer or establish modeled performance as measured fact.
 
 Decision block **2000–2099** requested. Not claimed until a human activates.
 

@@ -1,16 +1,133 @@
-# Pixels language and machine contract
+# Pixels language, compiler, and runtime contract
 
-Pixels is the compiler-owned renderer declaration for machine v1. The
-implementation plan in
-`docs/designs/WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md` is the canonical
-definition during the P-series implementation program; this chapter records
-the source and ABI boundary without copying wire definitions that could drift.
+This chapter is the normative contract for the production Pixels subsystem.
+The [implementation plan](../designs/WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md)
+controls task order, repository ownership, and gates; it does not override this
+chapter's language or runtime semantics. A semantic change lands here first and
+reconciles the plan in the same change.
 
-## Source boundary
+Pixels compiles a field-authored scene into a sealed, immutable frame program.
+A validated scanline sweep constructs visible structure from scratch. Later
+frames may reuse that structure only while every relevant certificate remains
+valid. Any proof or capacity failure returns `RenderError` and leaves the last
+complete framebuffer on screen; it never guesses a hit, a color, or background.
 
-`@field` marks a top-level synchronous function with one of these signatures:
+## 0. Delivered contract
 
-```wrela
+A source image binds a pure `@field` root, a pure `@material` root, bounded
+frame inputs, and one display driver with `Image.renderer`. The returned
+`ImageDecl[Renderer[P]]` can produce an `Actor[Renderer[P]]` handle. The public
+method owns the parameter value during rendering:
+
+```text
+pub async fn render(
+    take frame: RenderFrame[P],
+) -> Result[RenderedFrame[P], RenderError]
+```
+
+`RenderFrame[P]` contains owned `params: P`, `camera`, a fixed-capacity
+`LightFrame`, `exposure`, `environment`, and `frame_index`. Runtime camera,
+light, exposure, and environment values are validated against the renderer
+declaration before a worker writes output. `RenderedFrame[P]` returns `P` only
+after successful presentation.
+
+The flagship `RenderProfile.AaaByteExact` contract is deterministic and
+allocation-free. It supports hard and smooth field geometry, exact object and
+material identity, analytic silhouette coverage, deterministic lighting and
+filtering, ordered transparency, and exact replay bytes. Stochastic sampling,
+stochastic dither, denoising, a host renderer, and a GPU renderer are outside
+version 1.
+
+The P-1 64×32, one-plane walking skeleton remains an isolated end-to-end
+boundary fixture. It is not production renderer semantics and must not be
+generalized piecemeal.
+
+## 1. Closed architectural decisions
+
+### 1.1 Compiler data, not another executable IR
+
+`FieldGraph`, `MaterialGraph`, and `FrameProgram` are compiler-owned data.
+Source functions still type-check into the typed program. Ordinary renderer
+runtime code still lowers through FlowWir, MachineWir, and AArch64.
+`FieldGraph` exists only during Pixels compilation; it is not serialized as a
+compiler cache. `FrameProgram v1` is immutable image data consumed by the
+standard-library renderer. Its scalar tape defines fallback source semantics;
+it is not a fourth Wrela executable IR.
+
+Pixels uses a dedicated symbolic interpreter over typed expressions and
+statements. Renderer-only symbolic values never enter the generic comptime
+`eval::Value` domain.
+
+### 1.2 Opaque fields and structural semantics
+
+`core.field.Field` has a scalar runtime representation but private
+construction. Authors compose it only through the closed field API. This keeps
+surface, feature, object, and material structure recoverable and prevents
+ordinary scalar arithmetic from acquiring an ambiguous field meaning.
+
+The compiler emits both structural object/feature records and a scalar
+semantic tape. Structural specializations may propose candidates and discharge
+proofs; the scalar tape remains the exact fallback and differential oracle.
+
+### 1.3 Complete local proof, from scratch
+
+Pixels does not precompute a global arrangement or enumerate all visibility
+cells. For the current tile, row band, and parameter box it proves:
+
+```text
+all possible roots are covered
++ all possible combinatorial changes have active predicates
++ every omitted predicate has a valid exclusion certificate
++ active predicates exclude zero over the run
+=> visible combinatorics are fixed over the run
+```
+
+The validated scanline sweep is the primary renderer. It is correct without
+prior-frame state and is used for the first frame, camera cuts, whips, disabled
+kinetic reuse, and failed temporal certificates. A run ends at the earliest
+geometric event, proof expiry, ordering expiry, shading/transfer expiry,
+fixed-point range expiry, or tile boundary.
+
+Kinetic maintenance is optional work reduction. It is never a correctness
+input, and disabling it preserves displayed bytes and errors.
+
+### 1.4 Separate candidates from authority
+
+Candidate construction may use bit-defined floating-point arithmetic, jets,
+or other approximations. Acceptance uses conservative dyadic intervals with
+integer endpoints. No approximate value has authority until the interval
+verifier accepts it. An overflow or invalid proof domain is unresolved and
+fails closed; it is not widened to an apparently useful infinite interval.
+
+`AaaByteExact` rejects unsupported field operations, unbounded transforms,
+runtime topology branches, unbounded repetition, missing proof ranges, and
+unbounded material discontinuities at build time. It never silently lowers
+them to an uncertified marcher.
+
+### 1.5 Quality and proof ownership
+
+Point and directional shadows use certified secondary visibility. Area lights
+use deterministic adaptive emitter integration with interval radiance bounds.
+Polynomial or tensor shading summaries are accepted only by residual bounds;
+low-rank compression is optional and never assumed.
+
+The deterministic refinement scheduler orders candidates by exact
+cross-multiplied display-error reduction over estimated cost and recomputes
+after every accepted refinement. No independent approximation ratio is part
+of the contract.
+
+Lean proves generic mathematics. Build-time Rust constructs concrete facts,
+stable dumps expose them, and generated guest verifiers consume the encoded
+records. Lean is not invoked by an ordinary Wrela build.
+
+## 2. Source and semantic contract
+
+### 2.1 Attributes
+
+`@field` is allowed only on a top-level synchronous function with one of these
+shapes:
+
+```text
 @field
 fn world(p: Vec3) -> Field
 
@@ -18,65 +135,336 @@ fn world(p: Vec3) -> Field
 fn world(p: Vec3, read params: P) -> Field
 ```
 
-`@material` marks a top-level synchronous function with the matching parameter
-type and the one nominal material enum reached by `mark`:
+The root has no receiver or generics, is not async or a task, and returns
+exactly `core.field.Field`. `P` is finite data. The transitive call graph has
+available bodies, is pure and terminating, has no recursion, and may loop only
+when comptime unrolled over an exact array length. Runtime control flow
+depending on coordinates or parameters is rejected. Hardware, actors, time,
+entropy, panic, mutable statics, allocation, runtime object/material IDs, and
+runtime repetition counts are forbidden.
 
-```wrela
+`@material` is allowed only on a top-level synchronous function:
+
+```text
 @material
 fn shade(surface: SurfaceContext[M], read params: P) -> MaterialSample
 ```
 
-An image binds those roots through `img.renderer[P](...)`. Every v1 label in
-the plan's §2.5 is required. The result is
-`ImageDecl[Renderer[P]]`; `handle()` returns `Actor[Renderer[P]]`. This is a
-sealed exception for the standard `Renderer` actor only. Other generic actor
-handles remain unsupported.
+The parameter may be omitted. `M` is the single nominal material enum reached
+by every `mark` in the bound field graph. Material selection on
+`surface.material` is explicit dataflow. Other runtime control flow is accepted
+only when the material graph represents both branches and proves their
+boundary.
 
-`RenderFrame[P]` transfers ownership of `P` to `Renderer[P].render`.
-`RenderedFrame[P]` returns it after a successful presentation. The public
-runtime failure variants are defined once by `RenderError` in plan §2.6 and
-implemented by `stdlib/core/render.wr`.
+`@range(min=..., max=...)` applies to influencing `f32`, `Vec2`, `Vec3`, or
+`Rgb` fields. Endpoints are finite `f32` literals with `min <= max`; vector
+ranges apply component-wise. Structs and arrays have no recursive shorthand.
+Every influencing numeric path resolves to exactly one range. Integers and
+enums need no numeric range.
 
-The field operation set and scalar source semantics are defined by plan §2.2
-and `stdlib/core/field.wr`. `Field` is opaque. The compiler recognizes the
-canonical operation keys, and authors cannot construct an arbitrary field
-value or assert deformation bounds.
+`@rate(max_delta=..., max_second_delta=...)` is optional. Its finite,
+nonnegative values are measured per rendered frame. Omission is legal and
+disables kinetic reuse whenever that path changes. The runtime checks observed
+deltas before using a temporal certificate.
 
-## Compiler boundary
+The symbolic dependency classes are `Comptime`, `Coordinate`, `Parameter`,
+and `CoordinateAndParameter`. A field control-flow condition must be
+`Comptime`. Explicit field operations such as min/max, CSG, feature validity,
+and material selection remain graph nodes with representable boundaries.
 
-The only Pixels dump stages are:
+### 2.2 Closed field operations
+
+The version-1 constructors are:
 
 ```text
-field-graph
-frame-program
-render-layout
+plane sphere box round_box capsule finite_cylinder finite_cone torus
 ```
 
-`FieldKind` is canonical in plan §4.4. `Iv32` is canonical in plan §5.1.
-`FrameProgramHeaderV1` is the exactly 80-byte, little-endian directory header
-in plan §4.14; serialization is explicit and never uses Rust host layout.
-Formal theorem and kernel audits use the exact filenames
-`EXPECTED_AXIOMS.txt` and `KERNELS.txt`.
+Transforms are:
 
-P-1 accepts exactly one directly marked plane at 64×32. Any sphere, second
-plane, or other field composition receives a `pixels` diagnostic. This is a
-walking skeleton, not a general renderer or a correctness claim for the later
-scanline algorithm.
+```text
+translate rotate rigid_transform uniform_scale
+finite_repeat_x finite_repeat_y finite_repeat_z
+```
 
-## Machine-v1 display boundary
+Composition is:
 
-The guest is the sole pixel producer. It writes a complete BGRA8 framebuffer
-and an ordered tile list, then rings the display doorbell. The VMM validates:
+```text
+union intersection subtract
+smooth_union smooth_intersection smooth_subtract
+```
 
-- ABI version, format, 64×32 extent, and stride;
-- exact-next sequence number, starting at zero;
-- dense zero-based tile IDs in exact descriptor order within the fixed queue capacity;
-- in-bounds, non-overlapping, complete coverage;
-- exact pixel byte lengths.
+Metadata and deformation are:
 
-On any error, the sequence and guest ownership are unchanged. On success, the
-headless sink hashes the complete assembled framebuffer bytes in row-major
-BGRA order and returns ownership synchronously. Record/replay includes the
-frame sequence and digest. The shared constants and records live in
-`crates/wrela-machine/src/pixels.rs`; the guest and host implementations may
-not reinterpret them independently.
+```text
+mark sinusoidal_displace
+```
+
+Every operation has a real scalar Wrela implementation, a symbolic rule,
+range and derivative rules, structural bounds, a cost rule, a Rust reference,
+and a theorem or reduction to proved primitives. `sinusoidal_displace` is the
+only public deformation constructor in v1. The compiler derives its amplitude,
+gradient, Hessian, and third-derivative bounds; authors cannot assert arbitrary
+deformation contracts.
+
+The polynomial smooth minimum is:
+
+```text
+if a <= b - k: a
+else if b <= a - k: b
+else:
+    h = 0.5 + 0.5 * (b - a) / k
+    b + (a - b) * h - k * h * (1 - h)
+```
+
+`k` is finite and positive. Saturated branches return the selected operand
+bit-for-bit. Its bound is
+`min(a,b) - k/4 <= smooth_min(a,b,k) <= min(a,b)`. Smooth support budgets
+accumulate conservatively; sampled branch gaps are never proof.
+
+### 2.3 Renderer declaration
+
+Version 1 recognizes:
+
+```text
+img.renderer[P](
+    field=field_fn,
+    material=material_fn,
+    display=display_driver_decl,
+    width=W,
+    height=H,
+    refresh_hz=R,
+    shade_hz=S,
+    profile=RenderProfile.AaaByteExact,
+    tone_curve=T,
+    near=NEAR,
+    far=FAR,
+    world_min=MIN,
+    world_max=MAX,
+    camera_bounds=CAMERA,
+    light_config=LIGHTS,
+    exposure_range=EXPOSURE,
+    environment_range=ENVIRONMENT,
+    ao=AO,
+    probes=PROBES,
+    initialization_deadline_ms=DEADLINE,
+)
+```
+
+Every label is required. `P`, the two roots, and their material identity must
+match. The display declaration is owned by one renderer. Dimensions and rates
+are positive compile-time integers; `shade_hz` divides `refresh_hz`. Near/far,
+world, camera, light, exposure, environment, AO, probe, and initialization
+contracts are finite, ordered, and compile-time. The output extent matches the
+display. The renderer and its generated workers receive deterministic
+placement and participate in the image dependency DAG.
+
+The result is `ImageDecl[Renderer[P]]`. Its `handle()` method yields
+`Actor[Renderer[P]]` under the narrow sealed generic-actor exception; arbitrary
+generic actors remain rejected.
+
+### 2.4 Runtime results and failure
+
+The sole public failure contract is:
+
+```text
+enum RenderError:
+    ParameterOutOfRange(RenderPath)
+    NonFiniteInput(RenderPath)
+    FrameContractMismatch(RenderPath)
+    RootIsolationExhausted(TileId)
+    EventIsolationExhausted(TileId)
+    CertificateExhausted(TileId)
+    CapacityExceeded(RenderCapacity)
+    FixedPointRangeExceeded(TileId)
+    Display(DisplayError)
+    InternalInvariant(RenderInvariant)
+```
+
+`RenderedFrame[P]` contains returned `params`, `frame_index`,
+`displayed_digest`, `rebuilt_tiles`, and `reused_tiles`. No failure flushes a
+partial back buffer. Root, event, or certificate exhaustion is an expected
+fail-closed result. A static table/workspace mismatch is an internal invariant.
+Neither means background or success. The release workload has the stronger
+requirement that no supported frame returns an error.
+
+## 3. Compiler pipeline and ownership
+
+After image evaluation and sealing, `pixels::compile_all` compiles every
+renderer declaration before guest reachability is finalized:
+
+```text
+typed @field/@material roots
+  -> FieldGraph and MaterialGraph
+  -> structural proofs and capacities
+  -> FrameProgram v1
+  -> generated actor and glue facts
+  -> ordinary FlowWir/MachineWir lowering and code generation
+  -> code, rodata, rtdata, frameprog, pixelsdata, report, image digest
+```
+
+Pixels results are passed explicitly through build, layout, and report code;
+they are never hidden in thread-local state.
+
+The only stable Pixels dump stages are `field-graph`, `frame-program`, and
+`render-layout`. They sort renderers by image declaration index, accept
+`--renderer=<index>` to select one renderer, and print version headers plus
+`Renderers count=0` for a valid image with no renderer. An index that does not
+exist is a build error.
+
+`field-graph` records canonical scalar/field/material nodes, parameter paths,
+proof metadata, features, objects, CSG, interaction edges, and capacities.
+`frame-program` records header/digest, directory, encoded records, offsets,
+alignment, sizes, and revisions. `render-layout` records program/state
+placement, generated actors, per-core workspaces, tile ownership, display
+buffers, and report totals.
+
+## 4. Internal data model and image format
+
+All IDs are typed dense integer newtypes assigned after deterministic
+canonicalization. Source order is not an encoded identity. Nodes are ordered by
+kind, canonical operands, exact immediate bits, parameter paths, and stable
+source location only as a final diagnostic tie-break.
+
+Symbolic values distinguish scalar/vector nodes, opaque fields, object and
+material IDs, finite arrays/structs, and comptime values. They never represent
+actors, hardware resources, runtime allocation, or arbitrary function values.
+Every field node carries conservative value, world, Lipschitz, derivative,
+smooth-support, identity, and finiteness metadata where applicable.
+
+Each maximal smooth object owns the complete composed scalar root program.
+Primitive support slabs seed candidate domains; runtime isolation evaluates
+the full object scalar, not only leaf zeros. Consequently the permanent
+`a=b=k/4` smooth-min root is covered even though neither leaf is zero.
+
+Camera rays are unnormalized:
+
+```text
+r(u,v) = forward + u*right + v*up
+P(u,v,q) = eye + r(u,v)/q
+q = 1 / view_axis_depth, q > 0
+```
+
+For degree-`d` implicit `phi`, the compiler uses
+`Phi(u,v,q) = q^d * phi(eye + r(u,v)/q)`. Positive-q roots are preserved.
+
+Local events include projected-bound entry/exit, feature validity, tangency,
+smooth-band, identity, depth-order, repeat, and material boundaries. An
+omitted object, feature, or event has a domain-scoped exclusion record with
+strictly positive slack. Domain splits regenerate invalidated exclusions.
+
+### 4.1 FrameProgram v1
+
+The frame program is little-endian, pointer-free, offset-based, and
+directory-based. Its header is exactly 80 bytes:
+
+```text
+magic[8] = "WRELAPX\0"
+version: u16 = 1
+header_bytes: u16 = 80
+flags: u32
+total_bytes: u32
+renderer_index: u16
+reserved0: u16 = 0
+numeric_revision: u32
+formal_revision: u32
+table_count: u16
+reserved1[14] = 0
+digest[32]
+```
+
+The directory begins at byte 80. Its 16-byte entries contain table kind,
+record size, count, aligned offset, and byte length, sorted by the versioned
+table-kind number. The namespace covers scalar, field, object, feature,
+material, parameter, event, CSG, fixed-domain, immediate, camera/light/post,
+texture, shading, transparency, probe, kinetic, and optional debug-name data.
+Absent tables encode zero count, offset, and length.
+
+The digest is SHA-256 over the complete encoding with the digest field zero.
+Serialization writes fields explicitly and never uses Rust host layout. All
+tables are 16-byte aligned and all reserved bytes are zero. The compiler/VMM
+decoder rejects wrong identity or version, unsorted/duplicate/inconsistent
+directory entries, unknown required kinds or opcodes, nonzero reserved bytes,
+overflow, overlap, misalignment, noncanonical order, and digest mismatch.
+
+### 4.2 Placement and capacity
+
+`frameprog` is immutable and 64-byte aligned. `pixelsdata` is zero-initialized
+mutable renderer state and 64-byte aligned. Both follow ordinary rtdata and do
+not change the machine-v1 device ABI.
+
+Mutable state is compiler-sized and allocation-free: coefficient and frame
+input snapshots; double-buffered frame complexes; per-core candidate, root,
+event, sheet, run, corridor, fixed-q, shading, and transparency workspaces;
+probe state; tile ownership; and one failure record. A failed rebuild cannot
+corrupt the last valid complex; swap occurs only after every tile succeeds.
+
+The compiler derives and reports all feature, candidate, root, sheet, event,
+run, corridor, transparency, stack, shading, and probe capacities. Authors do
+not provide runtime completeness capacities. A successful build proves the
+encoded widths and total image memory fit.
+
+## 5. Runtime mathematics
+
+`Iv32 { lo, hi }` interprets endpoints in a compiler-selected
+`FixedDomain { frac_bits, min_raw, max_raw }`. Addition and subtraction are
+checked. Multiplication uses four `i64` products and outward floor/ceil shift.
+Division uses a separately certified reciprocal interval. Conversion from
+`f32` uses the exact IEEE value and outward integer rounding. Invalid domains
+and overflow are unresolved, never saturation.
+
+At each row start, the renderer isolates every object root over
+`[1/far, 1/near]`, front to back in decreasing q. Interval exclusion discards
+root-free boxes. Monotone sign-bracket contraction or Krawczyk contraction
+isolates roots. Tangent or near-multiple roots that cannot be separated become
+event corridors. Exhaustion returns `RootIsolationExhausted`.
+
+Inside a candidate run, implicit derivatives propose a quadratic q sheet. The
+certificate proves one root in its tube, feature validity, stable identity,
+strict separation from competing sheets, and a complete active cover. It also
+proves empty q slabs cannot contain an untracked root unless covered by an
+active tangency corridor. Failed proofs shorten or split the run; tolerances
+are never widened.
+
+Larger q is nearer. Adjacent strict interval order implies total order.
+Ordinary runs never cross an event corridor. Corridors use bounded local
+isolation and analytic coverage; unresolved output prevents presentation.
+
+Silhouette coverage uses certified line or quadratic segments and analytic box
+filter integration. Positional and curvature uncertainty is converted to
+color uncertainty through local contrast. MSAA and TAA do not establish
+correctness.
+
+Certified runs use checked fixed-q forward differences with resets no farther
+than 64 pixels. Their certificates include coefficient quantization,
+recurrence error, and overflow freedom. Ordinary normals come from q-sheet
+derivatives; exact field gradients handle corridors or excessive normal cones.
+
+Material and lighting summaries are constant, polynomial, tensor, optional
+verified low-rank, or dense. Every summarized form is accepted against the
+exact graph with an interval residual bound.
+
+Transparency uses premultiplied radiance and residual transmittance:
+
+```text
+(C1,T1) compose (C2,T2) = (C1 + T1*C2, T1*T2)
+```
+
+A suffix is dropped only when bounded remaining radiance times current
+transmittance fits its assigned encoded error. Point/directional visibility is
+certified. Rectangular/disk lights use deterministic adaptive integration. AO
+uses bounded field taps. GI uses a deterministic fixed-capacity world-space
+probe clipmap with compiler-known update and invalidation rules.
+
+The final interval pipeline is geometry and coverage, material, lighting,
+transparency, exposure, color transform, monotone tone/transfer tables, then
+u8 quantization. A channel is fixed only when both interval endpoints encode
+to the same byte; otherwise deterministic refinement continues or the frame
+fails.
+
+Kinetic transport stores derivative and slack bounds for parameters, events,
+roots, q order, identity, shading, transfer, and fixed-point state. Reuse is
+legal only when the complete perturbation bound is strictly below stored
+slack. Static framebuffer reuse additionally requires exact equality digests
+covering all geometry, camera, light, material, probe, exposure, transform,
+table, extent, dither-policy, and renderer-program inputs.

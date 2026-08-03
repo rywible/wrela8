@@ -190,8 +190,21 @@ pixels out:
   Metal layer on macOS.
 
 Because every pixel is CPU-computed and every flush is a recorded output,
-**replay reproduces exactly what the user saw**, and CI can assert
-golden-image digests through the VMM.
+**replay reproduces exactly what the user saw**, and the conformance suite can
+assert golden-image digests through the VMM.
+
+Pixels adds two image-internal regions after ordinary runtime data:
+`frameprog` contains immutable, 64-byte-aligned frame programs and
+`pixelsdata` contains zero-initialized, 64-byte-aligned renderer state. These
+regions are compiler-placed guest memory, not devices or host-visible renderer
+state, and do not alter display ownership or queue semantics.
+
+An `Image.renderer` declaration creates a generated `Renderer[P]` actor and
+deterministically placed internal workers. The guest actors alone consume the
+frame program, construct and shade pixels, fill disjoint guest-owned tiles,
+and submit the complete display list. The VMM validates and scans out those
+bytes without rendering or modifying a pixel. A renderer failure leaves the
+previous complete framebuffer visible and submits no partial frame.
 
 ## 8. Record/replay boundary
 

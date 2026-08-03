@@ -445,6 +445,27 @@ alias proof never erases a hardware observation or barrier. An optimization
 used to satisfy a hard layout or timing assertion becomes a required,
 verified part of that build.
 
+### 5.1 Pixels compiler data and one-ISA obligations
+
+Pixels adds `FieldGraph`, `MaterialGraph`, and `FrameProgram` as
+compiler-owned data, not executable IR. Source and generated runtime functions
+still lower through the existing FlowWir → MachineWir → AArch64 path.
+`FieldGraph` is an ephemeral canonical graph used while compiling `@field` and
+`@material`; `FrameProgram v1` is immutable image data consumed by the
+generated standard-library renderer. Neither may add executable semantics that
+bypass the ordinary lowering pipeline. The full contract is
+[07 §1.1](07-pixels.md#11-compiler-data-not-another-executable-ir).
+
+Machine v1 is a one-ISA target: every emitted hot workload carries a
+machine-readable obligation listing the source operation, selected AArch64
+instruction or fixed sequence, feature requirement, register/stack/call
+constraints, and cost rows. Compiler conformance proves that every obligation
+has exactly one legal selection and that every emitted hot instruction is
+covered. There is no runtime dispatch or scalar portability fallback inside a
+sealed hot workload. `FEAT_DotProd` is not part of the current baseline; Pixels
+may require it only after the planned P12 additive machine-v1 baseline update
+and matching host conformance gate.
+
 ## 6. The image report
 
 Every successful build emits a machine-readable report and a summary. At
