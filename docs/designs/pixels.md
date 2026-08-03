@@ -23,7 +23,7 @@ the production renderer or establish modeled performance as measured fact.
 
 Decision block **2000–2099** requested. Not claimed until a human activates.
 
-Not 1900–1999, which is what [graphics.md](graphics.md) asks for: master's
+Not 1900–1999, which is what the historical `graphics.md` asked for: master's
 `codegen-pareto-2` item K has since claimed **1950–1969** inside that
 range. graphics.md's request is now partially invalid and wants the same
 correction.
@@ -533,7 +533,7 @@ plane, scaled and composited by the Pi's HVS — cutting scanout traffic from
 ~4.0 GB/s to ~1.05 GB/s. **That is not available under the machine
 contract.**
 
-[06 §7](../docs/language/06-machine.md) already specifies the display path,
+[06 §7](../language/06-machine.md) already specifies the display path,
 and it has no hardware scaler in it: framebuffers are *"blob resources —
 guest-owned pages the VMM maps and scans out directly"*, `transfer` is a
 no-op, and the host backends are *"DRM dumb buffers / Mesa-V3D present"*. A
@@ -645,7 +645,7 @@ is 28 median / 82 max (colonnade) and 1 median / 179 max (melee).
 
 ### 9.4 This activates Tiers 9–10
 
-[opts-ladder.md](opts-ladder.md) lists *"SIMD + vectorizer (Tiers 9–10) —
+The historical `opts-ladder.md` listed *"SIMD + vectorizer (Tiers 9–10) —
 gated on the pixels rung; when that activates, this becomes urgent rather
 than optional."* This document is that rung.
 
@@ -812,7 +812,7 @@ In descending order of how much rests on them.
    unknown, seen from the other end.
 3. **§14.2's display path — narrower than graphics.md thought.** graphics.md
    §14.2 says *"There is no scanout contract, no framebuffer device, no
-   display driver."* The first is wrong: [06 §7](../docs/language/06-machine.md)
+   display driver."* The first is wrong: [06 §7](../language/06-machine.md)
    specifies blob-resource framebuffers, scatter-gather tile lists, a vsync
    frame vector and the host backends. What is missing is the *driver* and
    the VMM device model, not the contract. That is a smaller and much
@@ -849,7 +849,7 @@ In descending order of how much rests on them.
 9. **`rsqrt` is an explicit Newton sequence in stdlib** (§9.4).
 10. **Over-relaxation is rejected** — start-point-dependent (§3.4).
 11. **1080p60 is the flagship; 4K is a stretch profile.** Not this
-    document's choice — [06 §7](../docs/language/06-machine.md) already
+    document's choice — [06 §7](../language/06-machine.md) already
     says so normatively, and an earlier draft of §10 overrode it. The
     measurements are consistent with it: 1080p60 fits every scene with
     room, and 4K60 is reachable as a stretch (§10).

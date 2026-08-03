@@ -156,7 +156,124 @@ fn lint_text(text: &str, repo: &Path) -> Result<(), String> {
 
     lint_marked_paths(text, repo)?;
     lint_display_contract(repo)?;
+    lint_normative_docs(repo)?;
     lint_permanent_fixtures(text, repo, &headings)?;
+    Ok(())
+}
+
+fn lint_normative_docs(repo: &Path) -> Result<(), String> {
+    let pixels_path = repo.join("docs/language/07-pixels.md");
+    let pixels = std::fs::read_to_string(&pixels_path)
+        .map_err(|error| format!("read {}: {error}", pixels_path.display()))?;
+    for heading in [
+        "## 0. Delivered contract",
+        "## 1. Closed architectural decisions",
+        "## 2. Source and semantic contract",
+        "## 3. Compiler pipeline and ownership",
+        "## 4. Internal data model and image format",
+        "## 5. Runtime mathematics",
+    ] {
+        if !pixels.contains(heading) {
+            return Err(format!(
+                "pixels plan lint: normative chapter lacks `{heading}`"
+            ));
+        }
+    }
+    for spelling in ["@field", "@material", "@range", "@rate", "Image.renderer"] {
+        if !pixels.contains(spelling) {
+            return Err(format!(
+                "pixels plan lint: normative chapter lacks source spelling `{spelling}`"
+            ));
+        }
+    }
+    for contract in [
+        "correct without",
+        "Kinetic maintenance is optional",
+        "`AaaByteExact` rejects unsupported",
+        "FieldGraph",
+        "FrameProgram",
+        "field-graph",
+        "frame-program",
+        "render-layout",
+        "WRELAPX\\0",
+        "exactly 80 bytes",
+        "frameprog",
+        "pixelsdata",
+        "FEAT_DotProd",
+    ] {
+        let all_docs = if contract == "FEAT_DotProd" {
+            std::fs::read_to_string(repo.join("docs/language/04-compiler.md"))
+                .map_err(|error| format!("read compiler chapter: {error}"))?
+        } else {
+            pixels.clone()
+        };
+        if !all_docs.contains(contract) {
+            return Err(format!(
+                "pixels plan lint: normative Pixels contract lacks `{contract}`"
+            ));
+        }
+    }
+
+    let historical_path = repo.join("docs/designs/pixels.md");
+    let historical = std::fs::read_to_string(&historical_path)
+        .map_err(|error| format!("read {}: {error}", historical_path.display()))?;
+    let historical_words = historical.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "HISTORICAL EVIDENCE",
+        "unfavorable online-result history",
+        "does not validate the production renderer",
+    ] {
+        if !historical_words.contains(phrase) {
+            return Err(format!(
+                "pixels plan lint: historical fieldprobe evidence lacks `{phrase}`"
+            ));
+        }
+    }
+
+    for relative in [
+        "docs/language/04-compiler.md",
+        "docs/language/05-library.md",
+        "docs/language/06-machine.md",
+        "docs/language/07-pixels.md",
+        "docs/designs/pixels.md",
+    ] {
+        lint_relative_markdown_links(&repo.join(relative))?;
+    }
+    Ok(())
+}
+
+fn lint_relative_markdown_links(path: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let mut rest = text.as_str();
+    while let Some((_, after_open)) = rest.split_once("](") {
+        let Some((target, after_close)) = after_open.split_once(')') else {
+            return Err(format!(
+                "pixels plan lint: unterminated Markdown link in {}",
+                path.display()
+            ));
+        };
+        rest = after_close;
+        let file = target.split('#').next().unwrap_or("");
+        if file.is_empty()
+            || file.starts_with("http://")
+            || file.starts_with("https://")
+            || file.starts_with("mailto:")
+            || !(file.contains('/') || file.ends_with(".md") || file.ends_with(".wr"))
+        {
+            continue;
+        }
+        let resolved = path
+            .parent()
+            .expect("tracked Markdown file has a parent")
+            .join(file);
+        if !resolved.exists() {
+            return Err(format!(
+                "pixels plan lint: broken relative link `{target}` in {}",
+                path.display()
+            ));
+        }
+    }
     Ok(())
 }
 

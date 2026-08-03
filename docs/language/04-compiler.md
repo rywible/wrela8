@@ -316,7 +316,7 @@ explain almost none of it; **Lane 3**
 host/VMM agreement that Lane-2 vectors match on a named control case.
 Lane 2's normative sink is the **host memory snapshot** taken after halt,
 not the guest transcript: the machine's console is a fixed, statically
-bounded surface ([02](02-machine.md) §12.2) and the number of hit blocks
+bounded surface ([02](02-language.md) §12.2) and the number of hit blocks
 has no static bound, so the transcript's hit line is a **bounded
 diagnostic** — it carries at most a fixed number of pairs and must then
 report the count it dropped, so a dropped pair is loud rather than
@@ -571,9 +571,8 @@ A toolchain conforms only if it implements every normative rule in chapters
 01–06 for the machine revision it advertises. The digest-pinned test runner
 is the wrela VMM itself (QEMU stands in only during bootstrap and is then
 retired); machine implementations additionally pass the machine conformance
-suite of [06 §10](06-machine.md). The archived draft's enumerated test
-catalogue ([archive](../archive/v0.1-draft/08-build-contract.md)) remains
-the working checklist; the worked example
+suite of [06 §10](06-machine.md). The repository's golden and census
+manifests are the working checklist; the worked example
 ([virtio_storage.wr](examples/virtio_storage.wr)) is a required
 integration-shape test once the corresponding library APIs exist.
 Structural properties (direct calls, static frames, scoped-pool reset,

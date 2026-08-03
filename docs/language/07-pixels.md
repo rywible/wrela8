@@ -319,6 +319,24 @@ alignment, sizes, and revisions. `render-layout` records program/state
 placement, generated actors, per-core workspaces, tile ownership, display
 buffers, and report totals.
 
+### 3.1 Compiler ownership
+
+The `pixels` compiler subsystem owns attributes and diagnostics; the dedicated
+symbolic evaluator; canonical scalar, vector, field, material, object, and
+feature graphs; parameter paths; interval/derivative/world/support proofs;
+smooth-object and hard-CSG partitioning; projective, polynomial, derivative,
+and event programs; capacity derivation; frame-program records and
+encoding/decoding; stable dumps and report blocks; generated actor/glue facts;
+and allocation-free Rust references used only by compiler tests and host
+conformance.
+
+Syntax supplies ordinary attribute spans but no Pixels grammar. Sema owns
+source typing and body-subset legality. Image evaluation owns sealed renderer
+declarations but no symbolic field values. Layout owns explicit `frameprog`
+and `pixelsdata` placement supplied by Pixels. Ordinary runtime code remains
+owned by lowering and code generation. The VMM owns only display validation
+and scanout, never renderer semantics.
+
 ## 4. Internal data model and image format
 
 All IDs are typed dense integer newtypes assigned after deterministic
@@ -404,6 +422,114 @@ run, corridor, transparency, stack, shading, and probe capacities. Authors do
 not provide runtime completeness capacities. A successful build proves the
 encoded widths and total image memory fit.
 
+### 4.3 Canonical record details
+
+The distinct dense ID domains are `ScalarId`, `Vec3Id`, `FieldId`,
+`ObjectId`, `FeatureId`, `MaterialId`, `ParamSlotId`, `EventId`,
+`ProgramId`, `TextureId`, and `ProbeSetId`. Encoded tables never substitute an
+untyped integer for one of these identities.
+
+The scalar graph is append-only. Its closed operations are constants,
+parameter and coordinate loads, arithmetic, explicit comparison predicates,
+min/max/abs/clamp, bit-defined square root and reciprocal, vector
+construction/selection, dot products, lengths, and the closed trigonometric
+form used by `sinusoidal_displace`. It has no general control flow,
+value-called functions, memory mutation, or implicit host math.
+
+The closed structural field kinds are:
+
+```text
+Plane Sphere Box RoundBox Capsule FiniteCylinder FiniteCone Torus
+Translate Rotate RigidTransform UniformScale
+FiniteRepeatX FiniteRepeatY FiniteRepeatZ
+Union Intersection Subtract
+SmoothUnion SmoothIntersection SmoothSubtract
+Mark BoundedDisplace
+```
+
+Primitive records carry canonical operands and a source span. Feature records
+decompose primitives into a finite set of algebraic or Taylor-bounded sheets
+plus explicit validity predicates. Feature kinds cover plane and sphere
+sheets; box faces, edges, and corners; capsule bodies and caps;
+cylinder/cone bodies and caps; torus sheets; repetition boundaries; and
+bounded-deformation sheets. A feature identity is stable only on a domain
+where both validity and owning object identity are certified.
+
+Hard CSG is an occupancy program over maximal smooth objects. Smooth
+operators belong inside those objects. Hard union, intersection, and
+subtraction determine occupancy and winning identity between them. `mark`
+contributes exact object and nominal material identity without changing the
+scalar.
+
+Every referenced runtime coefficient becomes a stable field/index access path
+into `P`, with layout offset, scalar kind, outward range, and optional rate
+contract. Only referenced paths are snapshotted. Each construction carries:
+
+```text
+ProofMeta:
+    value: optional outward f64 interval
+    world_bounds: optional Aabb3
+    lipschitz: optional f64
+    gradient_norm: optional outward interval
+    hessian_norm: optional outward interval
+    third_derivative_norm: optional outward interval
+    smooth_support: f64
+    identity_set: finite identities
+    finite: bool
+```
+
+Host `f64` results are analysis aids rather than proof records. Authority
+begins only after outward conversion into an encoded fixed domain.
+
+For polynomial smooth minimum, the exact support rules are:
+
+```text
+min(a,b) - k/4 <= smooth_min(a,b,k) <= min(a,b)
+support(leaf) = 0
+support(smooth_min(a,b,k)) = k/4 + max(support(a), support(b))
+bulge(g,k) = (k-g)^2 / (4k), when 0 <= g <= |a-b| <= k is certified
+```
+
+Without a certified gap lower bound the compiler uses `k/4`. A
+`SmoothObjectRootProgram` names the maximal object, its complete scalar root,
+primitive candidate slabs, support certificate, and derived isolation
+capacity.
+
+The direct projective forms include:
+
+```text
+plane:
+Phi = q * (dot(n, eye) + c) + dot(n, r)
+
+sphere, a = eye - center:
+Phi = (dot(a,a) - radius^2) * q^2
+    + 2 * dot(a,r) * q
+    + dot(r,r)
+```
+
+Other algebraic features use the sparse-polynomial homogenizer and are checked
+against scalar evaluation. Primary certificates never normalize the camera
+ray.
+
+Events are analytic conics, sparse polynomials, or Taylor-bounded predicates.
+Static interaction edges exist only when conservative world/projected bounds
+and q ranges may overlap. Runtime active covers name included objects and
+features, active events, exclusions, and the complete q domain. Exclusion
+reasons are projected-bounds disjointness, support-shell disjointness,
+q-range disjointness, false CSG influence, false feature validity, or
+parameter-box disjointness.
+
+The frame-program directory entry is exactly 16 bytes and encodes
+`kind: u16`, `record_bytes: u16`, `count: u32`, `offset: u32`, and
+`byte_len: u32`. Every renderer has exact program/state base and byte size
+plus exact per-core workspace placement.
+
+Derived maxima cover features per object; candidate objects/features per
+tile; row-start roots; simultaneous sheets; event intervals, runs, and
+singular corridors per row; transparency layers; root/event stack nodes;
+shading terms; and probe invalidations per frame. Global maxima are permitted
+until tighter proofs exist. Undercounting is never permitted.
+
 ## 5. Runtime mathematics
 
 `Iv32 { lo, hi }` interprets endpoints in a compiler-selected
@@ -468,3 +594,106 @@ legal only when the complete perturbation bound is strictly below stored
 slack. Static framebuffer reuse additionally requires exact equality digests
 covering all geometry, camera, light, material, probe, exposure, transform,
 table, extent, dither-policy, and renderer-program inputs.
+
+### 5.1 Fixed-domain rules
+
+Square and absolute value use exact sign cases. `lo <= hi` is mandatory. Hot
+SIMD groups share one domain rather than carrying per-lane exponents. World
+coordinates, q, q derivatives, field residual, radiance, coverage, and proof
+slack use separate compiler-selected domains.
+
+The row-start isolation stack pushes the farther half before the nearer half,
+so the larger-q domain is processed first. A domain is discharged only by
+strict zero exclusion, a monotone opposite-sign bracket and contraction, or a
+strictly smaller Krawczyk contraction. Reaching minimum width unresolved is an
+exhaustion error. Root results are sorted and merged only after disjointness is
+proved.
+
+### 5.2 Run proposal and acceptance
+
+For `G(x,q)=0`, candidates use:
+
+```text
+q_x  = -G_x / G_q
+q_xx = -(G_xx + 2*G_xq*q_x + G_qq*q_x^2) / G_q
+q_hat(dx) = q0 + q_x*dx + 0.5*q_xx*dx^2
+```
+
+Acceptance evaluates both correction-tube boundaries, proves `G_q` excludes
+zero, requires opposite strict boundary signs, proves feature validity and
+identity, separates every competitor, and retains the complete active cover.
+Parametric Krawczyk is allowed only when its image lies strictly inside the
+correction interval.
+
+Continuation alone is insufficient. Every run starts from complete q-domain
+isolation and proves each tracked root remains regular; every intervening q
+slab excludes zero or belongs to a tangency corridor; and all support,
+projected-bound, validity, repetition, identity, and material events stay away
+from zero. The earliest expiring condition ends the run. A winner requires
+`winner.lo > competitor.hi` after all root and quantization errors.
+
+Analytic event roots are enclosed outward. General events use interval
+subdivision and derivative contraction. Overlapping roots merge into one
+corridor widened by curve-position and fixed-point error.
+
+### 5.3 Coverage, recurrence, and normals
+
+Line coverage clips a polygon against the pixel square. Quadratic coverage
+uses a Green's-theorem boundary integral. A segment splits whenever its
+remainder can exceed the assigned output-code error.
+
+The scalar fixed-q recurrence is:
+
+```text
+q  += d1
+d1 += d2
+```
+
+For a four-pixel packet:
+
+```text
+q4_delta = 4*d1 + 6*d2
+delta_step = 16*d2
+```
+
+No update may overflow before the next certified reset.
+
+For camera-space `P(u,v)=(u/q,v/q,1/q)`, an unnormalized normal is
+proportional to:
+
+```text
+N = (q_u, q_v, q - u*q_u - v*q_v)
+```
+
+The exact field gradient replaces this proposal in corridors or when the
+normal-cone error exceeds the material allocation.
+
+### 5.4 Shading, transparency, and output bytes
+
+The v1 material model is energy-conserving Lambert diffuse, one GGX-style
+glossy lobe, emissive radiance, scalar opacity, and filtered normal/slope
+moments. Lights are directional, point, rectangular area, or disk area.
+
+The exact transparency tail condition is:
+
+```text
+current_transmittance * max_remaining_radiance <= assigned_encoded_error
+```
+
+The radiance bound comes from material/light proofs, never a heuristic.
+Area-light integration works over emitter coordinates with an interval
+remainder. AO uses four or five field-distance taps valid for their own
+spatial domains. Probe updates and invalidations are deterministic; culling a
+probe contribution requires a transfer-sensitive encoded-error proof.
+
+The compiler proves tone and transfer tables monotone. Refinement selects the
+largest remaining contributor under the deterministic exact error/cost
+ordering.
+
+### 5.5 Temporal reuse
+
+Regular-sheet temporal proposals use `q_t = -G_t/G_q`. Reuse validates actual
+parameter deltas, event signs, root tubes, adjacent q order, feature and
+identity stability, shading/post bounds, and fixed-point margins. Diagnostics
+retain the component owning minimum slack. A failed margin rebuilds the tile
+or the full frame from scratch.
