@@ -1,0 +1,90 @@
+module examples.boot_pixels_numeric
+
+from core.field import (
+    Field,
+    Rgb,
+    Vec3,
+    mark,
+    smooth_union,
+    sphere,
+    union,
+)
+from core.render import (
+    AoConfig,
+    CameraBounds,
+    LightConfig,
+    MaterialSample,
+    ProbeConfig,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 33
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P6.11"
+
+const VECTOR_COUNT: u32 = 16
+
+struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    phase: f32
+
+enum MaterialId:
+    Ground
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    a = sphere(p, Vec3(x=-0.5, y=0.0, z=0.0), radius=0.75)
+    b = sphere(p, Vec3(x=0.5, y=0.0, z=0.0), radius=0.75)
+    return mark(smooth_union(a, b, k=0.25), object=33, material=MaterialId.Ground)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 33, "fixture id must remain pinned"
+    assert VECTOR_COUNT == 16, "adversarial scene value must remain pinned"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-numeric", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds(max_motion=0.25),
+        light_config=LightConfig(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig(enabled=false),
+        probes=ProbeConfig(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

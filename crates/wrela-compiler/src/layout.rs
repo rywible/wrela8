@@ -2840,7 +2840,11 @@ pub fn lower_and_codegen_image(
     )
     .map_err(|e| e.message)?;
     if let Some(skeleton) = &pixels_skeleton {
-        crate::codegen::install_pixels_plane_renderer(&mut program, &skeleton.frame_program)?;
+        crate::codegen::install_pixels_plane_renderer(
+            &mut program,
+            &skeleton.frame_program,
+            &skeleton.semantic_seed,
+        )?;
         crate::cost::audit::audit_program(&program)?;
     }
     let async_frames =

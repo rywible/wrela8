@@ -42,6 +42,53 @@ The P-1 64×32, one-plane walking skeleton remains an isolated end-to-end
 boundary fixture. It is not production renderer semantics and must not be
 generalized piecemeal.
 
+### 0.1 Definition of done
+
+The production renderer is complete only when every item below is true:
+
+1. A Wrela image declares a renderer through `Image.renderer` and boots it
+   through the ordinary image and layout pipeline.
+2. `@field` and `@material` functions have stable typed dumps, deterministic
+   compiler artifacts, and focused diagnostics.
+3. Every flagship field operation has exact scalar semantics and a
+   conservative compiler proof rule.
+4. The compiler emits a versioned `FrameProgram v1` data section and exact
+   mutable renderer-state placement.
+5. The guest constructs a frame from scratch with the validated sweep,
+   without dense truth, a sample lattice, a dense edge mask, or previous-frame
+   state.
+6. Kinetic reuse is only an optimization; disabling it produces the same
+   displayed bytes.
+7. Every accepted visibility run proves root existence, root uniqueness,
+   identity stability, and front order for its complete domain.
+8. Every approximation in coverage, shading, transparency, post, and temporal
+   transport is either proven unable to change the stored output code or is
+   refined or falls back.
+9. A proof or capacity failure prevents presentation and returns
+   `RenderError`; it never becomes background, a stale hit, or a guessed
+   color. Acceptance is fail-closed but not universally total over every
+   declared numeric range: release conformance separately proves zero errors
+   for the locked workload.
+10. The compiler report publishes frame-program bytes, renderer-state bytes,
+    per-core placement, exact capacity derivations, fallback classes, and
+    generated hot functions.
+11. The Lean project builds with no admissions and prints no unexpected axioms
+    for the trust-boundary theorems.
+12. The Rust compiler reference, generated Wrela scalar kernels, generated
+    Wrela SIMD kernels, and host oracle agree on every permanent differential
+    fixture; every hot workload satisfies its one-ISA instruction obligation
+    with no missed or illegal idiom.
+13. The machine-v1 display conformance lane presents the exact expected frame
+    digests.
+14. The flagship A76/Pi 5 target profile is admitted at 1080p60 by the
+    exact sealed renderer cycle proxy, with every acceptance frame below budget, no
+    unresolved frame, and no output divergence during the locked workload.
+    Physical hardware execution is not a conformance input.
+
+Items 13 and 14 are release conformance, not research lanes. They do not
+choose algorithms or tune tolerances. The algorithms and tolerances in this
+chapter are fixed before those gates run.
+
 ## 1. Closed architectural decisions
 
 ### 1.1 Compiler data, not another executable IR

@@ -27,13 +27,16 @@ pub fn dump_field_graph(skeleton: &PlaneSkeleton) -> String {
 
 pub fn dump_frame_program(skeleton: &PlaneSkeleton) -> String {
     format!(
-        "FrameProgram v1 renderer={} digest={}\n  Header magic=WRELAPX\\0 version=1 bytes=80 flags=[plane-skeleton] total_bytes=80\n  Directory count=0 offset=80\n  Record kind=Plane id=f0 semantic_digest={}\n",
+        "FrameProgram v1 renderer={} digest={}\n  Header magic=WRELAPX\\0 version=1 bytes=80 flags=[] total_bytes=80\n  Directory count=0 offset=80\n  WalkingSkeleton version=P-1 semantic_seed={} storage=generated-actor\n",
         skeleton.renderer_index, skeleton.frame_program_digest, skeleton.semantic_digest
     )
 }
 
 pub fn dump_render_layout(skeleton: &PlaneSkeleton) -> String {
-    let renderer = crate::codegen::emit_pixels_plane_renderer(&skeleton.frame_program);
+    let renderer = crate::codegen::emit_pixels_plane_renderer(
+        &skeleton.frame_program,
+        &skeleton.semantic_seed,
+    );
     let code_bytes = renderer.code.len() * 4;
     let memory_bytes = wrela_machine::pixels::FRAME_BYTES
         + wrela_machine::pixels::CONTROL_BYTES

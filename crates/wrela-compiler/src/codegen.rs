@@ -475,11 +475,11 @@ pub const PIXELS_RENDERER_SYMBOL: &str = "__wrela_pixels_render";
 /// Emit the P-1 scalar renderer as ordinary guest AArch64.
 ///
 /// The renderer installs its frame program, shades the fixed 64x32 BGRA8
-/// target from the semantic digest embedded in that program, publishes the
+/// target from the P-1 semantic seed compiled into the generated actor, publishes the
 /// one-tile display queue, and finally rings the display doorbell.  Keeping
 /// this as an explicit, auditable emitter makes the walking skeleton travel
 /// through the same image/link/VMM path as every later renderer.
-pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80]) -> CodegenFn {
+pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80], semantic_seed: &[u8; 32]) -> CodegenFn {
     use wrela_machine::pixels;
 
     fn renderer_load_u64(code: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -572,13 +572,12 @@ pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80]) -> CodegenFn {
         );
     }
 
-    let seed = &frame_program[48..80];
     renderer_load_u64(&mut code, 9, pixels::FRAMEBUFFER_BASE, "pixels framebuffer");
     for y in 0..pixels::HEIGHT {
         for x in 0..pixels::WIDTH {
-            let b = (x as u8).wrapping_mul(4) ^ seed[0];
-            let g = (y as u8).wrapping_mul(8) ^ seed[1];
-            let r = seed[2];
+            let b = (x as u8).wrapping_mul(4) ^ semantic_seed[0];
+            let g = (y as u8).wrapping_mul(8) ^ semantic_seed[1];
+            let r = semantic_seed[2];
             let pixel = u32::from_le_bytes([b, g, r, 0xff]);
             let offset = ((y * pixels::WIDTH + x) * pixels::BYTES_PER_PIXEL) as u16;
             renderer_load_u64(&mut code, 10, u64::from(pixel), "semantic pixel");
@@ -688,6 +687,7 @@ pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80]) -> CodegenFn {
 pub fn install_pixels_plane_renderer(
     program: &mut CodegenProgram,
     frame_program: &[u8; 80],
+    semantic_seed: &[u8; 32],
 ) -> Result<(), String> {
     let boot = program.fns.get_mut("__wrela_rt_boot_init").ok_or_else(|| {
         "pixels: live image did not codegen the runtime boot initializer".to_string()
@@ -754,7 +754,7 @@ pub fn install_pixels_plane_renderer(
         .fns
         .insert(
             PIXELS_RENDERER_SYMBOL.to_string(),
-            emit_pixels_plane_renderer(frame_program),
+            emit_pixels_plane_renderer(frame_program, semantic_seed),
         )
         .is_some()
     {

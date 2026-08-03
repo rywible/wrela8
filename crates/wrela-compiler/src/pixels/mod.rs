@@ -79,6 +79,7 @@ pub struct PlaneSkeleton {
     pub frame_program: [u8; FRAME_PROGRAM_HEADER_BYTES],
     pub frame_program_digest: String,
     pub semantic_digest: String,
+    pub semantic_seed: [u8; 32],
 }
 
 fn arg<'a>(renderer: &'a RendererDecl, label: &str) -> Result<&'a DeclArg, String> {
@@ -448,22 +449,21 @@ fn digest_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn encode_header(
-    renderer_index: usize,
-    semantic_digest: &str,
-) -> Result<([u8; 80], String), String> {
+fn encode_header(renderer_index: usize) -> Result<([u8; 80], String), String> {
     let renderer_index = u16::try_from(renderer_index)
         .map_err(|_| "pixels: renderer index exceeds u16".to_string())?;
     let mut bytes = [0u8; FRAME_PROGRAM_HEADER_BYTES];
     bytes[0..8].copy_from_slice(FRAME_PROGRAM_MAGIC);
     bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
     bytes[10..12].copy_from_slice(&(FRAME_PROGRAM_HEADER_BYTES as u16).to_le_bytes());
-    bytes[12..16].copy_from_slice(&1u32.to_le_bytes()); // P-1 plane-only
+    // P-1 reserves no production wire-format flags.
     bytes[16..20].copy_from_slice(&(FRAME_PROGRAM_HEADER_BYTES as u32).to_le_bytes());
     bytes[20..22].copy_from_slice(&renderer_index.to_le_bytes());
     bytes[24..28].copy_from_slice(&1u32.to_le_bytes()); // numeric revision
     bytes[28..32].copy_from_slice(&1u32.to_le_bytes()); // formal revision
-    bytes[32..48].copy_from_slice(&digest_bytes(semantic_digest)[..16]);
+    // The P-1 walking skeleton has no v1 tables. Keep table_count and every
+    // reserved byte zero; P5 owns the table-kind namespace and will replace
+    // this header-only program with the production representation.
     let digest = wrela_machine::sha256::sha256_hex(&bytes);
     bytes[48..80].copy_from_slice(&digest_bytes(&digest));
     Ok((bytes, digest))
@@ -576,7 +576,10 @@ pub fn compile_plane_skeleton(
     semantic_program.fns = analysis.functions;
     let semantic_text = crate::sema::typed::dump(&semantic_program);
     let semantic_digest = wrela_machine::sha256::sha256_hex(semantic_text.as_bytes());
-    let (frame_program, frame_program_digest) = encode_header(0, &semantic_digest)?;
+    let semantic_seed: [u8; 32] = digest_bytes(&semantic_digest)
+        .try_into()
+        .expect("SHA-256 hex decodes to 32 bytes");
+    let (frame_program, frame_program_digest) = encode_header(0)?;
     Ok(PlaneSkeleton {
         renderer_index: 0,
         field,
@@ -590,6 +593,7 @@ pub fn compile_plane_skeleton(
         frame_program,
         frame_program_digest,
         semantic_digest,
+        semantic_seed,
     })
 }
 
@@ -654,27 +658,34 @@ mod tests {
 
     #[test]
     fn frame_program_header_is_explicitly_eighty_bytes() {
-        let semantic = wrela_machine::sha256::sha256_hex(b"semantic scene");
-        let (bytes, digest) = encode_header(0, &semantic).unwrap();
+        let (bytes, digest) = encode_header(0).unwrap();
         assert_eq!(bytes.len(), 80);
         assert_eq!(&bytes[0..8], FRAME_PROGRAM_MAGIC);
+        assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 1);
         assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 80);
-        assert_eq!(&bytes[32..48], &digest_bytes(&semantic)[..16]);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 80);
+        assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(bytes[32..34].try_into().unwrap()), 0);
+        assert_eq!(&bytes[34..48], &[0; 14]);
         assert_eq!(digest.len(), 64);
         assert_eq!(&bytes[48..80], digest_bytes(&digest));
     }
 
     #[test]
-    fn semantic_source_digest_changes_frame_program_and_generated_pixels() {
+    fn semantic_source_digest_changes_generated_pixels_not_header_only_program() {
         let semantic_a = wrela_machine::sha256::sha256_hex(b"plane material blue");
         let semantic_b = wrela_machine::sha256::sha256_hex(b"plane material red");
-        let (header_a, digest_a) = encode_header(0, &semantic_a).unwrap();
-        let (header_b, digest_b) = encode_header(0, &semantic_b).unwrap();
-        assert_ne!(digest_a, digest_b);
-        assert_ne!(header_a, header_b);
+        let seed_a: [u8; 32] = digest_bytes(&semantic_a).try_into().unwrap();
+        let seed_b: [u8; 32] = digest_bytes(&semantic_b).try_into().unwrap();
+        let (header_a, digest_a) = encode_header(0).unwrap();
+        let (header_b, digest_b) = encode_header(0).unwrap();
+        assert_eq!(digest_a, digest_b);
+        assert_eq!(header_a, header_b);
 
-        let code_a = crate::codegen::emit_pixels_plane_renderer(&header_a);
-        let code_b = crate::codegen::emit_pixels_plane_renderer(&header_b);
+        let code_a = crate::codegen::emit_pixels_plane_renderer(&header_a, &seed_a);
+        let code_b = crate::codegen::emit_pixels_plane_renderer(&header_b, &seed_b);
         let words_a: Vec<u32> = code_a.code.iter().map(|word| word.word).collect();
         let words_b: Vec<u32> = code_b.code.iter().map(|word| word.word).collect();
         assert_ne!(words_a, words_b);

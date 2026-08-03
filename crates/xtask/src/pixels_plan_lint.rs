@@ -167,6 +167,7 @@ fn lint_normative_docs(repo: &Path) -> Result<(), String> {
         .map_err(|error| format!("read {}: {error}", pixels_path.display()))?;
     for heading in [
         "## 0. Delivered contract",
+        "### 0.1 Definition of done",
         "## 1. Closed architectural decisions",
         "## 2. Source and semantic contract",
         "## 3. Compiler pipeline and ownership",
@@ -188,7 +189,12 @@ fn lint_normative_docs(repo: &Path) -> Result<(), String> {
     }
     for contract in [
         "correct without",
+        "without dense truth, a sample lattice, a dense edge mask, or previous-frame",
         "Kinetic maintenance is optional",
+        "root existence, root uniqueness,",
+        "generated Wrela scalar kernels",
+        "machine-v1 display conformance lane",
+        "exact sealed renderer cycle proxy",
         "`AaaByteExact` rejects unsupported",
         "FieldGraph",
         "FrameProgram",
@@ -374,6 +380,56 @@ fn compare_fixture_names(
     Ok(())
 }
 
+fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
+    match name {
+        "check-pixels-plane" => &["plane(", "PLANE_NORMAL_Y_RAW"],
+        "check-pixels-hard-csg" => &["union(", "intersection(", "subtract("],
+        "check-pixels-smooth-csg" => &["smooth_union(", "k=0.25"],
+        "check-pixels-repeat" => &["finite_repeat_x(", "count=5", "first=-2"],
+        "check-pixels-displace" => &["sinusoidal_displace(", "amplitude=0.125"],
+        "check-pixels-close-depth" => &["z=0.99609375", "FRONT_Q_RAW", "BACK_Q_RAW"],
+        "check-pixels-thin-feature" => &["x=0.00390625", "HALF_WIDTH_RAW"],
+        "check-pixels-enclosed-feature" => &["subtract(", "radius=0.00390625"],
+        "check-pixels-material-edge" => &["MaterialId.Accent", "LEFT_MATERIAL_ID"],
+        "check-pixels-transparent-tail" => &["LAYER_COUNT", "z=1.5", "radius=0.25"],
+        "check-pixels-area-light" => &["LightConfig(capacity=1)", "EMITTER_HALF_WIDTH_RAW"],
+        "check-pixels-kinetic" => &["@rate(", "params.phase", "FRAME_COUNT"],
+        "check-pixels-camera-inside" => &["radius=2.0", "CAMERA_X_RAW"],
+        "check-pixels-torus-roots" => &["torus(", "major_radius=2.0"],
+        "check-pixels-tangent" => &["y=1.0", "radius=1.0", "RAY_HEIGHT_RAW"],
+        "check-pixels-simultaneous-event" => &["x=-1.0", "x=1.0", "EVENT_FRAME_INDEX"],
+        "check-pixels-tile-boundary" => &["TILE_WIDTH", "EDGE_X"],
+        "check-pixels-fixed-q-range" => &["offset=-64.0", "Q_FRAC_BITS"],
+        "check-pixels-texture-seam" => &["U_LEFT_RAW", "U_RIGHT_RAW", "UV_FRAC_BITS"],
+        "check-pixels-normal-moments" => &["round_box(", "sinusoidal_displace("],
+        "check-pixels-probe-wall" => &["WALL_X_RAW", "x=-1.0", "x=1.0"],
+        "check-pixels-probe-shift" => &["ProbeConfig(enabled=true)", "params.phase"],
+        "err-pixels-unsupported-op" => &["unsupported_twist(", "p.x * p.y"],
+        "err-pixels-missing-range" => {
+            &["radius=params.phase", "struct SceneParams:\n    phase: f32"]
+        }
+        "err-pixels-rate" => &["max_delta=-0.25", "NEGATIVE_DELTA_RAW"],
+        "err-pixels-topology-branch" => &["if params.enabled:", "sphere(", "box("],
+        "err-pixels-repeat-unbounded" => &["count=params.count", "count: u32"],
+        "err-pixels-capacity" => &["count=257", "REQUIRED_FEATURES"],
+        "err-pixels-projective-zero" => &["near=0.0", "DENOMINATOR_RAW"],
+        "err-pixels-fixed-q" => &["scale=2147483648.0", "REQUIRED_RAW_BITS"],
+        "err-pixels-tone-table" => &["INVALID_TONE_TABLE", "[TABLE_LEFT_CODE, TABLE_RIGHT_CODE]"],
+        "err-pixels-cost" => &["width=1920", "height=1080", "initialization_deadline_ms=1"],
+        "boot-pixels-numeric" => &["smooth_union(", "VECTOR_COUNT"],
+        "boot-pixels-plane" => &["plane(", "WIDTH", "HEIGHT"],
+        "boot-pixels-quality" => &[
+            "round_box(",
+            "sinusoidal_displace(",
+            "AoConfig(enabled=true)",
+        ],
+        "boot-pixels-transparent" => &["TRANSPARENT_LAYERS", "z=1.5", "radius=0.25"],
+        "boot-pixels-gi" => &["ProbeConfig(enabled=true)", "PROBE_LEVELS"],
+        "boot-pixels-kinetic" => &["@rate(", "params.phase", "SEQUENCE_FRAMES"],
+        _ => &[],
+    }
+}
+
 fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Result<(), String> {
     let matrix = matrix_fixture_names(plan)?;
     let manifest_text = std::fs::read_to_string(repo.join(PIXELS_CASES))
@@ -438,12 +494,61 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
                 readme_path.display()
             ));
         }
-        let input_path = path.join("input.wr");
+        let input_path = if path.join("root").is_file() {
+            let root_path = path.join("root");
+            let root_text = std::fs::read_to_string(&root_path)
+                .map_err(|error| format!("read {}: {error}", root_path.display()))?;
+            let root_file = root_text.trim();
+            let relative = Path::new(root_file);
+            if root_file.is_empty()
+                || relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(format!(
+                    "pixels plan lint: {} has invalid project root `{root_file}`",
+                    root_path.display()
+                ));
+            }
+            path.join(relative)
+        } else {
+            path.join("input.wr")
+        };
+        if !input_path.is_file() {
+            return Err(format!(
+                "pixels plan lint: fixture source does not exist: {}",
+                input_path.display()
+            ));
+        }
         let expected_path = path.join("expected/check.txt");
         let input = std::fs::read_to_string(&input_path)
             .map_err(|error| format!("read {}: {error}", input_path.display()))?;
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;
+        for required in [
+            "@field",
+            "@material",
+            "@test(runtime)",
+            "fn pinned_scene_contract()",
+            "@image",
+            "img.renderer[SceneParams](",
+            "field=world",
+            "material=shade",
+            "camera_bounds=",
+            "light_config=",
+            "world_min=",
+            "world_max=",
+        ]
+        .into_iter()
+        .chain(fixture_source_requirements(directory_name).iter().copied())
+        {
+            if !input.contains(required) {
+                return Err(format!(
+                    "pixels plan lint: {directory_name} does not pin required source `{required}`"
+                ));
+            }
+        }
         let placeholder = "production Pixels stage is not implemented; implemented in task ";
         for (kind, source) in [
             ("input", input.as_str()),
