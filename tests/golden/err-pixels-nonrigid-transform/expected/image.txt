@@ -1,0 +1,3 @@
+error[pixels P004]: field operation `rotate` rotation rows are not orthonormal within f32 roundoff at 42:36
+note: renderer call chain: examples.err_pixels_nonrigid_transform::world
+help: use only the closed AaaByteExact field-operation and rigid-transform surface

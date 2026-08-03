@@ -1,0 +1,1 @@
+error[pixels P007]: renderer bound `world_max` must be finite at 39:23

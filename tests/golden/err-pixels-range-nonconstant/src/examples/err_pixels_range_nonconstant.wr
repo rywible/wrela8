@@ -1,0 +1,8 @@
+module examples.err_pixels_range_nonconstant
+
+fn limit() -> f32:
+    return 1.0
+
+struct Params:
+    @range(min=0.0, max=limit())
+    value: f32

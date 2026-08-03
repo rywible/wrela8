@@ -48,11 +48,16 @@ fn build_error_with_lines(message: String, extra_lines: Vec<String>) -> SemaErro
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedImage {
+    pub renderer_configs: crate::pixels::config::RendererConfigs,
+}
+
 pub fn check_sealed(
     graph: &ImageGraph,
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
-) -> Result<(), SemaError> {
+) -> Result<CheckedImage, SemaError> {
     check_cores(graph)?;
     check_construction_dag(graph)?;
     let mut declared: BTreeSet<String> = owner.declared_pools.clone();
@@ -72,24 +77,27 @@ pub fn check_sealed(
     )?;
     check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
-    crate::placement::check_annotations(graph).map_err(build_error)?;
-    if !graph.renderers.is_empty() {
-        crate::pixels::compile_plane_skeleton(owner, programs, graph).map_err(|message| {
+    let renderer_configs = crate::pixels::config::validate_renderers(owner, programs, graph)
+        .map_err(|error| {
+            let diagnostic = error.diagnostic();
+            let mut extra_lines: Vec<String> = diagnostic
+                .notes
+                .iter()
+                .map(|note| format!("note: {note}"))
+                .collect();
+            extra_lines.extend(diagnostic.help.iter().map(|help| format!("help: {help}")));
             SemaError {
-                category: "pixels",
-                message: message
-                    .strip_prefix("pixels: ")
-                    .unwrap_or(&message)
-                    .to_string(),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
+                category: diagnostic.category(),
+                message: diagnostic.message.clone(),
+                line: diagnostic.primary.line,
+                col: diagnostic.primary.col,
+                extra_lines,
+                omit_location: diagnostic.primary == Default::default(),
                 missing_method: None,
             }
         })?;
-    }
-    Ok(())
+    crate::placement::check_annotations(graph).map_err(build_error)?;
+    Ok(CheckedImage { renderer_configs })
 }
 
 pub fn check_device_bound_once(graph: &ImageGraph) -> Result<(), SemaError> {
@@ -135,8 +143,10 @@ fn check_driver_mode(graph: &ImageGraph) -> Result<(), SemaError> {
         let Some(mode) = mode else {
             continue;
         };
-        let vector = device_index_of_driver(decl)
-            .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        let vector = device_vector(&decl.args).or_else(|| {
+            device_index_of_driver(decl)
+                .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)))
+        });
         match (mode, vector) {
             ("Poll", Some(v)) => {
                 return Err(build_error(format!(
@@ -815,7 +825,7 @@ fn own_handles_in_closure(programs: &BTreeMap<String, TypedProgram>) -> Vec<(Str
             match inst {
                 TypedInstantiation::Fn(f) => own_handles_in_fn(f, &mut out),
                 TypedInstantiation::Struct(s) => own_handles_in_struct(s, &mut out),
-                TypedInstantiation::Enum => {}
+                TypedInstantiation::Enum(_) => {}
             }
         }
     }
@@ -864,7 +874,7 @@ enum DeclKind {
 
 fn reserved_args(kind: DeclKind) -> &'static [&'static str] {
     match kind {
-        DeclKind::Driver => &["device", "core", "mailbox"],
+        DeclKind::Driver => &["device", "vector", "core", "mailbox"],
         DeclKind::Actor => &["mailbox", "core"],
     }
 }
@@ -966,6 +976,70 @@ impl Constructor {
     }
 }
 
+fn resolved_struct<'a>(
+    programs: &'a BTreeMap<String, TypedProgram>,
+    visible_name: &str,
+) -> Option<&'a crate::sema::typed::TypedStruct> {
+    let mut resolved = programs.values().filter_map(|program| {
+        let module = program.type_decl_modules.get(visible_name)?;
+        let declaration = program.type_decl_names.get(visible_name)?;
+        programs
+            .get(module)
+            .or_else(|| {
+                let short = module.strip_prefix("core.").or_else(|| {
+                    module
+                        .strip_prefix("drivers.")
+                        .filter(|short| *short == "display")
+                })?;
+                programs.get(short)
+            })
+            .and_then(|program| program.structs.get(declaration))
+    });
+    let first = resolved.next();
+    if first.is_some() && resolved.next().is_none() {
+        return first;
+    }
+    let mut exact = programs
+        .values()
+        .filter_map(|program| program.structs.get(visible_name));
+    let first = exact.next();
+    (exact.next().is_none()).then_some(first).flatten()
+}
+
+fn nominal_ids(
+    programs: &BTreeMap<String, TypedProgram>,
+    visible_name: &str,
+) -> BTreeSet<(String, String)> {
+    let mut ids = BTreeSet::new();
+    for (module, program) in programs {
+        if let (Some(declaring_module), Some(declaration)) = (
+            program.type_decl_modules.get(visible_name),
+            program.type_decl_names.get(visible_name),
+        ) {
+            ids.insert((declaring_module.clone(), declaration.clone()));
+        }
+        if program.structs.contains_key(visible_name) || program.enums.contains_key(visible_name) {
+            ids.insert((module.clone(), visible_name.to_string()));
+        }
+    }
+    ids
+}
+
+fn same_nominal_type(programs: &BTreeMap<String, TypedProgram>, left: &Type, right: &Type) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Type::Named(left, left_args), Type::Named(right, right_args)) = (left, right) else {
+        return false;
+    };
+    if left_args != right_args {
+        return false;
+    }
+    let left_ids = nominal_ids(programs, left);
+    let right_ids = nominal_ids(programs, right);
+    !left_ids.is_disjoint(&right_ids)
+}
+
 fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type) -> Constructor {
     let Type::Named(struct_name, targs) = actor_type else {
         return Constructor::Init(Vec::new());
@@ -996,9 +1070,7 @@ fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type
         }
         return Constructor::Init(Vec::new());
     }
-    if let Some(f) = programs
-        .values()
-        .find_map(|p| p.structs.get(struct_name).and_then(|s| s.init.as_ref()))
+    if let Some(f) = resolved_struct(programs, struct_name).and_then(|strukt| strukt.init.as_ref())
     {
         return Constructor::Init(
             f.params
@@ -1007,7 +1079,7 @@ fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type
                 .collect(),
         );
     }
-    let Some(s) = programs.values().find_map(|p| p.structs.get(struct_name)) else {
+    let Some(s) = resolved_struct(programs, struct_name) else {
         return Constructor::Init(Vec::new());
     };
     Constructor::Fields(
@@ -1028,6 +1100,7 @@ fn check_capability_substitution(
     args: &[DeclArg],
     graph: &ImageGraph,
     backings: &BTreeMap<String, PoolBacking>,
+    programs: &BTreeMap<String, TypedProgram>,
     device_caps_seen: &mut usize,
 ) -> Result<(), SemaError> {
     let rendered = types::render_type(param_ty);
@@ -1106,14 +1179,15 @@ fn check_capability_substitution(
         )));
     };
     let bound = types::render_type(&device.device_type);
-    let declared = match param_ty {
+    let declared_type = match param_ty {
         Type::Named(_, targs) => match targs.first() {
-            Some(crate::sema::types::TypeArg::Type(t)) => types::render_type(t),
-            _ => bound.clone(),
+            Some(crate::sema::types::TypeArg::Type(ty)) => ty,
+            _ => &device.device_type,
         },
-        _ => bound.clone(),
+        _ => &device.device_type,
     };
-    if declared != bound {
+    if !same_nominal_type(programs, declared_type, &device.device_type) {
+        let declared = types::render_type(declared_type);
         return Err(build_error(format!(
             "`{}` binds device#{idx} (declared `{bound}`) to `{struct_name}`, but \
              `{struct_name}.init` takes `{param_name}: {rendered}` — a `DeviceCap[D]` is minted \
@@ -1300,6 +1374,13 @@ fn check_one_decl(
         if satisfied.contains(name) {
             continue;
         }
+        if resolved_struct(programs, struct_name)
+            .and_then(|strukt| strukt.init.as_ref())
+            .and_then(|init| init.params.iter().find(|param| param.name == *name))
+            .is_some_and(|param| param.default.is_some())
+        {
+            continue;
+        }
         if let Type::Named(tn, _) = ty {
             if is_capability_type_name(tn) {
                 check_capability_substitution(
@@ -1312,6 +1393,7 @@ fn check_one_decl(
                     args,
                     graph,
                     backings,
+                    programs,
                     &mut device_caps_seen,
                 )?;
                 continue;
@@ -1444,7 +1526,7 @@ pub fn check_vector_bindings(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    let mut claimed: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut claimed: BTreeMap<u64, String> = BTreeMap::new();
     for (i, d) in graph.devices.iter().enumerate() {
         let Some(v) = device_vector(&d.args) else {
             continue;
@@ -1461,9 +1543,9 @@ pub fn check_vector_bindings(
                  (bits 0..=63)"
             )));
         }
-        if let Some(prev) = claimed.insert(v, i) {
+        if let Some(prev) = claimed.insert(v, format!("device#{i}")) {
             return Err(build_error(format!(
-                "`device#{i}` and `device#{prev}` both declare `vector={v}` — 03-hardware.md §6: \
+                "`device#{i}` and `{prev}` both declare `vector={v}` — 03-hardware.md §6: \
                  exactly one handler per vector, and a vector is owned by exactly one device"
             )));
         }
@@ -1475,8 +1557,40 @@ pub fn check_vector_bindings(
         let Type::Named(driver, targs) = &decl.actor_type else {
             continue;
         };
-        let vector = device_index_of_driver(decl)
-            .and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        let device_index = device_index_of_driver(decl);
+        let bound_device_vector =
+            device_index.and_then(|i| graph.devices.get(i).and_then(|d| device_vector(&d.args)));
+        let direct_vector = device_vector(&decl.args);
+        if let (Some(direct), Some(device)) = (direct_vector, bound_device_vector)
+            && direct != device
+        {
+            return Err(build_error(format!(
+                "`driver#{di}` declares `vector={direct}` but its bound device declares \
+                 `vector={device}`"
+            )));
+        }
+        if let Some(vector) = direct_vector {
+            if vector == DEADLINE_VECTOR || vector > 63 {
+                return Err(build_error(format!(
+                    "`driver#{di}` declares `vector={vector}`, but a device-owned vector must \
+                     be in 1..=63"
+                )));
+            }
+            let owner = device_index
+                .map(|index| format!("device#{index}"))
+                .unwrap_or_else(|| format!("driver#{di}"));
+            if let Some(previous) = claimed.get(&vector) {
+                if previous != &owner {
+                    return Err(build_error(format!(
+                        "`driver#{di}` and `{previous}` both declare `vector={vector}` — \
+                         exactly one device may own a vector"
+                    )));
+                }
+            } else {
+                claimed.insert(vector, owner);
+            }
+        }
+        let vector = direct_vector.or(bound_device_vector);
         let Some(program) = programs.values().find(|p| {
             p.structs.contains_key(driver)
                 || p.instantiations.keys().any(|k| {
@@ -1595,9 +1709,11 @@ fn device_vector_for_driver(graph: &ImageGraph, driver: &str) -> Option<u64> {
         if name != driver {
             continue;
         }
-        return device_index_of_driver(decl)
-            .and_then(|i| graph.devices.get(i))
-            .and_then(|d| device_vector(&d.args));
+        return device_vector(&decl.args).or_else(|| {
+            device_index_of_driver(decl)
+                .and_then(|i| graph.devices.get(i))
+                .and_then(|d| device_vector(&d.args))
+        });
     }
     None
 }
@@ -1863,6 +1979,7 @@ mod tests {
             label: label.to_string(),
             ty,
             value,
+            span: Default::default(),
         }
     }
 
@@ -1947,6 +2064,40 @@ mod tests {
         assert!(
             !err.extra_lines.is_empty(),
             "the cycle prints one line per hop"
+        );
+    }
+
+    #[test]
+    fn a_renderer_declaration_cycle_is_rejected() {
+        let mut g = ImageGraph::default();
+        g.actors.push(crate::eval::image::ActorDecl {
+            actor_type: Type::Named("Consumer".to_string(), vec![]),
+            args: vec![decl_arg(
+                "renderer",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Renderer(0)),
+            )],
+        });
+        g.renderers.push(crate::eval::image::RendererDecl {
+            params_type: Type::Named("Params".to_string(), vec![]),
+            actor_type: Type::Named("Renderer".to_string(), vec![]),
+            args: vec![decl_arg(
+                "consumer",
+                Type::Named("ImageDecl".to_string(), vec![]),
+                Value::ImageDecl(ImageDeclRef::Actor(0)),
+            )],
+            span: Default::default(),
+        });
+        let err =
+            check_construction_dag(&g).expect_err("renderer#0 <-> actor#0 is a declaration cycle");
+        assert_eq!(err.category, "build");
+        assert!(err.message.contains("cycle"));
+        assert!(
+            err.extra_lines
+                .iter()
+                .any(|line| line.contains("renderer#0")),
+            "cycle why-chain must name the renderer hop: {:?}",
+            err.extra_lines
         );
     }
 

@@ -1,0 +1,10 @@
+module examples.err_pixels_material_generic_root
+
+from core.render import MaterialSample, SurfaceContext
+
+enum MaterialId:
+    Surface
+
+@material
+fn shade[T](surface: SurfaceContext[MaterialId]) -> MaterialSample:
+    return surface

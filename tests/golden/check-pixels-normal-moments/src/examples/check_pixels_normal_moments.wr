@@ -24,12 +24,10 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 20
+# production Pixels stage is not implemented; implemented in task P9.5
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
-
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P9.5"
 
 const SLOPE_X_RAW: i32 = 1
 const SLOPE_Y_RAW: i32 = -1
@@ -47,11 +45,11 @@ enum MaterialId:
 fn world(p: Vec3, read params: SceneParams) -> Field:
     round = round_box(p, Vec3(x=0.75, y=0.75, z=0.75), radius=0.125)
     detail = sinusoidal_displace(round, p, amplitude=0.0625, frequency=4.0, phase=0.0)
-    return mark(detail, object=20, material=MaterialId.Ground)
+    return mark(detail, object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
 
 @test(runtime)
 fn pinned_scene_contract():
@@ -62,7 +60,7 @@ fn pinned_scene_contract():
 pub fn build() -> Image:
     img = Image(name="check-pixels-normal-moments", target=Target.wrela_machine_v1)
     display_device = img.device[DisplayDevice](transport=0x6000)
-    display = img.driver(Display, device=display_device)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
     renderer = img.renderer[SceneParams](
         field=world,
         material=shade,
@@ -77,15 +75,15 @@ pub fn build() -> Image:
         far=128.0,
         world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
         world_max=Vec3(x=4.0, y=4.0, z=4.0),
-        camera_bounds=CameraBounds(max_motion=0.25),
-        light_config=LightConfig(capacity=0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
         exposure_range=ScalarRange(min=-1.0, max=1.0),
         environment_range=RgbRange(
             min=Rgb(r=0.0, g=0.0, b=0.0),
             max=Rgb(r=1.0, g=1.0, b=1.0),
         ),
-        ao=AoConfig(enabled=false),
-        probes=ProbeConfig(enabled=false),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
         initialization_deadline_ms=10,
     )
     img.on_failure(policy=Failure.Halt)

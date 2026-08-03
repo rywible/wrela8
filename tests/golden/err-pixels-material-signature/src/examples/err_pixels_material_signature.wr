@@ -1,0 +1,7 @@
+module examples.err_pixels_material_signature
+
+from core.render import MaterialSample
+
+@material
+fn wrong(value: f32) -> MaterialSample:
+    return value

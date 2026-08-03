@@ -1,0 +1,1 @@
+error[pixels P007]: renderer bound `near` must be finite at 34:18

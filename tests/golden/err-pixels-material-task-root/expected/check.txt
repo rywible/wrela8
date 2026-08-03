@@ -1,0 +1,1 @@
+error[pixels P002]: `@material` function `shade` has unsupported parameter shape: expected a top-level synchronous nongeneric function at 10:1

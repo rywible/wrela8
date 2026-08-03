@@ -1,0 +1,1 @@
+error[pixels P002]: `@material` function `shade` has unsupported parameter shape: `@material` is only valid on a top-level fn, not a struct member (`shade`) at 8:5

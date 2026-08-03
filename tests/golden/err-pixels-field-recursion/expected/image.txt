@@ -1,0 +1,1 @@
+error[pixels P023]: field recursion is forbidden; cycle members: examples.err_pixels_field_recursion::cycle_a, examples.err_pixels_field_recursion::cycle_b, examples.err_pixels_field_recursion::cycle_c at 48:36

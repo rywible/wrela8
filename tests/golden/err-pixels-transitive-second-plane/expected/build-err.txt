@@ -1,1 +1,0 @@
-error[pixels]: P-1 plane skeleton accepts exactly one marked `plane`; found [plane, union, plane]

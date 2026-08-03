@@ -280,10 +280,15 @@ pub struct TypedStruct {
     pub name: String,
     pub fields: Vec<String>,
     pub field_types: BTreeMap<String, Type>,
+    /// Pixels contracts keyed by declaration-order field index. Source names
+    /// remain presentation-only; renames cannot perturb the typed contract
+    /// identity consumed by later renderer stages.
+    pub field_contracts: BTreeMap<Vec<usize>, crate::sema::attrs::FieldContracts>,
     pub field_defaults: BTreeMap<String, TypedExpr>,
     pub methods: BTreeMap<String, TypedFn>,
     pub assoc_fns: BTreeMap<String, TypedFn>,
     pub init: Option<TypedFn>,
+    pub is_resource: bool,
     pub is_actor: bool,
     pub is_driver: bool,
 }
@@ -292,6 +297,9 @@ pub struct TypedStruct {
 pub struct TypedEnum {
     pub variants: Vec<String>,
     pub variant_payload_types: Vec<Vec<Type>>,
+    /// Generic type parameter names aligned with declaration type/const
+    /// arguments. Const-generic positions are `None`.
+    pub generic_type_params: Vec<Option<String>>,
     pub methods: BTreeMap<String, TypedFn>,
     pub assoc_fns: BTreeMap<String, TypedFn>,
 }
@@ -302,6 +310,7 @@ impl TypedEnum {
         Self {
             variants,
             variant_payload_types,
+            generic_type_params: Vec::new(),
             methods: BTreeMap::new(),
             assoc_fns: BTreeMap::new(),
         }
@@ -312,7 +321,7 @@ impl TypedEnum {
 pub enum TypedInstantiation {
     Fn(TypedFn),
     Struct(TypedStruct),
-    Enum,
+    Enum(TypedEnum),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,6 +376,21 @@ pub struct TypedProgram {
     pub effects: EffectMap,
     pub imported: ImportedDecls,
     pub pixels_fns: BTreeMap<String, PixelsFnMeta>,
+    /// Canonical declaring module for every function name visible while this
+    /// module was checked. This includes generic functions, which do not
+    /// otherwise have an entry in `fns`.
+    pub fn_decl_modules: BTreeMap<String, String>,
+    /// Canonical declaration name paired with `fn_decl_modules`; imported
+    /// aliases retain their target declaration identity here.
+    pub fn_decl_names: BTreeMap<String, String>,
+    /// Canonical declaring module for every nominal struct or enum name
+    /// visible while this module was checked.
+    pub type_decl_modules: BTreeMap<String, String>,
+    /// Canonical declaration name paired with `type_decl_modules`; imported
+    /// aliases retain their target declaration identity here.
+    pub type_decl_names: BTreeMap<String, String>,
+    /// Canonical module path for stable typed metadata keys.
+    pub module_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -407,10 +431,19 @@ pub fn dump(program: &TypedProgram) -> String {
             .as_ref()
             .map(ty)
             .unwrap_or_else(|| "none".to_string());
+        let key = if program.module_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{}::{name}", program.module_path)
+        };
         push_line(
             &mut out,
             1,
-            &format!("PixelsFn name={name} kind={kind} params={params} material={material}"),
+            &format!(
+                "PixelsFn key={key} kind={kind} input_index=0 params_index={} \
+                 params={params} material={material}",
+                meta.params_type.as_ref().map(|_| "1").unwrap_or("none")
+            ),
         );
     }
     for (name, c) in &program.consts {
@@ -436,7 +469,7 @@ pub fn dump(program: &TypedProgram) -> String {
                 push_line(&mut out, 2, "Struct");
                 dump_struct_body(s, 3, &mut out);
             }
-            TypedInstantiation::Enum => push_line(&mut out, 2, "Enum"),
+            TypedInstantiation::Enum(_) => push_line(&mut out, 2, "Enum"),
         }
     }
     out
@@ -475,6 +508,32 @@ fn dump_fn_body(f: &TypedFn, depth: usize, out: &mut String) {
 }
 
 fn dump_struct_body(s: &TypedStruct, depth: usize, out: &mut String) {
+    for index in 0..s.fields.len() {
+        let Some(contracts) = s.field_contracts.get([index].as_slice()) else {
+            continue;
+        };
+        if contracts.range.is_none() && contracts.rate.is_none() {
+            continue;
+        }
+        let mut line = format!("PixelsParamField path=[{index}]");
+        if let Some(range) = contracts.range {
+            let endpoints = range
+                .exact_integer
+                .map(|(min, max)| format!("{min},{max}"))
+                .unwrap_or_else(|| format!("{},{}", range.min, range.max));
+            line.push_str(&format!(
+                " range=[{endpoints}] exact_integer={}",
+                range.integer
+            ));
+        }
+        if let Some(rate) = contracts.rate {
+            line.push_str(&format!(
+                " rate=[{},{}]",
+                rate.max_delta, rate.max_second_delta
+            ));
+        }
+        push_line(out, depth, &line);
+    }
     for (name, def) in &s.field_defaults {
         push_line(out, depth, &format!("FieldDefault name={name}"));
         dump_expr(def, depth + 1, out);
@@ -1139,7 +1198,20 @@ pub(crate) fn rekey_instantiation(inst: &mut TypedInstantiation, subs: &BTreeMap
     match inst {
         TypedInstantiation::Fn(f) => rekey_fn_names(f, subs),
         TypedInstantiation::Struct(s) => rekey_struct_names(s, subs),
-        TypedInstantiation::Enum => {}
+        TypedInstantiation::Enum(enumeration) => {
+            for payloads in &mut enumeration.variant_payload_types {
+                for payload in payloads {
+                    rekey_type(payload, subs);
+                }
+            }
+            for function in enumeration
+                .methods
+                .values_mut()
+                .chain(enumeration.assoc_fns.values_mut())
+            {
+                rekey_fn_names(function, subs);
+            }
+        }
     }
 }
 

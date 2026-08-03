@@ -1,0 +1,10 @@
+module examples.err_pixels_material_marker_on_enum_method
+
+from core.render import MaterialSample, SurfaceContext
+
+enum MaterialId:
+    Only
+
+    @material
+    fn shade(surface: SurfaceContext[MaterialId]) -> MaterialSample:
+        return surface

@@ -1,0 +1,2 @@
+error[pixels P004]: `smooth_union` `k` must be a positive comptime constant or direct renderer parameter with a strictly positive `@range`; transformed parameter expressions are not admitted at 45:36
+help: use only the closed AaaByteExact field-operation and rigid-transform surface

@@ -1,0 +1,4 @@
+module examples.err_pixels_renderer_handle_counterfeit
+
+struct Renderer[T]:
+    value: T

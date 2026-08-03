@@ -1,0 +1,10 @@
+module lib.unrelated_root_names
+
+fn scene_world() -> u32:
+    return 1
+
+fn scene_shade() -> u32:
+    return 2
+
+pub fn unrelated_root_value() -> u32:
+    return scene_world() + scene_shade()

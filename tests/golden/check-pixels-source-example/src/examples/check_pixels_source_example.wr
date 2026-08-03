@@ -1,0 +1,79 @@
+module examples.check_pixels_source_example
+
+from core.field import Field, Rgb, Vec3, mark, plane, sphere
+from core.render import (
+    AoConfig, CameraBounds, LightConfig, MaterialSample, ProbeConfig,
+    Renderer, RenderProfile, RgbRange, ScalarRange, SurfaceContext, ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+struct SceneParams:
+    @range(min=-4.0, max=4.0)
+    fighter_offset: Vec3
+
+enum ObjectId:
+    Ground
+    Fighter
+
+enum MaterialId:
+    Clay
+    Porcelain
+
+@actor
+struct Game:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    ground = mark(
+        plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=0.0),
+        object=ObjectId.Ground,
+        material=MaterialId.Clay,
+    )
+    body = mark(
+        sphere(p.subtract(params.fighter_offset), Vec3(x=0.0, y=0.0, z=0.0), radius=1.0),
+        object=ObjectId.Fighter,
+        material=MaterialId.Porcelain,
+    )
+    return ground.union(body)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    match surface.material:
+        case .Clay:
+            return MaterialSample.clay(
+                color=Rgb(r=0.40, g=0.20, b=0.12),
+                roughness=0.82,
+            )
+        case .Porcelain:
+            return MaterialSample.porcelain(
+                color=Rgb(r=0.92, g=0.88, b=0.78),
+                roughness=0.16,
+            )
+
+@image
+fn build() -> Image:
+    img = Image(name="check-pixels-source-example", target=Target.wrela_machine_v1, cores=4)
+    device = img.device[DisplayDevice](transport=Transport.Blob)
+    display = img.driver(Display, device=device, vector=5, mailbox=2)
+    renderer = img.renderer[SceneParams](
+        field=world, material=shade, display=display,
+        width=1920, height=1080, refresh_hz=60, shade_hz=30,
+        profile=RenderProfile.AaaByteExact, tone_curve=ToneCurve.FilmicV1,
+        near=0.05, far=200.0,
+        world_min=Vec3(x=-64.0, y=-16.0, z=-64.0),
+        world_max=Vec3(x=64.0, y=64.0, z=64.0),
+        camera_bounds=CameraBounds.gameplay_default(),
+        light_config=LightConfig.gameplay_default(),
+        exposure_range=ScalarRange(min=-8.0, max=8.0),
+        environment_range=RgbRange.black_to_hdr_white(),
+        ao=AoConfig.deterministic_v1(),
+        probes=ProbeConfig.disabled(),
+        initialization_deadline_ms=250,
+    )
+    game = img.actor(Game, mailbox=8, renderer=renderer.handle())
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

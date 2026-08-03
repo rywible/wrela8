@@ -1,0 +1,2 @@
+error[pixels P003]: `@field` function `world` uses runtime control flow that changes field topology at 76:41
+note: renderer call chain: examples.err_pixels_topology_branch::world

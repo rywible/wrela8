@@ -1,0 +1,10 @@
+module examples.err_pixels_field_parameter_order
+
+from core.field import Field, Vec3
+
+struct Params:
+    value: u32
+
+@field
+fn world(read params: Params, p: Vec3) -> Field:
+    return p

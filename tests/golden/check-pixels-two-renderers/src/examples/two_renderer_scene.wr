@@ -1,0 +1,25 @@
+module examples.two_renderer_scene
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import MaterialSample, SurfaceContext
+
+pub struct Params:
+    marker: bool
+
+pub enum ObjectId:
+    Scene
+
+pub enum MaterialId:
+    Surface
+
+@field
+pub fn world(p: Vec3, read params: Params) -> Field:
+    return mark(
+        plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=0.0),
+        object=ObjectId.Scene,
+        material=MaterialId.Surface,
+    )
+
+@material
+pub fn shade(surface: SurfaceContext[MaterialId], read params: Params) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.0, g=0.0, b=0.0), roughness=0.5)

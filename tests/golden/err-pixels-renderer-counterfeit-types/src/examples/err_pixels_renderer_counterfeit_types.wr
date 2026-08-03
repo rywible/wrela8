@@ -1,0 +1,43 @@
+module examples.err_pixels_renderer_counterfeit_types
+
+from drivers.display import Display, DisplayDevice
+from lib.canonical_config import (
+    AO, CAMERA, ENVIRONMENT, EXPOSURE, LIGHTS, PROBES, TONE, WORLD_MAX, WORLD_MIN,
+)
+from lib.counterfeit_scene import Params, shade, world
+
+enum RenderProfile:
+    Counterfeit
+
+@image
+fn build() -> Image:
+    img = Image(
+        name="err-pixels-renderer-counterfeit-types",
+        target=Target.wrela_machine_v1,
+    )
+    device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[Params](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.Counterfeit,
+        tone_curve=TONE,
+        near=0.1,
+        far=10.0,
+        world_min=WORLD_MIN,
+        world_max=WORLD_MAX,
+        camera_bounds=CAMERA,
+        light_config=LIGHTS,
+        exposure_range=EXPOSURE,
+        environment_range=ENVIRONMENT,
+        ao=AO,
+        probes=PROBES,
+        initialization_deadline_ms=1,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

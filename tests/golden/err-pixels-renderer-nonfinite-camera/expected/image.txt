@@ -1,0 +1,1 @@
+error[pixels P007]: renderer bound `camera_bounds` must be finite at 40:43

@@ -1,1 +1,1 @@
-error[pixels]: `@field` reaches more than one nominal material type: FieldMaterial, HiddenMaterial
+error[pixels P009]: renderer field/material parameter types disagree: pixels: `@field` reaches more than one nominal material type: examples.err_pixels_material_mismatch::FieldMaterial, examples.err_pixels_material_mismatch::HiddenMaterial at 59:41

@@ -1,0 +1,5 @@
+module examples.err_pixels_range_label
+
+struct Params:
+    @range(min=0.0, upper=1.0)
+    value: f32

@@ -579,7 +579,7 @@ fn build_nodes(
                     insert_fn(&mut nodes, format!("{key}.init"), f, static_addrs);
                 }
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     nodes

@@ -9,13 +9,32 @@ pub struct Vec3:
     pub y: f32
     pub z: f32
 
+    pub fn add(read self, right: Vec3) -> Vec3:
+        return Vec3(x=self.x + right.x, y=self.y + right.y, z=self.z + right.z)
+
+    pub fn subtract(read self, right: Vec3) -> Vec3:
+        return Vec3(x=self.x - right.x, y=self.y - right.y, z=self.z - right.z)
+
+pub struct Vec4:
+    pub x: f32
+    pub y: f32
+    pub z: f32
+    pub w: f32
+
 pub struct Rgb:
     pub r: f32
     pub g: f32
     pub b: f32
 
+pub struct Aabb:
+    pub min: Vec3
+    pub max: Vec3
+
 pub struct Field:
     value: f32
+
+    pub fn union(read self, right: Field) -> Field:
+        return union(self, right)
 
 fn abs_scalar(x: f32) -> f32:
     if x < 0.0:
@@ -38,12 +57,18 @@ fn clamp_scalar(x: f32, lo: f32, hi: f32) -> f32:
 fn sqrt_scalar(x: f32) -> f32:
     if x <= 0.0:
         return 0.0
+    max_finite: f32 = 340282346638528859811704183484516925440.0
+    if x > max_finite:
+        return x
     guess = x
     if guess < 1.0:
         guess = 1.0
     i: u32 = 0
-    @budget(bound=8)
-    while i < 8:
+    # Starting at x (or one for subunit inputs), 128 halvings cover the full
+    # finite f32 exponent range before Newton convergence reaches its fixed
+    # point. This is intentionally simple source semantics, not a fast kernel.
+    @budget(bound=128)
+    while i < 128:
         guess = 0.5 * (guess + x / guess)
         i = i + 1
     return guess
@@ -169,11 +194,45 @@ pub fn smooth_intersection(a: Field, b: Field, k: f32) -> Field:
 pub fn smooth_subtract(a: Field, b: Field, k: f32) -> Field:
     return smooth_intersection(a, Field(value=-b.value), k)
 
-pub fn mark[M](field: Field, object: u32, material: M) -> Field:
+pub fn mark[O, M](field: Field, object: O, material: M) -> Field:
     return field
 
-# Structural intrinsic: the compiler lowers the closed
-# amplitude*sin(frequency*p.x+phase) form and derives every bound.
+fn sin_scalar(angle: f32) -> f32:
+    # Deterministic range reduction followed by the odd degree-11 Taylor
+    # polynomial. The compiler recognizes sinusoidal_displace structurally,
+    # but this body remains the source-level scalar meaning.
+    two_pi: f32 = 6.283185307179586
+    pi: f32 = 3.141592653589793
+    x = angle % two_pi
+    if x > pi:
+        x = x - two_pi
+    if x < -pi:
+        x = x + two_pi
+    x2 = x * x
+    c3: f32 = -0.16666666666666666
+    c5: f32 = 0.008333333333333333
+    c7: f32 = -0.0001984126984126984
+    c9: f32 = 0.0000027557319223985893
+    c11: f32 = -0.00000002505210838544172
+    return x * (
+        1.0
+        + x2 * (
+            c3
+            + x2 * (
+                c5
+                + x2 * (
+                    c7
+                    + x2 * (
+                        c9
+                        + x2 * c11
+                    )
+                )
+            )
+        )
+    )
+
+# The compiler lowers this closed form and derives amplitude, gradient,
+# Hessian, and third-derivative bounds. Authors never provide those bounds.
 pub fn sinusoidal_displace(
     field: Field,
     p: Vec3,
@@ -181,4 +240,16 @@ pub fn sinusoidal_displace(
     frequency: f32,
     phase: f32,
 ) -> Field:
-    return field
+    wave = sin_scalar(frequency * p.x + phase)
+    return Field(value=field.value + amplitude * wave)
+
+@test
+fn scalar_length_semantics_cover_large_exact_radius():
+    assert sqrt_scalar(16384.0) == 128.0, "sqrt converges across large f32 exponents"
+    center = Vec3(x=0.0, y=0.0, z=0.0)
+    surface = sphere(
+        Vec3(x=128.0, y=0.0, z=0.0),
+        center=center,
+        radius=128.0,
+    )
+    assert surface.value == 0.0, "large exact radius remains on the sphere surface"

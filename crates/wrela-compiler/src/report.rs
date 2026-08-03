@@ -224,6 +224,24 @@ pub fn render_doc(doc: &ImageReportDoc<'_>) -> String {
             &mut edges,
         );
     }
+    for (i, d) in doc.graph.renderers.iter().enumerate() {
+        image::push_line(
+            &mut out,
+            1,
+            &format!(
+                "Renderer index={i} params={} actor={}",
+                types::render_type(&d.params_type),
+                types::render_type(&d.actor_type)
+            ),
+        );
+        render_decl_block(
+            &program,
+            &ImageDeclRef::Renderer(i),
+            &d.args,
+            &mut out,
+            &mut edges,
+        );
+    }
 
     for (from, to) in &edges {
         image::push_line(
@@ -516,6 +534,7 @@ mod tests {
             label: label.to_string(),
             ty,
             value,
+            span: Default::default(),
         }
     }
 

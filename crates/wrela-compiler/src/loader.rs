@@ -225,6 +225,13 @@ fn import_target(
 }
 
 pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
+    load_closure_with_discovery_order(root_file, false)
+}
+
+pub fn load_closure_with_discovery_order(
+    root_file: &Path,
+    reverse_imports: bool,
+) -> Result<LoadedProgram, LoadError> {
     let root_module = parse_file(root_file)?;
     let pkgroot = anchor_package_root(root_file, &root_module.path, root_module.span)?;
 
@@ -243,7 +250,10 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
     while head < queue.len() {
         let current = queue[head].clone();
         head += 1;
-        let imports = modules[&current].module.imports.clone();
+        let mut imports = modules[&current].module.imports.clone();
+        if reverse_imports {
+            imports.reverse();
+        }
         for import in &imports {
             if import.path.len() == 1 && (import.path[0] == "core" || import.path[0] == "drivers") {
                 continue;

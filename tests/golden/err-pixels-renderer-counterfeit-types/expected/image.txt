@@ -1,0 +1,1 @@
+error[pixels P022]: renderer bound `profile` must have canonical type `core.render::RenderProfile`, found `RenderProfile` declared by `examples.err_pixels_renderer_counterfeit_types::RenderProfile` at 28:31

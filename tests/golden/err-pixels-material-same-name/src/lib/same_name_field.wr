@@ -1,0 +1,20 @@
+module lib.same_name_field
+
+from core.field import Field, Vec3, mark, sphere
+
+pub struct Params:
+    pub enabled: bool
+
+pub enum MaterialId:
+    Surface
+
+enum ObjectId:
+    Scene
+
+@field
+pub fn world(p: Vec3, read params: Params) -> Field:
+    return mark(
+        sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0),
+        object=ObjectId.Scene,
+        material=MaterialId.Surface,
+    )

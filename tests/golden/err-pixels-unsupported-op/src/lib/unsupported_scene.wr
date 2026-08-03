@@ -1,0 +1,37 @@
+module lib.unsupported_scene
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import MaterialSample, SurfaceContext
+
+pub struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    pub phase: f32
+
+pub enum MaterialId:
+    Ground
+
+pub enum ObjectId:
+    Ground
+
+fn unsupported_twist(p: Vec3) -> Vec3:
+    return Vec3(x=p.x, y=p.y, z=p.x * p.y)
+
+fn translate(p: Vec3, by: Vec3) -> Vec3:
+    return unsupported_twist(p)
+
+@field
+pub fn world(p: Vec3, read params: SceneParams) -> Field:
+    return mark(
+        plane(
+            translate(p, Vec3(x=0.0, y=0.0, z=0.0)),
+            Vec3(x=0.0, y=1.0, z=0.0),
+            offset=0.0,
+        ),
+        object=ObjectId.Ground,
+        material=MaterialId.Ground,
+    )
+
+@material
+pub fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)

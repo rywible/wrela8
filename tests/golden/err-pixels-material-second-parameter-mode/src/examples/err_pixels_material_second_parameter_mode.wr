@@ -1,0 +1,13 @@
+module examples.err_pixels_material_second_parameter_mode
+
+from core.render import MaterialSample, SurfaceContext
+
+struct Params:
+    value: u32
+
+enum MaterialId:
+    Surface
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], take params: Params) -> MaterialSample:
+    return surface

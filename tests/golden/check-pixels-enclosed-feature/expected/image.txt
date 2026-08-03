@@ -1,0 +1,35 @@
+ImageGraph v0
+  Name value=check-pixels-enclosed-feature
+  Target value=Target.wrela_machine_v1
+  Cores count=1
+  Device index=0 type=DisplayDevice
+    Arg label=transport value=24576
+  Driver index=0 type=Display
+    Arg label=device value=device#0
+    Arg label=width value=64
+    Arg label=height value=32
+    Arg label=refresh_hz value=60
+  Renderer index=0 params=SceneParams actor=Renderer[SceneParams]
+    Arg label=field value=world
+    Arg label=material value=shade
+    Arg label=display value=driver#0
+    Arg label=width value=64
+    Arg label=height value=32
+    Arg label=refresh_hz value=60
+    Arg label=shade_hz value=60
+    Arg label=profile value=RenderProfile.AaaByteExact
+    Arg label=tone_curve value=ToneCurve.Linear
+    Arg label=near value=0.1
+    Arg label=far value=128
+    Arg label=world_min value=(-4, -4, -4)
+    Arg label=world_max value=(4, 4, 4)
+    Arg label=camera_bounds value=(0.25)
+    Arg label=light_config value=(0, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1))
+    Arg label=exposure_range value=(-1, 1)
+    Arg label=environment_range value=((0, 0, 0), (1, 1, 1))
+    Arg label=ao value=(false)
+    Arg label=probes value=(false, 0)
+    Arg label=initialization_deadline_ms value=10
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
+  Sealed value=true

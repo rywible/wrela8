@@ -1,0 +1,7 @@
+module examples.err_pixels_field_generic_root
+
+from core.field import Field, Vec3
+
+@field
+fn world[T](p: Vec3) -> Field:
+    return p

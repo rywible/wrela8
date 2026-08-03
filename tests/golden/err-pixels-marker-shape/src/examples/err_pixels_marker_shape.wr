@@ -1,0 +1,7 @@
+module examples.err_pixels_marker_shape
+
+from core.field import Field, Vec3
+
+@field(version=1)
+fn world(p: Vec3) -> Field:
+    return p

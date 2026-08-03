@@ -1,0 +1,129 @@
+module examples.check_pixels_field_ops
+
+from core.field import (
+    Field,
+    Rgb,
+    Vec3,
+    box,
+    capsule,
+    finite_cone,
+    finite_cylinder,
+    finite_repeat_x,
+    finite_repeat_y,
+    finite_repeat_z,
+    intersection,
+    mark,
+    plane,
+    rigid_transform,
+    rotate,
+    round_box,
+    sinusoidal_displace,
+    smooth_intersection,
+    smooth_subtract,
+    smooth_union,
+    sphere,
+    subtract,
+    torus,
+    translate,
+    uniform_scale,
+    union,
+)
+from core.render import (
+    AoConfig,
+    CameraBounds,
+    LightConfig,
+    MaterialSample,
+    ProbeConfig,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+enum ObjectId:
+    Scene
+
+enum MaterialId:
+    Surface
+
+struct SceneParams:
+    marker: bool
+
+fn identity[T](value: T) -> T:
+    return value
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    row_x = Vec3(x=1.0, y=0.0, z=0.0)
+    row_y = Vec3(x=0.0, y=1.0, z=0.0)
+    row_z = Vec3(x=0.0, y=0.0, z=1.0)
+    translated = translate(p, Vec3(x=1.0, y=0.0, z=0.0))
+    rotated = rotate(
+        translated,
+        Vec3(x=0.70710678, y=-0.70710678, z=0.0),
+        Vec3(x=0.70710678, y=0.70710678, z=0.0),
+        Vec3(x=0.0, y=0.0, z=1.0),
+    )
+    rigid = rigid_transform(
+        rotated,
+        Vec3(x=0.0, y=1.0, z=0.0),
+        Vec3(x=1.0, y=0.0, z=0.0),
+        Vec3(x=0.0, y=1.0, z=0.0),
+        Vec3(x=0.0, y=0.0, z=1.0),
+    )
+    repeated_x = finite_repeat_x(rigid, first=-1, count=3, period=2.0)
+    repeated_y = finite_repeat_y(repeated_x, first=-1, count=3, period=2.0)
+    repeated = finite_repeat_z(repeated_y, first=-1, count=3, period=2.0)
+    zero: f32 = 0.0
+    a = plane(repeated, row_y, offset=identity(zero))
+    b = sphere(repeated, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0)
+    c = box(repeated, Vec3(x=1.0, y=1.0, z=1.0))
+    d = round_box(repeated, Vec3(x=1.0, y=1.0, z=1.0), radius=0.1)
+    e = capsule(repeated, Vec3(x=0.0, y=-1.0, z=0.0), Vec3(x=0.0, y=1.0, z=0.0), radius=0.2)
+    f = finite_cylinder(repeated, radius=1.0, half_height=1.0)
+    g = finite_cone(repeated, radius=1.0, half_height=1.0)
+    h = torus(repeated, major_radius=1.0, minor_radius=0.2)
+    hard = subtract(intersection(union(a, b), union(c, d)), union(e, f))
+    smooth = smooth_subtract(smooth_intersection(smooth_union(hard, g, k=0.1), h, k=0.1), a, k=0.1)
+    scaled = uniform_scale(smooth, scale=2.0)
+    displaced = sinusoidal_displace(scaled, repeated, amplitude=0.1, frequency=2.0, phase=0.0)
+    return mark(displaced, object=ObjectId.Scene, material=MaterialId.Surface)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+@image
+fn build() -> Image:
+    img = Image(name="check-pixels-field-ops", target=Target.wrela_machine_v1)
+    device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

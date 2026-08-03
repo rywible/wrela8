@@ -2754,6 +2754,7 @@ pub fn lower_and_codegen_image(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
+    renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
     runtime_tests: &[String],
     async_tests: &BTreeSet<String>,
     emit_comptime_tests: bool,
@@ -2762,13 +2763,20 @@ pub fn lower_and_codegen_image(
     let pixels_skeleton = if graph.renderers.is_empty() {
         None
     } else {
-        let owner = programs
-            .values()
-            .find(|program| program.image_fn.is_some())
+        let configs = renderer_configs.ok_or_else(|| {
+            "pixels::config: lowering requires the validated renderer side table".to_string()
+        })?;
+        let (owner_module, owner) = programs
+            .iter()
+            .find(|(_, program)| program.image_fn.is_some())
             .ok_or_else(|| "pixels: image owner program is missing".to_string())?;
-        Some(crate::pixels::compile_plane_skeleton(
-            owner, programs, graph,
-        )?)
+        if !crate::pixels::is_walking_skeleton(owner_module, graph) {
+            None
+        } else {
+            Some(crate::pixels::compile_plane_skeleton(
+                owner, programs, graph, configs,
+            )?)
+        }
     };
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
@@ -3020,6 +3028,7 @@ pub fn try_layout_with_codegen(
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
+    renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
 ) -> Result<Option<(ImageLayout, CodegenProgram)>, String> {
     let empty_tests: &[String] = &[];
     let empty_async = BTreeSet::new();
@@ -3035,6 +3044,7 @@ pub fn try_layout_with_codegen(
         programs,
         layout_ctx,
         graph,
+        renderer_configs,
         empty_tests,
         &empty_async,
         false,
@@ -3068,8 +3078,12 @@ pub fn try_layout_program(
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
+    renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
 ) -> Result<Option<ImageLayout>, String> {
-    Ok(try_layout_with_codegen(programs, layout_ctx, graph, modules)?.map(|(layout, _)| layout))
+    Ok(
+        try_layout_with_codegen(programs, layout_ctx, graph, modules, renderer_configs)?
+            .map(|(layout, _)| layout),
+    )
 }
 
 fn collect_placed_statics(
@@ -3441,6 +3455,7 @@ fn use(d: Duo, h: Hue):
                 label: "mailbox".to_string(),
                 ty: Type::U32,
                 value: Value::U32(n),
+                span: Default::default(),
             });
         }
         crate::eval::image::ActorDecl {
@@ -3695,6 +3710,7 @@ pub struct Store:
             label: label.to_string(),
             ty,
             value,
+            span: Default::default(),
         }
     }
 
@@ -3839,6 +3855,7 @@ pub struct Store:
                 label: "mailbox".into(),
                 ty: crate::sema::types::Type::U64,
                 value: crate::eval::value::Value::U64(4),
+                span: Default::default(),
             }],
         });
         let src = "\
@@ -3987,6 +4004,7 @@ pub struct Store:
                 label: "seed".to_string(),
                 ty: Type::I64,
                 value: v,
+                span: Default::default(),
             });
             let mut graph = ImageGraph::default();
             graph.actors.push(d);

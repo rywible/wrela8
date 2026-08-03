@@ -1,0 +1,10 @@
+module examples.err_pixels_marker_on_enum_method
+
+from core.field import Field, Vec3
+
+enum Choice:
+    Only
+
+    @field
+    fn world(p: Vec3) -> Field:
+        return p

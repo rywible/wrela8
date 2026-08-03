@@ -1,0 +1,8 @@
+module examples.err_pixels_field_conflicting_marker
+
+from core.field import Field, Vec3
+
+@field
+@material
+fn world(p: Vec3) -> Field:
+    return p

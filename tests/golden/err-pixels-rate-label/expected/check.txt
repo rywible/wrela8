@@ -1,0 +1,1 @@
+error[pixels P006]: rate for [0] is negative, non-finite, or not representable: `@rate` has no `second_delta=` argument at 4:27

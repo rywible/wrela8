@@ -1,0 +1,7 @@
+module examples.err_pixels_field_parameter_mode
+
+from core.field import Field, Vec3
+
+@field
+fn world(take p: Vec3) -> Field:
+    return p

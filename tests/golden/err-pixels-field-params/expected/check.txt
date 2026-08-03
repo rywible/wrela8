@@ -1,0 +1,1 @@
+error[pixels P002]: `@field` function `world` has unsupported parameter shape; expected `(p: Vec3)` or `(p: Vec3, read params: P)` at 9:1

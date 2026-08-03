@@ -1,0 +1,1 @@
+error[type]: P004: opaque `Field` may not be stored in user struct `Escaped.value` at 6:5

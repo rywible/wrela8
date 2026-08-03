@@ -1,0 +1,11 @@
+FieldGraph v1
+Renderers count=1
+  Renderer index=0 params=SceneParams field=world material=shade material_type=MaterialId
+    Compilation status=not-run
+    Display ref=driver#0
+    Mode width=64 height=32 refresh_hz=60 shade_hz=60
+    Profile value=AaaByteExact tone_curve=Linear
+    Depth near=0.1 far=10
+    World min=[-2,-2,-2] max=[2,2,2]
+    Contracts camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1] ao=false probes=false probe_initialization_worst_case_ms=0 initialization_deadline_ms=10
+    Parameter path=[0] type=f32 range=[0.10000000149011612,2] rate=none

@@ -1,0 +1,1 @@
+error[pixels P008]: renderer declaration has unknown or duplicate argument `mystery`: the label is not part of the sealed renderer declaration at 55:9

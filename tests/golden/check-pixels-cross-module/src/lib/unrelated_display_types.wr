@@ -1,0 +1,10 @@
+module lib.unrelated_display_types
+
+pub struct Display:
+    value: u32
+
+pub struct DisplayDevice:
+    value: u32
+
+pub fn unrelated_display_value() -> u32:
+    return 7

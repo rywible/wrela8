@@ -1,0 +1,37 @@
+ImageGraph v0
+  Name value=check-pixels-source-example
+  Target value=Target.wrela_machine_v1
+  Cores count=4
+  Device index=0 type=DisplayDevice
+    Arg label=transport value=Transport.Blob
+  Driver index=0 type=Display
+    Arg label=device value=device#0
+    Arg label=vector value=5
+    Arg label=mailbox value=2
+  Actor index=0 type=Game
+    Arg label=mailbox value=8
+    Arg label=renderer value=renderer#0
+  Renderer index=0 params=SceneParams actor=Renderer[SceneParams]
+    Arg label=field value=world
+    Arg label=material value=shade
+    Arg label=display value=driver#0
+    Arg label=width value=1920
+    Arg label=height value=1080
+    Arg label=refresh_hz value=60
+    Arg label=shade_hz value=30
+    Arg label=profile value=RenderProfile.AaaByteExact
+    Arg label=tone_curve value=ToneCurve.FilmicV1
+    Arg label=near value=0.05
+    Arg label=far value=200
+    Arg label=world_min value=(-64, -16, -64)
+    Arg label=world_max value=(64, 64, 64)
+    Arg label=camera_bounds value=(0.25)
+    Arg label=light_config value=(8, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1))
+    Arg label=exposure_range value=(-8, 8)
+    Arg label=environment_range value=((0, 0, 0), (16, 16, 16))
+    Arg label=ao value=(true)
+    Arg label=probes value=(false, 0)
+    Arg label=initialization_deadline_ms value=250
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
+  Sealed value=true

@@ -1,0 +1,3 @@
+error[pixels P004]: coordinate vectors must come from the closed rigid/translation transform set at 34:41
+note: renderer call chain: lib.unsupported_scene::world -> lib.unsupported_scene::translate -> lib.unsupported_scene::unsupported_twist
+help: use only the closed AaaByteExact field-operation and rigid-transform surface

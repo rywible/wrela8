@@ -1,1 +1,4 @@
-error[pixels]: P-1 plane skeleton accepts exactly one marked `plane`; found [plane, union, plane]
+test never_boots: ok
+1 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

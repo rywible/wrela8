@@ -1,0 +1,2 @@
+error[pixels P024]: field loop bound is not comptime-known (`while`) at 41:36
+note: renderer call chain: examples.err_pixels_field_loop::world -> examples.err_pixels_field_loop::loop_field

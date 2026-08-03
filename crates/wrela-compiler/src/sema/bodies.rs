@@ -184,7 +184,10 @@ pub(crate) struct ModuleCtx {
     pub(crate) module_path: String,
     pub(crate) loader_key: Vec<String>,
     pub(crate) struct_decl_module: BTreeMap<String, String>,
+    pub(crate) type_decl_module: BTreeMap<String, String>,
+    pub(crate) type_decl_name: BTreeMap<String, String>,
     pub(crate) fn_decl_module: BTreeMap<String, String>,
+    pub(crate) fn_decl_name: BTreeMap<String, String>,
     pub(crate) visibility_home: RefCell<Option<String>>,
 }
 
@@ -225,7 +228,10 @@ pub(crate) fn build_module_ctx(
     let mut statics = BTreeMap::new();
     let mut const_values = BTreeMap::new();
     let mut struct_decl_module = BTreeMap::new();
+    let mut type_decl_module = BTreeMap::new();
+    let mut type_decl_name = BTreeMap::new();
     let mut fn_decl_module = BTreeMap::new();
+    let mut fn_decl_name = BTreeMap::new();
 
     let ast_items: Vec<&Item> = module
         .items
@@ -283,6 +289,8 @@ pub(crate) fn build_module_ctx(
                     }
                 }
                 struct_decl_module.insert(s.name.clone(), module_path.clone());
+                type_decl_module.insert(s.name.clone(), module_path.clone());
+                type_decl_name.insert(s.name.clone(), s.name.clone());
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
@@ -294,6 +302,8 @@ pub(crate) fn build_module_ctx(
             }
             (Item::Enum(e), types::DeclItem::Enum(d)) => {
                 shapes.insert(e.name.clone(), e.generics.len());
+                type_decl_module.insert(e.name.clone(), module_path.clone());
+                type_decl_name.insert(e.name.clone(), e.name.clone());
                 let mut ast_members = e.members.clone();
                 if e.deriving.iter().any(|d| d == "From") {
                     let v = &e.variants[0];
@@ -328,6 +338,7 @@ pub(crate) fn build_module_ctx(
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
                 fn_decl_module.insert(f.name.clone(), module_path.clone());
+                fn_decl_name.insert(f.name.clone(), f.name.clone());
                 fns.insert(
                     f.name.clone(),
                     FnInfo {
@@ -376,7 +387,10 @@ pub(crate) fn build_module_ctx(
         module_path,
         loader_key: module.path.clone(),
         struct_decl_module,
+        type_decl_module,
+        type_decl_name,
         fn_decl_module,
+        fn_decl_name,
         visibility_home: RefCell::new(None),
     }
 }
@@ -599,9 +613,15 @@ pub(crate) fn check(
         .filter(|i| !matches!(i, Item::ComptimeIf(_)))
         .collect();
     let mut program = TypedProgram::default();
+    program.module_path = mctx.module_path.clone();
     program.declared_pools = mctx.module_pools.clone();
+    program.fn_decl_modules = mctx.fn_decl_module.clone();
+    program.fn_decl_names = mctx.fn_decl_name.clone();
+    program.type_decl_modules = mctx.type_decl_module.clone();
+    program.type_decl_names = mctx.type_decl_name.clone();
     for name in [
         "Target",
+        "Transport",
         "Failure",
         "BootError",
         "DriverMode",
@@ -635,7 +655,16 @@ pub(crate) fn check(
                     },
                 );
             }
-            (Item::Static(_), types::DeclItem::Static(d)) => {
+            (Item::Static(s), types::DeclItem::Static(d)) => {
+                if contains_opaque_field(&d.ty, mctx) && mctx.module_path != "field" {
+                    return Err(type_error(
+                        format!(
+                            "P004: opaque `Field` may not be stored in static `{}`",
+                            d.name
+                        ),
+                        s.span,
+                    ));
+                }
                 program.statics.insert(
                     d.name.clone(),
                     crate::sema::typed::TypedStatic {
@@ -646,7 +675,22 @@ pub(crate) fn check(
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
                 check_marker_attr_shape(f, true)?;
-                let mut pixels_meta = check_pixels_fn_shape(f, d)?;
+                let mut pixels_meta = check_pixels_fn_shape(f, d, mctx)?;
+                if f.is_pub
+                    && contains_opaque_field(&d.ret, mctx)
+                    && pixels_meta
+                        .as_ref()
+                        .is_none_or(|meta| meta.kind != PixelsFnKind::Field)
+                    && mctx.module_path != "field"
+                {
+                    return Err(type_error(
+                        format!(
+                            "P004: public function `{}` may not return opaque `Field` without `@field`",
+                            f.name
+                        ),
+                        f.span,
+                    ));
+                }
                 let test_kind = test_attr_kind(f)?;
                 if test_kind == Some(TestKind::Exhaustive) {
                     check_exhaustive_test_params(f, d, mctx)?;
@@ -658,7 +702,7 @@ pub(crate) fn check(
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     if let Some(meta) = pixels_meta.as_mut() {
                         if meta.kind == PixelsFnKind::Field {
-                            meta.material_type = pixels_field_material_type(&tf)?;
+                            meta.material_type = pixels_field_material_type(&tf, mctx)?;
                         }
                     }
                     if let Some(meta) = pixels_meta {
@@ -691,10 +735,26 @@ pub(crate) fn check(
                     return Err(unimplemented_at("`@test` on a generic fn is", f.span));
                 }
             }
-            (Item::Struct(s), types::DeclItem::Struct(_)) => {
+            (Item::Struct(s), types::DeclItem::Struct(d)) => {
                 for m in &s.members {
                     if let ast::Member::Fn(mf) = m {
                         check_marker_attr_shape(mf, false)?;
+                    }
+                }
+                if !s.generics.is_empty() && s.name != "Field" {
+                    for (am, dm) in s.members.iter().zip(&d.members) {
+                        if let (Member::Field(af), DeclMember::Field(df)) = (am, dm)
+                            && contains_opaque_field(&df.ty, mctx)
+                        {
+                            return Err(type_error(
+                                format!(
+                                    "P004: opaque `Field` may not be stored in user struct \
+                                     `{}.{}`",
+                                    s.name, af.name
+                                ),
+                                af.span,
+                            ));
+                        }
                     }
                 }
                 if let Some(ts) = check_struct_bodies(s, mctx)? {
@@ -702,10 +762,13 @@ pub(crate) fn check(
                 }
             }
             (Item::Enum(e), types::DeclItem::Enum(_d)) => {
-                if e.generics.is_empty() {
-                    if let Some(te) = check_enum_bodies(e, mctx)? {
-                        program.enums.insert(e.name.clone(), te);
+                for member in &e.members {
+                    if let ast::Member::Fn(method) = member {
+                        check_marker_attr_shape(method, false)?;
                     }
+                }
+                if let Some(te) = check_enum_bodies(e, mctx)? {
+                    program.enums.insert(e.name.clone(), te);
                 }
             }
             _ => {}
@@ -731,13 +794,21 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
         .collect();
     if let Some(first) = markers.first() {
         if !top_level {
-            return Err(type_error(
-                format!(
-                    "`@{}` is only valid on a top-level fn, not a struct member (`{}`)",
-                    first.name, f.name
+            let message = format!(
+                "`@{}` is only valid on a top-level fn, not a struct member (`{}`)",
+                first.name, f.name
+            );
+            return Err(match first.name.as_str() {
+                "field" | "material" => SemaError::at(
+                    "pixels P002",
+                    format!(
+                        "`@{}` function `{}` has unsupported parameter shape: {message}",
+                        first.name, f.name
+                    ),
+                    first.span,
                 ),
-                first.span,
-            ));
+                _ => type_error(message, first.span),
+            });
         }
         if markers.len() > 1 {
             let legacy_markers = ["test", "image", "layout_assert"];
@@ -748,14 +819,35 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
             } else {
                 "top-level marker"
             };
-            return Err(type_error(
-                format!(
-                    "fn `{}` carries more than one {marker_set} \
-                     attribute (`@{}` and `@{}`) — at most one is valid",
-                    f.name, markers[0].name, markers[1].name
-                ),
-                markers[1].span,
-            ));
+            let pixels_category = if markers
+                .iter()
+                .any(|marker| matches!(marker.name.as_str(), "field" | "material"))
+            {
+                Some("pixels P002")
+            } else {
+                None
+            };
+            let detail = format!(
+                "fn `{}` carries more than one {marker_set} attribute (`@{}` and `@{}`) — at most one is valid",
+                f.name, markers[0].name, markers[1].name
+            );
+            return Err(match pixels_category {
+                Some(category) => {
+                    let marker = markers
+                        .iter()
+                        .find(|marker| matches!(marker.name.as_str(), "field" | "material"))
+                        .expect("pixels marker selected category");
+                    SemaError::at(
+                        category,
+                        format!(
+                            "`@{}` function `{}` has unsupported parameter shape: {detail}",
+                            marker.name, f.name
+                        ),
+                        markers[1].span,
+                    )
+                }
+                None => type_error(detail, markers[1].span),
+            });
         }
     }
     Ok(())
@@ -764,7 +856,32 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
 fn check_pixels_fn_shape(
     f: &ast::FnItem,
     d: &types::DeclFn,
+    mctx: &ModuleCtx,
 ) -> Result<Option<PixelsFnMeta>, SemaError> {
+    let pixels_error = |code: &'static str, message: String, span: Span| {
+        let category = match code {
+            "P001" => "pixels P001",
+            "P002" => "pixels P002",
+            _ => "pixels",
+        };
+        SemaError::at(category, message, span)
+    };
+    let named_from = |ty: &Type, name: &str, module: &str| {
+        let Type::Named(found, _) = ty else {
+            return false;
+        };
+        mctx.type_decl_name
+            .get(found)
+            .is_some_and(|declaration| declaration == name)
+            && mctx
+                .type_decl_module
+                .get(found)
+                .is_some_and(|origin| match module {
+                    "field" => matches!(origin.as_str(), "field" | "core.field"),
+                    "render" => matches!(origin.as_str(), "render" | "core.render"),
+                    _ => origin == module,
+                })
+    };
     let field = f.attrs.iter().find(|attr| attr.name == "field");
     let material = f.attrs.iter().find(|attr| attr.name == "material");
     let Some((kind, attr)) = field
@@ -774,26 +891,33 @@ fn check_pixels_fn_shape(
         return Ok(None);
     };
     if !attr.args.is_empty() {
-        return Err(type_error(
-            format!("`@{}` takes no arguments", attr.name),
+        return Err(pixels_error(
+            "P002",
+            format!(
+                "`@{}` function `{}` has unsupported parameter shape: marker attributes take no arguments",
+                attr.name, f.name
+            ),
             attr.span,
         ));
     }
     if d.is_async || d.is_task || !d.generics.is_empty() || d.receiver.is_some() {
-        return Err(type_error(
+        return Err(pixels_error(
+            "P002",
             format!(
-                "`@{}` fn `{}` must be a top-level synchronous nongeneric function",
-                attr.name, f.name
+                "`@{}` function `{}` has unsupported parameter shape: expected a top-level \
+                 synchronous nongeneric function",
+                attr.name, f.name,
             ),
             f.span,
         ));
     }
     match kind {
         PixelsFnKind::Field => {
-            if d.ret != Type::Named("Field".to_string(), vec![]) {
-                return Err(type_error(
+            if !named_from(&d.ret, "Field", "field") {
+                return Err(pixels_error(
+                    "P001",
                     format!(
-                        "`@field` fn `{}` must return `Field`, found `{}`",
+                        "`@field` function `{}` must return `Field`, found `{}`",
                         f.name,
                         types::render_type(&d.ret)
                     ),
@@ -802,13 +926,17 @@ fn check_pixels_fn_shape(
             }
             if !(d.params.len() == 1 || d.params.len() == 2)
                 || d.params[0].mode != AccessMode::Read
-                || d.params[0].ty != Type::Named("Vec3".to_string(), vec![])
+                || !named_from(&d.params[0].ty, "Vec3", "field")
                 || d.params.get(1).is_some_and(|p| p.mode != AccessMode::Read)
+                || d.params
+                    .get(1)
+                    .is_some_and(|p| is_resource_type(&p.ty, mctx))
             {
-                return Err(type_error(
+                return Err(pixels_error(
+                    "P002",
                     format!(
-                        "`@field` fn `{}` must be `(p: Vec3)` or \
-                         `(p: Vec3, read params: P) -> Field`",
+                        "`@field` function `{}` has unsupported parameter shape; expected \
+                         `(p: Vec3)` or `(p: Vec3, read params: P)`",
                         f.name
                     ),
                     f.span,
@@ -821,8 +949,21 @@ fn check_pixels_fn_shape(
             }))
         }
         PixelsFnKind::Material => {
+            if !named_from(&d.ret, "MaterialSample", "render") {
+                return Err(pixels_error(
+                    "P001",
+                    format!(
+                        "`@material` function `{}` must return `MaterialSample`, found `{}`",
+                        f.name,
+                        types::render_type(&d.ret)
+                    ),
+                    f.span,
+                ));
+            }
             let surface_material = match d.params.first().map(|p| (&p.mode, &p.ty)) {
-                Some((AccessMode::Read, Type::Named(name, args))) if name == "SurfaceContext" => {
+                Some((AccessMode::Read, ty @ Type::Named(_, args)))
+                    if named_from(ty, "SurfaceContext", "render") =>
+                {
                     match args.as_slice() {
                         [TypeArg::Type(material)] => Some(material.clone()),
                         _ => None,
@@ -830,15 +971,23 @@ fn check_pixels_fn_shape(
                 }
                 _ => None,
             };
-            if d.ret != Type::Named("MaterialSample".to_string(), vec![])
-                || !(d.params.len() == 1 || d.params.len() == 2)
+            if !(d.params.len() == 1 || d.params.len() == 2)
                 || surface_material.is_none()
+                || !d
+                    .params
+                    .first()
+                    .is_some_and(|param| named_from(&param.ty, "SurfaceContext", "render"))
                 || d.params.get(1).is_some_and(|p| p.mode != AccessMode::Read)
+                || d.params
+                    .get(1)
+                    .is_some_and(|p| is_resource_type(&p.ty, mctx))
             {
-                return Err(type_error(
+                return Err(pixels_error(
+                    "P002",
                     format!(
-                        "`@material` fn `{}` must be `(surface: SurfaceContext[M])` or \
-                         `(surface: SurfaceContext[M], read params: P) -> MaterialSample`",
+                        "`@material` function `{}` has unsupported parameter shape; expected \
+                         `(surface: SurfaceContext[M])` or \
+                         `(surface: SurfaceContext[M], read params: P)`",
                         f.name
                     ),
                     f.span,
@@ -853,12 +1002,16 @@ fn check_pixels_fn_shape(
     }
 }
 
-fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
-    fn visit_expr(expr: &TypedExpr, found: &mut Option<Type>) -> Result<(), SemaError> {
+fn pixels_field_material_type(f: &TypedFn, mctx: &ModuleCtx) -> Result<Option<Type>, SemaError> {
+    fn visit_expr(
+        expr: &TypedExpr,
+        found: &mut Option<Type>,
+        mctx: &ModuleCtx,
+    ) -> Result<(), SemaError> {
         let visit_args = |args: &[TypedCallArg], found: &mut Option<Type>| {
             for arg in args {
                 if let Some(value) = &arg.value {
-                    visit_expr(value, found)?;
+                    visit_expr(value, found, mctx)?;
                 }
             }
             Ok::<(), SemaError>(())
@@ -870,20 +1023,25 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
                 args,
             } => {
                 let spelling = callee.spelling();
-                if (spelling == "mark"
-                    || spelling.starts_with("fn:mark[")
-                    || spelling.ends_with("::mark"))
-                    && args.len() >= 3
-                {
+                let visible_name = crate::pixels::call_base(&spelling);
+                let canonical_mark = mctx
+                    .fn_decl_module
+                    .get(visible_name)
+                    .zip(mctx.fn_decl_name.get(visible_name))
+                    .is_some_and(|(module, declaration)| {
+                        declaration == "mark" && matches!(module.as_str(), "field" | "core.field")
+                    });
+                if canonical_mark && args.len() >= 3 {
                     let material = args[2]
                         .value
                         .as_ref()
                         .map(|value| value.ty.clone())
                         .expect("ordinary call arguments carry values");
                     if found.as_ref().is_some_and(|prior| prior != &material) {
-                        return Err(type_error(
+                        return Err(SemaError::at(
+                            "pixels P009",
                             format!(
-                                "`@field` uses more than one nominal material type (`{}` and `{}`)",
+                                "renderer field/material parameter types disagree: `@field` uses more than one nominal material type (`{}` and `{}`)",
                                 types::render_type(found.as_ref().unwrap()),
                                 types::render_type(&material)
                             ),
@@ -893,12 +1051,12 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
                     *found = Some(material);
                 }
                 if let Some(receiver) = receiver {
-                    visit_expr(receiver, found)?;
+                    visit_expr(receiver, found, mctx)?;
                 }
                 visit_args(args, found)?;
             }
             TypedExprKind::CallValue(callee, args) => {
-                visit_expr(callee, found)?;
+                visit_expr(callee, found, mctx)?;
                 visit_args(args, found)?;
             }
             TypedExprKind::Field(base, _)
@@ -910,33 +1068,33 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
             | TypedExprKind::Not(base)
             | TypedExprKind::Panic(base)
             | TypedExprKind::Await(base)
-            | TypedExprKind::Send(base) => visit_expr(base, found)?,
+            | TypedExprKind::Send(base) => visit_expr(base, found, mctx)?,
             TypedExprKind::Index(a, b)
             | TypedExprKind::Binary(_, a, b)
             | TypedExprKind::OpCall(_, a, b)
             | TypedExprKind::And(a, b)
             | TypedExprKind::Or(a, b) => {
-                visit_expr(a, found)?;
-                visit_expr(b, found)?;
+                visit_expr(a, found, mctx)?;
+                visit_expr(b, found, mctx)?;
             }
-            TypedExprKind::Is(value, _) => visit_expr(value, found)?,
+            TypedExprKind::Is(value, _) => visit_expr(value, found, mctx)?,
             TypedExprKind::EnumConstruct { args, .. } => visit_args(args, found)?,
             TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
                 for item in items {
-                    visit_expr(item, found)?;
+                    visit_expr(item, found, mctx)?;
                 }
             }
             TypedExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
-                    visit_expr(value, found)?;
+                    visit_expr(value, found, mctx)?;
                 }
             }
             TypedExprKind::Intrinsic { receiver, args, .. } => {
                 if let Some(receiver) = receiver {
-                    visit_expr(receiver, found)?;
+                    visit_expr(receiver, found, mctx)?;
                 }
                 for (_, value) in args {
-                    visit_expr(value, found)?;
+                    visit_expr(value, found, mctx)?;
                 }
             }
             TypedExprKind::Closure { .. }
@@ -956,13 +1114,17 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
         }
         Ok(())
     }
-    fn visit_stmts(stmts: &[TypedStmt], found: &mut Option<Type>) -> Result<(), SemaError> {
+    fn visit_stmts(
+        stmts: &[TypedStmt],
+        found: &mut Option<Type>,
+        mctx: &ModuleCtx,
+    ) -> Result<(), SemaError> {
         for stmt in stmts {
             match &stmt.kind {
-                TypedStmtKind::Let { value, .. } => visit_expr(value, found)?,
+                TypedStmtKind::Let { value, .. } => visit_expr(value, found, mctx)?,
                 TypedStmtKind::Assign { target, value } => {
-                    visit_expr(target, found)?;
-                    visit_expr(value, found)?;
+                    visit_expr(target, found, mctx)?;
+                    visit_expr(value, found, mctx)?;
                 }
                 TypedStmtKind::If {
                     cond,
@@ -970,52 +1132,54 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
                     elifs,
                     else_branch,
                 } => {
-                    visit_expr(cond, found)?;
-                    visit_stmts(then_branch, found)?;
+                    visit_expr(cond, found, mctx)?;
+                    visit_stmts(then_branch, found, mctx)?;
                     for elif in elifs {
-                        visit_expr(&elif.cond, found)?;
-                        visit_stmts(&elif.body, found)?;
+                        visit_expr(&elif.cond, found, mctx)?;
+                        visit_stmts(&elif.body, found, mctx)?;
                     }
                     if let Some(branch) = else_branch {
-                        visit_stmts(branch, found)?;
+                        visit_stmts(branch, found, mctx)?;
                     }
                 }
                 TypedStmtKind::Match { scrutinee, arms } => {
-                    visit_expr(scrutinee, found)?;
+                    visit_expr(scrutinee, found, mctx)?;
                     for arm in arms {
                         if let Some(guard) = &arm.guard {
-                            visit_expr(guard, found)?;
+                            visit_expr(guard, found, mctx)?;
                         }
-                        visit_stmts(&arm.body, found)?;
+                        visit_stmts(&arm.body, found, mctx)?;
                     }
                 }
                 TypedStmtKind::For { iter, body, .. } => {
                     match iter {
                         TypedForIter::Range(a, b, _) => {
-                            visit_expr(a, found)?;
-                            visit_expr(b, found)?;
+                            visit_expr(a, found, mctx)?;
+                            visit_expr(b, found, mctx)?;
                         }
-                        TypedForIter::Expr(value) => visit_expr(value, found)?,
+                        TypedForIter::Expr(value) => visit_expr(value, found, mctx)?,
                     }
-                    visit_stmts(body, found)?;
+                    visit_stmts(body, found, mctx)?;
                 }
                 TypedStmtKind::While { cond, body, .. } => {
-                    visit_expr(cond, found)?;
-                    visit_stmts(body, found)?;
+                    visit_expr(cond, found, mctx)?;
+                    visit_stmts(body, found, mctx)?;
                 }
                 TypedStmtKind::Return(Some(value))
                 | TypedStmtKind::ExprStmt(value)
-                | TypedStmtKind::BareSend { expr: value, .. } => visit_expr(value, found)?,
+                | TypedStmtKind::BareSend { expr: value, .. } => visit_expr(value, found, mctx)?,
                 TypedStmtKind::Assert { cond, message }
                 | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-                    visit_expr(cond, found)?;
+                    visit_expr(cond, found, mctx)?;
                     if let Some(message) = message {
-                        visit_expr(message, found)?;
+                        visit_expr(message, found, mctx)?;
                     }
                 }
-                TypedStmtKind::Defer(TypedDeferBody::Expr(value)) => visit_expr(value, found)?,
+                TypedStmtKind::Defer(TypedDeferBody::Expr(value)) => {
+                    visit_expr(value, found, mctx)?
+                }
                 TypedStmtKind::Defer(TypedDeferBody::Suite(body))
-                | TypedStmtKind::WithGroup { body, .. } => visit_stmts(body, found)?,
+                | TypedStmtKind::WithGroup { body, .. } => visit_stmts(body, found, mctx)?,
                 TypedStmtKind::Break
                 | TypedStmtKind::Continue
                 | TypedStmtKind::Pass
@@ -1025,7 +1189,7 @@ fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
         Ok(())
     }
     let mut found = None;
-    visit_stmts(&f.body, &mut found)?;
+    visit_stmts(&f.body, &mut found, mctx)?;
     Ok(found)
 }
 
@@ -1385,6 +1549,12 @@ fn check_struct_bodies(
     s: &ast::StructItem,
     mctx: &ModuleCtx,
 ) -> Result<Option<TypedStruct>, SemaError> {
+    if s.name == "Renderer" && !matches!(mctx.module_path.as_str(), "render" | "core.render") {
+        return Err(type_error(
+            "`Renderer` is reserved for the canonical `core.render::Renderer` actor".to_string(),
+            s.span,
+        ));
+    }
     if !s.generics.is_empty() {
         return Ok(None);
     }
@@ -1394,10 +1564,54 @@ fn check_struct_bodies(
 }
 
 fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<TypedEnum>, SemaError> {
-    if !e.generics.is_empty() {
-        return Ok(None);
+    if e.name == "Renderer" && !matches!(mctx.module_path.as_str(), "render" | "core.render") {
+        return Err(type_error(
+            "`Renderer` is reserved for the canonical `core.render::Renderer` actor".to_string(),
+            e.span,
+        ));
     }
     let info = mctx.enums.get(&e.name).expect("enum present in mctx");
+    for (variant, declaration) in e.variants.iter().zip(&info.variants) {
+        if decl_variant_payload_types(declaration)
+            .iter()
+            .any(|ty| contains_opaque_field(ty, mctx))
+        {
+            return Err(type_error(
+                format!(
+                    "P004: opaque `Field` may not be stored in enum payload `{}.{}`",
+                    e.name, variant.name
+                ),
+                variant.span,
+            ));
+        }
+    }
+    let variant_payload_types = info
+        .variants
+        .iter()
+        .map(|v| match &v.payload {
+            DeclVariantPayload::None => Vec::new(),
+            DeclVariantPayload::Tuple(tys) => tys.clone(),
+            DeclVariantPayload::Named(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
+        })
+        .collect();
+    let generic_type_params = info
+        .decl
+        .generics
+        .iter()
+        .map(|generic| match generic.kind {
+            crate::sema::types::DeclGenericKind::Type => Some(generic.name.clone()),
+            crate::sema::types::DeclGenericKind::Const(_) => None,
+        })
+        .collect();
+    if !e.generics.is_empty() {
+        return Ok(Some(TypedEnum {
+            variants: info.variants.iter().map(|v| v.name.clone()).collect(),
+            variant_payload_types,
+            generic_type_params,
+            methods: BTreeMap::new(),
+            assoc_fns: BTreeMap::new(),
+        }));
+    }
     let self_ty = Type::Named(e.name.clone(), vec![]);
     let mut methods = BTreeMap::new();
     let mut assoc_fns = BTreeMap::new();
@@ -1405,6 +1619,16 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
         let (Member::Fn(f), DeclMember::Fn(fd)) = (am, dm) else {
             continue;
         };
+        if f.is_pub && contains_opaque_field(&fd.ret, mctx) && mctx.module_path != "field" {
+            return Err(type_error(
+                format!(
+                    "P004: public function `{}.{}` may not return opaque `Field`; \
+                     renderer roots must be top-level `@field` functions",
+                    e.name, f.name
+                ),
+                f.span,
+            ));
+        }
         if !f.generics.is_empty() {
             continue;
         }
@@ -1458,19 +1682,11 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             assoc_fns.insert(f.name.clone(), tf);
         }
     }
-    let variant_payload_types = info
-        .variants
-        .iter()
-        .map(|v| match &v.payload {
-            DeclVariantPayload::None => Vec::new(),
-            DeclVariantPayload::Tuple(tys) => tys.clone(),
-            DeclVariantPayload::Named(fields) => fields.iter().map(|(_, t)| t.clone()).collect(),
-        })
-        .collect();
     validate_format_contract(&e.name, &methods, &assoc_fns, e.span)?;
     Ok(Some(TypedEnum {
         variants: info.variants.iter().map(|v| v.name.clone()).collect(),
         variant_payload_types,
+        generic_type_params,
         methods,
         assoc_fns,
     }))
@@ -1488,6 +1704,7 @@ pub(crate) fn check_struct_members(
     let local_pools = local_pool_names(info);
     let mut fields = Vec::new();
     let mut field_types = BTreeMap::new();
+    let mut field_contracts = BTreeMap::new();
     let mut field_defaults = BTreeMap::new();
     let mut methods = BTreeMap::new();
     let mut assoc_fns = BTreeMap::new();
@@ -1495,8 +1712,50 @@ pub(crate) fn check_struct_members(
     for (am, dm) in info.members() {
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
+                if !is_opaque_field_name(&struct_name, mctx) && contains_opaque_field(&df.ty, mctx)
+                {
+                    return Err(type_error(
+                        format!(
+                            "P004: opaque `Field` may not be stored in user struct \
+                             `{struct_name}.{}`",
+                            af.name
+                        ),
+                        af.span,
+                    ));
+                }
+                let field_index = fields.len();
                 fields.push(af.name.clone());
                 field_types.insert(af.name.clone(), df.ty.clone());
+                let contracts = crate::sema::attrs::parse_field_contracts(
+                    af,
+                    &df.ty,
+                    &mctx.const_values,
+                    is_core_field_vector_type(&df.ty, mctx),
+                )
+                .map_err(|mut error| {
+                    let path = format!("[{field_index}]");
+                    match error.category {
+                        "pixels P006"
+                            if !error.message.starts_with(&format!("rate for {path} ")) =>
+                        {
+                            error.message = format!(
+                                "rate for {path} is negative, non-finite, or not representable: {}",
+                                error.message
+                            );
+                        }
+                        "pixels P007"
+                            if !error.message.starts_with(&format!("range for {path} ")) =>
+                        {
+                            error.message = format!(
+                                "range for {path} is empty, non-finite, or not representable: {}",
+                                error.message
+                            );
+                        }
+                        _ => {}
+                    }
+                    error
+                })?;
+                field_contracts.insert(vec![field_index], contracts);
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
                     fctx.insert_local("self".to_string(), self_ty.clone());
@@ -1505,6 +1764,16 @@ pub(crate) fn check_struct_members(
                 }
             }
             (Member::Fn(f), DeclMember::Fn(fd)) => {
+                if f.is_pub && contains_opaque_field(&fd.ret, mctx) && mctx.module_path != "field" {
+                    return Err(type_error(
+                        format!(
+                            "P004: public function `{struct_name}.{}` may not return opaque `Field`; \
+                             renderer roots must be top-level `@field` functions",
+                            f.name
+                        ),
+                        f.span,
+                    ));
+                }
                 if !f.generics.is_empty() {
                     continue;
                 }
@@ -1615,10 +1884,12 @@ pub(crate) fn check_struct_members(
         name: struct_name,
         fields,
         field_types,
+        field_contracts,
         field_defaults,
         methods,
         assoc_fns,
         init,
+        is_resource: info.decl.classification == Classification::Resource,
         is_actor: info.decl.is_actor,
         is_driver: info.decl.is_driver,
     })
@@ -3356,6 +3627,12 @@ fn synth_expr(
             let payload_types = variant_payload_types_for(&exp, None, name, *span, mctx)?;
             let typed_args = check_variant_args(&payload_types, args, *span, fctx, mctx)?;
             let enum_name = resolved_enum_name(&exp);
+            if contains_opaque_field(&exp, mctx) {
+                return Err(type_error(
+                    "P004: opaque `Field` may not be stored in an enum value".to_string(),
+                    *span,
+                ));
+            }
             Ok(TypedExpr {
                 span: *span,
                 ty: exp,
@@ -3867,6 +4144,13 @@ fn synth_tuple(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     if let Some(Type::Tuple(exp_elems)) = expected {
+        if exp_elems.iter().any(|ty| contains_opaque_field(ty, mctx)) && mctx.module_path != "field"
+        {
+            return Err(type_error(
+                "P004: opaque `Field` values may not be stored in tuples".to_string(),
+                span,
+            ));
+        }
         if exp_elems.len() != items.len() {
             return Err(type_error(
                 format!(
@@ -3893,6 +4177,16 @@ fn synth_tuple(
         typed_items.push(check_expr(item, None, fctx, mctx)?);
     }
     let elems = typed_items.iter().map(|t| t.ty.clone()).collect();
+    if typed_items
+        .iter()
+        .any(|item| contains_opaque_field(&item.ty, mctx))
+        && mctx.module_path != "field"
+    {
+        return Err(type_error(
+            "P004: opaque `Field` values may not be stored in tuples".to_string(),
+            span,
+        ));
+    }
     Ok(TypedExpr {
         span: span,
         ty: Type::Tuple(elems),
@@ -3909,6 +4203,12 @@ fn synth_list(
 ) -> Result<TypedExpr, SemaError> {
     if let Some(Type::Array(elem, len_expr)) = expected {
         let elem = (**elem).clone();
+        if contains_opaque_field(&elem, mctx) && mctx.module_path != "field" {
+            return Err(type_error(
+                "P004: opaque `Field` values may not be stored in arrays".to_string(),
+                span,
+            ));
+        }
         let len_expr = len_expr.clone();
         if let Some(n) = literal_array_len(&len_expr) {
             if n != items.len() as i128 {
@@ -3936,6 +4236,12 @@ fn synth_list(
     }
     let first = check_expr(&items[0], None, fctx, mctx)?;
     let elem_ty = first.ty.clone();
+    if contains_opaque_field(&elem_ty, mctx) && mctx.module_path != "field" {
+        return Err(type_error(
+            "P004: opaque `Field` values may not be stored in arrays".to_string(),
+            span,
+        ));
+    }
     let mut typed_items = Vec::with_capacity(items.len());
     typed_items.push(first);
     for item in &items[1..] {
@@ -3993,6 +4299,12 @@ fn synth_array_repeat(
     };
     let first = check_expr(elem, elem_expected, fctx, mctx)?;
     let elem_ty = first.ty.clone();
+    if contains_opaque_field(&elem_ty, mctx) && mctx.module_path != "field" {
+        return Err(type_error(
+            "P004: opaque `Field` values may not be stored in arrays".to_string(),
+            span,
+        ));
+    }
     let mut typed_items = Vec::with_capacity(n_usize);
     typed_items.push(first);
     for _ in 1..n_usize {
@@ -5195,6 +5507,7 @@ fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Resul
             });
             mctx.resolve_type(&ast_ty, &fctx.local_pools)
         }
+        Expr::Index(_, _, _) => resolve_intrinsic_struct_type_arg(e, mctx),
         _ => Err(unimplemented_at("generic instantiation is", e.span())),
     }
 }
@@ -5246,6 +5559,40 @@ fn check_image_bracket_intrinsic(
         ));
     }
     let type_arg = resolve_intrinsic_type_arg(&targs[0], fctx, mctx)?;
+    if mname == "renderer" {
+        let mut seen = BTreeSet::new();
+        for arg in args {
+            let Some(label) = &arg.label else {
+                return Err(SemaError::at(
+                    "pixels P008",
+                    "renderer declaration has unknown or duplicate argument `<unlabeled>`: \
+                     every renderer argument must be labeled"
+                        .to_string(),
+                    arg.span,
+                ));
+            };
+            if !crate::pixels::RENDERER_LABELS.contains(&label.as_str()) {
+                return Err(SemaError::at(
+                    "pixels P008",
+                    format!(
+                        "renderer declaration has unknown or duplicate argument `{label}`: \
+                         the label is not part of the sealed renderer declaration"
+                    ),
+                    arg.span,
+                ));
+            }
+            if !seen.insert(label) {
+                return Err(SemaError::at(
+                    "pixels P008",
+                    format!(
+                        "renderer declaration has unknown or duplicate argument `{label}`: \
+                         the label is bound more than once"
+                    ),
+                    arg.span,
+                ));
+            }
+        }
+    }
     let iargs = check_intrinsic_args(args, fctx, mctx)?;
     if mname == "renderer" {
         return check_image_renderer_intrinsic(type_arg, iargs, ispan, mctx);
@@ -5269,11 +5616,26 @@ fn check_image_renderer_intrinsic(
     span: Span,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
+    if mctx
+        .type_decl_module
+        .get("Renderer")
+        .is_some_and(|module| !matches!(module.as_str(), "render" | "core.render"))
+    {
+        return Err(SemaError::at(
+            "pixels P009",
+            "`img.renderer[P]` cannot use a noncanonical type bound as `Renderer`".to_string(),
+            span,
+        ));
+    }
     let labels: BTreeSet<&str> = args.iter().map(|(label, _)| label.as_str()).collect();
     for required in crate::pixels::RENDERER_LABELS {
         if !labels.contains(required) {
-            return Err(type_error(
-                format!("`img.renderer[P]` requires `{required}=`"),
+            return Err(SemaError::at(
+                "pixels P008",
+                format!(
+                    "renderer declaration has unknown or duplicate argument `{required}`: \
+                     the required argument is missing"
+                ),
                 span,
             ));
         }
@@ -5284,8 +5646,12 @@ fn check_image_renderer_intrinsic(
             .find(|label| !crate::pixels::RENDERER_LABELS.contains(label))
             .copied()
             .unwrap_or("<duplicate>");
-        return Err(type_error(
-            format!("`img.renderer[P]` has no `{extra}=` argument"),
+        return Err(SemaError::at(
+            "pixels P008",
+            format!(
+                "renderer declaration has unknown or duplicate argument `{extra}`: \
+                 the label is not part of the sealed renderer declaration"
+            ),
             span,
         ));
     }
@@ -5313,7 +5679,7 @@ fn check_image_renderer_intrinsic(
             .borrow()
             .get(&name)
             .cloned()
-            .or(check_pixels_fn_shape(&info.ast, &info.decl)?)
+            .or(check_pixels_fn_shape(&info.ast, &info.decl, mctx)?)
         else {
             return Err(type_error(
                 format!(
@@ -5326,14 +5692,18 @@ fn check_image_renderer_intrinsic(
                 expr.span,
             ));
         };
-        if meta.kind == PixelsFnKind::Field && meta.material_type.is_none() {
+        let declared_here = mctx
+            .fn_decl_module
+            .get(&name)
+            .is_none_or(|module| module == &mctx.module_path);
+        if meta.kind == PixelsFnKind::Field && meta.material_type.is_none() && declared_here {
             let typed = check_top_fn(&info.ast, &info.decl, mctx)?.ok_or_else(|| {
                 type_error(
                     format!("renderer `field=` function `{name}` may not be generic"),
                     expr.span,
                 )
             })?;
-            meta.material_type = pixels_field_material_type(&typed)?;
+            meta.material_type = pixels_field_material_type(&typed, mctx)?;
         }
         if meta.kind != expected_kind {
             return Err(type_error(
@@ -5343,43 +5713,8 @@ fn check_image_renderer_intrinsic(
         }
         Ok(meta)
     };
-    let field = root_meta("field", PixelsFnKind::Field)?;
-    let material = root_meta("material", PixelsFnKind::Material)?;
-    for (label, found) in [
-        ("@field", field.params_type.as_ref()),
-        ("@material", material.params_type.as_ref()),
-    ] {
-        if found != Some(&params) {
-            return Err(type_error(
-                format!(
-                    "renderer parameter mismatch: `{label}` uses `{}`, declaration uses `{}`",
-                    found
-                        .map(types::render_type)
-                        .unwrap_or_else(|| "no parameter type".to_string()),
-                    types::render_type(&params)
-                ),
-                span,
-            ));
-        }
-    }
-    if field.material_type.is_some() && field.material_type != material.material_type {
-        return Err(type_error(
-            format!(
-                "renderer material mismatch: field marks use `{}`, `SurfaceContext` uses `{}`",
-                field
-                    .material_type
-                    .as_ref()
-                    .map(types::render_type)
-                    .unwrap_or_else(|| "none".to_string()),
-                material
-                    .material_type
-                    .as_ref()
-                    .map(types::render_type)
-                    .unwrap_or_else(|| "none".to_string())
-            ),
-            span,
-        ));
-    }
+    root_meta("field", PixelsFnKind::Field)?;
+    root_meta("material", PixelsFnKind::Material)?;
     Ok(TypedExpr {
         span,
         ty: image_renderer_decl_type(params.clone()),
@@ -5418,6 +5753,57 @@ pub(crate) fn scalar_type_by_name(name: &str) -> Option<Type> {
         "char" => Type::Char,
         _ => return None,
     })
+}
+
+fn is_opaque_field_name(name: &str, mctx: &ModuleCtx) -> bool {
+    mctx.type_decl_module
+        .get(name)
+        .zip(mctx.type_decl_name.get(name))
+        .is_some_and(|(module, declaration)| {
+            declaration == "Field" && matches!(module.as_str(), "field" | "core.field")
+        })
+}
+
+fn is_core_field_vector_type(ty: &Type, mctx: &ModuleCtx) -> bool {
+    let Type::Named(name, args) = ty else {
+        return false;
+    };
+    args.is_empty()
+        && mctx
+            .type_decl_module
+            .get(name)
+            .zip(mctx.type_decl_name.get(name))
+            .is_some_and(|(module, declaration)| {
+                matches!(module.as_str(), "field" | "core.field")
+                    && matches!(declaration.as_str(), "Vec2" | "Vec3" | "Vec4" | "Rgb")
+            })
+}
+
+fn contains_opaque_field(ty: &Type, mctx: &ModuleCtx) -> bool {
+    match ty {
+        Type::Named(name, args) => {
+            is_opaque_field_name(name, mctx)
+                || args.iter().any(|arg| match arg {
+                    TypeArg::Type(ty) => contains_opaque_field(ty, mctx),
+                    _ => false,
+                })
+        }
+        Type::Array(element, _)
+        | Type::Option(element)
+        | Type::Static(element)
+        | Type::Own(_, element) => contains_opaque_field(element, mctx),
+        Type::Tuple(items) => items.iter().any(|item| contains_opaque_field(item, mctx)),
+        Type::Result(ok, error) => {
+            contains_opaque_field(ok, mctx) || contains_opaque_field(error, mctx)
+        }
+        Type::Fn(params, ret) => {
+            params
+                .iter()
+                .any(|(_, param)| contains_opaque_field(param, mctx))
+                || contains_opaque_field(ret, mctx)
+        }
+        _ => false,
+    }
 }
 
 fn is_scalar(t: &Type) -> bool {
@@ -5791,9 +6177,16 @@ fn check_call_by_field(
                     let payload_types = decl_variant_payload_types(dv);
                     let typed_args =
                         check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
+                    let ty = Type::Named(bname.clone(), targs);
+                    if contains_opaque_field(&ty, mctx) {
+                        return Err(type_error(
+                            "P004: opaque `Field` may not be stored in an enum value".to_string(),
+                            call_span,
+                        ));
+                    }
                     return Ok(TypedExpr {
                         span: call_span,
-                        ty: Type::Named(bname.clone(), targs),
+                        ty,
                         kind: TypedExprKind::EnumConstruct {
                             enum_name: bname.clone(),
                             variant: name.to_string(),
@@ -7223,6 +7616,14 @@ pub(crate) fn check_struct_construction(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     let self_ty = Type::Named(local_name.to_string(), targs.to_vec());
+    if contains_opaque_field(&self_ty, mctx)
+        && !(is_opaque_field_name(local_name, mctx) && mctx.module_path == "field")
+    {
+        return Err(type_error(
+            "P004: opaque `Field` may not be stored in a user struct value".to_string(),
+            call_span,
+        ));
+    }
     if let Some((ia, id)) = s.init() {
         let typed_args = check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
         let key = if targs.is_empty() {

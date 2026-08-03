@@ -6,12 +6,23 @@ Module path=field
     pub field x: f32
     pub field y: f32
     pub field z: f32
+    fn add(read self, right: read Vec3) -> Vec3
+    fn subtract(read self, right: read Vec3) -> Vec3
+  Struct Vec4 data
+    pub field x: f32
+    pub field y: f32
+    pub field z: f32
+    pub field w: f32
   Struct Rgb data
     pub field r: f32
     pub field g: f32
     pub field b: f32
+  Struct Aabb data
+    pub field min: Vec3
+    pub field max: Vec3
   Struct Field data
     field value: f32
+    fn union(read self, right: read Field) -> Field
   Fn abs_scalar(x: read f32) -> f32
   Fn min_scalar(a: read f32, b: read f32) -> f32
   Fn max_scalar(a: read f32, b: read f32) -> f32
@@ -42,8 +53,10 @@ Module path=field
   Fn smooth_union(a: read Field, b: read Field, k: read f32) -> Field
   Fn smooth_intersection(a: read Field, b: read Field, k: read f32) -> Field
   Fn smooth_subtract(a: read Field, b: read Field, k: read f32) -> Field
-  Fn mark[M](field: read Field, object: read u32, material: read M) -> Field
+  Fn mark[O, M](field: read Field, object: read O, material: read M) -> Field
+  Fn sin_scalar(angle: read f32) -> f32
   Fn sinusoidal_displace(field: read Field, p: read Vec3, amplitude: read f32, frequency: read f32, phase: read f32) -> Field
+  Fn scalar_length_semantics_cover_large_exact_radius() -> unit
 Module path=render
   Struct RenderPath data
     pub field component: u32
@@ -58,22 +71,55 @@ Module path=render
   Struct Camera data
     pub field eye: Vec3
     pub field forward: Vec3
+    pub field right: Vec3
+    pub field up: Vec3
+  Enum LightKind data
+    variant Disabled
+    variant Point
+    variant Directional
+    variant Rectangle
+    variant Disk
+  Struct Light data
+    field position: Vec3
+    field direction: Vec3
+    field axis_u: Vec3
+    field axis_v: Vec3
+    field radiance: Rgb
+    fn zero() -> Light
+    fn point(position: read Vec3, radiance: read Rgb) -> Light
+    fn directional(direction: read Vec3, radiance: read Rgb) -> Light
+    fn rectangle(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
+    fn disk(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
   Struct LightFrame data
-    pub field active: u32
+    field lights: [Light; 8]
+    fn empty() -> LightFrame
+    fn fixed(lights: read [Light; 8]) -> LightFrame
   Struct ScalarRange data
     pub field min: f32
     pub field max: f32
   Struct RgbRange data
     pub field min: Rgb
     pub field max: Rgb
+    fn black_to_hdr_white() -> RgbRange
   Struct CameraBounds data
-    pub field max_motion: f32
+    field max_motion: f32
+    fn bounded(max_motion: read f32) -> CameraBounds
+    fn gameplay_default() -> CameraBounds
   Struct LightConfig data
-    pub field capacity: u32
+    field capacity: u32
+    field kinds: [LightKind; 8]
+    fn fixed(capacity: read u32) -> LightConfig
+    fn declared(capacity: read u32, kinds: read [LightKind; 8]) -> LightConfig
+    fn gameplay_default() -> LightConfig
   Struct AoConfig data
-    pub field enabled: bool
+    field enabled: bool
+    fn fixed(enabled: read bool) -> AoConfig
+    fn deterministic_v1() -> AoConfig
   Struct ProbeConfig data
-    pub field enabled: bool
+    field enabled: bool
+    field initialization_worst_case_ms: u32
+    fn fixed(enabled: read bool) -> ProbeConfig
+    fn disabled() -> ProbeConfig
   Enum RenderProfile data
     variant AaaByteExact
   Enum ToneCurve data
@@ -95,8 +141,13 @@ Module path=render
     pub field position: Vec3
     pub field normal: Vec3
   Struct MaterialSample data
-    pub field color: Rgb
-    pub field roughness: f32
+    field color: Rgb
+    field roughness: f32
+    fn standard(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn clay(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn porcelain(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn sample_color(read self) -> Rgb
+    fn sample_roughness(read self) -> f32
   Struct RenderFrame[P] data
     pub field params: P
     pub field camera: Camera
@@ -120,7 +171,7 @@ Module path=display
     variant Bgra8
   Struct Display resource
     field device: DriverClaimedDevice[DisplayDevice]
-    init(mut self, cap: take DeviceCap[DisplayDevice]) -> Result[unit, BootError]
+    init(mut self, cap: take DeviceCap[DisplayDevice], width: read u32, height: read u32, refresh_hz: read u32) -> Result[unit, BootError]
   Struct DisplayDoorbell data
     field present: u64
   Struct DisplayMemory data
@@ -145,6 +196,9 @@ Module path=display
 Module path=examples.check_pixels_source_abi
   Struct SceneParams data
     pub field height: f32
+    pub field tint: u8
+  Enum ObjectId data
+    variant Ground
   Enum MaterialId data
     variant Ground
   Struct Consumer resource

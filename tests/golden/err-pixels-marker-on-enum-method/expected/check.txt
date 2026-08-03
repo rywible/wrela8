@@ -1,0 +1,1 @@
+error[pixels P002]: `@field` function `world` has unsupported parameter shape: `@field` is only valid on a top-level fn, not a struct member (`world`) at 8:5

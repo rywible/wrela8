@@ -1,0 +1,1 @@
+error[pixels P005]: parameter path [0, 1, 0] influences rendering but has no `@range` (type `f32`) at 51:41

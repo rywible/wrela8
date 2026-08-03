@@ -1,0 +1,15 @@
+module lib.same_name_material
+
+from core.field import Rgb
+from core.render import MaterialSample, SurfaceContext
+from lib.same_name_field import Params
+
+pub enum MaterialId:
+    Surface
+
+@material
+pub fn shade(surface: SurfaceContext[MaterialId], read params: Params) -> MaterialSample:
+    return MaterialSample.standard(
+        color=Rgb(r=0.0, g=0.0, b=0.0),
+        roughness=0.5,
+    )

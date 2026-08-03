@@ -10,10 +10,18 @@ use crate::fuzz::collect_wr_files;
 use crate::root;
 
 pub(crate) fn stdlib_test() -> Result<(), String> {
-    run_stdlib_tests(&root().join("stdlib/tests"))
+    run_stdlib_tests_with_extra(
+        &root().join("stdlib/tests"),
+        &[root().join("stdlib/core/field.wr")],
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn run_stdlib_tests(tests_root: &Path) -> Result<(), String> {
+    run_stdlib_tests_with_extra(tests_root, &[])
+}
+
+fn run_stdlib_tests_with_extra(tests_root: &Path, extra_files: &[PathBuf]) -> Result<(), String> {
     if !tests_root.exists() {
         return Err(format!(
             "stdlib-test: missing suite root {} (fail closed)",
@@ -29,6 +37,7 @@ pub(crate) fn run_stdlib_tests(tests_root: &Path) -> Result<(), String> {
 
     let mut files: Vec<PathBuf> = Vec::new();
     collect_wr_files(tests_root, &mut files)?;
+    files.extend(extra_files.iter().cloned());
     files.sort();
     if files.is_empty() {
         return Err(format!(

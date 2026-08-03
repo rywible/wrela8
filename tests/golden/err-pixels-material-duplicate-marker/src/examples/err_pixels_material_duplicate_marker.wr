@@ -1,0 +1,11 @@
+module examples.err_pixels_material_duplicate_marker
+
+from core.render import MaterialSample, SurfaceContext
+
+enum MaterialId:
+    Surface
+
+@material
+@material
+fn shade(surface: SurfaceContext[MaterialId]) -> MaterialSample:
+    return surface

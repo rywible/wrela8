@@ -1,0 +1,5 @@
+module examples.err_pixels_range_infinite
+
+struct Params:
+    @range(min=0.0, max=1e999)
+    value: f32

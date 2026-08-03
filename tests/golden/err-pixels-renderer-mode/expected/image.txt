@@ -1,0 +1,1 @@
+error[pixels P010]: renderer display mode disagrees with the bound display driver: renderer mode is 64x32@60, display mode is 128x32@60 at 57:46

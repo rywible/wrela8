@@ -286,7 +286,7 @@ fn check_comptime_asserts(
         match inst {
             TypedInstantiation::Fn(f) => check_asserts_in_fn(program, legality, f)?,
             TypedInstantiation::Struct(s) => check_asserts_in_struct(program, legality, s)?,
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     Ok(())

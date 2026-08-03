@@ -12,6 +12,36 @@ pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
     "ImageDecl.handle",
 ];
 
+/// Closed compiler-recognized field operation surface. These functions retain
+/// ordinary Wrela bodies in `core.field`; the list is the host-side typing and
+/// legality census, not a request to replace those scalar bodies with opaque
+/// executable intrinsics.
+pub const PIXELS_FIELD_SURFACE: &[&str] = &[
+    "plane",
+    "sphere",
+    "box",
+    "round_box",
+    "capsule",
+    "finite_cylinder",
+    "finite_cone",
+    "torus",
+    "translate",
+    "rotate",
+    "rigid_transform",
+    "uniform_scale",
+    "finite_repeat_x",
+    "finite_repeat_y",
+    "finite_repeat_z",
+    "union",
+    "intersection",
+    "subtract",
+    "smooth_union",
+    "smooth_intersection",
+    "smooth_subtract",
+    "mark",
+    "sinusoidal_displace",
+];
+
 pub const EXCEPTIONS: &[(&str, &str)] = &[
     (
         "now",
@@ -473,6 +503,11 @@ mod tests {
     const ALLOWED_OFFSITE_KEY_SITES: &[(&str, &str)] = &[
         ("wrela-compiler/src/eval/legal.rs", "wake"),
         ("wrela-compiler/src/eval/legal.rs", "entropy"),
+        // Test-only typed nodes exercise the Pixels legality walker directly.
+        // They do not add producer surface; sema/bodies.rs remains the sole
+        // source-program producer for these keys.
+        ("wrela-compiler/src/pixels/legality.rs", "entropy"),
+        ("wrela-compiler/src/pixels/legality.rs", "now"),
         ("wrela-compiler/src/sema/transport.rs", "Device.claim"),
         ("wrela-compiler/src/sema/transport.rs", "Device.take_irq"),
         ("wrela-compiler/src/sema/transport.rs", "Device.negotiate"),

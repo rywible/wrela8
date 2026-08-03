@@ -1,6 +1,6 @@
 module examples.boot_pixels_walking_skeleton
 
-from core.field import Field, Rgb, Vec3, mark, plane
+from core.field import Field, Rgb, Vec3, mark, plane, translate
 from core.render import (
     AoConfig,
     CameraBounds,
@@ -16,23 +16,27 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 struct SceneParams:
+    @range(min=-2.0, max=2.0)
     height: f32
+
+enum ObjectId:
+    Ground
 
 enum MaterialId:
     Ground
 
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    shifted = Vec3(x=p.x, y=p.y - params.height, z=p.z)
+    shifted = translate(p, Vec3(x=0.0, y=params.height, z=0.0))
     return mark(
         plane(shifted, Vec3(x=0.0, y=1.0, z=0.0), offset=0.0),
-        object=0,
+        object=ObjectId.Ground,
         material=MaterialId.Ground,
     )
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample(
+    return MaterialSample.standard(
         color=Rgb(r=0.25, g=0.5, b=0.75),
         roughness=0.5,
     )
@@ -45,7 +49,7 @@ fn plane_frame():
 pub fn build() -> Image:
     img = Image(name="boot-pixels-walking-skeleton", target=Target.wrela_machine_v1)
     display_device = img.device[DisplayDevice](transport=0x6000)
-    display = img.driver(Display, device=display_device)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
     renderer = img.renderer[SceneParams](
         field=world,
         material=shade,
@@ -60,15 +64,15 @@ pub fn build() -> Image:
         far=10.0,
         world_min=Vec3(x=-2.0, y=-2.0, z=-2.0),
         world_max=Vec3(x=2.0, y=2.0, z=2.0),
-        camera_bounds=CameraBounds(max_motion=0.25),
-        light_config=LightConfig(capacity=0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
         exposure_range=ScalarRange(min=-1.0, max=1.0),
         environment_range=RgbRange(
             min=Rgb(r=0.0, g=0.0, b=0.0),
             max=Rgb(r=1.0, g=1.0, b=1.0),
         ),
-        ao=AoConfig(enabled=false),
-        probes=ProbeConfig(enabled=false),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
         initialization_deadline_ms=10,
     )
     img.on_failure(policy=Failure.Halt)

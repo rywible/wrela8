@@ -747,7 +747,7 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     let mut fctx = FnCtx::new(Type::Unit, mctx.module_pools.clone());
     let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, mctx)?;
     let mut program = TypedProgram::default();
-    for name in ["Target", "Failure", "DriverMode"] {
+    for name in ["Target", "Transport", "Failure", "DriverMode"] {
         if let Some(vs) = stdlib_enums::variant_strs(name)? {
             program.enums.insert(
                 name.to_string(),

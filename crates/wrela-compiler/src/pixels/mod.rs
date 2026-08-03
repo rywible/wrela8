@@ -4,16 +4,30 @@
 //! It is deliberately replaced by the symbolic compiler in P2-P8; expanding
 //! this matcher is not a supported extension path.
 
+pub mod config;
 pub mod diagnostics;
 pub mod dump;
+pub mod legality;
+pub mod params;
 
 pub use dump::{
-    PixelsDumpStage, dump_field_graph, dump_frame_program, dump_render_layout, dump_zero_renderers,
+    PixelsDumpStage, dump_field_graph, dump_frame_program, dump_render_layout,
+    dump_uncompiled_configs, dump_zero_renderers,
 };
+
+pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
+    module == "examples.boot_pixels_walking_skeleton"
+        && graph.name.as_ref().is_some_and(|name| {
+            matches!(
+                &name.value,
+                Value::Str(bytes) if bytes.as_slice() == b"boot-pixels-walking-skeleton"
+            )
+        })
+}
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::eval::image::{DeclArg, ImageDeclRef, ImageGraph, RendererDecl};
+use crate::eval::image::{ImageDeclRef, ImageGraph};
 use crate::eval::value::Value;
 use crate::sema::typed::{
     TypedCallArg, TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn,
@@ -46,24 +60,7 @@ pub const RENDERER_LABELS: &[&str] = &[
     "initialization_deadline_ms",
 ];
 
-const FIELD_OPERATIONS: &[&str] = &[
-    "plane",
-    "sphere",
-    "box",
-    "round_box",
-    "capsule",
-    "finite_cylinder",
-    "finite_cone",
-    "torus",
-    "uniform_scale",
-    "union",
-    "intersection",
-    "subtract",
-    "smooth_union",
-    "smooth_intersection",
-    "smooth_subtract",
-    "sinusoidal_displace",
-];
+pub(crate) const FIELD_OPERATIONS: &[&str] = crate::sema::intrinsics::PIXELS_FIELD_SURFACE;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaneSkeleton {
@@ -82,28 +79,7 @@ pub struct PlaneSkeleton {
     pub semantic_seed: [u8; 32],
 }
 
-fn arg<'a>(renderer: &'a RendererDecl, label: &str) -> Result<&'a DeclArg, String> {
-    renderer
-        .args
-        .iter()
-        .find(|arg| arg.label == label)
-        .ok_or_else(|| format!("pixels: renderer is missing `{label}=` after sema"))
-}
-
-fn fn_name(renderer: &RendererDecl, label: &str) -> Result<String, String> {
-    match &arg(renderer, label)?.value {
-        Value::Fn(key) => Ok(key.spelling()),
-        _ => Err(format!("pixels: renderer `{label}=` is not a function")),
-    }
-}
-
-fn u32_arg(renderer: &RendererDecl, label: &str) -> Result<u32, String> {
-    let value = crate::eval::value::as_i128(&arg(renderer, label)?.value)
-        .ok_or_else(|| format!("pixels: renderer `{label}=` is not an integer"))?;
-    u32::try_from(value).map_err(|_| format!("pixels: renderer `{label}={value}` is out of range"))
-}
-
-fn call_base(spelling: &str) -> &str {
+pub(crate) fn call_base(spelling: &str) -> &str {
     spelling
         .strip_prefix("fn:")
         .unwrap_or(spelling)
@@ -113,29 +89,50 @@ fn call_base(spelling: &str) -> &str {
 }
 
 #[derive(Clone)]
-struct LocatedFn {
-    module: String,
-    key: String,
-    function: TypedFn,
+pub(crate) struct LocatedFn {
+    pub(crate) module: String,
+    pub(crate) key: String,
+    pub(crate) decl_name: String,
+    pub(crate) function: TypedFn,
 }
 
-fn local_function(program: &TypedProgram, name: &str) -> Option<TypedFn> {
-    program
-        .fns
-        .get(name)
-        .or_else(|| program.imported.fns.get(name))
-        .cloned()
-}
-
-fn root_function(
+pub(crate) fn root_function(
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
     name: &str,
 ) -> Result<LocatedFn, String> {
+    if let Some(function) = owner
+        .fns
+        .get(name)
+        .or_else(|| owner.imported.fns.get(name))
+        .cloned()
+    {
+        let module = owner
+            .fn_decl_modules
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "<image-owner>".to_string());
+        let decl_name = owner
+            .fn_decl_names
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string());
+        let function = program_for_decl_module(programs, &module)
+            .and_then(|program| program.fns.get(&decl_name))
+            .cloned()
+            .unwrap_or(function);
+        return Ok(LocatedFn {
+            module,
+            key: decl_name.clone(),
+            decl_name,
+            function,
+        });
+    }
     let mut local = programs.iter().filter_map(|(module, program)| {
         program.fns.get(name).cloned().map(|function| LocatedFn {
             module: module.clone(),
             key: name.to_string(),
+            decl_name: name.to_string(),
             function,
         })
     });
@@ -144,41 +141,183 @@ fn root_function(
             return Ok(found);
         }
     }
-    if let Some(function) = local_function(owner, name) {
-        return Ok(LocatedFn {
-            module: "<image-owner>".to_string(),
-            key: name.to_string(),
-            function,
-        });
-    }
     Err(format!(
         "pixels: renderer root `{name}` is unavailable or ambiguous"
     ))
 }
 
-fn called_function(
+pub(crate) fn called_function(
     programs: &BTreeMap<String, TypedProgram>,
     current_module: &str,
-    name: &str,
+    spelling: &str,
 ) -> Option<LocatedFn> {
+    let name = call_base(spelling);
+    let local_instance = |program: &TypedProgram| {
+        let candidates = [spelling, spelling.strip_prefix("fn:").unwrap_or(spelling)];
+        candidates.into_iter().find_map(|key| {
+            program
+                .instantiations
+                .get(key)
+                .and_then(|instantiation| match instantiation {
+                    crate::sema::typed::TypedInstantiation::Fn(function) => {
+                        Some((key.to_string(), function.clone()))
+                    }
+                    _ => None,
+                })
+        })
+    };
+    let imported_instance = |program: &TypedProgram| {
+        let candidates = [spelling, spelling.strip_prefix("fn:").unwrap_or(spelling)];
+        candidates.into_iter().find_map(|key| {
+            program
+                .imported
+                .instantiations
+                .get(key)
+                .and_then(|instantiation| match instantiation {
+                    crate::sema::typed::TypedInstantiation::Fn(function) => {
+                        Some((key.to_string(), function.clone()))
+                    }
+                    _ => None,
+                })
+        })
+    };
     if let Some(program) = programs.get(current_module) {
-        if let Some(function) = local_function(program, name) {
+        if let Some((visible_type, member)) = name.rsplit_once('.')
+            && let Some((declaring_module, declaring_name)) = nominal_decl(program, visible_type)
+            && let Some(function) = program_for_decl_module(programs, declaring_module)
+                .and_then(|declaration| declaration.structs.get(declaring_name))
+                .and_then(|strukt| {
+                    strukt
+                        .methods
+                        .get(member)
+                        .or_else(|| strukt.assoc_fns.get(member))
+                })
+                .cloned()
+        {
+            return Some(LocatedFn {
+                module: declaring_module.to_string(),
+                key: name.to_string(),
+                decl_name: member.to_string(),
+                function,
+            });
+        }
+        if let Some((key, function)) = local_instance(program) {
+            return Some(LocatedFn {
+                module: program
+                    .fn_decl_modules
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| current_module.to_string()),
+                key,
+                decl_name: program
+                    .fn_decl_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string()),
+                function,
+            });
+        }
+        if let Some(function) = program.fns.get(name).cloned() {
             return Some(LocatedFn {
                 module: current_module.to_string(),
                 key: name.to_string(),
+                decl_name: name.to_string(),
+                function,
+            });
+        }
+        if let Some((key, function)) = imported_instance(program) {
+            return Some(LocatedFn {
+                module: program
+                    .fn_decl_modules
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| current_module.to_string()),
+                key,
+                decl_name: program
+                    .fn_decl_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string()),
+                function,
+            });
+        }
+        if let Some(function) = program.imported.fns.get(name).cloned() {
+            return Some(LocatedFn {
+                module: program
+                    .fn_decl_modules
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| current_module.to_string()),
+                key: name.to_string(),
+                decl_name: program
+                    .fn_decl_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string()),
                 function,
             });
         }
     }
     let mut found = programs.iter().filter_map(|(module, program)| {
-        program.fns.get(name).cloned().map(|function| LocatedFn {
-            module: module.clone(),
-            key: name.to_string(),
-            function,
-        })
+        if let Some((key, function)) = local_instance(program) {
+            Some(LocatedFn {
+                module: module.clone(),
+                key,
+                decl_name: program
+                    .fn_decl_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string()),
+                function,
+            })
+        } else {
+            program.fns.get(name).cloned().map(|function| LocatedFn {
+                module: module.clone(),
+                key: name.to_string(),
+                decl_name: name.to_string(),
+                function,
+            })
+        }
     });
     let first = found.next()?;
     found.next().is_none().then_some(first)
+}
+
+pub(crate) fn is_core_field_function(located: &LocatedFn) -> bool {
+    is_core_field_function_identity(&located.module, &located.key, &located.decl_name)
+}
+
+fn is_core_field_function_identity(module: &str, key: &str, decl_name: &str) -> bool {
+    is_core_field_module(module)
+        && !call_base(key).contains('.')
+        && FIELD_OPERATIONS.contains(&decl_name)
+}
+
+pub(crate) fn is_core_field_vector_method(located: &LocatedFn) -> bool {
+    is_core_field_vector_method_identity(&located.module, &located.key)
+}
+
+pub(crate) fn is_core_field_vector_method_identity(module: &str, key: &str) -> bool {
+    is_core_field_module(module) && matches!(call_base(key), "Vec3.add" | "Vec3.subtract")
+}
+
+fn is_core_field_module(module: &str) -> bool {
+    matches!(module, "field" | "core.field")
+}
+
+pub(crate) fn program_for_decl_module<'a>(
+    programs: &'a BTreeMap<String, TypedProgram>,
+    declaring_module: &str,
+) -> Option<&'a TypedProgram> {
+    programs.get(declaring_module).or_else(|| {
+        let short = match declaring_module {
+            "core.field" => "field",
+            "core.render" => "render",
+            "drivers.display" => "display",
+            _ => return None,
+        };
+        programs.get(short)
+    })
 }
 
 struct SceneAnalysis<'a> {
@@ -187,7 +326,223 @@ struct SceneAnalysis<'a> {
     visited: BTreeSet<String>,
     functions: BTreeMap<String, TypedFn>,
     field_operations: Vec<String>,
-    mark_types: Vec<Type>,
+    mark_types: Vec<NominalType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NominalType {
+    ty: Type,
+    key: String,
+}
+
+pub(crate) fn nominal_decl<'a>(
+    program: &'a TypedProgram,
+    visible_name: &str,
+) -> Option<(&'a str, &'a str)> {
+    Some((
+        program.type_decl_modules.get(visible_name)?.as_str(),
+        program.type_decl_names.get(visible_name)?.as_str(),
+    ))
+}
+
+pub(crate) fn instantiated_struct<'a>(
+    program: &'a TypedProgram,
+    name: &str,
+    args: &[TypeArg],
+) -> Option<&'a crate::sema::typed::TypedStruct> {
+    let key =
+        crate::sema::generics::canonical_key(crate::sema::bodies::InstKind::Struct, name, args);
+    program
+        .instantiations
+        .get(&key)
+        .or_else(|| program.imported.instantiations.get(&key))
+        .and_then(|instantiation| match instantiation {
+            crate::sema::typed::TypedInstantiation::Struct(strukt) => Some(strukt),
+            crate::sema::typed::TypedInstantiation::Fn(_)
+            | crate::sema::typed::TypedInstantiation::Enum(_) => None,
+        })
+}
+
+pub(crate) fn instantiated_enum<'a>(
+    program: &'a TypedProgram,
+    name: &str,
+    args: &[TypeArg],
+) -> Option<&'a crate::sema::typed::TypedEnum> {
+    let key = crate::sema::generics::canonical_key(crate::sema::bodies::InstKind::Enum, name, args);
+    program
+        .instantiations
+        .get(&key)
+        .or_else(|| program.imported.instantiations.get(&key))
+        .and_then(|instantiation| match instantiation {
+            crate::sema::typed::TypedInstantiation::Enum(enumeration) => Some(enumeration),
+            crate::sema::typed::TypedInstantiation::Fn(_)
+            | crate::sema::typed::TypedInstantiation::Struct(_) => None,
+        })
+}
+
+fn is_nominal_type(
+    programs: &BTreeMap<String, TypedProgram>,
+    module: &str,
+    ty: &Type,
+    declaring_modules: &[&str],
+    declaration: &str,
+) -> bool {
+    let Type::Named(name, args) = ty else {
+        return false;
+    };
+    args.is_empty()
+        && program_for_decl_module(programs, module).is_some_and(|program| {
+            nominal_decl(program, name).is_some_and(|(found_module, found_name)| {
+                found_name == declaration && declaring_modules.contains(&found_module)
+            })
+        })
+}
+
+pub(crate) fn is_core_material_constructor(
+    programs: &BTreeMap<String, TypedProgram>,
+    module: &str,
+    spelling: &str,
+) -> bool {
+    let Some((receiver, method)) = call_base(spelling).rsplit_once('.') else {
+        return false;
+    };
+    matches!(method, "standard" | "clay" | "porcelain")
+        && program_for_decl_module(programs, module).is_some_and(|program| {
+            nominal_decl(program, receiver).is_some_and(|(declaring_module, declaration)| {
+                declaration == "MaterialSample"
+                    && matches!(declaring_module, "render" | "core.render")
+            })
+        })
+}
+
+fn nominal_type(
+    programs: &BTreeMap<String, TypedProgram>,
+    module: &str,
+    ty: Type,
+) -> Result<NominalType, String> {
+    let Type::Named(name, _) = &ty else {
+        return Err(format!(
+            "pixels: material identity must be nominal, found `{}`",
+            types::render_type(&ty)
+        ));
+    };
+    let name = name.clone();
+    let (declaring_module, declaring_name) = programs
+        .get(module)
+        .and_then(|program| nominal_decl(program, &name))
+        .ok_or_else(|| {
+            format!("pixels: cannot resolve nominal type `{name}` from module `{module}`")
+        })?;
+    Ok(NominalType {
+        ty,
+        key: format!("{declaring_module}::{declaring_name}"),
+    })
+}
+
+fn same_canonical_type(
+    programs: &BTreeMap<String, TypedProgram>,
+    left_module: &str,
+    left: &Type,
+    right_module: &str,
+    right: &Type,
+) -> Result<bool, String> {
+    match (left, right) {
+        (Type::Named(left_name, left_args), Type::Named(right_name, right_args)) => {
+            let left_decl = programs
+                .get(left_module)
+                .and_then(|program| nominal_decl(program, left_name));
+            let right_decl = programs
+                .get(right_module)
+                .and_then(|program| nominal_decl(program, right_name));
+            if left_decl.is_none() || left_decl != right_decl || left_args.len() != right_args.len()
+            {
+                return Ok(false);
+            }
+            for (left_arg, right_arg) in left_args.iter().zip(right_args) {
+                match (left_arg, right_arg) {
+                    (TypeArg::Type(left), TypeArg::Type(right)) => {
+                        if !same_canonical_type(programs, left_module, left, right_module, right)? {
+                            return Ok(false);
+                        }
+                    }
+                    _ if left_arg == right_arg => {}
+                    _ => return Ok(false),
+                }
+            }
+            Ok(true)
+        }
+        (Type::Array(left, left_len), Type::Array(right, right_len)) => Ok(left_len == right_len
+            && same_canonical_type(programs, left_module, left, right_module, right)?),
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            if left.len() != right.len() {
+                return Ok(false);
+            }
+            for (left, right) in left.iter().zip(right) {
+                if !same_canonical_type(programs, left_module, left, right_module, right)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        (Type::Option(left), Type::Option(right)) | (Type::Static(left), Type::Static(right)) => {
+            same_canonical_type(programs, left_module, left, right_module, right)
+        }
+        (Type::Result(left_ok, left_err), Type::Result(right_ok, right_err)) => Ok(
+            same_canonical_type(programs, left_module, left_ok, right_module, right_ok)?
+                && same_canonical_type(programs, left_module, left_err, right_module, right_err)?,
+        ),
+        (Type::Own(left_pool, left), Type::Own(right_pool, right)) => Ok(left_pool == right_pool
+            && same_canonical_type(programs, left_module, left, right_module, right)?),
+        (Type::Fn(left_params, left_ret), Type::Fn(right_params, right_ret)) => {
+            if left_params.len() != right_params.len() {
+                return Ok(false);
+            }
+            for ((left_mode, left), (right_mode, right)) in left_params.iter().zip(right_params) {
+                if left_mode != right_mode
+                    || !same_canonical_type(programs, left_module, left, right_module, right)?
+                {
+                    return Ok(false);
+                }
+            }
+            same_canonical_type(programs, left_module, left_ret, right_module, right_ret)
+        }
+        _ => Ok(left == right),
+    }
+}
+
+pub(crate) fn validate_parameter_identity(
+    owner: &TypedProgram,
+    programs: &BTreeMap<String, TypedProgram>,
+    params_type: &Type,
+    field: &str,
+    material: &str,
+) -> Result<(), String> {
+    let field = root_function(owner, programs, field)?;
+    let material = root_function(owner, programs, material)?;
+    for (kind, root) in [("field", field), ("material", material)] {
+        let root_params = root
+            .function
+            .params
+            .get(1)
+            .map(|param| &param.ty)
+            .unwrap_or(&Type::Unit);
+        if !same_canonical_type(
+            programs,
+            &owner.module_path,
+            params_type,
+            &root.module,
+            root_params,
+        )? {
+            return Err(format!(
+                "pixels: renderer parameter type `{}` is not the same nominal type as \
+                 {kind} root `{}` parameter `{}`",
+                types::render_type(params_type),
+                root.key,
+                types::render_type(root_params)
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl<'a> SceneAnalysis<'a> {
@@ -248,23 +603,39 @@ impl<'a> SceneAnalysis<'a> {
                 args,
             } => {
                 let spelling = callee.spelling();
-                let base = call_base(&spelling);
-                if field_root && FIELD_OPERATIONS.contains(&base) {
-                    self.field_operations.push(base.to_string());
-                } else if field_root && base == "mark" {
-                    let material = args
-                        .get(2)
-                        .and_then(|arg| arg.value.as_ref())
-                        .map(|value| value.ty.clone())
-                        .ok_or_else(|| {
-                            "pixels: `mark` lacks its material value after sema".to_string()
-                        })?;
-                    self.mark_types.push(material);
-                } else if let Some(function) = called_function(self.programs, module, base) {
+                let visible_name = call_base(&spelling);
+                let resolved = called_function(self.programs, module, &spelling);
+                let canonical_field_name = resolved
+                    .as_ref()
+                    .filter(|located| is_core_field_function(located))
+                    .map(|located| located.decl_name.as_str());
+                if field_root && let Some(canonical_field_name) = canonical_field_name {
+                    if canonical_field_name == "mark" {
+                        let material = args
+                            .get(2)
+                            .and_then(|arg| arg.value.as_ref())
+                            .map(|value| value.ty.clone())
+                            .ok_or_else(|| {
+                                "pixels: `mark` lacks its material value after sema".to_string()
+                            })?;
+                        self.mark_types
+                            .push(nominal_type(self.programs, module, material)?);
+                    } else {
+                        self.field_operations.push(canonical_field_name.to_string());
+                    }
+                } else if let Some(function) = resolved {
                     self.visit_function(function, field_root)?;
-                } else if field_root && expr.ty == Type::Named("Field".to_string(), vec![]) {
+                } else if field_root
+                    && is_nominal_type(
+                        self.programs,
+                        module,
+                        &expr.ty,
+                        &["field", "core.field"],
+                        "Field",
+                    )
+                {
                     return Err(format!(
-                        "pixels: P-1 cannot resolve field-producing helper `{spelling}`"
+                        "pixels: P-1 cannot resolve field-producing helper `{visible_name}`"
                     ));
                 }
                 if let Some(receiver) = receiver {
@@ -287,18 +658,39 @@ impl<'a> SceneAnalysis<'a> {
             | TypedExprKind::Neg(base)
             | TypedExprKind::BitNot(base)
             | TypedExprKind::Take(base)
-            | TypedExprKind::Try(base, _)
             | TypedExprKind::Not(base)
             | TypedExprKind::Panic(base)
             | TypedExprKind::Await(base)
             | TypedExprKind::Send(base) => self.visit_expr(base, module, field_root)?,
+            TypedExprKind::Try(base, conversion) => {
+                self.visit_expr(base, module, field_root)?;
+                if let Some(conversion) = conversion {
+                    let spelling = conversion.spelling();
+                    let Some(function) = called_function(self.programs, module, &spelling) else {
+                        return Err(format!(
+                            "pixels: P-1 cannot resolve `?` conversion `{spelling}`"
+                        ));
+                    };
+                    self.visit_function(function, field_root)?;
+                }
+            }
             TypedExprKind::Index(a, b)
             | TypedExprKind::Binary(_, a, b)
-            | TypedExprKind::OpCall(_, a, b)
             | TypedExprKind::And(a, b)
             | TypedExprKind::Or(a, b) => {
                 self.visit_expr(a, module, field_root)?;
                 self.visit_expr(b, module, field_root)?;
+            }
+            TypedExprKind::OpCall(callee, receiver, argument) => {
+                self.visit_expr(receiver, module, field_root)?;
+                self.visit_expr(argument, module, field_root)?;
+                let spelling = callee.spelling();
+                let Some(function) = called_function(self.programs, module, &spelling) else {
+                    return Err(format!(
+                        "pixels: P-1 cannot resolve overloaded operator `{spelling}`"
+                    ));
+                };
+                self.visit_function(function, field_root)?;
             }
             TypedExprKind::Is(value, _) => self.visit_expr(value, module, field_root)?,
             TypedExprKind::EnumConstruct { args, .. } => {
@@ -429,17 +821,68 @@ impl<'a> SceneAnalysis<'a> {
     }
 }
 
-fn material_type(function: &TypedFn) -> Option<Type> {
+fn material_type(
+    programs: &BTreeMap<String, TypedProgram>,
+    module: &str,
+    function: &TypedFn,
+) -> Option<Type> {
     let Type::Named(name, args) = &function.params.first()?.ty else {
         return None;
     };
-    if name != "SurfaceContext" {
+    let program = program_for_decl_module(programs, module)?;
+    if !nominal_decl(program, name).is_some_and(|(declaring_module, declaration)| {
+        declaration == "SurfaceContext" && matches!(declaring_module, "render" | "core.render")
+    }) {
         return None;
     }
     match args.as_slice() {
         [TypeArg::Type(material)] => Some(material.clone()),
         _ => None,
     }
+}
+
+pub(crate) fn validate_material_identity(
+    owner: &TypedProgram,
+    programs: &BTreeMap<String, TypedProgram>,
+    field: &str,
+    material: &str,
+) -> Result<Type, String> {
+    let field_fn = root_function(owner, programs, field)?;
+    let material_fn = root_function(owner, programs, material)?;
+    let expected = material_type(programs, &material_fn.module, &material_fn.function)
+        .ok_or_else(|| "pixels: material root lacks `SurfaceContext[M]`".to_string())?;
+    let expected_nominal = nominal_type(programs, &material_fn.module, expected.clone())?;
+    let mut analysis = SceneAnalysis::new(programs);
+    analysis.visit_function(field_fn, true)?;
+    let mut nominal: Vec<NominalType> = Vec::new();
+    for material in analysis.mark_types {
+        if !nominal.iter().any(|prior| prior.key == material.key) {
+            nominal.push(material);
+        }
+    }
+    if nominal.is_empty() {
+        return Err(
+            "pixels: renderer `@field` must reach at least one `mark(..., material=M.*)`"
+                .to_string(),
+        );
+    }
+    if nominal.len() != 1 {
+        return Err(format!(
+            "pixels: `@field` reaches more than one nominal material type: {}",
+            nominal
+                .iter()
+                .map(|material| material.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if nominal[0].key != expected_nominal.key {
+        return Err(format!(
+            "pixels: renderer material mismatch: field marks use `{}`, `SurfaceContext` uses `{}`",
+            nominal[0].key, expected_nominal.key
+        ));
+    }
+    Ok(expected)
 }
 
 fn digest_bytes(hex: &str) -> Vec<u8> {
@@ -492,48 +935,37 @@ pub fn compile_plane_skeleton(
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
     graph: &ImageGraph,
+    configs: &crate::pixels::config::RendererConfigs,
 ) -> Result<PlaneSkeleton, String> {
-    let [renderer] = graph.renderers.as_slice() else {
+    let [_renderer] = graph.renderers.as_slice() else {
         return Err(format!(
             "pixels: plane skeleton requires exactly one renderer, found {}",
             graph.renderers.len()
         ));
     };
-    let field = fn_name(renderer, "field")?;
-    let material = fn_name(renderer, "material")?;
-    let display = arg(renderer, "display")?.value.clone();
-    let (display_index, display) = match display {
-        Value::ImageDecl(ImageDeclRef::Driver(index)) => {
-            (index, ImageDeclRef::Driver(index).render())
-        }
-        Value::ImageDecl(reference) => {
-            return Err(format!(
-                "pixels: renderer `display=` must name a display driver, found {}",
-                reference.render()
-            ));
-        }
-        _ => return Err("pixels: renderer display is not an image declaration".to_string()),
-    };
-    let display_decl = graph
-        .drivers
-        .get(display_index)
-        .ok_or_else(|| format!("pixels: renderer display driver#{display_index} is unavailable"))?;
-    if !matches!(&display_decl.actor_type, Type::Named(name, _) if name == "Display") {
+    let [config] = configs.renderers.as_slice() else {
         return Err(format!(
-            "pixels: renderer `display=` must bind `Display`, found `{}`",
-            types::render_type(&display_decl.actor_type)
+            "pixels::config: plane skeleton requires exactly one validated renderer config, found {}",
+            configs.renderers.len()
         ));
-    }
+    };
+    let field = config.field.clone();
+    let material = config.material.clone();
+    let display = ImageDeclRef::Driver(config.display_index).render();
     let field_fn = root_function(owner, programs, &field)?;
     let material_fn = root_function(owner, programs, &material)?;
-    let expected_material = material_type(&material_fn.function)
+    let expected_material = material_type(programs, &material_fn.module, &material_fn.function)
         .ok_or_else(|| "pixels: material root lacks `SurfaceContext[M]`".to_string())?;
+    let expected_material = nominal_type(programs, &material_fn.module, expected_material)?;
     let mut analysis = SceneAnalysis::new(programs);
     analysis.visit_function(field_fn, true)?;
     analysis.visit_function(material_fn, false)?;
-    let mut nominal_materials: Vec<Type> = Vec::new();
+    let mut nominal_materials: Vec<NominalType> = Vec::new();
     for material in &analysis.mark_types {
-        if !nominal_materials.iter().any(|prior| prior == material) {
+        if !nominal_materials
+            .iter()
+            .any(|prior| prior.key == material.key)
+        {
             nominal_materials.push(material.clone());
         }
     }
@@ -548,19 +980,24 @@ pub fn compile_plane_skeleton(
             "pixels: `@field` reaches more than one nominal material type: {}",
             nominal_materials
                 .iter()
-                .map(types::render_type)
+                .map(|material| material.key.as_str())
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
     }
-    if nominal_materials[0] != expected_material {
+    if nominal_materials[0].key != expected_material.key {
         return Err(format!(
             "pixels: renderer material mismatch: field marks use `{}`, `SurfaceContext` uses `{}`",
-            types::render_type(&nominal_materials[0]),
-            types::render_type(&expected_material)
+            nominal_materials[0].key, expected_material.key
         ));
     }
-    if analysis.field_operations != ["plane"] {
+    let structural_operations: Vec<&str> = analysis
+        .field_operations
+        .iter()
+        .map(String::as_str)
+        .filter(|operation| *operation != "translate")
+        .collect();
+    if structural_operations != ["plane"] {
         return Err(format!(
             "pixels: P-1 plane skeleton accepts exactly one marked `plane`; found [{}]",
             analysis.field_operations.join(", ")
@@ -572,8 +1009,8 @@ pub fn compile_plane_skeleton(
             analysis.mark_types.len()
         ));
     }
-    let width = u32_arg(renderer, "width")?;
-    let height = u32_arg(renderer, "height")?;
+    let width = config.width;
+    let height = config.height;
     if width != wrela_machine::pixels::WIDTH || height != wrela_machine::pixels::HEIGHT {
         return Err(format!(
             "pixels: P-1 plane skeleton extent must be {}x{}, found {width}x{height}",
@@ -581,8 +1018,8 @@ pub fn compile_plane_skeleton(
             wrela_machine::pixels::HEIGHT
         ));
     }
-    let refresh_hz = u32_arg(renderer, "refresh_hz")?;
-    let shade_hz = u32_arg(renderer, "shade_hz")?;
+    let refresh_hz = config.refresh_hz;
+    let shade_hz = config.shade_hz;
     if refresh_hz != wrela_machine::pixels::REFRESH_HZ
         || shade_hz != wrela_machine::pixels::REFRESH_HZ
     {
@@ -601,7 +1038,7 @@ pub fn compile_plane_skeleton(
         renderer_index: 0,
         field,
         material,
-        material_type: types::render_type(&expected_material),
+        material_type: types::render_type(&expected_material.ty),
         display,
         width,
         height,
@@ -719,16 +1156,49 @@ mod tests {
     }
 
     #[test]
-    fn field_operation_census_catches_wrappers_and_deformations() {
-        for name in [
-            "plane",
-            "sphere",
-            "uniform_scale",
-            "smooth_union",
-            "sinusoidal_displace",
-        ] {
-            assert!(FIELD_OPERATIONS.contains(&name), "missing `{name}`");
-        }
-        assert_eq!(call_base("fn:mark[Material]"), "mark");
+    fn field_operation_census_equals_public_producer_sites() {
+        let source = include_str!("../../../../stdlib/core/field.wr");
+        let public_functions: BTreeSet<&str> = source
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("pub fn ")
+                    .and_then(|tail| tail.split(['(', '[']).next())
+            })
+            .collect();
+        let census: BTreeSet<&str> = FIELD_OPERATIONS.iter().copied().collect();
+        assert_eq!(census, public_functions);
+        assert!(census.contains("mark"));
+    }
+
+    #[test]
+    fn canonical_field_module_check_rejects_suffix_counterfeits() {
+        assert!(is_core_field_module("field"));
+        assert!(is_core_field_module("core.field"));
+        assert!(!is_core_field_module("lib.field"));
+        assert!(!is_core_field_module("examples.field"));
+    }
+
+    #[test]
+    fn canonical_field_function_check_excludes_methods_with_producer_basenames() {
+        assert!(is_core_field_function_identity(
+            "core.field",
+            "aliased_union",
+            "union"
+        ));
+        assert!(is_core_field_function_identity(
+            "field",
+            "fn:mark[ObjectId,MaterialId]",
+            "mark"
+        ));
+        assert!(!is_core_field_function_identity(
+            "core.field",
+            "Field.union",
+            "union"
+        ));
+        assert!(!is_core_field_function_identity(
+            "core.field",
+            "Vec3.subtract",
+            "subtract"
+        ));
     }
 }

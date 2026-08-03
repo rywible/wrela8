@@ -1,0 +1,8 @@
+module examples.err_pixels_field_task_root
+
+from core.field import Field, Vec3
+
+@field
+@task
+fn world(p: Vec3) -> Field:
+    return p

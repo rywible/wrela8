@@ -1,0 +1,6 @@
+module examples.err_pixels_field_private
+
+from core.field import Field
+
+struct Escaped:
+    value: Field

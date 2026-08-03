@@ -1,0 +1,5 @@
+module examples.err_pixels_rate_label
+
+struct Params:
+    @rate(max_delta=0.25, second_delta=0.0625)
+    value: f32

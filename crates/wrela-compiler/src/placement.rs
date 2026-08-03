@@ -394,6 +394,7 @@ mod tests {
             label: label.to_string(),
             ty,
             value,
+            span: Default::default(),
         }
     }
 

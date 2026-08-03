@@ -3,4 +3,4 @@
 Protects: invalid temporal metadata rejection `P006`.
 Deterministic geometry: the invalid maximum delta is the exact integer `-1`.
 First active: P1.
-P0 status: production Pixels stage is not implemented; implemented in task P1.3.
+P0 status: activated; implemented in task P1.3.

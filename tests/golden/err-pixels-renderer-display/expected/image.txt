@@ -1,0 +1,1 @@
+error[pixels P010]: renderer display mode disagrees with the bound display driver: found device#0 at 36:46

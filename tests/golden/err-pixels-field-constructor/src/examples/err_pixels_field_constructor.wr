@@ -1,0 +1,6 @@
+module examples.err_pixels_field_constructor
+
+from core.field import Field
+
+fn forge() -> Field:
+    return Field(value=0.0)

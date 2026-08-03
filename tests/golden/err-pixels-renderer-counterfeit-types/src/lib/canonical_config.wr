@@ -1,0 +1,19 @@
+module lib.canonical_config
+
+from core.field import Rgb, Vec3
+from core.render import (
+    AoConfig, CameraBounds, LightConfig, ProbeConfig, RgbRange, ScalarRange, ToneCurve,
+)
+
+pub const TONE: ToneCurve = ToneCurve.Linear
+pub const WORLD_MIN: Vec3 = Vec3(x=-1.0, y=-1.0, z=-1.0)
+pub const WORLD_MAX: Vec3 = Vec3(x=1.0, y=1.0, z=1.0)
+pub const CAMERA: CameraBounds = CameraBounds.bounded(max_motion=0.0)
+pub const LIGHTS: LightConfig = LightConfig.fixed(capacity=0)
+pub const EXPOSURE: ScalarRange = ScalarRange(min=0.0, max=1.0)
+pub const ENVIRONMENT: RgbRange = RgbRange(
+    min=Rgb(r=0.0, g=0.0, b=0.0),
+    max=Rgb(r=1.0, g=1.0, b=1.0),
+)
+pub const AO: AoConfig = AoConfig.fixed(enabled=false)
+pub const PROBES: ProbeConfig = ProbeConfig.fixed(enabled=false)

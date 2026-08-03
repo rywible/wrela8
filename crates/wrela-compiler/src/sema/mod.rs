@@ -1,5 +1,6 @@
 pub mod access;
 pub mod actor;
+pub mod attrs;
 pub mod bodies;
 pub mod classes;
 pub mod flow;
@@ -519,6 +520,7 @@ fn check_program_typed_tables(
         if let Some(mut f) = fn_entry {
             types::rekey_decl_fn_names(&mut f.decl, &subs);
             dst.fn_decl_module.insert(local.clone(), origin.clone());
+            dst.fn_decl_name.insert(local.clone(), target_name.clone());
             dst.fns.insert(local.clone(), f);
         }
         if let Some(mut c) = const_entry {
@@ -530,11 +532,17 @@ fn check_program_typed_tables(
         }
         if let Some(mut s) = struct_entry {
             types::rekey_decl_struct_names(&mut s.decl, &subs);
-            dst.struct_decl_module.insert(local.clone(), origin);
+            dst.struct_decl_module.insert(local.clone(), origin.clone());
+            dst.type_decl_module.insert(local.clone(), origin.clone());
+            dst.type_decl_name
+                .insert(local.clone(), target_name.clone());
             dst.structs.insert(local.clone(), s);
         }
         if let Some(mut e) = enum_entry {
             types::rekey_decl_enum_names(&mut e.decl, &subs);
+            dst.type_decl_module.insert(local.clone(), origin);
+            dst.type_decl_name
+                .insert(local.clone(), target_name.clone());
             dst.enums.insert(local.clone(), e);
         }
         if let Some(mut s) = static_entry {
@@ -900,6 +908,9 @@ fn close_mctx_type_reachability(
                     dst.shapes.insert(tname.clone(), s.decl.generics.len());
                     dst.struct_decl_module
                         .insert(tname.clone(), def_module.join("."));
+                    dst.type_decl_module
+                        .insert(tname.clone(), def_module.join("."));
+                    dst.type_decl_name.insert(tname.clone(), def_name.clone());
                     dst.structs.insert(tname.clone(), s);
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
@@ -911,6 +922,9 @@ fn close_mctx_type_reachability(
                         types::rekey_decl_enum_names(&mut e.decl, &name_sub);
                     }
                     dst.shapes.insert(tname.clone(), e.decl.generics.len());
+                    dst.type_decl_module
+                        .insert(tname.clone(), def_module.join("."));
+                    dst.type_decl_name.insert(tname.clone(), def_name.clone());
                     dst.enums.insert(tname.clone(), e);
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
@@ -1041,7 +1055,7 @@ fn close_typed_type_reachability(
                     typed::TypedInstantiation::Fn(f) => {
                         typed::collect_named_types_from_fn(f, &mut from_inst);
                     }
-                    typed::TypedInstantiation::Enum => {}
+                    typed::TypedInstantiation::Enum(_) => {}
                 }
             }
         }

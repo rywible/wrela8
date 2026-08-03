@@ -1,0 +1,1 @@
+error[pixels P010]: renderer display mode disagrees with the bound display driver: shade_hz=7 must divide refresh_hz=60 at 38:54

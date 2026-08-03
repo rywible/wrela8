@@ -1,0 +1,1 @@
+error[pixels P002]: `@material` function `shade` has unsupported parameter shape; expected `(surface: SurfaceContext[M])` or `(surface: SurfaceContext[M], read params: P)` at 12:1

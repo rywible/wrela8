@@ -564,6 +564,13 @@ fn verify_deep() -> Result<(), String> {
 }
 
 pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
+    produce_report_and_image_with_discovery_order(target, false)
+}
+
+fn produce_report_and_image_with_discovery_order(
+    target: &Path,
+    reverse_imports: bool,
+) -> Result<(String, Option<Vec<u8>>), String> {
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
             format!("error[{}]: {}\n", e.category, e.message)
@@ -620,7 +627,7 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
             Err(e) => return Ok((render_sema_error(&e), None)),
         }
     } else {
-        match loader::load_closure(target) {
+        match loader::load_closure_with_discovery_order(target, reverse_imports) {
             Ok(loaded) => {
                 let paths: BTreeMap<Vec<String>, String> = loaded
                     .modules
@@ -682,7 +689,7 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
-                    Ok(()) => {
+                    Ok(checked_image) => {
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in &file_paths {
                             if path.to_string_lossy()
@@ -740,6 +747,7 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                                     &layout_ctx,
                                     &graph,
                                     &modules_by_addr,
+                                    Some(&checked_image.renderer_configs),
                                 ) {
                                     Ok(Some(image_layout)) => {
                                         if let Some(ref tables) = image_layout.runtime {
@@ -859,7 +867,7 @@ fn report_determinism() -> Result<(), String> {
                         }
                     };
                     let first = produce_report_and_image(&target);
-                    let second = produce_report_and_image(&target);
+                    let second = produce_report_and_image_with_discovery_order(&target, true);
                     match (first, second) {
                         (Ok(a), Ok(b)) => {
                             collected
@@ -889,7 +897,7 @@ fn report_determinism() -> Result<(), String> {
 
     if failures.is_empty() {
         println!(
-            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across two runs"
+            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across normal and reversed module discovery"
         );
         Ok(())
     } else {
@@ -919,14 +927,14 @@ fn compare_two_runs(
                 None => "outputs differ only in length".to_string(),
             };
             failures.push(format!(
-                "{}: two fresh --stage=report runs disagree ({where_str}); first run began {:?}",
+                "{}: normal and reversed-discovery --stage=report runs disagree ({where_str}); first run began {:?}",
                 case.display(),
                 first_line
             ));
         }
         if first_img != second_img {
             failures.push(format!(
-                "{}: two fresh image-emission runs disagree ({} bytes vs {} bytes)",
+                "{}: normal and reversed-discovery image-emission runs disagree ({} bytes vs {} bytes)",
                 case.display(),
                 first_img.map(|b| b.len()).unwrap_or(0),
                 second_img.map(|b| b.len()).unwrap_or(0),
@@ -2111,6 +2119,14 @@ pub(crate) fn build_runtime_test_image(
         }
         None => wrela_compiler::eval::image::ImageGraph::default(),
     };
+    let checked_image = if program.image_fn.is_some() {
+        Some(
+            wrela_compiler::eval::image_checks::check_sealed(&graph, program, programs)
+                .map_err(|error| error.message)?,
+        )
+    } else {
+        None
+    };
     let test_args =
         layout::resolve_runtime_test_args(program, test_names, &graph).map_err(|e| e)?;
     let async_tests: std::collections::BTreeSet<String> = test_names
@@ -2123,6 +2139,9 @@ pub(crate) fn build_runtime_test_image(
         programs,
         &layout_ctx,
         &graph,
+        checked_image
+            .as_ref()
+            .map(|checked| &checked.renderer_configs),
         test_names,
         &async_tests,
         true,

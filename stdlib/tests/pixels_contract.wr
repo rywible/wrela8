@@ -1,6 +1,7 @@
 module pixels_contract
 
-from core.field import Vec3
+from core.field import Rgb, Vec3
+from core.render import Light, LightConfig, LightFrame, LightKind, MaterialSample
 
 @test
 fn dyadic_fixture_coordinates_are_exact():
@@ -8,6 +9,71 @@ fn dyadic_fixture_coordinates_are_exact():
     assert p.x * 2.0 == 1.0, "one half is exact"
     assert p.y * 4.0 == 1.0, "one quarter is exact"
     assert p.z * 8.0 == 1.0, "one eighth is exact"
+
+@test
+fn canonical_scene_vector_subtraction_typechecks():
+    p = Vec3(x=2.0, y=4.0, z=8.0)
+    fighter_offset = Vec3(x=0.5, y=1.0, z=2.0)
+    q = p - fighter_offset
+    assert q.x == 1.5, "canonical scene expression subtracts x"
+    assert q.y == 3.0, "canonical scene expression subtracts y"
+    assert q.z == 6.0, "canonical scene expression subtracts z"
+
+@test
+fn nonempty_fixed_capacity_light_frame_typechecks():
+    origin = Vec3(x=0.0, y=2.0, z=0.0)
+    white = Rgb(r=1.0, g=1.0, b=1.0)
+    point = Light.point(position=origin, radiance=white)
+    frame = LightFrame.fixed(lights=[
+        point,
+        Light.zero(),
+        Light.zero(),
+        Light.zero(),
+        Light.zero(),
+        Light.zero(),
+        Light.zero(),
+        Light.zero(),
+    ])
+    config = LightConfig.declared(
+        capacity=1,
+        kinds=[
+            LightKind.Rectangle,
+            LightKind.Disabled,
+            LightKind.Disabled,
+            LightKind.Disabled,
+            LightKind.Disabled,
+            LightKind.Disabled,
+            LightKind.Disabled,
+            LightKind.Disabled,
+        ],
+    )
+    assert true, "a sealed light frame can carry a nonempty numeric payload"
+
+@test
+fn material_sample_sanitizes_nonfinite_color_and_clamps_roughness():
+    zero: f32 = 0.0
+    nan = zero / zero
+    infinity: f32 = 1.0 / zero
+    sanitized = MaterialSample.standard(
+        color=Rgb(r=nan, g=infinity, b=-infinity),
+        roughness=nan,
+    )
+    color = sanitized.sample_color()
+    assert color.r == 0.0, "NaN color becomes zero"
+    assert color.g < infinity, "positive infinity becomes finite"
+    assert color.b > -infinity, "negative infinity becomes finite"
+    assert sanitized.sample_roughness() == 0.0, "NaN roughness becomes zero"
+
+    high = MaterialSample.clay(
+        color=Rgb(r=0.0, g=0.0, b=0.0),
+        roughness=2.0,
+    )
+    low = MaterialSample.porcelain(
+        color=Rgb(r=0.0, g=0.0, b=0.0),
+        roughness=-1.0,
+    )
+    assert high.sample_roughness() == 1.0, "roughness clamps high"
+    assert low.sample_roughness() == 0.0, "roughness clamps low"
 
 @test
 fn premultiplied_transfer_identity_is_associative_for_opaque_suffix():

@@ -1,0 +1,1 @@
+error[pixels P009]: renderer field/material parameter types disagree: pixels: renderer material mismatch: field marks use `lib.same_name_field::MaterialId`, `SurfaceContext` uses `lib.same_name_material::MaterialId` at 17:36

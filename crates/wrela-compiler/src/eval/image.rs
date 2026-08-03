@@ -37,6 +37,7 @@ pub struct DeclArg {
     pub label: String,
     pub ty: Type,
     pub value: Value,
+    pub span: crate::syntax::ast::Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,7 @@ pub struct RendererDecl {
     pub params_type: Type,
     pub actor_type: Type,
     pub args: Vec<DeclArg>,
+    pub span: crate::syntax::ast::Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,7 +144,12 @@ impl ImageGraph {
         Value::ImageDecl(ImageDeclRef::Actor(idx))
     }
 
-    pub fn declare_renderer(&mut self, params_type: Type, args: Vec<DeclArg>) -> Value {
+    pub fn declare_renderer(
+        &mut self,
+        params_type: Type,
+        args: Vec<DeclArg>,
+        span: crate::syntax::ast::Span,
+    ) -> Value {
         let idx = self.renderers.len();
         let actor_type = Type::Named(
             "Renderer".to_string(),
@@ -152,6 +159,7 @@ impl ImageGraph {
             params_type,
             actor_type,
             args,
+            span,
         });
         Value::ImageDecl(ImageDeclRef::Renderer(idx))
     }
@@ -524,8 +532,32 @@ mod tests {
             label: "policy".to_string(),
             ty: Type::Named("Failure".to_string(), vec![]),
             value: Value::Enum(1, vec![]),
+            span: Default::default(),
         }]);
         assert_eq!(g.on_failures.len(), 1);
+    }
+
+    #[test]
+    fn renderer_declarations_and_function_values_preserve_construction_order() {
+        let mut graph = ImageGraph::default();
+        let args = |field: &str| {
+            vec![DeclArg {
+                label: "field".to_string(),
+                ty: Type::Fn(vec![], Box::new(Type::Named("Field".to_string(), vec![]))),
+                value: Value::Fn(crate::sema::typed::CalleeKey::Fn(field.to_string())),
+                span: Default::default(),
+            }]
+        };
+        assert_eq!(
+            graph.declare_renderer(Type::U32, args("first"), Default::default()),
+            Value::ImageDecl(ImageDeclRef::Renderer(0))
+        );
+        assert_eq!(
+            graph.declare_renderer(Type::U64, args("second"), Default::default()),
+            Value::ImageDecl(ImageDeclRef::Renderer(1))
+        );
+        assert_eq!(graph.renderers[0].args[0].value, args("first")[0].value);
+        assert_eq!(graph.renderers[1].args[0].value, args("second")[0].value);
     }
 
     #[test]
@@ -538,6 +570,7 @@ mod tests {
             "Image.actor",
             "Image.pool",
             "Image.dma_pool",
+            "Image.renderer",
             "Image.on_failure",
             "Image.check_layout",
             "Image.seal",

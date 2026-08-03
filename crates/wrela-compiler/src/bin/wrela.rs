@@ -288,7 +288,7 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
-                    Ok(()) => {
+                    Ok(_checked_image) => {
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
                         for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
                             enum_variants
@@ -370,10 +370,13 @@ fn run_pixels_stage(
             return;
         }
     };
-    if let Err(error) = eval::image_checks::check_sealed(&graph, program, programs) {
-        print_sema_error(&error);
-        return;
-    }
+    let checked = match eval::image_checks::check_sealed(&graph, program, programs) {
+        Ok(checked) => checked,
+        Err(error) => {
+            print_sema_error(&error);
+            return;
+        }
+    };
     if graph.renderers.is_empty() {
         if let Some(index) = renderer_index {
             print_pixels_error(&format!(
@@ -393,7 +396,23 @@ fn run_pixels_stage(
             return;
         }
     }
-    match wrela_compiler::pixels::compile_plane_skeleton(program, programs, &graph) {
+    if !wrela_compiler::pixels::is_walking_skeleton(module, &graph) {
+        print!(
+            "{}",
+            wrela_compiler::pixels::dump_uncompiled_configs(
+                stage,
+                &checked.renderer_configs,
+                renderer_index,
+            )
+        );
+        return;
+    }
+    match wrela_compiler::pixels::compile_plane_skeleton(
+        program,
+        programs,
+        &graph,
+        &checked.renderer_configs,
+    ) {
         Ok(skeleton) => match stage {
             wrela_compiler::pixels::PixelsDumpStage::FieldGraph => {
                 print!("{}", wrela_compiler::pixels::dump_field_graph(&skeleton))
@@ -442,7 +461,7 @@ fn build_report(
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
-                    Ok(()) => {
+                    Ok(checked_image) => {
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in file_paths {
                             let rel = report::address_to_relative_path(addr);
@@ -517,6 +536,7 @@ fn build_report(
                                     &layout_ctx,
                                     &graph,
                                     modules,
+                                    Some(&checked_image.renderer_configs),
                                 ) {
                                     Ok(Some((image_layout, codegen))) => {
                                         if let Some(ref tables) = image_layout.runtime {
@@ -655,12 +675,18 @@ fn build_rtconfig(
             let program = &programs[module];
             let graph = eval::interp::eval_image(program, fn_name)
                 .map_err(|e| render_sema_error(&eval::to_sema_error(e)))?;
-            eval::image_checks::check_sealed(&graph, program, programs)
+            let checked_image = eval::image_checks::check_sealed(&graph, program, programs)
                 .map_err(|e| render_sema_error(&e))?;
             let mut layout_ctx =
                 layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
             layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-            match layout::try_layout_program(programs, &layout_ctx, &graph, modules) {
+            match layout::try_layout_program(
+                programs,
+                &layout_ctx,
+                &graph,
+                modules,
+                Some(&checked_image.renderer_configs),
+            ) {
                 Ok(Some(image_layout)) => {
                     let Some(tables) = image_layout.runtime.as_ref() else {
                         return Err(
@@ -1763,12 +1789,17 @@ fn test_cmd(args: &[String]) -> ExitCode {
         },
         None => eval::image::ImageGraph::default(),
     };
-    if program.image_fn.is_some() {
-        if let Err(e) = eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
-            print_sema_error(&e);
-            return ExitCode::FAILURE;
+    let checked_image = if program.image_fn.is_some() {
+        match eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
+            Ok(checked_image) => Some(checked_image),
+            Err(e) => {
+                print_sema_error(&e);
+                return ExitCode::FAILURE;
+            }
         }
-    }
+    } else {
+        None
+    };
     let async_tests: std::collections::BTreeSet<String> = runtime_tests
         .iter()
         .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
@@ -1789,6 +1820,9 @@ fn test_cmd(args: &[String]) -> ExitCode {
         &checked.programs,
         &layout_ctx,
         &graph,
+        checked_image
+            .as_ref()
+            .map(|checked| &checked.renderer_configs),
         &runtime_tests,
         &async_tests,
         false,

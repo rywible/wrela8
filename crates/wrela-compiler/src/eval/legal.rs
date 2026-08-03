@@ -228,7 +228,7 @@ fn hardware_touches(program: &TypedProgram, authority: &Authority) -> BTreeMap<S
                     note_touch(&mut out, format!("{key}.init"), f, authority);
                 }
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     out
@@ -430,7 +430,7 @@ fn build_nodes(program: &TypedProgram) -> BTreeMap<String, NodeInfo> {
                     insert_fn_node(&mut nodes, format!("{key}.init"), f);
                 }
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
 
@@ -966,7 +966,7 @@ pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
                     note(&format!("{ikey}.{m}"), f);
                 }
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     if let Some(key) = bad {
@@ -1109,7 +1109,7 @@ fn collect_isr_roots(program: &TypedProgram) -> BTreeSet<String> {
                     note(f);
                 }
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     roots

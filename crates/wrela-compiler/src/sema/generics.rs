@@ -328,7 +328,7 @@ fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedPro
             );
         }
     }
-    for name in ["Target", "Failure", "DriverMode"] {
+    for name in ["Target", "Transport", "Failure", "DriverMode"] {
         if let Some(vs) = crate::sema::stdlib_enums::variant_strs(name)? {
             program.enums.entry(name.to_string()).or_insert_with(|| {
                 TypedEnum::from_variants(vs.iter().map(|v| v.to_string()).collect())
@@ -1300,8 +1300,29 @@ fn check_one_instantiation_inner(
             Ok(TypedInstantiation::Struct(ts))
         }
         InstKind::Enum => {
-            instantiate_enum(mctx, &entry.name, &entry.args, call_span)?;
-            Ok(TypedInstantiation::Enum)
+            let enumeration = instantiate_enum(mctx, &entry.name, &entry.args, call_span)?;
+            let variant_payload_types = enumeration
+                .variants
+                .iter()
+                .map(|variant| match &variant.payload {
+                    DeclVariantPayload::None => Vec::new(),
+                    DeclVariantPayload::Tuple(types) => types.clone(),
+                    DeclVariantPayload::Named(fields) => {
+                        fields.iter().map(|(_, ty)| ty.clone()).collect()
+                    }
+                })
+                .collect();
+            Ok(TypedInstantiation::Enum(TypedEnum {
+                variants: enumeration
+                    .variants
+                    .iter()
+                    .map(|variant| variant.name.clone())
+                    .collect(),
+                variant_payload_types,
+                generic_type_params: Vec::new(),
+                methods: BTreeMap::new(),
+                assoc_fns: BTreeMap::new(),
+            }))
         }
     }
 }

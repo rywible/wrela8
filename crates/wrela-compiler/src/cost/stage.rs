@@ -312,6 +312,7 @@ fn linked_shipped_program_recording(
         &front.checked.programs,
         &img.layout_ctx,
         &img.graph,
+        Some(&img.checked.renderer_configs),
         &[],
         &std::collections::BTreeSet::new(),
         false,
@@ -348,6 +349,7 @@ pub struct ShippedFront {
 struct ShippedImage {
     graph: crate::eval::image::ImageGraph,
     layout_ctx: crate::mwir::LayoutCtx,
+    checked: crate::eval::image_checks::CheckedImage,
 }
 
 pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
@@ -358,8 +360,15 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
         Some(image_fn) => {
             let graph = crate::eval::interp::eval_image(root, &image_fn)
                 .map_err(|e| format!("eval @image `{image_fn}`: {}", e.message))?;
+            let image_checked =
+                crate::eval::image_checks::check_sealed(&graph, root, &checked.programs)
+                    .map_err(|error| error.message)?;
             let layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
-            Some(ShippedImage { graph, layout_ctx })
+            Some(ShippedImage {
+                graph,
+                layout_ctx,
+                checked: image_checked,
+            })
         }
     };
     Ok(ShippedFront { checked, image })
@@ -378,6 +387,7 @@ pub fn codegen_shipped_from(
         &front.checked.programs,
         &img.layout_ctx,
         &img.graph,
+        Some(&img.checked.renderer_configs),
         &[],
         &std::collections::BTreeSet::new(),
         false,

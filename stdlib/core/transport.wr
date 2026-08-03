@@ -1,0 +1,4 @@
+module transport
+
+pub enum Transport:
+    Blob

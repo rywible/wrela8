@@ -1,0 +1,1 @@
+error[pixels P002]: `@material` function `shade` has unsupported parameter shape: fn `shade` carries more than one top-level marker attribute (`@material` and `@material`) — at most one is valid at 9:1

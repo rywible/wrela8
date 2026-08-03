@@ -1655,7 +1655,17 @@ fn eval_expr<'a, 'p>(
             type_arg,
             args,
             ..
-        } => eval_intrinsic(key, receiver, type_arg, args, env, dstack, loop_marker, ctx),
+        } => eval_intrinsic(
+            key,
+            receiver,
+            type_arg,
+            args,
+            expr.span,
+            env,
+            dstack,
+            loop_marker,
+            ctx,
+        ),
         TypedExprKind::PoolName(name) => Ok(Value::Str(name.clone().into_bytes())),
         TypedExprKind::Await(_) => Err(ctx.abandon(
             "internal error: `await` reached the comptime evaluator (unreachable — \
@@ -1678,6 +1688,7 @@ fn eval_intrinsic<'a, 'p>(
     receiver: &'a Option<Box<TypedExpr>>,
     type_arg: &Option<Type>,
     args: &'a [(String, TypedExpr)],
+    span: crate::syntax::ast::Span,
     env: &mut Env,
     dstack: &mut Vec<&'a TypedDeferBody>,
     loop_marker: usize,
@@ -1706,6 +1717,7 @@ fn eval_intrinsic<'a, 'p>(
                 label: label.clone(),
                 ty: a.ty.clone(),
                 value: v,
+                span: a.span,
             });
         }
         Ok((pool_name, out))
@@ -1789,7 +1801,7 @@ fn eval_intrinsic<'a, 'p>(
                     "Image.device" => Ok(g.declare_device(ty_arg, decl_args)),
                     "Image.driver" => Ok(g.declare_driver(ty_arg, decl_args)),
                     "Image.actor" => Ok(g.declare_actor(ty_arg, decl_args)),
-                    "Image.renderer" => Ok(g.declare_renderer(ty_arg, decl_args)),
+                    "Image.renderer" => Ok(g.declare_renderer(ty_arg, decl_args, span)),
                     "Image.pool" => match pool_name {
                         Some(name) => g.declare_pool(name, ty_arg, decl_args),
                         None => Err(

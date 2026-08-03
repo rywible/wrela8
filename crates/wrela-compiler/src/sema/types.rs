@@ -2508,6 +2508,7 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "IoCompletion"
             | "CompletionOutcome"
             | "Target"
+            | "Transport"
             | "Failure"
             | "DriverMode"
             | "ReadOnly"
@@ -2550,7 +2551,9 @@ fn resolve_named(
         "Image" => Some(Type::Named("Image".to_string(), vec![])),
         "BootError" => Some(Type::Named("BootError".to_string(), vec![])),
         "QueuePermit" => Some(Type::Named(n.name.clone(), vec![])),
-        "DriverMode" | "Target" | "Failure" => Some(Type::Named(n.name.clone(), vec![])),
+        "DriverMode" | "Target" | "Transport" | "Failure" => {
+            Some(Type::Named(n.name.clone(), vec![]))
+        }
         "CompletionOutcome" => Some(Type::Named("CompletionOutcome".to_string(), vec![])),
         "Admission" => Some(Type::Named("Admission".to_string(), vec![])),
         "GroupId" => Some(Type::Named("GroupId".to_string(), vec![])),

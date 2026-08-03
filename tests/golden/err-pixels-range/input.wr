@@ -1,0 +1,5 @@
+module err_pixels_range
+
+struct Params:
+    @range(min=2.0, max=-2.0)
+    value: f32

@@ -1,0 +1,1 @@
+error[pixels P002]: `@field` function `world` has unsupported parameter shape: expected a top-level synchronous nongeneric function at 7:1

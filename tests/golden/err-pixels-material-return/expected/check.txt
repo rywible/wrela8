@@ -1,0 +1,1 @@
+error[pixels P001]: `@material` function `shade` must return `MaterialSample`, found `f32` at 9:1

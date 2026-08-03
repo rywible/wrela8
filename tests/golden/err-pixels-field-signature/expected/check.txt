@@ -1,0 +1,1 @@
+error[pixels P001]: `@field` function `wrong` must return `Field`, found `Vec3` at 6:1

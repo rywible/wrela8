@@ -8,6 +8,7 @@ use crate::syntax::{lexer, parser};
 
 pub const AUTO_VISIBLE: &[&str] = &[
     "Target",
+    "Transport",
     "Failure",
     "BootError",
     "DriverMode",
@@ -18,6 +19,7 @@ pub const AUTO_VISIBLE: &[&str] = &[
 
 const ENUM_FILES: &[(&str, &str)] = &[
     ("Target", "target"),
+    ("Transport", "transport"),
     ("Failure", "failure"),
     ("BootError", "boot_error"),
     ("DriverMode", "driver_mode"),
@@ -227,6 +229,7 @@ mod tests {
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
         for stem in [
+            "transport",
             "failure",
             "boot_error",
             "driver_mode",
@@ -267,6 +270,7 @@ mod tests {
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir");
         for stem in [
+            "transport",
             "failure",
             "boot_error",
             "driver_mode",
@@ -303,6 +307,7 @@ mod tests {
             let core = tmp.join(dir).join("stdlib/core");
             fs::create_dir_all(&core).expect("mkdir core");
             for stem in [
+                "transport",
                 "failure",
                 "boot_error",
                 "driver_mode",
@@ -348,6 +353,7 @@ mod tests {
         let core = tmp.join("stdlib/core");
         fs::create_dir_all(&core).expect("mkdir core");
         for stem in [
+            "transport",
             "failure",
             "boot_error",
             "driver_mode",

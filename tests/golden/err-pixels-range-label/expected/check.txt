@@ -1,0 +1,1 @@
+error[pixels P007]: range for [0] is empty, non-finite, or not representable: `@range` has no `upper=` argument at 4:21

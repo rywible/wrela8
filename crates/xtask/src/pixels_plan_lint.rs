@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::root;
 
@@ -19,6 +19,40 @@ const REQUIRED_FIELDS: &[&str] = &[
 ];
 const DUMPS: &[&str] = &["field-graph", "frame-program", "render-layout"];
 const MANIFESTS: &[&str] = &["KERNELS.txt", "EXPECTED_AXIOMS.txt"];
+
+fn fixture_wrela_sources(path: &Path) -> Result<String, String> {
+    fn collect(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                collect(&entry_path, files)?;
+            } else if entry_path
+                .extension()
+                .is_some_and(|extension| extension == "wr")
+            {
+                files.push(entry_path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    collect(path, &mut files)?;
+    let mut source = String::new();
+    for file in files {
+        source.push_str(
+            &std::fs::read_to_string(&file)
+                .map_err(|error| format!("read {}: {error}", file.display()))?,
+        );
+        source.push('\n');
+    }
+    Ok(source)
+}
 
 fn task_id(line: &str) -> Option<&str> {
     line.strip_prefix("## Task ")?
@@ -437,7 +471,7 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "check-pixels-enclosed-feature" => &["subtract(", "radius=0.00390625"],
         "check-pixels-material-edge" => &["MaterialId.Accent", "LEFT_MATERIAL_ID"],
         "check-pixels-transparent-tail" => &["LAYER_COUNT", "z=1.5", "radius=0.25"],
-        "check-pixels-area-light" => &["LightConfig(capacity=1)", "EMITTER_HALF_WIDTH_RAW"],
+        "check-pixels-area-light" => &["LightConfig.fixed(capacity=1)", "EMITTER_HALF_WIDTH_RAW"],
         "check-pixels-kinetic" => &["@rate(", "params.phase", "FRAME_COUNT"],
         "check-pixels-camera-inside" => &["radius=2.0", "CAMERA_X_RAW"],
         "check-pixels-torus-roots" => &["torus(", "major_radius=2.0"],
@@ -448,13 +482,25 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "check-pixels-texture-seam" => &["U_LEFT_RAW", "U_RIGHT_RAW", "UV_FRAC_BITS"],
         "check-pixels-normal-moments" => &["round_box(", "sinusoidal_displace("],
         "check-pixels-probe-wall" => &["WALL_X_RAW", "x=-1.0", "x=1.0"],
-        "check-pixels-probe-shift" => &["ProbeConfig(enabled=true)", "params.phase"],
+        "check-pixels-probe-shift" => &["ProbeConfig.fixed(enabled=true)", "params.phase"],
         "err-pixels-unsupported-op" => &["unsupported_twist(", "p.x * p.y"],
-        "err-pixels-missing-range" => {
-            &["radius=params.phase", "struct SceneParams:\n    phase: f32"]
-        }
+        "err-pixels-missing-range" => &[
+            "fn motion(read params: SceneParams) -> Motion:",
+            "const INDEX: usize = 1",
+            "return params.motions[INDEX]",
+            "selected = wrap(motion(params).phase)",
+            "radius=selected.value",
+            "struct Motion:\n    phase: f32",
+            "struct Wrapper:\n    value: f32",
+        ],
         "err-pixels-rate" => &["max_delta=-0.25", "NEGATIVE_DELTA_RAW"],
-        "err-pixels-topology-branch" => &["if params.enabled:", "sphere(", "box("],
+        "err-pixels-topology-branch" => &[
+            "if true:",
+            "enabled = params.enabled",
+            "if enabled:",
+            "sphere(",
+            "box(",
+        ],
         "err-pixels-repeat-unbounded" => &["count=params.count", "count: u32"],
         "err-pixels-capacity" => &["count=257", "REQUIRED_FEATURES"],
         "err-pixels-projective-zero" => &["near=0.0", "DENOMINATOR_RAW"],
@@ -466,10 +512,10 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "boot-pixels-quality" => &[
             "round_box(",
             "sinusoidal_displace(",
-            "AoConfig(enabled=true)",
+            "AoConfig.fixed(enabled=true)",
         ],
         "boot-pixels-transparent" => &["TRANSPARENT_LAYERS", "z=1.5", "radius=0.25"],
-        "boot-pixels-gi" => &["ProbeConfig(enabled=true)", "PROBE_LEVELS"],
+        "boot-pixels-gi" => &["ProbeConfig.fixed(enabled=true)", "PROBE_LEVELS"],
         "boot-pixels-kinetic" => &["@rate(", "params.phase", "SEQUENCE_FRAMES"],
         _ => &[],
     }
@@ -620,8 +666,7 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
             ));
         }
         let expected_path = path.join("expected/check.txt");
-        let input = std::fs::read_to_string(&input_path)
-            .map_err(|error| format!("read {}: {error}", input_path.display()))?;
+        let fixture_source = fixture_wrela_sources(&path)?;
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;
         for required in [
@@ -641,19 +686,31 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
         .into_iter()
         .chain(fixture_source_requirements(directory_name).iter().copied())
         {
-            if !input.contains(required) {
+            if !fixture_source.contains(required) {
                 return Err(format!(
                     "pixels plan lint: {directory_name} does not pin required source `{required}`"
                 ));
             }
         }
-        for (kind, source) in [
-            ("input", input.as_str()),
-            ("expectation", expected.as_str()),
-        ] {
-            lint_fixture_placeholder(directory_name, kind, activation, source)?;
-        }
-        let lower_input = input.to_ascii_lowercase();
+        lint_fixture_placeholder(directory_name, "input", activation, fixture_source.as_str())?;
+        // P1 accepts and seals the source declaration even when the production
+        // renderer behavior remains owned by a later milestone. The task
+        // sentinel therefore stays in source, while stable expectations must
+        // describe the accepted compiler stage rather than repeat a failure.
+        let expectation_activation = match (directory_name.starts_with("check-pixels-"), activation)
+        {
+            (true, FixtureActivation::Pending(task)) | (_, FixtureActivation::Active(task)) => {
+                FixtureActivation::Active(task)
+            }
+            (false, FixtureActivation::Pending(task)) => FixtureActivation::Pending(task),
+        };
+        lint_fixture_placeholder(
+            directory_name,
+            "expectation",
+            expectation_activation,
+            expected.as_str(),
+        )?;
+        let lower_input = fixture_source.to_ascii_lowercase();
         for forbidden in [
             "dense edge mask",
             "renderer_hint",
@@ -670,7 +727,7 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
             "check-pixels-close-depth"
                 | "check-pixels-thin-feature"
                 | "check-pixels-enclosed-feature"
-        ) && (!input.contains("_RAW:") || !input.contains("_FRAC_BITS:"))
+        ) && (!fixture_source.contains("_RAW:") || !fixture_source.contains("_FRAC_BITS:"))
         {
             return Err(format!(
                 "pixels plan lint: {directory_name} must encode its adversarial geometry as exact dyadic raw constants"

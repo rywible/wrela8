@@ -1,0 +1,2 @@
+error[pixels P003]: renderer bodies may not panic on a reachable path at 45:36
+note: renderer call chain: examples.err_pixels_field_effects::world -> examples.err_pixels_field_effects::effectful

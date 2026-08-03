@@ -1,0 +1,7 @@
+module examples.err_pixels_range_nan
+
+const NAN: f64 = 0.0 / 0.0
+
+struct Params:
+    @range(min=NAN, max=1.0)
+    value: f32

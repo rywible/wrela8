@@ -1,0 +1,1 @@
+error[pixels P007]: range for [0] is empty, non-finite, or not representable: `@range` maximum must be finite at 4:25

@@ -1,0 +1,1 @@
+error[sema]: field `color` of `MaterialSample` is private to module `core.render`; only that module may construct, read, write, or pattern-bind it (02-language.md §2) at 7:27

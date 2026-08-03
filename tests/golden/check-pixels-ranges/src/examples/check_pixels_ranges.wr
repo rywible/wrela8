@@ -1,0 +1,62 @@
+module examples.check_pixels_ranges
+
+from core.field import Field, Rgb, Vec3, mark, sphere
+from core.render import (
+    AoConfig, CameraBounds, LightConfig, MaterialSample, ProbeConfig,
+    RenderProfile, RgbRange, ScalarRange, SurfaceContext, ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+const LOW: f32 = -2.0
+const HIGH: f32 = 2.0
+
+struct Params:
+    untouched: bool
+
+    @range(min=9007199254740992, max=9007199254740993)
+    exact_counter: u64
+
+    @range(min=LOW, max=HIGH)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    position: Vec3
+
+enum ObjectId:
+    Scene
+
+enum MaterialId:
+    Surface
+
+@field
+fn world(p: Vec3, read params: Params) -> Field:
+    field = sphere(p, params.position, radius=1.0)
+    return mark(field, object=ObjectId.Scene, material=MaterialId.Surface)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: Params) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.0, g=0.0, b=0.0), roughness=0.5)
+
+@image
+fn build() -> Image:
+    img = Image(name="check-pixels-ranges", target=Target.wrela_machine_v1)
+    device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[Params](
+        field=world, material=shade, display=display,
+        width=64, height=32, refresh_hz=60, shade_hz=60,
+        profile=RenderProfile.AaaByteExact, tone_curve=ToneCurve.Linear,
+        near=0.1, far=10.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.0),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=0.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=1,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

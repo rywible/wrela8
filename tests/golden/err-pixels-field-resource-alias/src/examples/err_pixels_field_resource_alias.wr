@@ -1,0 +1,10 @@
+module examples.err_pixels_field_resource_alias
+
+from core.field import Field, Vec3
+
+resource struct HardwareParams:
+    value: u32
+
+@field
+fn world(p: Vec3, read alias: HardwareParams) -> Field:
+    return p

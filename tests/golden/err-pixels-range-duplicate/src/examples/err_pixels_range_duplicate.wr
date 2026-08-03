@@ -1,0 +1,5 @@
+module examples.err_pixels_range_duplicate
+
+struct Params:
+    @range(min=0.0, max=1.0, min=0.25)
+    value: f32

@@ -1,0 +1,1648 @@
+Module path=field
+Program
+  Fn name=abs_scalar ret=f32
+    Param name=x mode=read ty=f32
+    Body
+      If
+        Binary op=< ty=bool
+          Local name=x ty=f32
+          Float text=0.0 ty=f32
+        Then
+          Return
+            Neg ty=f32
+              Local name=x ty=f32
+      Return
+        Local name=x ty=f32
+  Fn name=box ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=half mode=read ty=Vec3
+    Body
+      Let name=qx ty=f32
+        Binary op=- ty=f32
+          Call key=abs_scalar ty=f32
+            Field name=x ty=f32
+              Local name=p ty=Vec3
+          Field name=x ty=f32
+            Local name=half ty=Vec3
+      Let name=qy ty=f32
+        Binary op=- ty=f32
+          Call key=abs_scalar ty=f32
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+          Field name=y ty=f32
+            Local name=half ty=Vec3
+      Let name=qz ty=f32
+        Binary op=- ty=f32
+          Call key=abs_scalar ty=f32
+            Field name=z ty=f32
+              Local name=p ty=Vec3
+          Field name=z ty=f32
+            Local name=half ty=Vec3
+      Let name=outside ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Call key=max_scalar ty=f32
+              Local name=qx ty=f32
+              Float text=0.0 ty=f32
+          Field name=y
+            Call key=max_scalar ty=f32
+              Local name=qy ty=f32
+              Float text=0.0 ty=f32
+          Field name=z
+            Call key=max_scalar ty=f32
+              Local name=qz ty=f32
+              Float text=0.0 ty=f32
+      Let name=inside ty=f32
+        Call key=min_scalar ty=f32
+          Call key=max_scalar ty=f32
+            Local name=qx ty=f32
+            Call key=max_scalar ty=f32
+              Local name=qy ty=f32
+              Local name=qz ty=f32
+          Float text=0.0 ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=+ ty=f32
+              Call key=length3 ty=f32
+                Local name=outside ty=Vec3
+              Local name=inside ty=f32
+  Fn name=capsule ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=a mode=read ty=Vec3
+    Param name=b mode=read ty=Vec3
+    Param name=radius mode=read ty=f32
+    Body
+      Let name=pax ty=f32
+        Binary op=- ty=f32
+          Field name=x ty=f32
+            Local name=p ty=Vec3
+          Field name=x ty=f32
+            Local name=a ty=Vec3
+      Let name=pay ty=f32
+        Binary op=- ty=f32
+          Field name=y ty=f32
+            Local name=p ty=Vec3
+          Field name=y ty=f32
+            Local name=a ty=Vec3
+      Let name=paz ty=f32
+        Binary op=- ty=f32
+          Field name=z ty=f32
+            Local name=p ty=Vec3
+          Field name=z ty=f32
+            Local name=a ty=Vec3
+      Let name=bax ty=f32
+        Binary op=- ty=f32
+          Field name=x ty=f32
+            Local name=b ty=Vec3
+          Field name=x ty=f32
+            Local name=a ty=Vec3
+      Let name=bay ty=f32
+        Binary op=- ty=f32
+          Field name=y ty=f32
+            Local name=b ty=Vec3
+          Field name=y ty=f32
+            Local name=a ty=Vec3
+      Let name=baz ty=f32
+        Binary op=- ty=f32
+          Field name=z ty=f32
+            Local name=b ty=Vec3
+          Field name=z ty=f32
+            Local name=a ty=Vec3
+      Let name=denom ty=f32
+        Binary op=+ ty=f32
+          Binary op=+ ty=f32
+            Binary op=* ty=f32
+              Local name=bax ty=f32
+              Local name=bax ty=f32
+            Binary op=* ty=f32
+              Local name=bay ty=f32
+              Local name=bay ty=f32
+          Binary op=* ty=f32
+            Local name=baz ty=f32
+            Local name=baz ty=f32
+      Let name=h ty=f32
+        Float text=0.0 ty=f32
+      If
+        Binary op=> ty=bool
+          Local name=denom ty=f32
+          Float text=0.0 ty=f32
+        Then
+          Assign
+            Local name=h ty=f32
+            Call key=clamp_scalar ty=f32
+              Binary op=/ ty=f32
+                Binary op=+ ty=f32
+                  Binary op=+ ty=f32
+                    Binary op=* ty=f32
+                      Local name=pax ty=f32
+                      Local name=bax ty=f32
+                    Binary op=* ty=f32
+                      Local name=pay ty=f32
+                      Local name=bay ty=f32
+                  Binary op=* ty=f32
+                    Local name=paz ty=f32
+                    Local name=baz ty=f32
+                Local name=denom ty=f32
+              Float text=0.0 ty=f32
+              Float text=1.0 ty=f32
+      Let name=q ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Binary op=- ty=f32
+              Local name=pax ty=f32
+              Binary op=* ty=f32
+                Local name=bax ty=f32
+                Local name=h ty=f32
+          Field name=y
+            Binary op=- ty=f32
+              Local name=pay ty=f32
+              Binary op=* ty=f32
+                Local name=bay ty=f32
+                Local name=h ty=f32
+          Field name=z
+            Binary op=- ty=f32
+              Local name=paz ty=f32
+              Binary op=* ty=f32
+                Local name=baz ty=f32
+                Local name=h ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=- ty=f32
+              Call key=length3 ty=f32
+                Local name=q ty=Vec3
+              Local name=radius ty=f32
+  Fn name=clamp_scalar ret=f32
+    Param name=x mode=read ty=f32
+    Param name=lo mode=read ty=f32
+    Param name=hi mode=read ty=f32
+    Body
+      Return
+        Call key=min_scalar ty=f32
+          Call key=max_scalar ty=f32
+            Local name=x ty=f32
+            Local name=lo ty=f32
+          Local name=hi ty=f32
+  Fn name=dot3 ret=f32
+    Param name=a mode=read ty=Vec3
+    Param name=b mode=read ty=Vec3
+    Body
+      Return
+        Binary op=+ ty=f32
+          Binary op=+ ty=f32
+            Binary op=* ty=f32
+              Field name=x ty=f32
+                Local name=a ty=Vec3
+              Field name=x ty=f32
+                Local name=b ty=Vec3
+            Binary op=* ty=f32
+              Field name=y ty=f32
+                Local name=a ty=Vec3
+              Field name=y ty=f32
+                Local name=b ty=Vec3
+          Binary op=* ty=f32
+            Field name=z ty=f32
+              Local name=a ty=Vec3
+            Field name=z ty=f32
+              Local name=b ty=Vec3
+  Fn name=finite_cone ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=radius mode=read ty=f32
+    Param name=half_height mode=read ty=f32
+    Body
+      Let name=y ty=f32
+        Call key=clamp_scalar ty=f32
+          Binary op=+ ty=f32
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+            Local name=half_height ty=f32
+          Float text=0.0 ty=f32
+          Binary op=+ ty=f32
+            Local name=half_height ty=f32
+            Local name=half_height ty=f32
+      Let name=allowed ty=f32
+        Binary op=* ty=f32
+          Local name=radius ty=f32
+          Binary op=- ty=f32
+            Float text=1.0 ty=f32
+            Binary op=/ ty=f32
+              Local name=y ty=f32
+              Binary op=+ ty=f32
+                Local name=half_height ty=f32
+                Local name=half_height ty=f32
+      Let name=radial ty=f32
+        Binary op=- ty=f32
+          Call key=length2 ty=f32
+            StructLiteral name=Vec2 ty=Vec2
+              Field name=x
+                Field name=x ty=f32
+                  Local name=p ty=Vec3
+              Field name=y
+                Field name=z ty=f32
+                  Local name=p ty=Vec3
+          Local name=allowed ty=f32
+      Let name=axial ty=f32
+        Binary op=- ty=f32
+          Call key=abs_scalar ty=f32
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+          Local name=half_height ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Call key=max_scalar ty=f32
+              Local name=radial ty=f32
+              Local name=axial ty=f32
+  Fn name=finite_cylinder ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=radius mode=read ty=f32
+    Param name=half_height mode=read ty=f32
+    Body
+      Let name=radial ty=f32
+        Binary op=- ty=f32
+          Call key=length2 ty=f32
+            StructLiteral name=Vec2 ty=Vec2
+              Field name=x
+                Field name=x ty=f32
+                  Local name=p ty=Vec3
+              Field name=y
+                Field name=z ty=f32
+                  Local name=p ty=Vec3
+          Local name=radius ty=f32
+      Let name=axial ty=f32
+        Binary op=- ty=f32
+          Call key=abs_scalar ty=f32
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+          Local name=half_height ty=f32
+      Let name=outside ty=f32
+        Call key=length2 ty=f32
+          StructLiteral name=Vec2 ty=Vec2
+            Field name=x
+              Call key=max_scalar ty=f32
+                Local name=radial ty=f32
+                Float text=0.0 ty=f32
+            Field name=y
+              Call key=max_scalar ty=f32
+                Local name=axial ty=f32
+                Float text=0.0 ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=+ ty=f32
+              Local name=outside ty=f32
+              Call key=min_scalar ty=f32
+                Call key=max_scalar ty=f32
+                  Local name=radial ty=f32
+                  Local name=axial ty=f32
+                Float text=0.0 ty=f32
+  Fn name=finite_repeat_axis ret=f32
+    Param name=value mode=read ty=f32
+    Param name=first mode=read ty=i32
+    Param name=count mode=read ty=u32
+    Param name=period mode=read ty=f32
+    Body
+      Let name=best ty=f32
+        Binary op=- ty=f32
+          Local name=value ty=f32
+          Binary op=* ty=f32
+            ToScalar ty=f32
+              Local name=first ty=i32
+            Local name=period ty=f32
+      Let name=i ty=u32
+        Int text=1 ty=u32
+      While budget=1000000
+        Binary op=< ty=bool
+          Local name=i ty=u32
+          Local name=count ty=u32
+        Body
+          Let name=candidate ty=f32
+            Binary op=- ty=f32
+              Local name=value ty=f32
+              Binary op=* ty=f32
+                Binary op=+ ty=f32
+                  ToScalar ty=f32
+                    Local name=first ty=i32
+                  ToScalar ty=f32
+                    Local name=i ty=u32
+                Local name=period ty=f32
+          If
+            Binary op=< ty=bool
+              Call key=abs_scalar ty=f32
+                Local name=candidate ty=f32
+              Call key=abs_scalar ty=f32
+                Local name=best ty=f32
+            Then
+              Assign
+                Local name=best ty=f32
+                Local name=candidate ty=f32
+          Assign
+            Local name=i ty=u32
+            Binary op=+ ty=u32
+              Local name=i ty=u32
+              Int text=1 ty=u32
+      Return
+        Local name=best ty=f32
+  Fn name=finite_repeat_x ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=first mode=read ty=i32
+    Param name=count mode=read ty=u32
+    Param name=period mode=read ty=f32
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Call key=finite_repeat_axis ty=f32
+              Field name=x ty=f32
+                Local name=p ty=Vec3
+              Local name=first ty=i32
+              Local name=count ty=u32
+              Local name=period ty=f32
+          Field name=y
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+          Field name=z
+            Field name=z ty=f32
+              Local name=p ty=Vec3
+  Fn name=finite_repeat_y ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=first mode=read ty=i32
+    Param name=count mode=read ty=u32
+    Param name=period mode=read ty=f32
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Field name=x ty=f32
+              Local name=p ty=Vec3
+          Field name=y
+            Call key=finite_repeat_axis ty=f32
+              Field name=y ty=f32
+                Local name=p ty=Vec3
+              Local name=first ty=i32
+              Local name=count ty=u32
+              Local name=period ty=f32
+          Field name=z
+            Field name=z ty=f32
+              Local name=p ty=Vec3
+  Fn name=finite_repeat_z ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=first mode=read ty=i32
+    Param name=count mode=read ty=u32
+    Param name=period mode=read ty=f32
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Field name=x ty=f32
+              Local name=p ty=Vec3
+          Field name=y
+            Field name=y ty=f32
+              Local name=p ty=Vec3
+          Field name=z
+            Call key=finite_repeat_axis ty=f32
+              Field name=z ty=f32
+                Local name=p ty=Vec3
+              Local name=first ty=i32
+              Local name=count ty=u32
+              Local name=period ty=f32
+  Fn name=intersection ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Body
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Call key=max_scalar ty=f32
+              Field name=value ty=f32
+                Local name=a ty=Field
+              Field name=value ty=f32
+                Local name=b ty=Field
+  Fn name=length2 ret=f32
+    Param name=v mode=read ty=Vec2
+    Body
+      Return
+        Call key=sqrt_scalar ty=f32
+          Binary op=+ ty=f32
+            Binary op=* ty=f32
+              Field name=x ty=f32
+                Local name=v ty=Vec2
+              Field name=x ty=f32
+                Local name=v ty=Vec2
+            Binary op=* ty=f32
+              Field name=y ty=f32
+                Local name=v ty=Vec2
+              Field name=y ty=f32
+                Local name=v ty=Vec2
+  Fn name=length3 ret=f32
+    Param name=v mode=read ty=Vec3
+    Body
+      Return
+        Call key=sqrt_scalar ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Binary op=* ty=f32
+                Field name=x ty=f32
+                  Local name=v ty=Vec3
+                Field name=x ty=f32
+                  Local name=v ty=Vec3
+              Binary op=* ty=f32
+                Field name=y ty=f32
+                  Local name=v ty=Vec3
+                Field name=y ty=f32
+                  Local name=v ty=Vec3
+            Binary op=* ty=f32
+              Field name=z ty=f32
+                Local name=v ty=Vec3
+              Field name=z ty=f32
+                Local name=v ty=Vec3
+  Fn name=max_scalar ret=f32
+    Param name=a mode=read ty=f32
+    Param name=b mode=read ty=f32
+    Body
+      If
+        Binary op=> ty=bool
+          Local name=a ty=f32
+          Local name=b ty=f32
+        Then
+          Return
+            Local name=a ty=f32
+      Return
+        Local name=b ty=f32
+  Fn name=min_scalar ret=f32
+    Param name=a mode=read ty=f32
+    Param name=b mode=read ty=f32
+    Body
+      If
+        Binary op=< ty=bool
+          Local name=a ty=f32
+          Local name=b ty=f32
+        Then
+          Return
+            Local name=a ty=f32
+      Return
+        Local name=b ty=f32
+  Fn name=plane ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=normal mode=read ty=Vec3
+    Param name=offset mode=read ty=f32
+    Body
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=+ ty=f32
+              Call key=dot3 ty=f32
+                Local name=p ty=Vec3
+                Local name=normal ty=Vec3
+              Local name=offset ty=f32
+  Fn name=rigid_transform ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=translation mode=read ty=Vec3
+    Param name=row_x mode=read ty=Vec3
+    Param name=row_y mode=read ty=Vec3
+    Param name=row_z mode=read ty=Vec3
+    Body
+      Return
+        Call key=rotate ty=Vec3
+          Call key=translate ty=Vec3
+            Local name=p ty=Vec3
+            Local name=translation ty=Vec3
+          Local name=row_x ty=Vec3
+          Local name=row_y ty=Vec3
+          Local name=row_z ty=Vec3
+  Fn name=rotate ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=row_x mode=read ty=Vec3
+    Param name=row_y mode=read ty=Vec3
+    Param name=row_z mode=read ty=Vec3
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Call key=dot3 ty=f32
+              Local name=row_x ty=Vec3
+              Local name=p ty=Vec3
+          Field name=y
+            Call key=dot3 ty=f32
+              Local name=row_y ty=Vec3
+              Local name=p ty=Vec3
+          Field name=z
+            Call key=dot3 ty=f32
+              Local name=row_z ty=Vec3
+              Local name=p ty=Vec3
+  Fn name=round_box ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=half mode=read ty=Vec3
+    Param name=radius mode=read ty=f32
+    Body
+      Let name=base ty=Field
+        Call key=box ty=Field
+          Local name=p ty=Vec3
+          Local name=half ty=Vec3
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=- ty=f32
+              Field name=value ty=f32
+                Local name=base ty=Field
+              Local name=radius ty=f32
+  Fn name=scalar_length_semantics_cover_large_exact_radius ret=unit
+    Body
+      Assert
+        Binary op=== ty=bool
+          Call key=sqrt_scalar ty=f32
+            Float text=16384.0 ty=f32
+          Float text=128.0 ty=f32
+        Str text="sqrt converges across large f32 exponents" ty=Static[Str]
+      Let name=center ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Float text=0.0 ty=f32
+          Field name=y
+            Float text=0.0 ty=f32
+          Field name=z
+            Float text=0.0 ty=f32
+      Let name=surface ty=Field
+        Call key=sphere ty=Field
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=128.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          Local name=center ty=Vec3
+          Float text=128.0 ty=f32
+      Assert
+        Binary op=== ty=bool
+          Field name=value ty=f32
+            Local name=surface ty=Field
+          Float text=0.0 ty=f32
+        Str text="large exact radius remains on the sphere surface" ty=Static[Str]
+  Fn name=sin_scalar ret=f32
+    Param name=angle mode=read ty=f32
+    Body
+      Let name=two_pi ty=f32
+        Float text=6.283185307179586 ty=f32
+      Let name=pi ty=f32
+        Float text=3.141592653589793 ty=f32
+      Let name=x ty=f32
+        Binary op=% ty=f32
+          Local name=angle ty=f32
+          Local name=two_pi ty=f32
+      If
+        Binary op=> ty=bool
+          Local name=x ty=f32
+          Local name=pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=- ty=f32
+              Local name=x ty=f32
+              Local name=two_pi ty=f32
+      If
+        Binary op=< ty=bool
+          Local name=x ty=f32
+          Neg ty=f32
+            Local name=pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=+ ty=f32
+              Local name=x ty=f32
+              Local name=two_pi ty=f32
+      Let name=x2 ty=f32
+        Binary op=* ty=f32
+          Local name=x ty=f32
+          Local name=x ty=f32
+      Let name=c3 ty=f32
+        Neg ty=f32
+          Float text=0.16666666666666666 ty=f32
+      Let name=c5 ty=f32
+        Float text=0.008333333333333333 ty=f32
+      Let name=c7 ty=f32
+        Neg ty=f32
+          Float text=0.0001984126984126984 ty=f32
+      Let name=c9 ty=f32
+        Float text=0.0000027557319223985893 ty=f32
+      Let name=c11 ty=f32
+        Neg ty=f32
+          Float text=0.00000002505210838544172 ty=f32
+      Return
+        Binary op=* ty=f32
+          Local name=x ty=f32
+          Binary op=+ ty=f32
+            Float text=1.0 ty=f32
+            Binary op=* ty=f32
+              Local name=x2 ty=f32
+              Binary op=+ ty=f32
+                Local name=c3 ty=f32
+                Binary op=* ty=f32
+                  Local name=x2 ty=f32
+                  Binary op=+ ty=f32
+                    Local name=c5 ty=f32
+                    Binary op=* ty=f32
+                      Local name=x2 ty=f32
+                      Binary op=+ ty=f32
+                        Local name=c7 ty=f32
+                        Binary op=* ty=f32
+                          Local name=x2 ty=f32
+                          Binary op=+ ty=f32
+                            Local name=c9 ty=f32
+                            Binary op=* ty=f32
+                              Local name=x2 ty=f32
+                              Local name=c11 ty=f32
+  Fn name=sinusoidal_displace ret=Field
+    Param name=field mode=read ty=Field
+    Param name=p mode=read ty=Vec3
+    Param name=amplitude mode=read ty=f32
+    Param name=frequency mode=read ty=f32
+    Param name=phase mode=read ty=f32
+    Body
+      Let name=wave ty=f32
+        Call key=sin_scalar ty=f32
+          Binary op=+ ty=f32
+            Binary op=* ty=f32
+              Local name=frequency ty=f32
+              Field name=x ty=f32
+                Local name=p ty=Vec3
+            Local name=phase ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=+ ty=f32
+              Field name=value ty=f32
+                Local name=field ty=Field
+              Binary op=* ty=f32
+                Local name=amplitude ty=f32
+                Local name=wave ty=f32
+  Fn name=smooth_intersection ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Param name=k mode=read ty=f32
+    Body
+      Let name=na ty=Field
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Neg ty=f32
+              Field name=value ty=f32
+                Local name=a ty=Field
+      Let name=nb ty=Field
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Neg ty=f32
+              Field name=value ty=f32
+                Local name=b ty=Field
+      Let name=n ty=Field
+        Call key=smooth_union ty=Field
+          Local name=na ty=Field
+          Local name=nb ty=Field
+          Local name=k ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Neg ty=f32
+              Field name=value ty=f32
+                Local name=n ty=Field
+  Fn name=smooth_subtract ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Param name=k mode=read ty=f32
+    Body
+      Return
+        Call key=smooth_intersection ty=Field
+          Local name=a ty=Field
+          StructLiteral name=Field ty=Field
+            Field name=value
+              Neg ty=f32
+                Field name=value ty=f32
+                  Local name=b ty=Field
+          Local name=k ty=f32
+  Fn name=smooth_union ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Param name=k mode=read ty=f32
+    Body
+      If
+        Binary op=<= ty=bool
+          Field name=value ty=f32
+            Local name=a ty=Field
+          Binary op=- ty=f32
+            Field name=value ty=f32
+              Local name=b ty=Field
+            Local name=k ty=f32
+        Then
+          Return
+            Local name=a ty=Field
+      If
+        Binary op=<= ty=bool
+          Field name=value ty=f32
+            Local name=b ty=Field
+          Binary op=- ty=f32
+            Field name=value ty=f32
+              Local name=a ty=Field
+            Local name=k ty=f32
+        Then
+          Return
+            Local name=b ty=Field
+      Let name=h ty=f32
+        Binary op=+ ty=f32
+          Float text=0.5 ty=f32
+          Binary op=/ ty=f32
+            Binary op=* ty=f32
+              Float text=0.5 ty=f32
+              Binary op=- ty=f32
+                Field name=value ty=f32
+                  Local name=b ty=Field
+                Field name=value ty=f32
+                  Local name=a ty=Field
+            Local name=k ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=- ty=f32
+              Binary op=+ ty=f32
+                Field name=value ty=f32
+                  Local name=b ty=Field
+                Binary op=* ty=f32
+                  Binary op=- ty=f32
+                    Field name=value ty=f32
+                      Local name=a ty=Field
+                    Field name=value ty=f32
+                      Local name=b ty=Field
+                  Local name=h ty=f32
+              Binary op=* ty=f32
+                Binary op=* ty=f32
+                  Local name=k ty=f32
+                  Local name=h ty=f32
+                Binary op=- ty=f32
+                  Float text=1.0 ty=f32
+                  Local name=h ty=f32
+  Fn name=sphere ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=center mode=read ty=Vec3
+    Param name=radius mode=read ty=f32
+    Body
+      Let name=q ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Binary op=- ty=f32
+              Field name=x ty=f32
+                Local name=p ty=Vec3
+              Field name=x ty=f32
+                Local name=center ty=Vec3
+          Field name=y
+            Binary op=- ty=f32
+              Field name=y ty=f32
+                Local name=p ty=Vec3
+              Field name=y ty=f32
+                Local name=center ty=Vec3
+          Field name=z
+            Binary op=- ty=f32
+              Field name=z ty=f32
+                Local name=p ty=Vec3
+              Field name=z ty=f32
+                Local name=center ty=Vec3
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=- ty=f32
+              Call key=length3 ty=f32
+                Local name=q ty=Vec3
+              Local name=radius ty=f32
+  Fn name=sqrt_scalar ret=f32
+    Param name=x mode=read ty=f32
+    Body
+      If
+        Binary op=<= ty=bool
+          Local name=x ty=f32
+          Float text=0.0 ty=f32
+        Then
+          Return
+            Float text=0.0 ty=f32
+      Let name=max_finite ty=f32
+        Float text=340282346638528859811704183484516925440.0 ty=f32
+      If
+        Binary op=> ty=bool
+          Local name=x ty=f32
+          Local name=max_finite ty=f32
+        Then
+          Return
+            Local name=x ty=f32
+      Let name=guess ty=f32
+        Local name=x ty=f32
+      If
+        Binary op=< ty=bool
+          Local name=guess ty=f32
+          Float text=1.0 ty=f32
+        Then
+          Assign
+            Local name=guess ty=f32
+            Float text=1.0 ty=f32
+      Let name=i ty=u32
+        Int text=0 ty=u32
+      While budget=128
+        Binary op=< ty=bool
+          Local name=i ty=u32
+          Int text=128 ty=u32
+        Body
+          Assign
+            Local name=guess ty=f32
+            Binary op=* ty=f32
+              Float text=0.5 ty=f32
+              Binary op=+ ty=f32
+                Local name=guess ty=f32
+                Binary op=/ ty=f32
+                  Local name=x ty=f32
+                  Local name=guess ty=f32
+          Assign
+            Local name=i ty=u32
+            Binary op=+ ty=u32
+              Local name=i ty=u32
+              Int text=1 ty=u32
+      Return
+        Local name=guess ty=f32
+  Fn name=subtract ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Body
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Call key=max_scalar ty=f32
+              Field name=value ty=f32
+                Local name=a ty=Field
+              Neg ty=f32
+                Field name=value ty=f32
+                  Local name=b ty=Field
+  Fn name=torus ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=major_radius mode=read ty=f32
+    Param name=minor_radius mode=read ty=f32
+    Body
+      Let name=radial ty=f32
+        Binary op=- ty=f32
+          Call key=length2 ty=f32
+            StructLiteral name=Vec2 ty=Vec2
+              Field name=x
+                Field name=x ty=f32
+                  Local name=p ty=Vec3
+              Field name=y
+                Field name=z ty=f32
+                  Local name=p ty=Vec3
+          Local name=major_radius ty=f32
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=- ty=f32
+              Call key=length2 ty=f32
+                StructLiteral name=Vec2 ty=Vec2
+                  Field name=x
+                    Local name=radial ty=f32
+                  Field name=y
+                    Field name=y ty=f32
+                      Local name=p ty=Vec3
+              Local name=minor_radius ty=f32
+  Fn name=translate ret=Vec3
+    Param name=p mode=read ty=Vec3
+    Param name=by mode=read ty=Vec3
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Binary op=- ty=f32
+              Field name=x ty=f32
+                Local name=p ty=Vec3
+              Field name=x ty=f32
+                Local name=by ty=Vec3
+          Field name=y
+            Binary op=- ty=f32
+              Field name=y ty=f32
+                Local name=p ty=Vec3
+              Field name=y ty=f32
+                Local name=by ty=Vec3
+          Field name=z
+            Binary op=- ty=f32
+              Field name=z ty=f32
+                Local name=p ty=Vec3
+              Field name=z ty=f32
+                Local name=by ty=Vec3
+  Fn name=uniform_scale ret=Field
+    Param name=field mode=read ty=Field
+    Param name=scale mode=read ty=f32
+    Body
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Binary op=* ty=f32
+              Field name=value ty=f32
+                Local name=field ty=Field
+              Local name=scale ty=f32
+  Fn name=union ret=Field
+    Param name=a mode=read ty=Field
+    Param name=b mode=read ty=Field
+    Body
+      Return
+        StructLiteral name=Field ty=Field
+          Field name=value
+            Call key=min_scalar ty=f32
+              Field name=value ty=f32
+                Local name=a ty=Field
+              Field name=value ty=f32
+                Local name=b ty=Field
+  Struct name=Aabb
+  Struct name=Field
+    Method name=union ret=Field
+      Receiver mode=read ty=Field
+      Param name=right mode=read ty=Field
+      Body
+        Return
+          Call key=union ty=Field
+            Local name=self ty=Field
+            Local name=right ty=Field
+  Struct name=Rgb
+  Struct name=Vec2
+  Struct name=Vec3
+    Method name=add ret=Vec3
+      Receiver mode=read ty=Vec3
+      Param name=right mode=read ty=Vec3
+      Body
+        Return
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=+ ty=f32
+                Field name=x ty=f32
+                  Local name=self ty=Vec3
+                Field name=x ty=f32
+                  Local name=right ty=Vec3
+            Field name=y
+              Binary op=+ ty=f32
+                Field name=y ty=f32
+                  Local name=self ty=Vec3
+                Field name=y ty=f32
+                  Local name=right ty=Vec3
+            Field name=z
+              Binary op=+ ty=f32
+                Field name=z ty=f32
+                  Local name=self ty=Vec3
+                Field name=z ty=f32
+                  Local name=right ty=Vec3
+    Method name=subtract ret=Vec3
+      Receiver mode=read ty=Vec3
+      Param name=right mode=read ty=Vec3
+      Body
+        Return
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=- ty=f32
+                Field name=x ty=f32
+                  Local name=self ty=Vec3
+                Field name=x ty=f32
+                  Local name=right ty=Vec3
+            Field name=y
+              Binary op=- ty=f32
+                Field name=y ty=f32
+                  Local name=self ty=Vec3
+                Field name=y ty=f32
+                  Local name=right ty=Vec3
+            Field name=z
+              Binary op=- ty=f32
+                Field name=z ty=f32
+                  Local name=self ty=Vec3
+                Field name=z ty=f32
+                  Local name=right ty=Vec3
+  Struct name=Vec4
+Module path=render
+Program
+  Struct name=AoConfig
+    AssocFn name=deterministic_v1 ret=AoConfig
+      Body
+        Return
+          StructLiteral name=AoConfig ty=AoConfig
+            Field name=enabled
+              Bool value=true ty=bool
+    AssocFn name=fixed ret=AoConfig
+      Param name=enabled mode=read ty=bool
+      Body
+        Return
+          StructLiteral name=AoConfig ty=AoConfig
+            Field name=enabled
+              Local name=enabled ty=bool
+  Struct name=Camera
+  Struct name=CameraBounds
+    AssocFn name=bounded ret=CameraBounds
+      Param name=max_motion mode=read ty=f32
+      Body
+        Return
+          StructLiteral name=CameraBounds ty=CameraBounds
+            Field name=max_motion
+              Local name=max_motion ty=f32
+    AssocFn name=gameplay_default ret=CameraBounds
+      Body
+        Return
+          StructLiteral name=CameraBounds ty=CameraBounds
+            Field name=max_motion
+              Float text=0.25 ty=f32
+  Struct name=DisplayError
+  Struct name=Light
+    AssocFn name=directional ret=Light
+      Param name=direction mode=read ty=Vec3
+      Param name=radiance mode=read ty=Rgb
+      Body
+        Let name=zero ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+        Return
+          StructLiteral name=Light ty=Light
+            Field name=position
+              Local name=zero ty=Vec3
+            Field name=direction
+              Local name=direction ty=Vec3
+            Field name=axis_u
+              Local name=zero ty=Vec3
+            Field name=axis_v
+              Local name=zero ty=Vec3
+            Field name=radiance
+              Local name=radiance ty=Rgb
+    AssocFn name=disk ret=Light
+      Param name=center mode=read ty=Vec3
+      Param name=axis_u mode=read ty=Vec3
+      Param name=axis_v mode=read ty=Vec3
+      Param name=radiance mode=read ty=Rgb
+      Body
+        Let name=zero ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+        Return
+          StructLiteral name=Light ty=Light
+            Field name=position
+              Local name=center ty=Vec3
+            Field name=direction
+              Local name=zero ty=Vec3
+            Field name=axis_u
+              Local name=axis_u ty=Vec3
+            Field name=axis_v
+              Local name=axis_v ty=Vec3
+            Field name=radiance
+              Local name=radiance ty=Rgb
+    AssocFn name=point ret=Light
+      Param name=position mode=read ty=Vec3
+      Param name=radiance mode=read ty=Rgb
+      Body
+        Let name=zero ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+        Return
+          StructLiteral name=Light ty=Light
+            Field name=position
+              Local name=position ty=Vec3
+            Field name=direction
+              Local name=zero ty=Vec3
+            Field name=axis_u
+              Local name=zero ty=Vec3
+            Field name=axis_v
+              Local name=zero ty=Vec3
+            Field name=radiance
+              Local name=radiance ty=Rgb
+    AssocFn name=rectangle ret=Light
+      Param name=center mode=read ty=Vec3
+      Param name=axis_u mode=read ty=Vec3
+      Param name=axis_v mode=read ty=Vec3
+      Param name=radiance mode=read ty=Rgb
+      Body
+        Let name=zero ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+        Return
+          StructLiteral name=Light ty=Light
+            Field name=position
+              Local name=center ty=Vec3
+            Field name=direction
+              Local name=zero ty=Vec3
+            Field name=axis_u
+              Local name=axis_u ty=Vec3
+            Field name=axis_v
+              Local name=axis_v ty=Vec3
+            Field name=radiance
+              Local name=radiance ty=Rgb
+    AssocFn name=zero ret=Light
+      Body
+        Let name=zero ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+        Let name=black ty=Rgb
+          StructLiteral name=Rgb ty=Rgb
+            Field name=r
+              Float text=0.0 ty=f32
+            Field name=g
+              Float text=0.0 ty=f32
+            Field name=b
+              Float text=0.0 ty=f32
+        Return
+          StructLiteral name=Light ty=Light
+            Field name=position
+              Local name=zero ty=Vec3
+            Field name=direction
+              Local name=zero ty=Vec3
+            Field name=axis_u
+              Local name=zero ty=Vec3
+            Field name=axis_v
+              Local name=zero ty=Vec3
+            Field name=radiance
+              Local name=black ty=Rgb
+  Struct name=LightConfig
+    AssocFn name=declared ret=LightConfig
+      Param name=capacity mode=read ty=u32
+      Param name=kinds mode=read ty=[LightKind; 8]
+      Body
+        Return
+          StructLiteral name=LightConfig ty=LightConfig
+            Field name=capacity
+              Local name=capacity ty=u32
+            Field name=kinds
+              Local name=kinds ty=[LightKind; 8]
+    AssocFn name=fixed ret=LightConfig
+      Param name=capacity mode=read ty=u32
+      Body
+        Return
+          StructLiteral name=LightConfig ty=LightConfig
+            Field name=capacity
+              Local name=capacity ty=u32
+            Field name=kinds
+              List ty=[LightKind; 8]
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+                EnumConstruct enum=LightKind variant=Point ty=LightKind
+    AssocFn name=gameplay_default ret=LightConfig
+      Body
+        Return
+          Call key=LightConfig.fixed ty=LightConfig
+            Int text=8 ty=u32
+  Struct name=LightFrame
+    AssocFn name=empty ret=LightFrame
+      Body
+        Return
+          StructLiteral name=LightFrame ty=LightFrame
+            Field name=lights
+              List ty=[Light; 8]
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+                Call key=Light.zero ty=Light
+    AssocFn name=fixed ret=LightFrame
+      Param name=lights mode=read ty=[Light; 8]
+      Body
+        Return
+          StructLiteral name=LightFrame ty=LightFrame
+            Field name=lights
+              Local name=lights ty=[Light; 8]
+  Struct name=MaterialSample
+    Method name=sample_color ret=Rgb
+      Receiver mode=read ty=MaterialSample
+      Body
+        Return
+          Field name=color ty=Rgb
+            Local name=self ty=MaterialSample
+    Method name=sample_roughness ret=f32
+      Receiver mode=read ty=MaterialSample
+      Body
+        Return
+          Field name=roughness ty=f32
+            Local name=self ty=MaterialSample
+    AssocFn name=clay ret=MaterialSample
+      Param name=color mode=read ty=Rgb
+      Param name=roughness mode=read ty=f32
+      Body
+        Return
+          Call key=MaterialSample.standard ty=MaterialSample
+            Local name=color ty=Rgb
+            Local name=roughness ty=f32
+    AssocFn name=porcelain ret=MaterialSample
+      Param name=color mode=read ty=Rgb
+      Param name=roughness mode=read ty=f32
+      Body
+        Return
+          Call key=MaterialSample.standard ty=MaterialSample
+            Local name=color ty=Rgb
+            Local name=roughness ty=f32
+    AssocFn name=standard ret=MaterialSample
+      Param name=color mode=read ty=Rgb
+      Param name=roughness mode=read ty=f32
+      Body
+        Let name=max_finite ty=f32
+          Float text=340282346638528859811704183484516925440.0 ty=f32
+        Let name=safe_r ty=f32
+          Field name=r ty=f32
+            Local name=color ty=Rgb
+        Let name=safe_g ty=f32
+          Field name=g ty=f32
+            Local name=color ty=Rgb
+        Let name=safe_b ty=f32
+          Field name=b ty=f32
+            Local name=color ty=Rgb
+        If
+          Binary op=!= ty=bool
+            Local name=safe_r ty=f32
+            Local name=safe_r ty=f32
+          Then
+            Assign
+              Local name=safe_r ty=f32
+              Float text=0.0 ty=f32
+        If
+          Binary op=!= ty=bool
+            Local name=safe_g ty=f32
+            Local name=safe_g ty=f32
+          Then
+            Assign
+              Local name=safe_g ty=f32
+              Float text=0.0 ty=f32
+        If
+          Binary op=!= ty=bool
+            Local name=safe_b ty=f32
+            Local name=safe_b ty=f32
+          Then
+            Assign
+              Local name=safe_b ty=f32
+              Float text=0.0 ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=safe_r ty=f32
+            Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_r ty=f32
+              Local name=max_finite ty=f32
+        If
+          Binary op=< ty=bool
+            Local name=safe_r ty=f32
+            Neg ty=f32
+              Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_r ty=f32
+              Neg ty=f32
+                Local name=max_finite ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=safe_g ty=f32
+            Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_g ty=f32
+              Local name=max_finite ty=f32
+        If
+          Binary op=< ty=bool
+            Local name=safe_g ty=f32
+            Neg ty=f32
+              Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_g ty=f32
+              Neg ty=f32
+                Local name=max_finite ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=safe_b ty=f32
+            Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_b ty=f32
+              Local name=max_finite ty=f32
+        If
+          Binary op=< ty=bool
+            Local name=safe_b ty=f32
+            Neg ty=f32
+              Local name=max_finite ty=f32
+          Then
+            Assign
+              Local name=safe_b ty=f32
+              Neg ty=f32
+                Local name=max_finite ty=f32
+        Let name=clamped ty=f32
+          Local name=roughness ty=f32
+        If
+          Binary op=!= ty=bool
+            Local name=clamped ty=f32
+            Local name=clamped ty=f32
+          Then
+            Assign
+              Local name=clamped ty=f32
+              Float text=0.0 ty=f32
+        If
+          Binary op=< ty=bool
+            Local name=clamped ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=clamped ty=f32
+              Float text=0.0 ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=clamped ty=f32
+            Float text=1.0 ty=f32
+          Then
+            Assign
+              Local name=clamped ty=f32
+              Float text=1.0 ty=f32
+        Let name=safe_color ty=Rgb
+          StructLiteral name=Rgb ty=Rgb
+            Field name=r
+              Local name=safe_r ty=f32
+            Field name=g
+              Local name=safe_g ty=f32
+            Field name=b
+              Local name=safe_b ty=f32
+        Return
+          StructLiteral name=MaterialSample ty=MaterialSample
+            Field name=color
+              Local name=safe_color ty=Rgb
+            Field name=roughness
+              Local name=clamped ty=f32
+  Struct name=ProbeConfig
+    AssocFn name=disabled ret=ProbeConfig
+      Body
+        Return
+          StructLiteral name=ProbeConfig ty=ProbeConfig
+            Field name=enabled
+              Bool value=false ty=bool
+            Field name=initialization_worst_case_ms
+              Int text=0 ty=u32
+    AssocFn name=fixed ret=ProbeConfig
+      Param name=enabled mode=read ty=bool
+      Body
+        If
+          Local name=enabled ty=bool
+          Then
+            Return
+              StructLiteral name=ProbeConfig ty=ProbeConfig
+                Field name=enabled
+                  Bool value=true ty=bool
+                Field name=initialization_worst_case_ms
+                  Int text=250 ty=u32
+        Return
+          StructLiteral name=ProbeConfig ty=ProbeConfig
+            Field name=enabled
+              Bool value=false ty=bool
+            Field name=initialization_worst_case_ms
+              Int text=0 ty=u32
+  Struct name=RenderCapacity
+  Struct name=RenderInvariant
+  Struct name=RenderPath
+  Struct name=RgbRange
+    AssocFn name=black_to_hdr_white ret=RgbRange
+      Body
+        Return
+          StructLiteral name=RgbRange ty=RgbRange
+            Field name=min
+              StructLiteral name=Rgb ty=Rgb
+                Field name=r
+                  Float text=0.0 ty=f32
+                Field name=g
+                  Float text=0.0 ty=f32
+                Field name=b
+                  Float text=0.0 ty=f32
+            Field name=max
+              StructLiteral name=Rgb ty=Rgb
+                Field name=r
+                  Float text=16.0 ty=f32
+                Field name=g
+                  Float text=16.0 ty=f32
+                Field name=b
+                  Float text=16.0 ty=f32
+  Struct name=ScalarRange
+  Struct name=TileId
+Module path=display
+Program
+  Struct name=Display
+    Init ret=Result[unit, BootError]
+      Receiver mode=mut ty=Display
+      Param name=cap mode=take ty=DeviceCap[DisplayDevice]
+      Param name=width mode=read ty=u32
+        Default
+          Int text=1920 ty=u32
+      Param name=height mode=read ty=u32
+        Default
+          Int text=1080 ty=u32
+      Param name=refresh_hz mode=read ty=u32
+        Default
+          Int text=60 ty=u32
+      Body
+        Let name=claimed ty=DriverClaimedDevice[DisplayDevice]
+          Intrinsic key=Device.claim type_arg=DisplayDevice ty=DriverClaimedDevice[DisplayDevice]
+            Arg label=cap
+              Take ty=DeviceCap[DisplayDevice]
+                Local name=cap ty=DeviceCap[DisplayDevice]
+        Assign
+          Field name=device ty=DriverClaimedDevice[DisplayDevice]
+            Local name=self ty=Display
+          Take ty=DriverClaimedDevice[DisplayDevice]
+            Local name=claimed ty=DriverClaimedDevice[DisplayDevice]
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[unit, BootError]
+            Unit ty=unit
+  Struct name=DisplayDevice
+  Struct name=DisplayDoorbell
+  Struct name=DisplayMemory
+Module path=examples.check_pixels_generic_params
+Program
+  PixelsFn key=examples.check_pixels_generic_params::shade kind=material input_index=0 params_index=1 params=Params[f32] material=MaterialId
+  PixelsFn key=examples.check_pixels_generic_params::world kind=field input_index=0 params_index=1 params=Params[f32] material=MaterialId
+  Fn name=build ret=Image
+    Body
+      Let name=img ty=Image
+        Intrinsic key=Image ty=Image
+          Arg label=name
+            Str text="check-pixels-generic-params" ty=Static[Str]
+          Arg label=target
+            EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+      Let name=display_device ty=ImageDecl
+        Intrinsic key=Image.device type_arg=DisplayDevice ty=ImageDecl
+          Arg label=transport
+            Int text=0x6000 ty=i64
+      Let name=display ty=ImageDecl
+        Intrinsic key=Image.driver type_arg=Display ty=ImageDecl
+          Arg label=device
+            Local name=display_device ty=ImageDecl
+          Arg label=width
+            Int text=64 ty=i64
+          Arg label=height
+            Int text=32 ty=i64
+          Arg label=refresh_hz
+            Int text=60 ty=i64
+      Let name=renderer ty=ImageDecl[Renderer[Params[f32]]]
+        Intrinsic key=Image.renderer type_arg=Params[f32] ty=ImageDecl[Renderer[Params[f32]]]
+          Arg label=field
+            FnRef key=world ty=fn(read Vec3, read Params[f32]) -> Field
+          Arg label=material
+            FnRef key=shade ty=fn(read SurfaceContext[MaterialId], read Params[f32]) -> MaterialSample
+          Arg label=display
+            Local name=display ty=ImageDecl
+          Arg label=width
+            Int text=64 ty=i64
+          Arg label=height
+            Int text=32 ty=i64
+          Arg label=refresh_hz
+            Int text=60 ty=i64
+          Arg label=shade_hz
+            Int text=60 ty=i64
+          Arg label=profile
+            EnumConstruct enum=RenderProfile variant=AaaByteExact ty=RenderProfile
+          Arg label=tone_curve
+            EnumConstruct enum=ToneCurve variant=Linear ty=ToneCurve
+          Arg label=near
+            Float text=0.1 ty=f64
+          Arg label=far
+            Float text=128.0 ty=f64
+          Arg label=world_min
+            StructLiteral name=Vec3 ty=Vec3
+              Field name=x
+                Neg ty=f32
+                  Float text=4.0 ty=f32
+              Field name=y
+                Neg ty=f32
+                  Float text=4.0 ty=f32
+              Field name=z
+                Neg ty=f32
+                  Float text=4.0 ty=f32
+          Arg label=world_max
+            StructLiteral name=Vec3 ty=Vec3
+              Field name=x
+                Float text=4.0 ty=f32
+              Field name=y
+                Float text=4.0 ty=f32
+              Field name=z
+                Float text=4.0 ty=f32
+          Arg label=camera_bounds
+            Call key=CameraBounds.bounded ty=CameraBounds
+              Float text=0.25 ty=f32
+          Arg label=light_config
+            Call key=LightConfig.fixed ty=LightConfig
+              Int text=0 ty=u32
+          Arg label=exposure_range
+            StructLiteral name=ScalarRange ty=ScalarRange
+              Field name=min
+                Neg ty=f32
+                  Float text=1.0 ty=f32
+              Field name=max
+                Float text=1.0 ty=f32
+          Arg label=environment_range
+            StructLiteral name=RgbRange ty=RgbRange
+              Field name=min
+                StructLiteral name=Rgb ty=Rgb
+                  Field name=r
+                    Float text=0.0 ty=f32
+                  Field name=g
+                    Float text=0.0 ty=f32
+                  Field name=b
+                    Float text=0.0 ty=f32
+              Field name=max
+                StructLiteral name=Rgb ty=Rgb
+                  Field name=r
+                    Float text=1.0 ty=f32
+                  Field name=g
+                    Float text=1.0 ty=f32
+                  Field name=b
+                    Float text=1.0 ty=f32
+          Arg label=ao
+            Call key=AoConfig.fixed ty=AoConfig
+              Bool value=false ty=bool
+          Arg label=probes
+            Call key=ProbeConfig.fixed ty=ProbeConfig
+              Bool value=false ty=bool
+          Arg label=initialization_deadline_ms
+            Int text=10 ty=i64
+      Intrinsic key=Image.on_failure ty=unit
+        Arg label=policy
+          EnumConstruct enum=Failure variant=Halt ty=Failure
+      Return
+        Intrinsic key=Image.seal ty=Image
+  Fn name=shade ret=MaterialSample
+    Param name=surface mode=read ty=SurfaceContext[MaterialId]
+    Param name=params mode=read ty=Params[f32]
+    Body
+      Return
+        Call key=MaterialSample.standard ty=MaterialSample
+          StructLiteral name=Rgb ty=Rgb
+            Field name=r
+              Float text=0.25 ty=f32
+            Field name=g
+              Float text=0.5 ty=f32
+            Field name=b
+              Float text=0.75 ty=f32
+          Float text=0.5 ty=f32
+  Fn name=world ret=Field
+    Param name=p mode=read ty=Vec3
+    Param name=params mode=read ty=Params[f32]
+    Body
+      Let name=q ty=Vec3
+        Call key=fn:identity[Vec3] ty=Vec3
+          Local name=p ty=Vec3
+      Let name=surface ty=Field
+        Call key=sphere ty=Field
+          Local name=q ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          Field name=radius ty=f32
+            Local name=params ty=Params[f32]
+      Return
+        Call key=fn:mark[ObjectId, MaterialId] ty=Field
+          Local name=surface ty=Field
+          EnumConstruct enum=ObjectId variant=Surface ty=ObjectId
+          EnumConstruct enum=MaterialId variant=Surface ty=MaterialId
+  Instantiation key=fn:identity[Vec3]
+    Fn ret=Vec3
+      Param name=value mode=read ty=Vec3
+      Body
+        Return
+          Local name=value ty=Vec3
+  Instantiation key=fn:mark[ObjectId, MaterialId]
+    Fn ret=Field
+      Param name=field mode=read ty=Field
+      Param name=object mode=read ty=ObjectId
+      Param name=material mode=read ty=MaterialId
+      Body
+        Return
+          Local name=field ty=Field
+  Instantiation key=struct:Params[f32]
+    Struct
+      PixelsParamField path=[0] range=[0.25,2] exact_integer=false

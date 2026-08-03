@@ -139,9 +139,9 @@ mod tests {
 
     #[test]
     fn fixed_set_len_matches_core_plus_mb_pool() {
-        assert_eq!(fixed_core_names().len(), 17);
+        assert_eq!(fixed_core_names().len(), 19);
         assert_eq!(MB_POOL_COUNT, 32);
-        assert_eq!(fixed_set_len(), 81);
+        assert_eq!(fixed_set_len(), 83);
         for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
         }

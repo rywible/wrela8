@@ -1,1 +1,1 @@
-error[comptime]: comptime assert failed: production Pixels stage is not implemented; implemented in task P1.3 at 30:5
+error[pixels P006]: rate for [0] is negative, non-finite, or not representable: `@rate` max_delta must be nonnegative at 33:21

@@ -1,0 +1,8 @@
+module examples.err_pixels_field_layout_marker
+
+from core.field import Field, Vec3
+
+@field
+@layout_assert
+fn world(p: Vec3) -> Field:
+    return p

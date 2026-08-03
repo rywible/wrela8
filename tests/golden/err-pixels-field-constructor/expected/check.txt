@@ -1,0 +1,1 @@
+error[type]: P004: opaque `Field` may not be stored in a user struct value at 6:17

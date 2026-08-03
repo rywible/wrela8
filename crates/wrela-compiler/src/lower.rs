@@ -394,7 +394,7 @@ fn all_candidate_keys(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<Stri
                 }
             }
             TypedInstantiation::Struct(s) => add_one_struct_member_keys(ikey, s, &mut out),
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     out
@@ -1020,7 +1020,7 @@ pub fn lower_program_with(
             TypedInstantiation::Struct(s) => {
                 lower_struct_members(ikey, s, &mut lw, &mut fns, &reachable)?;
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     for (name, f) in &program.imported.fns {
@@ -1056,7 +1056,7 @@ pub fn lower_program_with(
             TypedInstantiation::Struct(s) => {
                 lower_struct_members(ikey, s, &mut lw, &mut fns, &reachable)?;
             }
-            TypedInstantiation::Enum => {}
+            TypedInstantiation::Enum(_) => {}
         }
     }
     Ok(MwirProgram {

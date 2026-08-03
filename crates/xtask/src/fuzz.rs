@@ -1155,7 +1155,7 @@ pub(crate) fn run_image_pipeline_once(
     programs.insert(module_addr.to_string(), program.clone());
     let text = match eval::interp::eval_image(program, &fn_name) {
         Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
-            Ok(()) => {
+            Ok(_) => {
                 let build_input = report::BuildInput {
                     path: report::address_to_relative_path(module_addr),
                     digest: report::sha256_hex(input.as_bytes()),
@@ -2356,6 +2356,7 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
             &programs,
             &layout_ctx,
             &graph,
+            None,
             &runtime_tests,
             &async_tests,
             false,

@@ -1,0 +1,1 @@
+error[pixels P005]: dynamic array index parameter path [1] must have an exact integer `@range` wholly within [0, 2) at 43:36

@@ -328,7 +328,7 @@ fn collect(programs: &BTreeMap<String, &TypedProgram>) -> Facts {
                         scan_fn(format!("{key}.init"), f, &mut facts);
                     }
                 }
-                TypedInstantiation::Enum => {}
+                TypedInstantiation::Enum(_) => {}
             }
         }
     }

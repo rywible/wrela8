@@ -1,0 +1,7 @@
+module lib.unrelated_pixels_params
+
+pub struct Params:
+    pub unrelated: bool
+
+pub fn unrelated_fixture_value(read params: Params) -> bool:
+    return params.unrelated

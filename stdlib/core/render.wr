@@ -20,9 +20,91 @@ pub struct DisplayError:
 pub struct Camera:
     pub eye: Vec3
     pub forward: Vec3
+    pub right: Vec3
+    pub up: Vec3
+
+pub enum LightKind:
+    Disabled
+    Point
+    Directional
+    Rectangle
+    Disk
+
+pub struct Light:
+    position: Vec3
+    direction: Vec3
+    axis_u: Vec3
+    axis_v: Vec3
+    radiance: Rgb
+
+    pub fn zero() -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        black = Rgb(r=0.0, g=0.0, b=0.0)
+        return Light(
+            position=zero,
+            direction=zero,
+            axis_u=zero,
+            axis_v=zero,
+            radiance=black,
+        )
+
+    pub fn point(position: Vec3, radiance: Rgb) -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        return Light(
+            position=position,
+            direction=zero,
+            axis_u=zero,
+            axis_v=zero,
+            radiance=radiance,
+        )
+
+    pub fn directional(direction: Vec3, radiance: Rgb) -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        return Light(
+            position=zero,
+            direction=direction,
+            axis_u=zero,
+            axis_v=zero,
+            radiance=radiance,
+        )
+
+    pub fn rectangle(center: Vec3, axis_u: Vec3, axis_v: Vec3, radiance: Rgb) -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        return Light(
+            position=center,
+            direction=zero,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            radiance=radiance,
+        )
+
+    pub fn disk(center: Vec3, axis_u: Vec3, axis_v: Vec3, radiance: Rgb) -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        return Light(
+            position=center,
+            direction=zero,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            radiance=radiance,
+        )
 
 pub struct LightFrame:
-    pub active: u32
+    lights: [Light; 8]
+
+    pub fn empty() -> LightFrame:
+        return LightFrame(lights=[
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+        ])
+
+    pub fn fixed(lights: [Light; 8]) -> LightFrame:
+        return LightFrame(lights=lights)
 
 pub struct ScalarRange:
     pub min: f32
@@ -32,17 +114,66 @@ pub struct RgbRange:
     pub min: Rgb
     pub max: Rgb
 
+    pub fn black_to_hdr_white() -> RgbRange:
+        return RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=16.0, g=16.0, b=16.0),
+        )
+
 pub struct CameraBounds:
-    pub max_motion: f32
+    max_motion: f32
+
+    pub fn bounded(max_motion: f32) -> CameraBounds:
+        return CameraBounds(max_motion=max_motion)
+
+    pub fn gameplay_default() -> CameraBounds:
+        return CameraBounds(max_motion=0.25)
 
 pub struct LightConfig:
-    pub capacity: u32
+    capacity: u32
+    kinds: [LightKind; 8]
+
+    pub fn fixed(capacity: u32) -> LightConfig:
+        return LightConfig(
+            capacity=capacity,
+            kinds=[
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+                LightKind.Point,
+            ],
+        )
+
+    pub fn declared(capacity: u32, kinds: [LightKind; 8]) -> LightConfig:
+        return LightConfig(capacity=capacity, kinds=kinds)
+
+    pub fn gameplay_default() -> LightConfig:
+        return LightConfig.fixed(capacity=8)
 
 pub struct AoConfig:
-    pub enabled: bool
+    enabled: bool
+
+    pub fn fixed(enabled: bool) -> AoConfig:
+        return AoConfig(enabled=enabled)
+
+    pub fn deterministic_v1() -> AoConfig:
+        return AoConfig(enabled=true)
 
 pub struct ProbeConfig:
-    pub enabled: bool
+    enabled: bool
+    initialization_worst_case_ms: u32
+
+    pub fn fixed(enabled: bool) -> ProbeConfig:
+        if enabled:
+            return ProbeConfig(enabled=true, initialization_worst_case_ms=250)
+        return ProbeConfig(enabled=false, initialization_worst_case_ms=0)
+
+    pub fn disabled() -> ProbeConfig:
+        return ProbeConfig(enabled=false, initialization_worst_case_ms=0)
 
 pub enum RenderProfile:
     AaaByteExact
@@ -69,8 +200,53 @@ pub struct SurfaceContext[M]:
     pub normal: Vec3
 
 pub struct MaterialSample:
-    pub color: Rgb
-    pub roughness: f32
+    color: Rgb
+    roughness: f32
+
+    pub fn standard(color: Rgb, roughness: f32) -> MaterialSample:
+        max_finite: f32 = 340282346638528859811704183484516925440.0
+        safe_r = color.r
+        safe_g = color.g
+        safe_b = color.b
+        if safe_r != safe_r:
+            safe_r = 0.0
+        if safe_g != safe_g:
+            safe_g = 0.0
+        if safe_b != safe_b:
+            safe_b = 0.0
+        if safe_r > max_finite:
+            safe_r = max_finite
+        if safe_r < -max_finite:
+            safe_r = -max_finite
+        if safe_g > max_finite:
+            safe_g = max_finite
+        if safe_g < -max_finite:
+            safe_g = -max_finite
+        if safe_b > max_finite:
+            safe_b = max_finite
+        if safe_b < -max_finite:
+            safe_b = -max_finite
+        clamped = roughness
+        if clamped != clamped:
+            clamped = 0.0
+        if clamped < 0.0:
+            clamped = 0.0
+        if clamped > 1.0:
+            clamped = 1.0
+        safe_color = Rgb(r=safe_r, g=safe_g, b=safe_b)
+        return MaterialSample(color=safe_color, roughness=clamped)
+
+    pub fn clay(color: Rgb, roughness: f32) -> MaterialSample:
+        return MaterialSample.standard(color=color, roughness=roughness)
+
+    pub fn porcelain(color: Rgb, roughness: f32) -> MaterialSample:
+        return MaterialSample.standard(color=color, roughness=roughness)
+
+    pub fn sample_color(read self) -> Rgb:
+        return self.color
+
+    pub fn sample_roughness(read self) -> f32:
+        return self.roughness
 
 pub struct RenderFrame[P]:
     pub params: P

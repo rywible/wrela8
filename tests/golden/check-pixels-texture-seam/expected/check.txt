@@ -1,1 +1,209 @@
-error[comptime]: comptime assert failed: production Pixels stage is not implemented; implemented in task P9.3 at 30:5
+Module path=field
+  Struct Vec2 data
+    pub field x: f32
+    pub field y: f32
+  Struct Vec3 data
+    pub field x: f32
+    pub field y: f32
+    pub field z: f32
+    fn add(read self, right: read Vec3) -> Vec3
+    fn subtract(read self, right: read Vec3) -> Vec3
+  Struct Vec4 data
+    pub field x: f32
+    pub field y: f32
+    pub field z: f32
+    pub field w: f32
+  Struct Rgb data
+    pub field r: f32
+    pub field g: f32
+    pub field b: f32
+  Struct Aabb data
+    pub field min: Vec3
+    pub field max: Vec3
+  Struct Field data
+    field value: f32
+    fn union(read self, right: read Field) -> Field
+  Fn abs_scalar(x: read f32) -> f32
+  Fn min_scalar(a: read f32, b: read f32) -> f32
+  Fn max_scalar(a: read f32, b: read f32) -> f32
+  Fn clamp_scalar(x: read f32, lo: read f32, hi: read f32) -> f32
+  Fn sqrt_scalar(x: read f32) -> f32
+  Fn length2(v: read Vec2) -> f32
+  Fn length3(v: read Vec3) -> f32
+  Fn dot3(a: read Vec3, b: read Vec3) -> f32
+  Fn plane(p: read Vec3, normal: read Vec3, offset: read f32) -> Field
+  Fn sphere(p: read Vec3, center: read Vec3, radius: read f32) -> Field
+  Fn box(p: read Vec3, half: read Vec3) -> Field
+  Fn round_box(p: read Vec3, half: read Vec3, radius: read f32) -> Field
+  Fn capsule(p: read Vec3, a: read Vec3, b: read Vec3, radius: read f32) -> Field
+  Fn finite_cylinder(p: read Vec3, radius: read f32, half_height: read f32) -> Field
+  Fn finite_cone(p: read Vec3, radius: read f32, half_height: read f32) -> Field
+  Fn torus(p: read Vec3, major_radius: read f32, minor_radius: read f32) -> Field
+  Fn translate(p: read Vec3, by: read Vec3) -> Vec3
+  Fn rotate(p: read Vec3, row_x: read Vec3, row_y: read Vec3, row_z: read Vec3) -> Vec3
+  Fn rigid_transform(p: read Vec3, translation: read Vec3, row_x: read Vec3, row_y: read Vec3, row_z: read Vec3) -> Vec3
+  Fn uniform_scale(field: read Field, scale: read f32) -> Field
+  Fn finite_repeat_axis(value: read f32, first: read i32, count: read u32, period: read f32) -> f32
+  Fn finite_repeat_x(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn finite_repeat_y(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn finite_repeat_z(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn union(a: read Field, b: read Field) -> Field
+  Fn intersection(a: read Field, b: read Field) -> Field
+  Fn subtract(a: read Field, b: read Field) -> Field
+  Fn smooth_union(a: read Field, b: read Field, k: read f32) -> Field
+  Fn smooth_intersection(a: read Field, b: read Field, k: read f32) -> Field
+  Fn smooth_subtract(a: read Field, b: read Field, k: read f32) -> Field
+  Fn mark[O, M](field: read Field, object: read O, material: read M) -> Field
+  Fn sin_scalar(angle: read f32) -> f32
+  Fn sinusoidal_displace(field: read Field, p: read Vec3, amplitude: read f32, frequency: read f32, phase: read f32) -> Field
+  Fn scalar_length_semantics_cover_large_exact_radius() -> unit
+Module path=render
+  Struct RenderPath data
+    pub field component: u32
+  Struct TileId data
+    pub field value: u32
+  Struct RenderCapacity data
+    pub field kind: u32
+  Struct RenderInvariant data
+    pub field kind: u32
+  Struct DisplayError data
+    pub field code: u32
+  Struct Camera data
+    pub field eye: Vec3
+    pub field forward: Vec3
+    pub field right: Vec3
+    pub field up: Vec3
+  Enum LightKind data
+    variant Disabled
+    variant Point
+    variant Directional
+    variant Rectangle
+    variant Disk
+  Struct Light data
+    field position: Vec3
+    field direction: Vec3
+    field axis_u: Vec3
+    field axis_v: Vec3
+    field radiance: Rgb
+    fn zero() -> Light
+    fn point(position: read Vec3, radiance: read Rgb) -> Light
+    fn directional(direction: read Vec3, radiance: read Rgb) -> Light
+    fn rectangle(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
+    fn disk(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
+  Struct LightFrame data
+    field lights: [Light; 8]
+    fn empty() -> LightFrame
+    fn fixed(lights: read [Light; 8]) -> LightFrame
+  Struct ScalarRange data
+    pub field min: f32
+    pub field max: f32
+  Struct RgbRange data
+    pub field min: Rgb
+    pub field max: Rgb
+    fn black_to_hdr_white() -> RgbRange
+  Struct CameraBounds data
+    field max_motion: f32
+    fn bounded(max_motion: read f32) -> CameraBounds
+    fn gameplay_default() -> CameraBounds
+  Struct LightConfig data
+    field capacity: u32
+    field kinds: [LightKind; 8]
+    fn fixed(capacity: read u32) -> LightConfig
+    fn declared(capacity: read u32, kinds: read [LightKind; 8]) -> LightConfig
+    fn gameplay_default() -> LightConfig
+  Struct AoConfig data
+    field enabled: bool
+    fn fixed(enabled: read bool) -> AoConfig
+    fn deterministic_v1() -> AoConfig
+  Struct ProbeConfig data
+    field enabled: bool
+    field initialization_worst_case_ms: u32
+    fn fixed(enabled: read bool) -> ProbeConfig
+    fn disabled() -> ProbeConfig
+  Enum RenderProfile data
+    variant AaaByteExact
+  Enum ToneCurve data
+    variant Linear
+    variant FilmicV1
+  Enum RenderError data
+    variant ParameterOutOfRange(RenderPath)
+    variant NonFiniteInput(RenderPath)
+    variant FrameContractMismatch(RenderPath)
+    variant RootIsolationExhausted(TileId)
+    variant EventIsolationExhausted(TileId)
+    variant CertificateExhausted(TileId)
+    variant CapacityExceeded(RenderCapacity)
+    variant FixedPointRangeExceeded(TileId)
+    variant Display(DisplayError)
+    variant InternalInvariant(RenderInvariant)
+  Struct SurfaceContext[M] data
+    pub field material: M
+    pub field position: Vec3
+    pub field normal: Vec3
+  Struct MaterialSample data
+    field color: Rgb
+    field roughness: f32
+    fn standard(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn clay(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn porcelain(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn sample_color(read self) -> Rgb
+    fn sample_roughness(read self) -> f32
+  Struct RenderFrame[P] data
+    pub field params: P
+    pub field camera: Camera
+    pub field lights: LightFrame
+    pub field exposure: f32
+    pub field environment: Rgb
+    pub field frame_index: u64
+  Struct RenderedFrame[P] data
+    pub field params: P
+    pub field frame_index: u64
+    pub field displayed_digest: [u8; 32]
+    pub field rebuilt_tiles: u32
+    pub field reused_tiles: u32
+  Struct Renderer[P] resource
+    field generated_state: u64
+    async fn render(mut self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
+Module path=display
+  Struct DisplayDevice data
+    field id: u32
+  Enum Feature data
+    variant Bgra8
+  Struct Display resource
+    field device: DriverClaimedDevice[DisplayDevice]
+    init(mut self, cap: take DeviceCap[DisplayDevice], width: read u32, height: read u32, refresh_hz: read u32) -> Result[unit, BootError]
+  Struct DisplayDoorbell data
+    field present: u64
+  Struct DisplayMemory data
+    field abi_version: u32
+    field format: u32
+    field width: u32
+    field height: u32
+    field stride_bytes: u32
+    field tile_count: u32
+    field sequence: u64
+    field tiles_addr: u64
+    field tile_id: u32
+    field tile_x: u32
+    field tile_y: u32
+    field tile_width: u32
+    field tile_height: u32
+    field tile_stride_bytes: u32
+    field tile_pixels_addr: u64
+    field pixels: [u8; 8192]
+  Static DISPLAY_MEMORY: DisplayMemory placed=0x40100000
+  Static DISPLAY_DOORBELL: DisplayDoorbell placed=0x8006000
+Module path=examples.check_pixels_texture_seam
+  Const FIXTURE_ID: u32
+  Fn fixture_id() -> u32
+  Const U_LEFT_RAW: i32
+  Const U_RIGHT_RAW: i32
+  Const UV_FRAC_BITS: u8
+  Struct SceneParams data
+    field phase: f32
+  Enum MaterialId data
+    variant Ground
+  Fn world(p: read Vec3, params: read SceneParams) -> Field
+  Fn shade(surface: read SurfaceContext[MaterialId], params: read SceneParams) -> MaterialSample
+  Fn pinned_scene_contract() -> unit
+  Fn build() -> Image
