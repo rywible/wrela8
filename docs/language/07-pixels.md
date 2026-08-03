@@ -387,9 +387,19 @@ and scanout, never renderer semantics.
 ## 4. Internal data model and image format
 
 All IDs are typed dense integer newtypes assigned after deterministic
-canonicalization. Source order is not an encoded identity. Nodes are ordered by
-kind, canonical operands, exact immediate bits, parameter paths, and stable
-source location only as a final diagnostic tie-break.
+canonicalization. No runtime record implicitly stores a source or Rust enum
+discriminant. The canonical order, for every order that reaches a dump,
+encoded program, report, or build digest, is:
+
+1. renderer declaration order in the sealed image graph;
+2. canonical callee key;
+3. source span `(module path, byte start, byte end)`;
+4. structural child IDs;
+5. exact immediate bits.
+
+Implementations use ordered maps, sorted vectors, and explicit stable sorts.
+The source span is an explicit canonical key, not merely a diagnostic
+tie-break.
 
 Symbolic values distinguish scalar/vector nodes, opaque fields, object and
 material IDs, finite arrays/structs, and comptime values. They never represent

@@ -61,6 +61,11 @@ fn strip_lean(source: &str) -> Result<String, String> {
             block_depth = 1;
             out.push_str("  ");
             i += 2;
+        } else if b == b'!' && next == Some(b'"') {
+            return Err(
+                "interpolated or macro string literals are unsupported by the admission scanner"
+                    .to_string(),
+            );
         } else if b == b'"' {
             string = true;
             out.push(' ');
@@ -223,6 +228,17 @@ mod tests {
                     .unwrap_err()
                     .contains("unterminated")
             );
+        }
+    }
+
+    #[test]
+    fn scanner_fails_closed_on_executable_interpolated_strings() {
+        for source in [
+            r#"def hidden := s!"{(by sorry : Nat)}""#,
+            r#"def hidden := m!"{(by admit : Nat)}""#,
+        ] {
+            let error = scan_text(source, "fixture").unwrap_err();
+            assert!(error.contains("interpolated or macro string"));
         }
     }
 

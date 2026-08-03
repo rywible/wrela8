@@ -214,6 +214,22 @@ fn lint_normative_docs(repo: &Path) -> Result<(), String> {
             ));
         }
     }
+    let normalized_pixels = pixels.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut ordering_cursor = 0;
+    for ordering_key in [
+        "renderer declaration order in the sealed image graph",
+        "canonical callee key",
+        "source span `(module path, byte start, byte end)`",
+        "structural child IDs",
+        "exact immediate bits",
+    ] {
+        let Some(relative) = normalized_pixels[ordering_cursor..].find(ordering_key) else {
+            return Err(format!(
+                "pixels plan lint: normative canonical ordering lacks `{ordering_key}`"
+            ));
+        };
+        ordering_cursor += relative + ordering_key.len();
+    }
     for contract in [
         "correct without",
         "without dense truth, a sample lattice, a dense edge mask, or previous-frame",
@@ -457,6 +473,45 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureActivation<'a> {
+    Pending(&'a str),
+    Active(&'a str),
+}
+
+fn parse_fixture_activation(status: &str) -> Result<FixtureActivation<'_>, String> {
+    const PLACEHOLDER: &str = "production Pixels stage is not implemented; implemented in task ";
+    if let Some(task) = status.strip_prefix(PLACEHOLDER) {
+        Ok(FixtureActivation::Pending(task.trim_end_matches('.')))
+    } else if let Some(task) = status.strip_prefix("activated; implemented in task ") {
+        Ok(FixtureActivation::Active(task.trim_end_matches('.')))
+    } else {
+        Err(format!("invalid P0 status `{status}`"))
+    }
+}
+
+fn lint_fixture_placeholder(
+    name: &str,
+    kind: &str,
+    activation: FixtureActivation<'_>,
+    source: &str,
+) -> Result<(), String> {
+    const PLACEHOLDER: &str = "production Pixels stage is not implemented; implemented in task ";
+    let source_task = source.split_once(PLACEHOLDER).and_then(|(_, tail)| {
+        tail.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
+            .next()
+    });
+    match activation {
+        FixtureActivation::Pending(task) if source_task != Some(task) => Err(format!(
+            "pixels plan lint: {name} pending {kind} must contain its task-owned `{task}` placeholder"
+        )),
+        FixtureActivation::Active(_) if source_task.is_some() => Err(format!(
+            "pixels plan lint: {name} active {kind} retains a P0 placeholder"
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Result<(), String> {
     let matrix = matrix_fixture_names(plan)?;
     let manifest_text = std::fs::read_to_string(repo.join(PIXELS_CASES))
@@ -515,10 +570,24 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
                 ));
             }
         }
-        if !readme.contains("production Pixels stage is not implemented; implemented in task P") {
+        let status = readme
+            .lines()
+            .find_map(|line| line.strip_prefix("P0 status: "))
+            .ok_or_else(|| {
+                format!(
+                    "pixels plan lint: {} lacks a `P0 status:` value",
+                    readme_path.display()
+                )
+            })?;
+        let activation = parse_fixture_activation(status).map_err(|message| {
+            format!("pixels plan lint: {} has {message}", readme_path.display())
+        })?;
+        let status_task = match activation {
+            FixtureActivation::Pending(task) | FixtureActivation::Active(task) => task,
+        };
+        if !tasks.contains(status_task) {
             return Err(format!(
-                "pixels plan lint: {} lacks the task-owned P0 placeholder",
-                readme_path.display()
+                "pixels plan lint: {directory_name} status names nonexistent task `{status_task}`"
             ));
         }
         let input_path = if path.join("root").is_file() {
@@ -576,24 +645,11 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
                 ));
             }
         }
-        let placeholder = "production Pixels stage is not implemented; implemented in task ";
         for (kind, source) in [
             ("input", input.as_str()),
             ("expectation", expected.as_str()),
         ] {
-            let Some(task) = source.split_once(placeholder).and_then(|(_, tail)| {
-                tail.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
-                    .next()
-            }) else {
-                return Err(format!(
-                    "pixels plan lint: {directory_name} {kind} lacks a task-owned placeholder"
-                ));
-            };
-            if !tasks.contains(task) {
-                return Err(format!(
-                    "pixels plan lint: {directory_name} {kind} names nonexistent task `{task}`"
-                ));
-            }
+            lint_fixture_placeholder(directory_name, kind, activation, source)?;
         }
         let lower_input = input.to_ascii_lowercase();
         for forbidden in [
@@ -847,6 +903,30 @@ mod tests {
             compare_fixture_names(&names, &names, names.len(), &names, &extra)
                 .unwrap_err()
                 .contains("extra")
+        );
+    }
+
+    #[test]
+    fn fixture_placeholder_check_allows_activation_but_not_stale_sentinels() {
+        let pending = parse_fixture_activation(
+            "production Pixels stage is not implemented; implemented in task P1.3.",
+        )
+        .unwrap();
+        let active = parse_fixture_activation("activated; implemented in task P1.3.").unwrap();
+        let placeholder =
+            "error: production Pixels stage is not implemented; implemented in task P1.3";
+
+        lint_fixture_placeholder("fixture", "input", pending, placeholder).unwrap();
+        assert!(
+            lint_fixture_placeholder("fixture", "input", pending, "real source")
+                .unwrap_err()
+                .contains("must contain")
+        );
+        lint_fixture_placeholder("fixture", "input", active, "real source").unwrap();
+        assert!(
+            lint_fixture_placeholder("fixture", "input", active, placeholder)
+                .unwrap_err()
+                .contains("retains")
         );
     }
 }
