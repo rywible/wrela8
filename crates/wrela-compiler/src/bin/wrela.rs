@@ -16,7 +16,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -315,7 +315,42 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
     }
 }
 
-fn run_pixels_stage(programs: &BTreeMap<String, TypedProgram>, stage: &str) {
+fn pixels_dump_stage(stage: &str) -> Option<wrela_compiler::pixels::PixelsDumpStage> {
+    use wrela_compiler::pixels::PixelsDumpStage;
+
+    match stage {
+        "field-graph" => Some(PixelsDumpStage::FieldGraph),
+        "frame-program" => Some(PixelsDumpStage::FrameProgram),
+        "render-layout" => Some(PixelsDumpStage::RenderLayout),
+        _ => None,
+    }
+}
+
+fn parse_renderer_index(value: &str) -> Result<usize, &'static str> {
+    value
+        .parse()
+        .map_err(|_| "--renderer requires a nonnegative integer index")
+}
+
+fn validate_renderer_stage(stage: &str, renderer_index: Option<usize>) -> Result<(), &'static str> {
+    if renderer_index.is_some() && pixels_dump_stage(stage).is_none() {
+        Err("--renderer is valid only with --stage=field-graph, \
+             --stage=frame-program, or --stage=render-layout")
+    } else {
+        Ok(())
+    }
+}
+
+fn print_pixels_error(message: &str) {
+    let message = message.strip_prefix("pixels: ").unwrap_or(message);
+    print_line_diagnostic(&format!("error[pixels]: {message}"));
+}
+
+fn run_pixels_stage(
+    programs: &BTreeMap<String, TypedProgram>,
+    stage: wrela_compiler::pixels::PixelsDumpStage,
+    renderer_index: Option<usize>,
+) {
     let candidates: Vec<(&String, &String)> = programs
         .iter()
         .filter_map(|(module, program)| program.image_fn.as_ref().map(|f| (module, f)))
@@ -339,18 +374,38 @@ fn run_pixels_stage(programs: &BTreeMap<String, TypedProgram>, stage: &str) {
         print_sema_error(&error);
         return;
     }
+    if graph.renderers.is_empty() {
+        if let Some(index) = renderer_index {
+            print_pixels_error(&format!(
+                "renderer index {index} is out of range; image declares 0 renderers"
+            ));
+        } else {
+            print!("{}", wrela_compiler::pixels::dump_zero_renderers(stage));
+        }
+        return;
+    }
+    if let Some(index) = renderer_index {
+        if index >= graph.renderers.len() {
+            print_pixels_error(&format!(
+                "renderer index {index} is out of range; image declares {} renderer(s)",
+                graph.renderers.len()
+            ));
+            return;
+        }
+    }
     match wrela_compiler::pixels::compile_plane_skeleton(program, programs, &graph) {
         Ok(skeleton) => match stage {
-            "field-graph" => print!("{}", wrela_compiler::pixels::dump_field_graph(&skeleton)),
-            "frame-program" => {
+            wrela_compiler::pixels::PixelsDumpStage::FieldGraph => {
+                print!("{}", wrela_compiler::pixels::dump_field_graph(&skeleton))
+            }
+            wrela_compiler::pixels::PixelsDumpStage::FrameProgram => {
                 print!("{}", wrela_compiler::pixels::dump_frame_program(&skeleton))
             }
-            "render-layout" => {
+            wrela_compiler::pixels::PixelsDumpStage::RenderLayout => {
                 print!("{}", wrela_compiler::pixels::dump_render_layout(&skeleton))
             }
-            _ => unreachable!("Pixels dispatcher names are fixed"),
         },
-        Err(message) => print_line_diagnostic(&format!("error[pixels]: {message}")),
+        Err(message) => print_pixels_error(&message),
     }
 }
 
@@ -763,6 +818,7 @@ fn dump(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_block_bridge(true);
 
     let mut stage = None;
+    let mut renderer_index = None;
     let mut path = None;
     let mut timings = false;
     let mut omit_dmb = false;
@@ -772,6 +828,18 @@ fn dump(args: &[String]) -> ExitCode {
     for a in args {
         if let Some(s) = a.strip_prefix("--stage=") {
             stage = Some(s.to_string());
+        } else if let Some(index) = a.strip_prefix("--renderer=") {
+            if renderer_index.is_some() {
+                eprintln!("error: --renderer may be specified only once");
+                return ExitCode::FAILURE;
+            }
+            renderer_index = match parse_renderer_index(index) {
+                Ok(index) => Some(index),
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    return ExitCode::FAILURE;
+                }
+            };
         } else if a == "--timings" {
             timings = true;
         } else if a == "--omit-dmb" {
@@ -809,6 +877,10 @@ fn dump(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    if let Err(message) = validate_renderer_stage(&stage, renderer_index) {
+        eprintln!("error: {message}");
+        return ExitCode::FAILURE;
+    }
     wrela_compiler::codegen::set_omit_dmb(omit_dmb);
     wrela_compiler::codegen::set_block_count(block_count);
     wrela_compiler::opts::apply_mode(mode);
@@ -1407,7 +1479,12 @@ fn dump(args: &[String]) -> ExitCode {
                 let dump_start = Instant::now();
                 match parsed {
                     Ok(module) => match load_build_closure(&path, module) {
-                        Ok((programs, _, _)) => run_pixels_stage(&programs, &stage),
+                        Ok((programs, _, _)) => run_pixels_stage(
+                            &programs,
+                            pixels_dump_stage(&stage)
+                                .expect("Pixels match arm has a canonical dump stage"),
+                            renderer_index,
+                        ),
                         Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
@@ -2068,4 +2145,43 @@ fn build_cmd(args: &[String]) -> ExitCode {
     );
     println!("build: report written to {report_path_str}");
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wrela_compiler::pixels::PixelsDumpStage;
+
+    #[test]
+    fn pixels_dump_stage_names_are_canonical() {
+        assert_eq!(
+            pixels_dump_stage("field-graph"),
+            Some(PixelsDumpStage::FieldGraph)
+        );
+        assert_eq!(
+            pixels_dump_stage("frame-program"),
+            Some(PixelsDumpStage::FrameProgram)
+        );
+        assert_eq!(
+            pixels_dump_stage("render-layout"),
+            Some(PixelsDumpStage::RenderLayout)
+        );
+        assert_eq!(pixels_dump_stage("pixels-hidden"), None);
+        for stage in ["field-graph", "frame-program", "render-layout"] {
+            assert!(USAGE.contains(stage));
+        }
+    }
+
+    #[test]
+    fn renderer_selector_is_numeric_and_pixels_only() {
+        assert_eq!(parse_renderer_index("0"), Ok(0));
+        assert!(parse_renderer_index("").is_err());
+        assert!(parse_renderer_index("-1").is_err());
+        assert!(parse_renderer_index("one").is_err());
+        assert!(validate_renderer_stage("field-graph", Some(0)).is_ok());
+        assert!(validate_renderer_stage("frame-program", Some(0)).is_ok());
+        assert!(validate_renderer_stage("render-layout", Some(0)).is_ok());
+        assert!(validate_renderer_stage("typed", Some(0)).is_err());
+        assert!(validate_renderer_stage("typed", None).is_ok());
+    }
 }

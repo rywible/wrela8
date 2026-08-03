@@ -1,0 +1,7 @@
+module examples.check_pixels_empty
+
+@image
+pub fn build() -> Image:
+    img = Image(name="pixels-empty", target=Target.wrela_machine_v1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
