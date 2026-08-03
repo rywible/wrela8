@@ -1,0 +1,11 @@
+module examples.err_pixels_rate
+
+const FIXTURE_ID: u32 = 25
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P1.3"
+
+const NEGATIVE_DELTA_RAW: i32 = -1

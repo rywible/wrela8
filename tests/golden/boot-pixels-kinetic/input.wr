@@ -1,0 +1,11 @@
+module examples.boot_pixels_kinetic
+
+const FIXTURE_ID: u32 = 38
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P11.13"
+
+const SEQUENCE_FRAMES: u32 = 16

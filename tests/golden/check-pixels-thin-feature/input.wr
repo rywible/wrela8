@@ -1,0 +1,13 @@
+module examples.check_pixels_thin_feature
+
+const FIXTURE_ID: u32 = 7
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.7"
+
+const POSITION_FRAC_BITS: u8 = 8
+const HALF_WIDTH_RAW: i32 = 1
+const CENTER_X_RAW: i32 = 0

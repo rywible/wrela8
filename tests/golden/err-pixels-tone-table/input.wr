@@ -1,0 +1,12 @@
+module examples.err_pixels_tone_table
+
+const FIXTURE_ID: u32 = 31
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P9.1"
+
+const TABLE_LEFT_CODE: u8 = 2
+const TABLE_RIGHT_CODE: u8 = 1

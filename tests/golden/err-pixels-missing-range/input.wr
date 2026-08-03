@@ -1,0 +1,11 @@
+module examples.err_pixels_missing_range
+
+const FIXTURE_ID: u32 = 24
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P1.3"
+
+const INFLUENCING_PATH_DEPTH: u32 = 3

@@ -1,0 +1,13 @@
+module examples.check_pixels_probe_wall
+
+const FIXTURE_ID: u32 = 21
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P10.7"
+
+const WALL_X_RAW: i32 = 0
+const PROBE_LEFT_X_RAW: i32 = -1
+const PROBE_RIGHT_X_RAW: i32 = 1

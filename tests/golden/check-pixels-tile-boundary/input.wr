@@ -1,0 +1,12 @@
+module examples.check_pixels_tile_boundary
+
+const FIXTURE_ID: u32 = 17
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P8.7"
+
+const TILE_WIDTH: u32 = 16
+const EDGE_X: u32 = 16

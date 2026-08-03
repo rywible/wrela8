@@ -1,0 +1,11 @@
+module examples.boot_pixels_gi
+
+const FIXTURE_ID: u32 = 37
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P10.10"
+
+const PROBE_LEVELS: u32 = 3

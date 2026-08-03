@@ -1,0 +1,12 @@
+module examples.err_pixels_cost
+
+const FIXTURE_ID: u32 = 32
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P12.8"
+
+const MODELED_CYCLES: u64 = 1001
+const DEADLINE_CYCLES: u64 = 1000

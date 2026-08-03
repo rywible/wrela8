@@ -1,0 +1,12 @@
+module examples.err_pixels_capacity
+
+const FIXTURE_ID: u32 = 28
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.10"
+
+const REQUIRED_FEATURES: u32 = 257
+const ENCODED_LIMIT: u32 = 256

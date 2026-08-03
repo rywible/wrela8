@@ -1,0 +1,12 @@
+module examples.err_pixels_fixed_q
+
+const FIXTURE_ID: u32 = 30
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P6.7"
+
+const REQUIRED_RAW_BITS: u8 = 33
+const AVAILABLE_RAW_BITS: u8 = 31

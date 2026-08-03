@@ -1,0 +1,1 @@
+error[comptime]: comptime assert failed: production Pixels stage is not implemented; implemented in task P12.8 at 9:5

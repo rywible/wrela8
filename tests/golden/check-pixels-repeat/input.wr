@@ -1,0 +1,13 @@
+module examples.check_pixels_repeat
+
+const FIXTURE_ID: u32 = 4
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.8"
+
+const FIRST_INSTANCE: i32 = -2
+const INSTANCE_COUNT: u32 = 5
+const PERIOD_RAW: i32 = 2

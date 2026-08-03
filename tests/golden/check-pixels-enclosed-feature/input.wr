@@ -1,0 +1,13 @@
+module examples.check_pixels_enclosed_feature
+
+const FIXTURE_ID: u32 = 8
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+fn production_pixels_placeholder():
+    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.4"
+
+const POSITION_FRAC_BITS: u8 = 8
+const CENTER_X_RAW: i32 = 128
+const RADIUS_RAW: i32 = 1

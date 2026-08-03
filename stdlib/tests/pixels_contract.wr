@@ -1,0 +1,22 @@
+module pixels_contract
+
+from core.field import Vec3
+
+@test
+fn dyadic_fixture_coordinates_are_exact():
+    p = Vec3(x=0.5, y=0.25, z=0.125)
+    assert p.x * 2.0 == 1.0, "one half is exact"
+    assert p.y * 4.0 == 1.0, "one quarter is exact"
+    assert p.z * 8.0 == 1.0, "one eighth is exact"
+
+@test
+fn premultiplied_transfer_identity_is_associative_for_opaque_suffix():
+    front_c: f32 = 0.25
+    front_t: f32 = 0.5
+    middle_c: f32 = 0.5
+    middle_t: f32 = 0.0
+    back_c: f32 = 1.0
+    back_t: f32 = 0.0
+    left = front_c + front_t * (middle_c + middle_t * back_c)
+    right = (front_c + front_t * middle_c) + (front_t * middle_t) * back_c
+    assert left == right, "transfer composition association"
