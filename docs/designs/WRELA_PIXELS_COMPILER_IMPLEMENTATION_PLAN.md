@@ -27,7 +27,7 @@ Execution rules:
 5. Run focused checks while diagnosing, then run exactly `cargo xtask verify` before every task commit and at every milestone close. Fuzzing is a separate discovery lane and never substitutes for the required gate.
 6. Never skip a stable-dump task. The dumps are the compatibility boundary between compiler stages and the forensic record when a later invariant fails.
 7. Do not begin runtime optimization before the from-scratch validated sweep is correct. Kinetic reuse, packet SIMD, and cycle-proxy admission are deliberately downstream.
-8. At every milestone close beginning with P8, record an informational cost trend. Beginning with P9, also record refinement counts and certificate/root/event exhaustion histograms. These reports do not become admission gates until P12.
+8. Beginning with P7.9, record deterministic certificate telemetry: run-length distributions, proof methods/shapes, expiry causes, active predicate counts, margin owners, subdivision depths, and bounded-rebuild reasons. P8 locks the schema and adversarial visibility corpus and records an informational cost trend. P9 adds shading/output refinement ownership. These reports do not become non-regression/admission gates until P12 and never replace exact structural workload bounds.
 9. Section 13 is the invariant ladder. Section 14 is the exact commit order. Section 15 is a hard prohibition list.
 
 Dependency policy:
@@ -302,6 +302,13 @@ all possible surface roots are covered
 ```
 
 Global closed-form event polynomials are allowed only as compact specializations for planes, quadrics, and other low-degree cases. They are not required for correctness.
+
+A compiler exclusion proved over the complete declared parameter box and
+spatial domain remains valid even when an influencing parameter has nonzero
+rate. Polynomial exclusions prefer Bernstein coefficient signs and bounded
+subdivision. Every globally removed runtime predicate retains a stable
+exclusion record and proof payload; an inconclusive proof emits the ordinary
+runtime predicate.
 
 ### 1.6 The validated scanline sweep is the primary renderer
 
@@ -1058,7 +1065,14 @@ struct SmoothObjectRootProgram {
 }
 ```
 
-Support shells prove where an object root may occur; they do not prove that a leaf itself is zero. Candidate leaf `q` slabs therefore seed the domain, but runtime isolation evaluates `scalar_root`, the complete composed smooth-object scalar. The permanent regression `a=b=k/4` must find the smooth-min zero even though neither child is zero.
+Support shells prove where an object root may occur; they do not prove that a
+leaf itself is zero. Candidate leaf `q` slabs are conservative sublevel domains
+where `leaf <= accumulated_support_budget`, not neighborhoods inferred only
+from leaf zeros. Polynomial leaf-sublevel boundaries may be isolated with
+Bernstein sign variation and subdivision. Runtime isolation still evaluates
+`scalar_root`, the complete composed smooth-object scalar, throughout every
+retained slab. The permanent regression `a=b=k/4` must find the smooth-min zero
+even though neither child is zero.
 
 Host analysis uses `f64` plus outward endpoint construction. Encoded runtime certificates use `Iv32` fixed domains. Host `f64` facts are not themselves proof objects unless converted outward into an encoded domain.
 
@@ -1371,6 +1385,13 @@ q_far  = 1 / far
 root domain = [q_far, q_near]
 ```
 
+Before isolating the complete object scalar, use compiler-emitted candidate
+leaf sublevel slabs to partition the q domain. Polynomial slabs isolate
+boundaries of `leaf - accumulated_support_budget` with the fixed Bernstein
+sign-variation/subdivision kernel. Analytic affine/quadratic feature roots may
+refine those proposals. Leaf zeros alone never establish completeness; every
+retained slab is checked against the complete smooth-object scalar.
+
 Use a front-to-back stack ordered by decreasing q:
 
 ```rust
@@ -1418,6 +1439,11 @@ fn isolate_all_roots(
 
 This routine finds every object root, not only the first. Tangent/near-multiple roots that cannot be isolated become event corridors; they are not discarded.
 
+For a supported polynomial on a q interval, Bernstein range exclusion and
+proved sign-variation/root-count predicates run before generic interval
+evaluation. An inconclusive count continues with derivative contraction or
+subdivision and never labels a partial root list complete.
+
 ### 5.3 Run candidate from implicit derivatives
 
 For `G(x,q)=0` on one row:
@@ -1450,6 +1476,23 @@ Given screen interval `X`, candidate `q_hat(X)`, and correction interval `E=[-ep
 9. require the complete active cover/exclusions remain valid over `X`.
 
 This proves exactly one root per x in the tube by continuity and monotonicity.
+
+For an algebraic/Taylor polynomial whose composition remains inside the sealed
+degree/term shapes, the preferred monotone-tube representation is Bernstein
+coefficient form:
+
+1. generated checked dyadic schedules compose
+   `G(x,q_hat(x)-eps)` and `G(x,q_hat(x)+eps)`;
+2. candidate-conversion and Taylor remainder radii widen every affected
+   coefficient outward;
+3. complete coefficient scans prove the two strict face signs;
+4. de Casteljau subdivision tightens an inconclusive hull.
+
+These are integer verifier kernels. Floating FMA/dot evaluation may construct
+a candidate but has no acceptance authority. Subdivision does not reduce
+degree. A shape/term overflow or checked arithmetic failure falls back to the
+ordinary interval/Taylor tube rather than rejecting an otherwise supported
+renderer.
 
 If endpoint ranges are too wide, attempt scalar parametric Krawczyk:
 
@@ -1658,6 +1701,14 @@ Store first- and second-order parameter/time derivative bounds. A temporal certi
 - fixed-point quantization slack.
 
 Compress them to the minimum margin only after recording the component that owns that minimum for diagnostics.
+
+A condition/homotopy-style estimate may propose a transport step, temporal
+center, or revalidation order, but acceptance remains the complete dyadic
+first/second-order remainder and root/event/order/identity/shading/
+quantization slack check. Diagnostics classify scheduled predicate expiry,
+isolated simple events, simultaneous/degenerate events, and event storms. A
+storm changes only the deterministic choice between local repair and the
+equivalent full sweep.
 
 A tile is reused only when the sum of all certified perturbation bounds is strictly below its stored slack. Otherwise rebuild that tile from scratch.
 
@@ -2562,10 +2613,21 @@ Prove:
 - positivity/negativity from coefficient signs;
 - derivative coefficient construction;
 - de Casteljau subdivision preserving the represented polynomial;
+- checked composition from interval source/candidate coefficients encloses the
+  exact composed polynomial;
+- opposite strict signs for the complete Bernstein coefficient arrays of the
+  two tube faces imply the uniform face-sign hypotheses used by the monotone
+  tube theorem;
+- the exact bounded sign-variation predicates used by root isolation,
+  including their inconclusive case;
+- strict coefficient sign over a normalized spatial/parameter box remains a
+  valid exclusion over every point in that box;
 - exact quadratic rectangle range candidate completeness: corners, interior stationary point, and edge stationary points;
 - Taylor polynomial plus remainder containment.
 
-Do not build a generic computer algebra library.
+Formalize only the finite composition shapes emitted by P4.2. Subdivision
+tightens coefficient hulls and preserves degree; it is never presented as
+degree reduction. Do not build a generic computer algebra library.
 
 ### 9.9 Root-isolation theorems
 
@@ -2756,6 +2818,10 @@ Required mappings include:
 
 - interval add/sub/mul/intersection;
 - quadratic exact range;
+- Bernstein composition containment, complete coefficient sign scan, and
+  de Casteljau subdivision;
+- Bernstein sign-variation/root-count predicates and global box strict-sign
+  exclusion;
 - root bracket step;
 - monotone run certificate predicate;
 - q-order packet;
@@ -4671,6 +4737,8 @@ Derive and checked-add/multiply:
 - maximum transparent layers per pixel/run;
 - maximum local rebuild queue;
 - per-worker scratch bytes;
+- fixed-schema diagnostic/conformance certificate-telemetry counter bytes,
+  with zero bytes in the uninstrumented production variant;
 - output tile and double-buffer bytes;
 - probe bytes;
 - kinetic certificate bytes.
@@ -4684,6 +4752,8 @@ Define machine-v1 ceilings in one `PixelsCeilings` struct and mirror them in the
 - Every runtime vector/array bound in later Wrela modules traces to one capacity field.
 - Arithmetic overflow is a build error before comparison to ceilings.
 - Capacity values appear in field-graph dump and report.
+- Instrumented and uninstrumented telemetry workspace bytes derive from the
+  versioned schema enum counts, never observed scene data.
 - A deliberately oversized fixture fails at compile time with exact contributors.
 - Formal capacity lemmas build.
 
@@ -4954,12 +5024,30 @@ Hard limits for v1:
 - terms per program ≤ a sealed ceiling derived and reported;
 - parameter coefficient programs may be arbitrary finite scalar DAGs already accepted by P3, but local Taylor expansion order is bounded.
 
+Add a deterministic fixed-shape composition planner for polynomial root/tube
+specializations. Given a bounded `PolyProgram` and a quadratic `q_hat`, it
+emits a straight-line schedule for the two constant-correction face
+polynomials and records source degrees, composed degree, term count, temporary
+count, and coefficient order. A shape is specialization-eligible only when the
+composed univariate degree remains ≤ 8 and every term/temporary fits a sealed
+ceiling. Otherwise retain the ordinary interval/Taylor program. Exceeding a
+specialization shape is never by itself a source rejection.
+
+The schedule is structural rather than numeric: runtime `q_hat` and coefficient
+values remain operands. It may share lifted coefficient products explicitly,
+but it must not describe verifier work as floating GEMV/FMA or introduce a
+generic computer algebra engine.
+
 **Tests:**
 
 - Polynomial arithmetic is deterministic and checked for degree/term overflow.
 - Different construction orders canonicalize identically.
 - Horner and direct-sum reference evaluation agree over permanent fixtures.
 - Bernstein conversion supports the fixed degree set and passes formal coefficient enclosure tests.
+- Composition schedules agree with direct symbolic substitution for every
+  supported degree shape and are deterministic across construction order.
+- An over-degree composition selects the interval/Taylor fallback without
+  changing source acceptance.
 - Exceeding a degree/term ceiling is `P004`/`P015`, not truncation.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -5370,6 +5458,7 @@ pixels P4.8: compile sparse q-order competitions
 crates/wrela-compiler/src/pixels/exclusions.rs # new at P-1 basis
 crates/wrela-compiler/src/pixels/events.rs # new at P-1 basis
 crates/wrela-compiler/src/pixels/verify.rs # new at P-1 basis
+formal/pixels/Pixels/Bernstein.lean # new at P-1 basis
 ```
 
 **Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
@@ -5392,6 +5481,8 @@ enum ExclusionReason {
     SupportShellDisjoint,
     MaterialClassIrrelevant,
     StaticStrictOrder,
+    GlobalParameterBoxStrictSign,
+    GlobalSpatialBoxStrictSign,
     DuplicateCanonicalFeature,
 }
 
@@ -5400,11 +5491,31 @@ pub struct ExclusionRecord {
     pub domain: DomainId,
     pub reason: ExclusionReason,
     pub margin: F64Interval,
+    pub proof: ProofRecordId,
     pub dependencies: Vec<ProofRecordId>,
 }
 ```
 
-A zero or sign-indefinite margin cannot justify exclusion. Static strict-order exclusions become runtime invariants only if all coefficient dependencies are zero-rate; otherwise emit a kinetic/event predicate.
+A zero or sign-indefinite margin cannot justify exclusion. Static strict-order
+exclusions derived only from a current coefficient snapshot become runtime
+invariants only if all dependencies are zero-rate. Separately, a strict-sign
+proof over the complete declared parameter box and spatial domain is permanent
+even when dependencies have nonzero rate.
+
+For predicates whose spatial and influencing-parameter dependence is
+polynomial after bounded P4.2 coefficient lowering, try the fixed hierarchy:
+
+1. exact constant/canonical simplification;
+2. outward interval range over the complete box;
+3. Bernstein conversion, complete coefficient sign scan, and bounded
+   de Casteljau subdivision;
+4. emit the runtime predicate when all static methods are inconclusive.
+
+The proof payload records normalized box, polynomial/program ID, degree and
+coefficient order, outward conversion radius, subdivision tree, strict sign,
+and minimum margin. Do not add an LP, SDP, SOS, external solver, or new Cargo
+dependency in v1. A globally excluded subject remains present in the audit
+graph and stable dump even though it has no runtime predicate record.
 
 **Tests:**
 
@@ -5412,6 +5523,10 @@ A zero or sign-indefinite margin cannot justify exclusion. Static strict-order e
 - Removing an exclusion/emitted record triggers internal verification failure.
 - Exclusion dependencies are acyclic and point to earlier pass facts.
 - Report can explain any omitted competition from source feature names to final margin.
+- A moving parameter with a complete-box Bernstein strict-sign proof emits no
+  runtime predicate and remains valid at every declared parameter corner.
+- Perturbing one coefficient to make the global sign inconclusive restores the
+  runtime predicate; it is never silently omitted.
 - No “default pruned” reason exists.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -5420,6 +5535,7 @@ A zero or sign-indefinite margin cannot justify exclusion. Static strict-order e
 
 ```text
 cargo xtask verify
+cargo xtask pixels-formal
 ```
 
 **Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
@@ -5886,7 +6002,7 @@ pixelsdata
 
 If multiple renderer programs are noncontiguous because of alignment, section covers padding and each placement reports exact subrange.
 
-`pixelsdata` is zero-initialized reservation, not stored zero bytes in the image blob. Record reservation separately from blob length where layout already supports BSS-like regions; otherwise implement the minimal explicit reservation mechanism rather than materializing hundreds of MiB in the image file.
+`pixelsdata` is zero-initialized reservation, not stored zero bytes in the image blob. Record reservation separately from blob length where layout already supports BSS-like regions; otherwise implement the minimal explicit reservation mechanism rather than materializing hundreds of MiB in the image file. Diagnostic/conformance builds include the fixed certificate-telemetry counter reservation derived at P3.10; uninstrumented production builds omit it. Both layouts are deterministic and reported separately.
 
 **Tests:**
 
@@ -5894,6 +6010,8 @@ If multiple renderer programs are noncontiguous because of alignment, section co
 - Renderer section addresses are deterministic.
 - All checked ranges fit the machine profile and do not overlap stacks/devices/framebuffer windows.
 - Image report lists section/reservation bytes separately.
+- Instrumented telemetry reservation changes only reported mutable-state bytes,
+  never frame-program semantics or displayed output.
 - Boundary tests cover exact max, one byte over, checked-add overflow, and alignment padding.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -6000,6 +6118,7 @@ const R0_HEIGHT: usize = 1080
 const R0_TILE_W: usize = 64
 const R0_TILE_H: usize = 32
 const R0_MAX_FEATURES_TILE: usize = ...
+const R0_CERT_TELEMETRY_BYTES: usize = ... # zero when uninstrumented
 # all exact capacities...
 ```
 
@@ -6412,10 +6531,22 @@ Implement scalar candidate f32/f64 and verifier `Iv32` paths for:
 - Horner univariate degree 1–8;
 - sparse multivariate term evaluation over `(u,v,q,t)`;
 - derivative program evaluation;
+- generated checked-dyadic composition of supported quadratic-candidate tube
+  faces into univariate Bernstein coefficients;
 - de Casteljau subdivision for fixed degree;
 - Bernstein coefficient sign test;
+- bounded Bernstein sign-variation predicates used by root isolation;
 - exact quadratic range over `[0,1]^2` using all candidate extrema;
 - Taylor polynomial plus interval remainder.
+
+The composition kernel converts every source and `q_hat` coefficient outward,
+uses checked widened integer intermediates for the generated schedule, and
+adds conversion/Taylor remainder radii to affected output coefficients. It
+returns `UnsupportedShape` for an unsealed degree/term schedule and
+`NumericError` for arithmetic failure. Neither outcome may be confused with a
+negative proof result. A complete coefficient scan is branch-light but remains
+integer proof arithmetic; floating FMA/dot results have no acceptance
+authority.
 
 The exact quadratic range routine:
 
@@ -6433,6 +6564,11 @@ Degenerate linear/constant edge/interior cases are explicit branches.
 - Quadratic range contains dense deterministic samples and analytic extrema fixtures.
 - Corner+center-only implementation would fail a pinned positive control.
 - Bernstein subdivision preserves coefficient/domain mapping.
+- Composed coefficient arrays contain direct exact/rational evaluation over
+  deterministic domain vectors.
+- Coefficient-face acceptance agrees with interval-tube acceptance wherever
+  both decide, and an inconclusive coefficient hull falls through without
+  widening tolerance.
 - No runtime allocation; coefficient arrays have generated fixed maxima.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -6483,7 +6619,9 @@ enum RootOutcome:
 The caller supplies output storage and stack arrays sized by compiler capacity. Algorithm:
 
 1. push full interval;
-2. evaluate Bernstein/interval range;
+2. for a supported polynomial, evaluate Bernstein range and the proved
+   sign-variation/root-count predicates; otherwise evaluate interval/Taylor
+   range;
 3. discard if zero excluded;
 4. if derivative sign excludes zero and endpoints bracket, isolate by bisection;
 5. if polynomial sign-variation/root-count rule proves exact root count, subdivide until each root interval meets q/x tolerance;
@@ -6497,6 +6635,9 @@ Tangency without sign change is handled by derivative/discriminant/root-count pr
 **Tests:**
 
 - Plane, sphere, torus multi-root, tangent double-root, close roots, and no-root fixtures pass.
+- Polynomial leaf-sublevel fixtures isolate boundaries of
+  `leaf - accumulated_support_budget`, including a positive leaf with no leaf
+  zero.
 - All roots inside domain are returned or outcome is `Unresolved`; no partial list labeled complete.
 - Root count never exceeds compiler capacity; overflow is `CapacityExceeded(RenderCapacity.Roots)` or `CapacityExceeded(RenderCapacity.Sheets)`.
 - Rust/Wrela scalar outputs agree exactly on interval endpoints/counts/reasons.
@@ -6539,9 +6680,21 @@ formal/pixels/KERNELS.txt # new at P-1 basis
 
 **Work:**
 
-Implement two fixed tiers:
+Implement three ordered certificate methods:
 
-**Tier 1: monotone tube**
+**Tier 0: Bernstein coefficient faces**
+
+- when P4.2 emitted a supported composition shape, construct the two tube-face
+  coefficient arrays with the P6.3 checked dyadic kernel;
+- require every lower-face coefficient to have one strict sign and every
+  upper-face coefficient the opposite sign;
+- use de Casteljau subdivision of `X` when the hull is inconclusive;
+- evaluate `G_q` over the complete tube with the ordinary derivative
+  range/Taylor kernel and require one strict sign;
+- include source/candidate conversion and Taylor remainder in the coefficient
+  bounds.
+
+**Tier 1: interval monotone tube**
 
 - evaluate `G` at lower/upper q tube faces over x domain;
 - require opposite uniform signs;
@@ -6572,7 +6725,11 @@ struct RootCertificate:
 **Tests:**
 
 - Plane accepts Tier 1 over full row absent events.
+- Supported algebraic plane/sphere/torus controls prefer Tier 0 when its
+  coefficient hull decides and report the sealed composition shape.
 - Curved regular sheets accept one tier on permanent fixtures.
+- Over-degree or non-polynomial deformation controls take the interval/Taylor
+  fallback without source rejection.
 - Grazing/silhouette domain rejects before miscertification.
 - Failed contraction is ordinary false, not error; numeric overflow/nonfinite is error.
 - Rust/Wrela predicates agree; Lean uniqueness theorems build.
@@ -7163,10 +7320,17 @@ struct RendererWorkspaceR0:
     runs: [CertifiedRun; R0_MAX_RUNS_TILE]
     rebuild: [RebuildCell; R0_MAX_REBUILD]
     transfer_nodes: [TransferNode; R0_MAX_TRANSFER_NODES]
-    # counters and scratch only
+    telemetry: CertificateTelemetryCounters
+    # fixed counters and scratch only
 ```
 
 Workspace lives in the worker’s assigned mutable state region. Reset sets counts/generation markers; it does not zero entire arrays unless required for determinism/security. Every accessor checks count before read.
+
+`CertificateTelemetryCounters` contains fixed arrays sized by the versioned
+method/shape/expiry/owner/density/subdivision/rebuild enum counts, never by
+observed data. Diagnostic/conformance layouts include and report those bytes;
+an uninstrumented production layout may omit the record entirely. No
+renderer-decision function receives a telemetry reference.
 
 Use generation tags only if wrap is impossible over image lifetime or checked; otherwise reset explicit counts and overwrite live slots.
 
@@ -7177,6 +7341,8 @@ Use generation tags only if wrap is impossible over image lifetime or checked; o
 - Every push returns capacity error.
 - Reset leaves no previous-frame record reachable through current counts.
 - Two worker workspaces never overlap in layout.
+- Diagnostic and uninstrumented workspace byte totals are exact, and enabling
+  telemetry changes no renderer decision or displayed byte.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -7269,7 +7435,12 @@ crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
 
 At initial x = tile’s left pixel-center coordinate:
 
-- union candidate feature `q` slabs by smooth object and intersect with positive near/far q;
+- construct candidate feature `q` slabs from conservative leaf sublevel domains
+  `leaf <= accumulated_support_budget`, union them by smooth object, and
+  intersect with positive near/far q;
+- for polynomial leaves, use P6.4 to isolate boundaries of
+  `leaf - accumulated_support_budget`; leaf zeros alone never seed
+  completeness;
 - for each resulting domain, evaluate and isolate the object’s `SmoothObjectRootProgram.scalar_root`;
 - use an analytic affine/quadratic proposal where available, then verify against the full object scalar;
 - use complete bounded root isolation for smooth blends, torus/deformation, and ambiguous cases;
@@ -7297,6 +7468,8 @@ struct RootRecord:
 
 - Plane/sphere/torus/capsule fixtures produce all expected roots.
 - `check-pixels-smooth-interior-root` finds `a=b=k/4` without a leaf-root seed.
+- A positive leaf with no zero but with a nonempty support-budget sublevel
+  still retains the complete smooth-object candidate slab.
 - No sign-changing-only assumption misses tangencies.
 - Root records are front-to-back (larger q first) when strict order is certified.
 - Duplicate shared-feature boundary roots are deduplicated only with proof of same geometric crossing and deterministic owner rule.
@@ -7496,16 +7669,18 @@ pixels P7.8: predict regular root sheets with jets
 ```text
 stdlib/core/render_sweep.wr # new at P-1 basis
 crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
+crates/wrela-compiler/src/report.rs
 formal/pixels/Pixels/RunCertificate.lean # new at P-1 basis
 ```
 
-**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+**Contract/dump delta:** Add the stable `CertificateTelemetry` report/debug-proof section with versioned enum IDs and histogram bins. It is diagnostic evidence and never a renderer input.
 
 **Work:**
 
 For each regular domain and every active root:
 
-1. certify root existence/uniqueness with monotone tube or Krawczyk;
+1. certify root existence/uniqueness with Bernstein-face, interval monotone
+   tube, or Krawczyk method;
 2. certify feature validity and orientation;
 3. certify active smooth branch/identity set;
 4. certify no omitted feature root using row candidate completeness plus runtime exclusions;
@@ -7538,12 +7713,35 @@ struct CertifiedRun:
 
 Do not store arbitrary proof trees at runtime; store all values needed to recheck/transport plus minimum margins and owner.
 
+Diagnostic builds and conformance runs record, per tile and stable ID:
+
+```text
+run length bin
+root certificate method and composed degree/term shape
+run-ending cause
+minimum-margin owner
+active feature/sheet/event/predicate counts
+leaf-sublevel and active smooth-cluster sizes
+root/event subdivision depth
+bounded-rebuild terminal reason (zero until P7.10 populates it)
+numeric/refinement failure cause
+regular/event-corridor pixel counts
+```
+
+Workers own local counters and merge them in tile-ID order. Production may
+omit component-detail storage, but conformance telemetry must be deterministic.
+No runtime proof, scheduler, or quality decision may read these counters.
+
 **Tests:**
 
 - Every accepted run passes host dense/oracle scoring, but oracle is never passed to renderer.
 - Plane fixture can emit one run per row apart from tile/microtile boundaries.
 - No run crosses a compiled event corridor.
 - Root/feature/order/CSG completeness is explicit in debug proof dump.
+- One/four-worker telemetry is identical and every run/pixel is charged to
+  exactly one stable bin.
+- Permanent low-event, grazing, close-depth, smooth-band, and mixed-scale
+  controls pin method/expiry ownership without imposing a cycle threshold.
 - Lean run theorem applies directly to record invariants.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -7597,6 +7795,11 @@ There is no generic sphere-tracing fallback in `AaaByteExact`. There is no “tr
 
 Each rebuild cell has fixed depth/record caps from `FrameProgram`. The runtime records the terminal reason.
 
+Charge every ladder entry, split depth, and terminal reason to the P7.9
+`CertificateTelemetry` schema using stable IDs. Successful resolution and
+explicit exhaustion are separate terminal classes. The counters remain
+diagnostic and cannot reorder the fixed ladder.
+
 **Tests:**
 
 - Close-depth, tangency, silhouette, repeat-boundary, smooth-tie, and material-edge controls resolve or fail explicitly.
@@ -7604,6 +7807,8 @@ Each rebuild cell has fixed depth/record caps from `FrameProgram`. The runtime r
 - Pixel-cell path still certifies complete roots over its required point/filter domain.
 - A deliberately pathological accepted scene returns `CertificateExhausted` and leaves prior frame displayed.
 - Rebuild choices are fixed, not heuristic thresholds tuned at runtime.
+- Every entered rebuild cell has exactly one terminal telemetry class and
+  one/four-worker merged counts agree.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -8546,6 +8751,20 @@ Run all opaque visibility fixtures through full guest/VMM presentation. Compare 
 
 Preserve separate controls for plane, hard CSG, smooth CSG, repeat, displacement, close depth, thin feature, enclosed feature, material edge.
 
+Grade the permanent visibility corpus by event/predicate density and include
+deterministic adversarial distributions for:
+
+- grazing silhouettes and near-tangencies;
+- overlapping smooth-band/support sublevels;
+- close adjacent q sheets and depth-swap corridors;
+- mixed near/far scale that stresses fixed-domain exponent selection;
+- repeated clutter with sparse and dense projected overlap.
+
+For each class, archive the P7.9 `CertificateTelemetry` section alongside the
+visibility result. P8 gates schema completeness, deterministic accounting,
+zero unresolved acceptance frames, and explicit coverage of every class. Run
+lengths and expiry-owner distributions remain informational until P12.
+
 **Tests:**
 
 - All assertions zero.
@@ -8553,6 +8772,9 @@ Preserve separate controls for plane, hard CSG, smooth CSG, repeat, displacement
 - Legacy fieldprobe result remains untouched/historical.
 - Debug visibility path remains runnable after P9 for regression diagnosis.
 - Kinetic mode is forced disabled.
+- One/four-core telemetry and density-class IDs are identical.
+- Every adversarial class has nonzero intended event/predicate activity and no
+  unclassified run ending or refinement cause.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -8573,7 +8795,7 @@ pixels P8.11: lock full visibility and scanout conformance
 
 ### Milestone P8 close
 
-Run `cargo xtask verify`. The renderer now attempts every contract-valid frame from scratch with certified geometry and analytic coverage, presents only on complete success, and returns the §2.6 error on bounded exhaustion. The locked P8 conformance workload must present with zero errors. Do not add temporal reuse before full AAA shading/output correctness is complete.
+Run `cargo xtask verify`. The renderer now attempts every contract-valid frame from scratch with certified geometry and analytic coverage, presents only on complete success, and returns the §2.6 error on bounded exhaustion. The locked P8 conformance workload must present with zero errors, and its versioned certificate-telemetry schema/adversarial density classes must be complete and deterministic. Telemetry is not yet a performance admission gate. Do not add temporal reuse before full AAA shading/output correctness is complete.
 
 ---
 
@@ -10165,6 +10387,14 @@ q_next ∈ q + q_t*dt + remainder
 
 for regular sheets. Event curve x/y transport uses implicit derivative of its event predicate. Shading summary transport uses compiled parameter/time derivatives and residual.
 
+A condition/homotopy-style estimate may propose a temporal center, refinement
+order, or candidate carry length for a regular sheet. It is candidate
+arithmetic only. The accepted next-frame enclosure still uses the complete
+dyadic first/second-order remainder, and every event, identity, adjacent
+q-order, shading, and quantization certificate is checked independently. No
+condition estimate may skip a predicate family or convert a failed structural
+certificate into continued tracking.
+
 Actual frame delta is normalized to one presentation interval. Skipped/late frames scale bounds with checked integer/rational dt; beyond compiler supported temporal box, invalidate and rebuild.
 
 **Tests:**
@@ -10172,6 +10402,8 @@ Actual frame delta is normalized to one presentation interval. Skipped/late fram
 - Zero deltas produce exact zero transport/remainder where expressions static.
 - Derivative programs use only influencing slots.
 - Transport intervals contain from-scratch next-frame root/event/shading truth on deterministic sequences.
+- Condition/homotopy proposals never change the accepted interval or output;
+  disabling them preserves success/failure and bytes.
 - `G_q` containing zero invalidates transport.
 - Formal implicit-flow/remainder theorems build.
 
@@ -10342,6 +10574,13 @@ Store events in a fixed binary min-heap keyed by due frame, tile ID, event ID. H
 
 At each frame, only due events plus records invalidated by dependency digests are fully re-evaluated. Nondue certificate remains valid by bound.
 
+Classify each due/failing predicate with stable kinetic-data terminology:
+scheduled expiry, isolated transverse event, simultaneous event, degenerate
+event, dependency invalidation, or numeric invalidation. Record due-event
+count and affected-domain density per tile. An `event storm` is a diagnostic
+class for many due/overlapping events, never a heuristic correctness cutoff;
+P11.9 uses sealed work bounds to choose the equivalent full sweep.
+
 **Tests:**
 
 - Predicted due time never exceeds actual first sign-zero in deterministic from-scratch comparisons.
@@ -10349,6 +10588,8 @@ At each frame, only due events plus records invalidated by dependency digests ar
 - Heap order deterministic.
 - No missed event when frame skips multiple ticks.
 - Numeric failure schedules due now, never infinity.
+- Event-storm classification is deterministic and every due predicate has one
+  failure/expiry class.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -10562,6 +10803,11 @@ Compiler emits conservative static work weights for:
 - surgery handler;
 - full frame sweep.
 
+Inputs also include exact due-event/affected-domain counts from the current
+validated state. Telemetry histograms and historical averages are forbidden
+as weight multipliers; the choice uses only current checked counts and sealed
+per-class worst-case weights.
+
 At frame start, after identifying invalid/expired tiles, compute checked sum of local worst-case weights. Choose local repair only if:
 
 ```text
@@ -10577,6 +10823,9 @@ Weights are versioned structural operation counts, not claimed hardware cycles. 
 - Choice deterministic and input-derived.
 - Full sweep path always available for valid input.
 - A synthetic surgery storm chooses full sweep.
+- A diagnostic event storm with cheap disjoint repairs may still choose local
+  repair when the sealed inequality proves it cheaper; the label itself has no
+  control authority.
 - Changing weights changes build/numeric revision and report.
 - Both paths produce identical output/error.
 
@@ -11077,11 +11326,19 @@ Required packet kernels:
 - eight/suitable adjacent q certificate comparisons using i32 lanes where packed;
 - four event predicate evaluations with same program;
 - four interval endpoint affine/polynomial evaluations when exponents align;
+- coefficient-face sign scans and generated composition arithmetic using
+  widening integer lanes only where the exact outward-rounding/data-dependency
+  contract permits;
 - four texture taps/BRDF evaluations.
 
 For each kernel, record its §6.16 ISA obligations. Byte-weight/filter and other exact packed 8-bit accumulations use `SDOT`/`UDOT`; f32 SH/BRDF/color work uses `FMLA` and retains the specified accumulation order; fixed-point accumulations use the appropriate widening MLA family. Layout conversion uses fixed zip/unzip/transpose or structure loads only when its proof obligations hold.
 
 Do not force packetization across divergent root-isolation stacks. Batch independent same-kind candidate cells only when they already exist; scalar fixed-stack algorithm remains semantic implementation.
+
+Do not lower proof-coefficient composition through f32 `FMLA`, `SDOT`, or
+`UDOT`. Those families are legal only for operand semantics already named by
+§6.16; Bernstein verifier schedules retain checked widening integer
+arithmetic and outward rounding.
 
 Use SoA for vectors/points/colors. Convert AoS records to SoA once at run setup, not inside pixel loop.
 
@@ -11280,6 +11537,13 @@ kinetic_frame:
   shading transport/refinement
 ```
 
+Join these exact structural counts to the versioned P7.9/P8 certificate
+telemetry for diagnosis: run-length bins, proof methods/shapes, active
+predicate counts, expiry owners, subdivision depths, event-corridor fractions,
+and bounded-rebuild reasons. The join must account every observed unit of work
+to one generated function. Histograms are never multiplied into admission
+workloads and may not replace structural maxima.
+
 For release admission, use the worst valid presented-frame path excluding first-frame probe initialization if the application can perform initialization before entering steady display deadline; report/init deadline separately. Camera cut/full sweep is included. The absolute pathological `CertificateExhausted` path may return error before completing a frame and is reported as failure bound, not admitted success.
 
 Attach counts to exact generated function keys/loops. Do not multiply unrelated averages. Per-core work uses actual tile/probe partition maxima.
@@ -11291,6 +11555,8 @@ Attach counts to exact generated function keys/loops. Do not multiply unrelated 
 - Single/four-core partition sums and max-core values exact.
 - Generated hot function missing workload is build error.
 - Report separates initialization, successful full sweep, kinetic valid, and failure/rebuild upper bounds.
+- Every telemetry bin maps to a charged function/path or an explicitly
+  zero-cost diagnostic event, with no unowned certificate work.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -11469,6 +11735,16 @@ RendererCost
   dispatches
   spills
   headroom
+
+CertificateTelemetry
+  schema_revision
+  density_class
+  run_length_bins
+  proof_method_and_shape_counts
+  active_predicate_bins
+  expiry_and_margin_owner_counts
+  subdivision_and_rebuild_counts
+  regular_and_corridor_pixels
 ```
 
 **Tests:**
@@ -11477,6 +11753,10 @@ RendererCost
 - Every renderer cost row has provenance and nonzero workload where used.
 - Report labels cycle-proxy values as deterministic model output, never empirical measurement.
 - Admission result computed from report data, not handwritten verdict.
+- Versioned distributional non-regression bounds are checked for the locked P8
+  adversarial scenes and report their failures separately. A passing
+  distribution may never relax a failing exact per-frame workload/cycle
+  admission result.
 - All permanent reports pinned.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
@@ -11544,11 +11824,18 @@ kinetic_melee: enabled swing/orbit
 quality_sequence: lights, transparency, GI, subpixel motion
 static_sequence: exact static reuse
 cut_sequence: repeated hard cuts
+event_density_sequence: grazing, blend clutter, close q order, and mixed-scale
+  near/far controls with kinetic disabled
 ```
 
 All scripts use exact frame-indexed coefficients, no wall clock or input device. Expected frame digests are checked in for selected frames and rolling sequence digest.
 
 `bench/pixels-acceptance.toml` is not a tunable benchmark file; it pins mode, frame count, scene path, expected digest, and hard conformance thresholds.
+
+It also pins versioned certificate-telemetry non-regression ranges for each
+density class. These ranges catch a collapse in run amortization or predicate
+pruning on real scenes, but they never average away or override one
+over-budget exact cycle-proxy frame.
 
 **Tests:**
 
@@ -11557,6 +11844,8 @@ All scripts use exact frame-indexed coefficients, no wall clock or input device.
 - No fieldprobe crate/source imported.
 - Frame scripts deterministic under replay.
 - Acceptance report contains complete capacities, ISA obligations, and cycle-proxy inputs.
+- Every density class emits complete telemetry with no unknown method, owner,
+  expiry, subdivision, or rebuild ID.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 

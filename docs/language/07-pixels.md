@@ -131,6 +131,14 @@ all possible roots are covered
 => visible combinatorics are fixed over the run
 ```
 
+An exclusion proved over the complete declared parameter box and spatial
+domain is permanent even when an influencing parameter has nonzero rate.
+Exclusions whose spatial and influencing-parameter dependence is polynomial
+after bounded coefficient lowering first use outward Bernstein coefficient
+signs and bounded subdivision. Unsupported or inconclusive forms remain
+runtime predicates. Every globally excluded subject retains an auditable
+compiler proof record; it is never silently dropped.
+
 The validated scanline sweep is the primary renderer. It is correct without
 prior-frame state and is used for the first frame, camera cuts, whips, disabled
 kinetic reuse, and failed temporal certificates. A run ends at the earliest
@@ -410,9 +418,13 @@ Every field node carries conservative value, world, Lipschitz, derivative,
 smooth-support, identity, and finiteness metadata where applicable.
 
 Each maximal smooth object owns the complete composed scalar root program.
-Primitive support slabs seed candidate domains; runtime isolation evaluates
-the full object scalar, not only leaf zeros. Consequently the permanent
-`a=b=k/4` smooth-min root is covered even though neither leaf is zero.
+Primitive candidate slabs are conservative sublevel domains where
+`leaf <= accumulated_support_budget`, not neighborhoods inferred only from
+leaf zeros. Polynomial sublevel boundaries may be isolated from
+`leaf - accumulated_support_budget` with Bernstein sign variation and bounded
+subdivision. Runtime isolation evaluates the full object scalar throughout
+every retained slab. Consequently the permanent `a=b=k/4` smooth-min root is
+covered even though neither leaf is zero.
 
 Camera rays are unnormalized:
 
@@ -429,6 +441,11 @@ Local events include projected-bound entry/exit, feature validity, tangency,
 smooth-band, identity, depth-order, repeat, and material boundaries. An
 omitted object, feature, or event has a domain-scoped exclusion record with
 strictly positive slack. Domain splits regenerate invalidated exclusions.
+Global parameter-box and spatial-box strict-sign exclusions remain valid
+across all allowed parameter motion. Their proof payload records the
+normalized box, polynomial program, Bernstein degree and coefficient order or
+subdivision tree, outward conversion radius, sign, and minimum margin. A
+failed supported-shape proof emits the ordinary runtime predicate instead.
 
 ### 4.1 FrameProgram v1
 
@@ -473,13 +490,19 @@ not change the machine-v1 device ABI.
 Mutable state is compiler-sized and allocation-free: coefficient and frame
 input snapshots; double-buffered frame complexes; per-core candidate, root,
 event, sheet, run, corridor, fixed-q, shading, and transparency workspaces;
-probe state; tile ownership; and one failure record. A failed rebuild cannot
+probe state; tile ownership; fixed-schema certificate telemetry counters in
+diagnostic/conformance builds; and one failure record. A failed rebuild cannot
 corrupt the last valid complex; swap occurs only after every tile succeeds.
+
+Telemetry storage is fixed integer counters rather than a log or allocation.
+Its enabled or omitted bytes are part of the generated build-mode layout
+report, and renderer decision code cannot read it.
 
 The compiler derives and reports all feature, candidate, root, sheet, event,
 run, corridor, transparency, stack, shading, and probe capacities. Authors do
 not provide runtime completeness capacities. A successful build proves the
-encoded widths and total image memory fit.
+encoded widths and total image memory fit. Diagnostic telemetry bytes derive
+from versioned schema enum counts, never observed scene data.
 
 ### 4.3 Canonical record details
 
@@ -580,7 +603,8 @@ and q ranges may overlap. Runtime active covers name included objects and
 features, active events, exclusions, and the complete q domain. Exclusion
 reasons are projected-bounds disjointness, support-shell disjointness,
 q-range disjointness, false CSG influence, false feature validity, or
-parameter-box disjointness.
+parameter-box disjointness, plus global parameter-box or spatial-box strict
+sign.
 
 The frame-program directory entry is exactly 16 bytes and encodes
 `kind: u16`, `record_bytes: u16`, `count: u32`, `offset: u32`, and
@@ -607,6 +631,16 @@ At each row start, the renderer isolates every object root over
 root-free boxes. Monotone sign-bracket contraction or Krawczyk contraction
 isolates roots. Tangent or near-multiple roots that cannot be separated become
 event corridors. Exhaustion returns `RootIsolationExhausted`.
+
+Before complete-object isolation, compiler-emitted leaf sublevel slabs
+partition the q domain. For polynomial leaves, the fixed Bernstein
+sign-variation/subdivision kernel isolates boundaries of
+`leaf - accumulated_support_budget`; analytic primitive roots may refine those
+proposals. Leaf zeros alone never establish completeness. For a supported
+polynomial q interval, Bernstein range and proved sign-variation/root-count
+predicates run before generic interval/Taylor evaluation. An inconclusive
+count continues with contraction or subdivision and never labels a partial
+root list complete.
 
 Inside a candidate run, implicit derivatives propose a quadratic q sheet. The
 certificate proves one root in its tube, feature validity, stable identity,
@@ -688,6 +722,18 @@ identity, separates every competitor, and retains the complete active cover.
 Parametric Krawczyk is allowed only when its image lies strictly inside the
 correction interval.
 
+For an algebraic or Taylor polynomial whose composed tube faces remain inside
+the sealed degree and term shapes, the preferred representation is Bernstein
+coefficient form. A generated checked-dyadic schedule composes
+`G(x,q_hat(x)-eps)` and `G(x,q_hat(x)+eps)`, widens every affected coefficient
+by candidate-conversion and Taylor remainder radii, proves the two face signs
+by complete coefficient scans, and uses de Casteljau subdivision when a hull
+is inconclusive. These are integer verifier kernels. Floating FMA or dot
+products may propose coefficients but cannot accept a certificate.
+Subdivision tightens a hull; it does not reduce degree. Unsupported shapes or
+checked arithmetic failure use the ordinary interval/Taylor tube rather than
+rejecting an otherwise supported renderer.
+
 Continuation alone is insufficient. Every run starts from complete q-domain
 isolation and proves each tracked root remains regular; every intervening q
 slab excludes zero or belongs to a tangency corridor; and all support,
@@ -760,3 +806,32 @@ parameter deltas, event signs, root tubes, adjacent q order, feature and
 identity stability, shading/post bounds, and fixed-point margins. Diagnostics
 retain the component owning minimum slack. A failed margin rebuilds the tile
 or the full frame from scratch.
+
+A condition or homotopy-style estimate may propose a temporal center,
+refinement order, or carry length. It has no authority: acceptance still uses
+the complete dyadic first/second-order remainder and every event, root, order,
+identity, shading, transfer, and quantization margin. Diagnostics classify
+scheduled expiry, isolated transverse events, simultaneous or degenerate
+events, dependency or numeric invalidation, and event storms. A storm label
+never makes a correctness decision; sealed current work bounds choose between
+local repair and the equivalent full sweep.
+
+### 5.6 Certificate telemetry
+
+Beginning with complete run construction, diagnostic and conformance builds
+record stable-ID counters for:
+
+- run-length histograms and regular/event-corridor pixel fractions;
+- root-certificate method and composed polynomial degree/term shape;
+- run-ending cause and minimum-margin owner;
+- active feature, sheet, event, and predicate counts;
+- leaf-sublevel and active smooth-cluster sizes;
+- root/event subdivision depth and bounded-rebuild terminal reason;
+- numeric domain/overflow and refinement causes.
+
+Workers own fixed local counter arrays and merge them in tile-ID order.
+Telemetry is report and conformance evidence only: the renderer cannot read it
+to choose a proof, vary quality, or admit a frame. P8 locks the schema and
+adversarial visibility corpus. P12/P13 may add versioned non-regression
+thresholds, but histograms never replace or relax exact structural workload
+and per-frame cycle admission.
