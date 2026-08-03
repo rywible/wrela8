@@ -157,7 +157,34 @@ fn lint_text(text: &str, repo: &Path) -> Result<(), String> {
     lint_marked_paths(text, repo)?;
     lint_display_contract(repo)?;
     lint_normative_docs(repo)?;
+    lint_formal_readme(repo)?;
     lint_permanent_fixtures(text, repo, &headings)?;
+    Ok(())
+}
+
+fn lint_formal_readme(repo: &Path) -> Result<(), String> {
+    let path = repo.join("formal/pixels/README.md");
+    let readme = std::fs::read_to_string(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let words = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    for required in [
+        "Lean 4.30.0",
+        "Mathlib 4.30.0",
+        "does not modify this repository",
+        "elan toolchain install leanprover/lean4:v4.30.0",
+        "lake exe cache get",
+        "normative project check",
+        "lake build",
+        "cargo xtask pixels-formal-scan",
+        "does not certify arbitrary",
+        "compiler-side proof-object checks",
+    ] {
+        if !words.contains(required) {
+            return Err(format!(
+                "pixels plan lint: formal project README lacks `{required}`"
+            ));
+        }
+    }
     Ok(())
 }
 
