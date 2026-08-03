@@ -1,6 +1,8 @@
 import Pixels.SmoothObject
 import Pixels.Deformation
+import Pixels.TrustBoundary
 
+#print axioms Pixels.trustBoundaryScaffold
 #print axioms Pixels.smoothInteriorRoot
 #print axioms Pixels.smoothMinLeftSaturated
 #print axioms Pixels.smoothMinBounds

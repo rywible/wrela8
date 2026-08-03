@@ -10,3 +10,4 @@ Pixels.smoothInteriorCandidateCoverage = propext,Classical.choice,Quot.sound
 Pixels.smoothInteriorRoot = propext,Classical.choice,Quot.sound
 Pixels.smoothMinBounds = propext,Classical.choice,Quot.sound
 Pixels.smoothMinLeftSaturated = propext,Classical.choice,Quot.sound
+Pixels.trustBoundaryScaffold = none

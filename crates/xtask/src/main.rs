@@ -421,8 +421,8 @@ fn verify() -> Result<(), String> {
     verify_stage(
         LANE,
         "Pixels formal",
-        "cargo xtask pixels-formal",
-        pixels_formal,
+        "cargo xtask pixels-formal-scan",
+        pixels_formal_scan,
     )?;
     verify_stage(
         LANE,
@@ -492,6 +492,12 @@ fn verify_deep() -> Result<(), String> {
         "host preflight",
         "cargo xtask verify-deep",
         deep_preflight,
+    )?;
+    verify_stage(
+        LANE,
+        "Pixels formal",
+        "cargo xtask pixels-formal",
+        pixels_formal,
     )?;
     verify_stage(
         LANE,

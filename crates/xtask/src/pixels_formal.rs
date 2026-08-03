@@ -5,7 +5,7 @@ use crate::root;
 
 const FORBIDDEN: &[&str] = &["sorry", "admit", "axiom", "unsafe", "native_decide"];
 
-fn strip_lean(source: &str) -> String {
+fn strip_lean(source: &str) -> Result<String, String> {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(bytes.len());
     let mut i = 0;
@@ -70,11 +70,18 @@ fn strip_lean(source: &str) -> String {
             i += 1;
         }
     }
-    out
+    if block_depth != 0 {
+        return Err("unterminated block comment".to_string());
+    }
+    if string {
+        return Err("unterminated string literal".to_string());
+    }
+    Ok(out)
 }
 
 fn scan_text(source: &str, name: &str) -> Result<(), String> {
-    let stripped = strip_lean(source);
+    let stripped =
+        strip_lean(source).map_err(|message| format!("pixels formal scan: {message} in {name}"))?;
     for (line_index, line) in stripped.lines().enumerate() {
         for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
             if FORBIDDEN.contains(&token) {
@@ -120,7 +127,11 @@ pub(crate) fn pixels_formal_scan() -> Result<(), String> {
 fn normalize_axioms(output: &str) -> String {
     let mut rows = Vec::new();
     for line in output.lines() {
-        let Some((left, right)) = line.split_once(" depends on axioms: [") else {
+        let (left, axioms) = if let Some((left, right)) = line.split_once(" depends on axioms: [") {
+            (left, right.trim().trim_end_matches(']').replace(", ", ","))
+        } else if let Some((left, _)) = line.split_once(" does not depend on any axioms") {
+            (left, "none".to_string())
+        } else {
             continue;
         };
         let theorem = left
@@ -131,8 +142,7 @@ fn normalize_axioms(output: &str) -> String {
             .last()
             .unwrap_or("")
             .trim_matches('\'');
-        let axioms = right.trim().trim_end_matches(']');
-        rows.push(format!("{theorem} = {}", axioms.replace(", ", ",")));
+        rows.push(format!("{theorem} = {axioms}"));
     }
     rows.sort();
     rows.dedup();
@@ -144,22 +154,15 @@ fn normalize_axioms(output: &str) -> String {
 pub(crate) fn pixels_formal() -> Result<(), String> {
     pixels_formal_scan()?;
     let dir = root().join("formal/pixels");
-    let status = Command::new("lake")
-        .current_dir(&dir)
-        .arg("build")
-        .status()
-        .map_err(|e| format!("run lake build: {e}"))?;
-    if !status.success() {
-        return Err("pixels formal: `lake build` failed".to_string());
-    }
     let output = Command::new("lake")
         .current_dir(&dir)
-        .args(["env", "lean", "Pixels.lean"])
+        .arg("build")
         .output()
-        .map_err(|e| format!("run Lean axiom audit: {e}"))?;
+        .map_err(|error| lake_error("build the project", &error))?;
     if !output.status.success() {
         return Err(format!(
-            "pixels formal: axiom audit failed:\n{}",
+            "pixels formal: `lake build` failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         ));
     }
@@ -183,6 +186,18 @@ pub(crate) fn pixels_formal() -> Result<(), String> {
     Ok(())
 }
 
+fn lake_error(action: &str, error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        format!(
+            "pixels formal: required `lake` executable was not found while trying to {action}. \
+             Install the pinned Lean toolchain with \
+             `elan toolchain install leanprover/lean4:v4.30.0` and ensure `lake` is on PATH"
+        )
+    } else {
+        format!("pixels formal: could not {action} with `lake`: {error}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +216,17 @@ mod tests {
     }
 
     #[test]
+    fn scanner_rejects_unterminated_comments_and_strings() {
+        for source in ["/- no close", "\"no close"] {
+            assert!(
+                scan_text(source, "fixture")
+                    .unwrap_err()
+                    .contains("unterminated")
+            );
+        }
+    }
+
+    #[test]
     fn scanner_rejects_each_escape_token() {
         for token in FORBIDDEN {
             let error =
@@ -213,8 +239,21 @@ mod tests {
     fn axiom_output_is_normalized_and_sorted() {
         let got = normalize_axioms(
             "'B' depends on axioms: [Quot.sound]\n\
-             info: X:1:0: 'A' depends on axioms: [propext, Classical.choice]\n",
+             info: X:1:0: 'A' depends on axioms: [propext, Classical.choice]\n\
+             'C' does not depend on any axioms\n",
         );
-        assert_eq!(got, "A = propext,Classical.choice\nB = Quot.sound\n");
+        assert_eq!(
+            got,
+            "A = propext,Classical.choice\nB = Quot.sound\nC = none\n"
+        );
+    }
+
+    #[test]
+    fn missing_lake_error_has_pinned_install_instructions() {
+        let error = lake_error(
+            "build the project",
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert!(error.contains("elan toolchain install leanprover/lean4:v4.30.0"));
     }
 }
