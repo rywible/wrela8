@@ -469,6 +469,25 @@ fn encode_header(renderer_index: usize) -> Result<([u8; 80], String), String> {
     Ok((bytes, digest))
 }
 
+fn walking_skeleton_seed(
+    frame_program: &[u8; FRAME_PROGRAM_HEADER_BYTES],
+    semantic_digest: &str,
+) -> [u8; 32] {
+    // Preserve the reviewed P-1 displayed-frame digest without emitting the
+    // malformed P-1 envelope. Before P0, the walking skeleton mixed its
+    // semantic prefix into v1 table-count/reserved bytes and then used that
+    // envelope's digest as its pixel seed. P0 keeps that seed derivation only
+    // as generated-actor compatibility metadata; `frame_program` itself stays
+    // a valid zero-table v1 header.
+    let mut seed_input = *frame_program;
+    seed_input[12..16].copy_from_slice(&1u32.to_le_bytes());
+    seed_input[32..48].copy_from_slice(&digest_bytes(semantic_digest)[..16]);
+    seed_input[48..80].fill(0);
+    digest_bytes(&wrela_machine::sha256::sha256_hex(&seed_input))
+        .try_into()
+        .expect("SHA-256 hex decodes to 32 bytes")
+}
+
 pub fn compile_plane_skeleton(
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
@@ -576,10 +595,8 @@ pub fn compile_plane_skeleton(
     semantic_program.fns = analysis.functions;
     let semantic_text = crate::sema::typed::dump(&semantic_program);
     let semantic_digest = wrela_machine::sha256::sha256_hex(semantic_text.as_bytes());
-    let semantic_seed: [u8; 32] = digest_bytes(&semantic_digest)
-        .try_into()
-        .expect("SHA-256 hex decodes to 32 bytes");
     let (frame_program, frame_program_digest) = encode_header(0)?;
+    let semantic_seed = walking_skeleton_seed(&frame_program, &semantic_digest);
     Ok(PlaneSkeleton {
         renderer_index: 0,
         field,
@@ -677,10 +694,10 @@ mod tests {
     fn semantic_source_digest_changes_generated_pixels_not_header_only_program() {
         let semantic_a = wrela_machine::sha256::sha256_hex(b"plane material blue");
         let semantic_b = wrela_machine::sha256::sha256_hex(b"plane material red");
-        let seed_a: [u8; 32] = digest_bytes(&semantic_a).try_into().unwrap();
-        let seed_b: [u8; 32] = digest_bytes(&semantic_b).try_into().unwrap();
         let (header_a, digest_a) = encode_header(0).unwrap();
         let (header_b, digest_b) = encode_header(0).unwrap();
+        let seed_a = walking_skeleton_seed(&header_a, &semantic_a);
+        let seed_b = walking_skeleton_seed(&header_b, &semantic_b);
         assert_eq!(digest_a, digest_b);
         assert_eq!(header_a, header_b);
 
@@ -689,6 +706,16 @@ mod tests {
         let words_a: Vec<u32> = code_a.code.iter().map(|word| word.word).collect();
         let words_b: Vec<u32> = code_b.code.iter().map(|word| word.word).collect();
         assert_ne!(words_a, words_b);
+    }
+
+    #[test]
+    fn walking_skeleton_keeps_the_reviewed_p1_pixel_seed() {
+        let semantic = "4339211ebc497254b70372e4bcf9501407d9ff588427661aa93d101d047c4583";
+        let (header, _) = encode_header(0).unwrap();
+        assert_eq!(
+            walking_skeleton_seed(&header, semantic).as_slice(),
+            digest_bytes("e778817fd997a1eb45c0a463f792569fd0534004153b18dfec13691a923048b4")
+        );
     }
 
     #[test]

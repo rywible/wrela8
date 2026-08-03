@@ -235,6 +235,8 @@ fn lint_normative_docs(repo: &Path) -> Result<(), String> {
         "without dense truth, a sample lattice, a dense edge mask, or previous-frame",
         "Kinetic maintenance is optional",
         "root existence, root uniqueness,",
+        "`Length3` remains a fused scalar operation",
+        "must remain defined at zero",
         "generated Wrela scalar kernels",
         "machine-v1 display conformance lane",
         "exact sealed renderer cycle proxy",

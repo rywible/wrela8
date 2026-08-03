@@ -3021,7 +3021,12 @@ tests/golden/check-pixels-empty/expected/frame-program.txt # new at P-1 basis
 tests/golden/check-pixels-empty/expected/render-layout.txt # new at P-1 basis
 ```
 
-**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly
+named by this task are permitted. P0.2 corrects the preexisting P-1
+walking-skeleton envelope that wrote its semantic seed into the v1
+`table_count` and reserved bytes. The corrected dump reports a zero-table v1
+header and labels the P-1 semantic seed as generated-actor metadata; the
+locked displayed-frame digest does not change.
 
 **Work:**
 
@@ -3029,6 +3034,9 @@ tests/golden/check-pixels-empty/expected/render-layout.txt # new at P-1 basis
 - Define `PixelsError` and `PixelsDiagnostic` without renderer behavior.
 - Add CLI stage parsing for `field-graph`, `frame-program`, `render-layout`, and `--renderer=<index>`.
 - For an image with no renderer, dumps print version headers plus `Renderers count=0`; the plane-skeleton fixture prints its explicitly restricted minimal records.
+- Keep the P-1 displayed-frame digest while moving its compatibility seed out
+  of the canonical v1 header. Assert `table_count=0` and every reserved byte is
+  zero.
 - A renderer index on an image with no renderer is a clear build error.
 - Add the three stages to CLI help and stage-validation tests.
 
@@ -3046,7 +3054,9 @@ pub fn dump_zero_renderers(stage: PixelsDumpStage) -> String;
 
 **Tests:**
 
-- All three dump stages produce byte-stable zero-renderer outputs and retain the reviewed P-1 skeleton outputs.
+- All three dump stages produce byte-stable zero-renderer outputs. The P-1
+  skeleton retains its reviewed displayed-frame digest; its frame-program dump
+  changes only for the malformed-header correction named above.
 - Existing stage behavior and usage text remain unchanged except for additions.
 - Unknown `--renderer` use is rejected, not ignored.
 - No renderer code is imported by sema, eval, lower, or layout yet.

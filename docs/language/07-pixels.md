@@ -40,7 +40,9 @@ version 1.
 
 The P-1 64×32, one-plane walking skeleton remains an isolated end-to-end
 boundary fixture. It is not production renderer semantics and must not be
-generalized piecemeal.
+generalized piecemeal. Its semantic seed is generated-actor compatibility
+metadata, never a v1 table count or reserved header byte. Correcting that
+envelope does not change the locked P-1 displayed-frame digest.
 
 ### 0.1 Definition of done
 
@@ -492,6 +494,10 @@ min/max/abs/clamp, bit-defined square root and reciprocal, vector
 construction/selection, dot products, lengths, and the closed trigonometric
 form used by `sinusoidal_displace`. It has no general control flow,
 value-called functions, memory mutation, or implicit host math.
+
+`Length3` remains a fused scalar operation. It must not decompose into
+`sqrt(x*x + y*y + z*z)` in derivative or range programs: its derivative bound
+uses Cauchy–Schwarz and must remain defined at zero.
 
 The closed structural field kinds are:
 
