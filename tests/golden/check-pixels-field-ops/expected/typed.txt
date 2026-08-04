@@ -184,6 +184,58 @@ Program
             Local name=x ty=f32
             Local name=lo ty=f32
           Local name=hi ty=f32
+  Fn name=cos_scalar ret=f32
+    Param name=angle mode=read ty=f32
+    Body
+      Let name=half_pi ty=f32
+        Float text=1.5707963267948966 ty=f32
+      Return
+        Call key=sin_scalar ty=f32
+          Binary op=+ ty=f32
+            Local name=angle ty=f32
+            Local name=half_pi ty=f32
+  Fn name=cross3 ret=Vec3
+    Param name=a mode=read ty=Vec3
+    Param name=b mode=read ty=Vec3
+    Body
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Binary op=- ty=f32
+              Binary op=* ty=f32
+                Field name=y ty=f32
+                  Local name=a ty=Vec3
+                Field name=z ty=f32
+                  Local name=b ty=Vec3
+              Binary op=* ty=f32
+                Field name=z ty=f32
+                  Local name=a ty=Vec3
+                Field name=y ty=f32
+                  Local name=b ty=Vec3
+          Field name=y
+            Binary op=- ty=f32
+              Binary op=* ty=f32
+                Field name=z ty=f32
+                  Local name=a ty=Vec3
+                Field name=x ty=f32
+                  Local name=b ty=Vec3
+              Binary op=* ty=f32
+                Field name=x ty=f32
+                  Local name=a ty=Vec3
+                Field name=z ty=f32
+                  Local name=b ty=Vec3
+          Field name=z
+            Binary op=- ty=f32
+              Binary op=* ty=f32
+                Field name=x ty=f32
+                  Local name=a ty=Vec3
+                Field name=y ty=f32
+                  Local name=b ty=Vec3
+              Binary op=* ty=f32
+                Field name=y ty=f32
+                  Local name=a ty=Vec3
+                Field name=x ty=f32
+                  Local name=b ty=Vec3
   Fn name=dot3 ret=f32
     Param name=a mode=read ty=Vec3
     Param name=b mode=read ty=Vec3
@@ -483,6 +535,42 @@ Program
             Local name=a ty=f32
       Return
         Local name=b ty=f32
+  Fn name=normalize3 ret=Vec3
+    Param name=v mode=read ty=Vec3
+    Body
+      Let name=length ty=f32
+        Call key=length3 ty=f32
+          Local name=v ty=Vec3
+      If
+        Binary op=<= ty=bool
+          Local name=length ty=f32
+          Float text=0.0 ty=f32
+        Then
+          Return
+            StructLiteral name=Vec3 ty=Vec3
+              Field name=x
+                Float text=0.0 ty=f32
+              Field name=y
+                Float text=0.0 ty=f32
+              Field name=z
+                Float text=0.0 ty=f32
+      Return
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Binary op=/ ty=f32
+              Field name=x ty=f32
+                Local name=v ty=Vec3
+              Local name=length ty=f32
+          Field name=y
+            Binary op=/ ty=f32
+              Field name=y ty=f32
+                Local name=v ty=Vec3
+              Local name=length ty=f32
+          Field name=z
+            Binary op=/ ty=f32
+              Field name=z ty=f32
+                Local name=v ty=Vec3
+              Local name=length ty=f32
   Fn name=plane ret=Field
     Param name=p mode=read ty=Vec3
     Param name=normal mode=read ty=Vec3
@@ -547,6 +635,23 @@ Program
               Field name=value ty=f32
                 Local name=base ty=Field
               Local name=radius ty=f32
+  Fn name=rsqrt_scalar ret=f32
+    Param name=x mode=read ty=f32
+    Body
+      Let name=root ty=f32
+        Call key=sqrt_scalar ty=f32
+          Local name=x ty=f32
+      If
+        Binary op=<= ty=bool
+          Local name=root ty=f32
+          Float text=0.0 ty=f32
+        Then
+          Return
+            Float text=0.0 ty=f32
+      Return
+        Binary op=/ ty=f32
+          Float text=1.0 ty=f32
+          Local name=root ty=f32
   Fn name=scalar_length_semantics_cover_large_exact_radius ret=unit
     Body
       Assert
@@ -580,6 +685,117 @@ Program
             Local name=surface ty=Field
           Float text=0.0 ty=f32
         Str text="large exact radius remains on the sphere surface" ty=Static[Str]
+  Fn name=scalar_vector_intrinsic_source_semantics_are_pinned ret=unit
+    Body
+      Let name=x ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Float text=1.0 ty=f32
+          Field name=y
+            Float text=0.0 ty=f32
+          Field name=z
+            Float text=0.0 ty=f32
+      Let name=y ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Float text=0.0 ty=f32
+          Field name=y
+            Float text=1.0 ty=f32
+          Field name=z
+            Float text=0.0 ty=f32
+      Let name=cross ty=Vec3
+        Call key=cross3 ty=Vec3
+          Local name=x ty=Vec3
+          Local name=y ty=Vec3
+      Let name=normalized ty=Vec3
+        Call key=normalize3 ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=4.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+      Assert
+        Binary op=== ty=bool
+          Call key=dot3 ty=f32
+            Local name=x ty=Vec3
+            Local name=y ty=Vec3
+          Float text=0.0 ty=f32
+        Str text="orthogonal dot product must be exact" ty=Static[Str]
+      Assert
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Field name=x ty=f32
+                Local name=cross ty=Vec3
+              Float text=0.0 ty=f32
+            Binary op=== ty=bool
+              Field name=y ty=f32
+                Local name=cross ty=Vec3
+              Float text=0.0 ty=f32
+          Binary op=== ty=bool
+            Field name=z ty=f32
+              Local name=cross ty=Vec3
+            Float text=1.0 ty=f32
+        Str text="cross order is normative" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=length2 ty=f32
+            StructLiteral name=Vec2 ty=Vec2
+              Field name=x
+                Float text=3.0 ty=f32
+              Field name=y
+                Float text=4.0 ty=f32
+          Float text=5.0 ty=f32
+        Str text="length2 uses source sqrt semantics" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=length3 ty=f32
+            StructLiteral name=Vec3 ty=Vec3
+              Field name=x
+                Float text=0.0 ty=f32
+              Field name=y
+                Float text=0.0 ty=f32
+              Field name=z
+                Float text=4.0 ty=f32
+          Float text=4.0 ty=f32
+        Str text="length3 stays fused" ty=Static[Str]
+      Assert
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Field name=x ty=f32
+                Local name=normalized ty=Vec3
+              Float text=1.0 ty=f32
+            Binary op=== ty=bool
+              Field name=y ty=f32
+                Local name=normalized ty=Vec3
+              Float text=0.0 ty=f32
+          Binary op=== ty=bool
+            Field name=z ty=f32
+              Local name=normalized ty=Vec3
+            Float text=0.0 ty=f32
+        Str text="normalize guard and division order are normative" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=rsqrt_scalar ty=f32
+            Float text=16.0 ty=f32
+          Float text=0.25 ty=f32
+        Str text="rsqrt source guard is normative" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=sin_scalar ty=f32
+            Float text=0.0 ty=f32
+          Float text=0.0 ty=f32
+        Str text="sin zero is exact" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=cos_scalar ty=f32
+            Float text=0.0 ty=f32
+          Call key=sin_scalar ty=f32
+            Float text=1.5707963267948966 ty=f32
+        Str text="cos is the pinned shifted sin" ty=Static[Str]
   Fn name=sin_scalar ret=f32
     Param name=angle mode=read ty=f32
     Body
@@ -1591,20 +1807,64 @@ Program
           EnumConstruct enum=Failure variant=Halt ty=Failure
       Return
         Intrinsic key=Image.seal ty=Image
+  Fn name=default_radius ret=f32
+    Param name=value mode=read ty=f32
+      Default
+        Float text=0.125 ty=f32
+    Body
+      Return
+        Local name=value ty=f32
   Fn name=shade ret=MaterialSample
     Param name=surface mode=read ty=SurfaceContext[MaterialId]
     Param name=params mode=read ty=SceneParams
     Body
+      Let name=color ty=Rgb
+        StructLiteral name=Rgb ty=Rgb
+          Field name=r
+            Float text=0.25 ty=f32
+          Field name=g
+            Float text=0.5 ty=f32
+          Field name=b
+            Float text=0.75 ty=f32
+      If
+        Binary op=< ty=bool
+          Field name=x ty=f32
+            Field name=position ty=Vec3
+              Local name=surface ty=SurfaceContext[MaterialId]
+          Float text=0.0 ty=f32
+        Then
+          Assign
+            Local name=color ty=Rgb
+            StructLiteral name=Rgb ty=Rgb
+              Field name=r
+                Float text=0.125 ty=f32
+              Field name=g
+                Float text=0.25 ty=f32
+              Field name=b
+                Float text=0.5 ty=f32
+        Else
+          Assign
+            Local name=color ty=Rgb
+            StructLiteral name=Rgb ty=Rgb
+              Field name=r
+                Float text=0.75 ty=f32
+              Field name=g
+                Float text=0.5 ty=f32
+              Field name=b
+                Float text=0.25 ty=f32
+      Let name=roughness ty=f32
+        Binary op=+ ty=f32
+          Float text=0.5 ty=f32
+          Binary op=* ty=f32
+            Field name=offset ty=f32
+              Local name=params ty=SceneParams
+            Field name=x ty=f32
+              Field name=normal ty=Vec3
+                Local name=surface ty=SurfaceContext[MaterialId]
       Return
         Call key=MaterialSample.standard ty=MaterialSample
-          StructLiteral name=Rgb ty=Rgb
-            Field name=r
-              Float text=0.25 ty=f32
-            Field name=g
-              Float text=0.5 ty=f32
-            Field name=b
-              Float text=0.75 ty=f32
-          Float text=0.5 ty=f32
+          Local name=color ty=Rgb
+          Local name=roughness ty=f32
   Fn name=world ret=Field
     Param name=p mode=read ty=Vec3
     Param name=params mode=read ty=SceneParams
@@ -1722,10 +1982,24 @@ Program
           Float text=2.0 ty=f32
       Let name=zero ty=f32
         Float text=0.0 ty=f32
+      Let name=dynamic_axis ty=Vec3
+        StructLiteral name=Vec3 ty=Vec3
+          Field name=x
+            Field name=offset ty=f32
+              Local name=params ty=SceneParams
+          Field name=y
+            Float text=1.0 ty=f32
+          Field name=z
+            Float text=0.0 ty=f32
+      Let name=derived_normal ty=Vec3
+        Call key=normalize3 ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=row_z ty=Vec3
+            Local name=dynamic_axis ty=Vec3
       Let name=a ty=Field
         Call key=plane ty=Field
           Local name=repeated ty=Vec3
-          Local name=row_y ty=Vec3
+          Local name=derived_normal ty=Vec3
           Call key=fn:identity[f32] ty=f32
             Local name=zero ty=f32
       Let name=b ty=Field
@@ -1763,21 +2037,10 @@ Program
       Let name=e ty=Field
         Call key=capsule ty=Field
           Local name=repeated ty=Vec3
-          StructLiteral name=Vec3 ty=Vec3
-            Field name=x
-              Float text=0.0 ty=f32
-            Field name=y
-              Neg ty=f32
-                Float text=1.0 ty=f32
-            Field name=z
-              Float text=0.0 ty=f32
-          StructLiteral name=Vec3 ty=Vec3
-            Field name=x
-              Float text=0.0 ty=f32
-            Field name=y
-              Float text=1.0 ty=f32
-            Field name=z
-              Float text=0.0 ty=f32
+          Field name=capsule_a ty=Vec3
+            Local name=params ty=SceneParams
+          Field name=capsule_b ty=Vec3
+            Local name=params ty=SceneParams
           Float text=0.2 ty=f32
       Let name=f ty=Field
         Call key=finite_cylinder ty=Field
@@ -1794,6 +2057,134 @@ Program
           Local name=repeated ty=Vec3
           Float text=1.0 ty=f32
           Float text=0.2 ty=f32
+      Let name=rotated_only ty=Vec3
+        Call key=rotate ty=Vec3
+          Local name=p ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Neg ty=f32
+                Float text=1.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=1.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=1.0 ty=f32
+      Let name=j ty=Field
+        Call key=sphere ty=Field
+          Local name=rotated_only ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          Float text=0.375 ty=f32
+      Let name=added ty=Vec3
+        Call key=Vec3.add ty=Vec3
+          Receiver
+            Local name=p ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.25 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+      Let name=scalar_mix ty=f32
+        Binary op=+ ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Binary op=+ ty=f32
+                Binary op=+ ty=f32
+                  Binary op=+ ty=f32
+                    Call key=sqrt_scalar ty=f32
+                      Binary op=+ ty=f32
+                        Binary op=* ty=f32
+                          Field name=offset ty=f32
+                            Local name=params ty=SceneParams
+                          Field name=offset ty=f32
+                            Local name=params ty=SceneParams
+                        Float text=0.015625 ty=f32
+                    Call key=rsqrt_scalar ty=f32
+                      Binary op=+ ty=f32
+                        Binary op=* ty=f32
+                          Field name=offset ty=f32
+                            Local name=params ty=SceneParams
+                          Field name=offset ty=f32
+                            Local name=params ty=SceneParams
+                        Float text=1.0 ty=f32
+                  Call key=sin_scalar ty=f32
+                    Field name=offset ty=f32
+                      Local name=params ty=SceneParams
+                Call key=cos_scalar ty=f32
+                  Field name=offset ty=f32
+                    Local name=params ty=SceneParams
+              Call key=dot3 ty=f32
+                Local name=row_x ty=Vec3
+                Local name=dynamic_axis ty=Vec3
+            Call key=length2 ty=f32
+              StructLiteral name=Vec2 ty=Vec2
+                Field name=x
+                  Field name=offset ty=f32
+                    Local name=params ty=SceneParams
+                Field name=y
+                  Float text=0.125 ty=f32
+          Call key=length3 ty=f32
+            Local name=dynamic_axis ty=Vec3
+      Let name=radius ty=RadiusSpec
+        StructLiteral name=RadiusSpec ty=RadiusSpec
+          Field name=base
+            Call key=default_radius ty=f32
+              DefaultArg ty=unit
+      Let name=i ty=Field
+        Call key=sphere ty=Field
+          Local name=added ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Field name=base ty=f32
+                Local name=radius ty=RadiusSpec
+              Field name=extra ty=f32
+                Local name=radius ty=RadiusSpec
+            Local name=scalar_mix ty=f32
+      Let name=degenerate ty=Field
+        Call key=capsule ty=Field
+          Local name=p ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.5 ty=f32
+            Field name=y
+              Float text=0.5 ty=f32
+            Field name=z
+              Float text=0.5 ty=f32
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.5 ty=f32
+            Field name=y
+              Float text=0.5 ty=f32
+            Field name=z
+              Float text=0.5 ty=f32
+          Float text=0.1 ty=f32
       Let name=hard ty=Field
         Call key=subtract ty=Field
           Call key=intersection ty=Field
@@ -1804,8 +2195,14 @@ Program
               Local name=c ty=Field
               Local name=d ty=Field
           Call key=union ty=Field
-            Local name=e ty=Field
-            Local name=f ty=Field
+            Call key=union ty=Field
+              Local name=e ty=Field
+              Local name=f ty=Field
+            Call key=union ty=Field
+              Call key=union ty=Field
+                Local name=i ty=Field
+                Local name=degenerate ty=Field
+              Local name=j ty=Field
       Let name=smooth ty=Field
         Call key=smooth_subtract ty=Field
           Call key=smooth_intersection ty=Field
@@ -1824,7 +2221,7 @@ Program
       Let name=displaced ty=Field
         Call key=sinusoidal_displace ty=Field
           Local name=scaled ty=Field
-          Local name=repeated ty=Vec3
+          Local name=rigid ty=Vec3
           Float text=0.1 ty=f32
           Float text=2.0 ty=f32
           Float text=0.0 ty=f32
@@ -1833,7 +2230,13 @@ Program
           Local name=displaced ty=Field
           EnumConstruct enum=ObjectId variant=Scene ty=ObjectId
           EnumConstruct enum=MaterialId variant=Surface ty=MaterialId
+  Struct name=RadiusSpec
+    FieldDefault name=extra
+      Float text=0.125 ty=f32
   Struct name=SceneParams
+    PixelsParamField path=[1] range=[-0.125,0.125] exact_integer=false
+    PixelsParamField path=[2] range=[-1,1] exact_integer=false
+    PixelsParamField path=[3] range=[-1,1] exact_integer=false
   Instantiation key=fn:identity[f32]
     Fn ret=f32
       Param name=value mode=read ty=f32
@@ -1848,3 +2251,5 @@ Program
       Body
         Return
           Local name=field ty=Field
+  Instantiation key=struct:SurfaceContext[MaterialId]
+    Struct

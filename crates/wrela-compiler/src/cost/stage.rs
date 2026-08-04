@@ -363,6 +363,13 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
             let image_checked =
                 crate::eval::image_checks::check_sealed(&graph, root, &checked.programs)
                     .map_err(|error| error.message)?;
+            crate::pixels::compile_all(
+                &checked.programs,
+                &root.module_path,
+                &graph,
+                &image_checked.renderer_configs,
+            )
+            .map_err(|error| error.diagnostic().message.clone())?;
             let layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
             Some(ShippedImage {
                 graph,

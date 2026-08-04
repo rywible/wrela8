@@ -53,6 +53,28 @@ pub struct CheckedImage {
     pub renderer_configs: crate::pixels::config::RendererConfigs,
 }
 
+fn pixels_diagnostic(diagnostic: crate::pixels::diagnostics::PixelsDiagnostic) -> SemaError {
+    let mut extra_lines: Vec<String> = diagnostic
+        .notes
+        .iter()
+        .map(|note| format!("note: {note}"))
+        .collect();
+    extra_lines.extend(diagnostic.help.iter().map(|help| format!("help: {help}")));
+    SemaError {
+        category: diagnostic.category(),
+        message: diagnostic.message,
+        line: diagnostic.primary.line,
+        col: diagnostic.primary.col,
+        extra_lines,
+        omit_location: diagnostic.primary == Default::default(),
+        missing_method: None,
+    }
+}
+
+pub fn pixels_error(error: crate::pixels::diagnostics::PixelsError) -> SemaError {
+    pixels_diagnostic(error.diagnostic().clone())
+}
+
 pub fn check_sealed(
     graph: &ImageGraph,
     owner: &TypedProgram,
@@ -77,26 +99,9 @@ pub fn check_sealed(
     )?;
     check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
-    let renderer_configs = crate::pixels::config::validate_renderers(owner, programs, graph)
-        .map_err(|error| {
-            let diagnostic = error.diagnostic();
-            let mut extra_lines: Vec<String> = diagnostic
-                .notes
-                .iter()
-                .map(|note| format!("note: {note}"))
-                .collect();
-            extra_lines.extend(diagnostic.help.iter().map(|help| format!("help: {help}")));
-            SemaError {
-                category: diagnostic.category(),
-                message: diagnostic.message.clone(),
-                line: diagnostic.primary.line,
-                col: diagnostic.primary.col,
-                extra_lines,
-                omit_location: diagnostic.primary == Default::default(),
-                missing_method: None,
-            }
-        })?;
     crate::placement::check_annotations(graph).map_err(build_error)?;
+    let renderer_configs = crate::pixels::config::validate_renderers(owner, programs, graph)
+        .map_err(|error| pixels_diagnostic(error.diagnostic().clone()))?;
     Ok(CheckedImage { renderer_configs })
 }
 
@@ -2471,7 +2476,11 @@ mod tests {
             ],
         );
         let backings = pool_backings(&g, &layouts).expect("well-formed");
-        let span = crate::syntax::ast::Span { line: 1, col: 1 };
+        let span = crate::syntax::ast::Span {
+            line: 1,
+            col: 1,
+            ..Default::default()
+        };
 
         let ty = |second: crate::sema::types::TypeArg| {
             Type::Named(
@@ -2821,7 +2830,11 @@ mod tests {
             ),
             default: None,
         };
-        let span = crate::syntax::ast::Span { line: 1, col: 1 };
+        let span = crate::syntax::ast::Span {
+            line: 1,
+            col: 1,
+            ..Default::default()
+        };
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
         let dma_args = vec![
             handle_arg("device", ImageDeclRef::Device(0)),

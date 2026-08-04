@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=core/field.wr sha256=281c1f4092ba197c59a930a985d60638b162df00fe56c7ddb668ffb451a90136
+  Input path=core/field.wr sha256=fa10100567a3d7cd0ab0919c4f254a99c6be4e1949b8c34469ead97d6c8be130
   Input path=core/render.wr sha256=a0b82f43ec61085f359bf9a24792d9ff610925c8cb04c17d7c129d780de3a115
   Input path=drivers/display.wr sha256=8c979e67ccfa9d45e377c55303c6d076e2d680e622c529e0dcf2bb7046b67a4b
   Input path=examples/check_pixels_two_renderers.wr sha256=4d28015d051d94574c5da12b069389afd08d4303dcb983063f9d2a3591a60abe

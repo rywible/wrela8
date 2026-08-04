@@ -12,6 +12,8 @@ use crate::syntax::ast::Span;
 
 use super::params::ParameterContract;
 
+const LIGHT_KIND_NAMES: &[&str] = &["Disabled", "Point", "Directional", "Rectangle", "Disk"];
+
 #[derive(Debug, Clone, PartialEq)]
 struct ConfigFailure {
     code: &'static str,
@@ -454,7 +456,6 @@ fn one_f32_struct(renderer: &RendererDecl, label: &str, ty: &str) -> ConfigResul
 }
 
 fn light_config(renderer: &RendererDecl) -> ConfigResult<(u32, Vec<String>)> {
-    const LIGHT_KINDS: &[&str] = &["Disabled", "Point", "Directional", "Rectangle", "Disk"];
     const LIGHT_CAPACITY: usize = 8;
 
     let span = arg(renderer, "light_config")?.span;
@@ -518,7 +519,7 @@ fn light_config(renderer: &RendererDecl) -> ConfigResult<(u32, Vec<String>)> {
                 )
                 .at(span));
             }
-            LIGHT_KINDS
+            LIGHT_KIND_NAMES
                 .get(*index)
                 .map(|kind| (*kind).to_string())
                 .ok_or_else(|| {
@@ -920,8 +921,25 @@ fn validate_renderers_inner(
         }
         let field = function(renderer, "field")?;
         let material = function(renderer, "material")?;
-        super::legality::check_renderer_roots(owner, programs, &field, &material)
-            .map_err(|message| ConfigFailure::from_prefixed(message).at(renderer.span))?;
+        super::legality::check_renderer_roots(owner, programs, &field, &material).map_err(
+            |error| {
+                let diagnostic = error.diagnostic();
+                let mut message = diagnostic.message.clone();
+                for note in &diagnostic.notes {
+                    message.push_str("\n  ");
+                    message.push_str(note);
+                }
+                ConfigFailure {
+                    code: diagnostic.code,
+                    message,
+                    primary: Some(if diagnostic.primary == Span::default() {
+                        renderer.span
+                    } else {
+                        diagnostic.primary
+                    }),
+                }
+            },
+        )?;
         super::validate_parameter_identity(
             owner,
             programs,
@@ -1464,6 +1482,22 @@ mod tests {
             error
                 .message
                 .starts_with("renderer capacity `lights` exceeds the machine-v1 sealed ceiling")
+        );
+    }
+
+    #[test]
+    fn light_kind_index_decoder_is_pinned_to_the_stdlib_declaration_order() {
+        let render_source = include_str!("../../../../stdlib/core/render.wr");
+        let declaration = format!(
+            "pub enum LightKind:\n{}",
+            LIGHT_KIND_NAMES
+                .iter()
+                .map(|name| format!("    {name}\n"))
+                .collect::<String>()
+        );
+        assert!(
+            render_source.contains(&declaration),
+            "update the typed light-kind decoder deliberately when the stdlib enum changes"
         );
     }
 }

@@ -186,6 +186,8 @@ pub(crate) struct ModuleCtx {
     pub(crate) struct_decl_module: BTreeMap<String, String>,
     pub(crate) type_decl_module: BTreeMap<String, String>,
     pub(crate) type_decl_name: BTreeMap<String, String>,
+    pub(crate) const_decl_module: BTreeMap<String, String>,
+    pub(crate) const_decl_name: BTreeMap<String, String>,
     pub(crate) fn_decl_module: BTreeMap<String, String>,
     pub(crate) fn_decl_name: BTreeMap<String, String>,
     pub(crate) visibility_home: RefCell<Option<String>>,
@@ -230,6 +232,8 @@ pub(crate) fn build_module_ctx(
     let mut struct_decl_module = BTreeMap::new();
     let mut type_decl_module = BTreeMap::new();
     let mut type_decl_name = BTreeMap::new();
+    let mut const_decl_module = BTreeMap::new();
+    let mut const_decl_name = BTreeMap::new();
     let mut fn_decl_module = BTreeMap::new();
     let mut fn_decl_name = BTreeMap::new();
 
@@ -348,6 +352,8 @@ pub(crate) fn build_module_ctx(
                 );
             }
             (Item::Const(c), types::DeclItem::Const(d)) => {
+                const_decl_module.insert(c.name.clone(), module_path.clone());
+                const_decl_name.insert(c.name.clone(), c.name.clone());
                 consts.insert(c.name.clone(), d.ty.clone());
                 const_values.insert(c.name.clone(), c.value.clone());
             }
@@ -389,6 +395,8 @@ pub(crate) fn build_module_ctx(
         struct_decl_module,
         type_decl_module,
         type_decl_name,
+        const_decl_module,
+        const_decl_name,
         fn_decl_module,
         fn_decl_name,
         visibility_home: RefCell::new(None),
@@ -615,6 +623,8 @@ pub(crate) fn check(
     let mut program = TypedProgram::default();
     program.module_path = mctx.module_path.clone();
     program.declared_pools = mctx.module_pools.clone();
+    program.const_decl_modules = mctx.const_decl_module.clone();
+    program.const_decl_names = mctx.const_decl_name.clone();
     program.fn_decl_modules = mctx.fn_decl_module.clone();
     program.fn_decl_names = mctx.fn_decl_name.clone();
     program.type_decl_modules = mctx.type_decl_module.clone();
@@ -4645,6 +4655,7 @@ fn rewrite_fstring_format_error(e: SemaError) -> SemaError {
                 return types::secret_has_no_format(Span {
                     line: e.line,
                     col: e.col,
+                    ..Default::default()
                 });
             }
             return SemaError::at(
@@ -4656,6 +4667,7 @@ fn rewrite_fstring_format_error(e: SemaError) -> SemaError {
                 Span {
                     line: e.line,
                     col: e.col,
+                    ..Default::default()
                 },
             );
         }
@@ -8198,8 +8210,22 @@ mod tests {
 
     #[test]
     fn types_eq_is_span_insensitive() {
-        let len_a = Expr::Int(Span { line: 1, col: 1 }, "3".to_string());
-        let len_b = Expr::Int(Span { line: 42, col: 7 }, "3".to_string());
+        let len_a = Expr::Int(
+            Span {
+                line: 1,
+                col: 1,
+                ..Default::default()
+            },
+            "3".to_string(),
+        );
+        let len_b = Expr::Int(
+            Span {
+                line: 42,
+                col: 7,
+                ..Default::default()
+            },
+            "3".to_string(),
+        );
         let a = Type::Array(Box::new(Type::U8), Box::new(len_a.clone()));
         let b = Type::Array(Box::new(Type::U8), Box::new(len_b.clone()));
         assert!(
@@ -8211,7 +8237,14 @@ mod tests {
             "the two length exprs differ by span under derived PartialEq"
         );
 
-        let len_c = Expr::Int(Span { line: 1, col: 1 }, "4".to_string());
+        let len_c = Expr::Int(
+            Span {
+                line: 1,
+                col: 1,
+                ..Default::default()
+            },
+            "4".to_string(),
+        );
         let c = Type::Array(Box::new(Type::U8), Box::new(len_c));
         assert!(
             !types_eq(&a, &c),

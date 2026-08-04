@@ -22,6 +22,8 @@ pub struct Token {
     pub text: String,
     pub line: u32,
     pub col: u32,
+    pub byte_start: usize,
+    pub byte_end: usize,
 }
 
 #[derive(Debug)]
@@ -68,6 +70,7 @@ struct Lexer<'s> {
     pos: usize,
     line: u32,
     col: u32,
+    line_start: usize,
     depth: usize,
     indents: Vec<u32>,
     islands: Vec<Island>,
@@ -81,6 +84,7 @@ impl<'s> Lexer<'s> {
             pos: 0,
             line: 1,
             col: 1,
+            line_start: 0,
             depth: 0,
             indents: vec![0],
             islands: Vec::new(),
@@ -139,6 +143,7 @@ impl<'s> Lexer<'s> {
         if b == b'\n' {
             self.line += 1;
             self.col = 1;
+            self.line_start = self.pos;
         } else {
             self.col += 1;
         }
@@ -146,11 +151,27 @@ impl<'s> Lexer<'s> {
     }
 
     fn push(&mut self, kind: TokenKind, text: impl Into<String>, line: u32, col: u32) {
+        let byte_start = self
+            .line_start
+            .saturating_add(col.saturating_sub(1) as usize);
+        self.push_at(kind, text, line, col, byte_start);
+    }
+
+    fn push_at(
+        &mut self,
+        kind: TokenKind,
+        text: impl Into<String>,
+        line: u32,
+        col: u32,
+        byte_start: usize,
+    ) {
         self.tokens.push(Token {
             kind,
             text: text.into(),
             line,
             col,
+            byte_start,
+            byte_end: self.pos,
         });
     }
 
@@ -268,6 +289,7 @@ impl<'s> Lexer<'s> {
                 }
                 Some(b'#') => {
                     let (line, col) = (self.line, self.col);
+                    let token_start = self.pos;
                     if self.peek2() == Some(b'#') {
                         self.dispatch_indent(width)?;
                         self.bump();
@@ -282,7 +304,7 @@ impl<'s> Lexer<'s> {
                         let text = std::str::from_utf8(&self.src[start..self.pos])
                             .map_err(|_| self.error("doc comment is not valid UTF-8"))?
                             .to_string();
-                        self.push(TokenKind::DocComment, text, line, col);
+                        self.push_at(TokenKind::DocComment, text, line, col, token_start);
                     } else {
                         self.bump();
                         while let Some(b) = self.peek() {
@@ -403,7 +425,7 @@ impl<'s> Lexer<'s> {
         } else {
             TokenKind::Ident
         };
-        self.push(kind, text, line, col);
+        self.push_at(kind, text, line, col, start);
     }
 
     fn lex_digit_run(&mut self, allowed: &[u8]) -> Result<(), LexError> {
@@ -460,7 +482,7 @@ impl<'s> Lexer<'s> {
             let text = std::str::from_utf8(&self.src[start..self.pos])
                 .expect("ASCII number bytes are valid UTF-8")
                 .to_string();
-            self.push(TokenKind::Int, text, line, col);
+            self.push_at(TokenKind::Int, text, line, col, start);
             return Ok(());
         }
         self.lex_digit_run(DECIMAL)?;
@@ -489,13 +511,14 @@ impl<'s> Lexer<'s> {
         } else {
             TokenKind::Int
         };
-        self.push(kind, text, line, col);
+        self.push_at(kind, text, line, col, start);
         Ok(())
     }
 
     fn lex_string(&mut self, kind: TokenKind, prefix: &str) -> Result<(), LexError> {
         let (line, col) = (self.line, self.col.saturating_sub(prefix.len() as u32));
         let start = self.pos;
+        let token_start = start.saturating_sub(prefix.len());
         self.bump();
         if self.peek() == Some(b'"') && self.peek2() == Some(b'"') {
             return Err(self.error("triple-quoted string literals are reserved"));
@@ -544,7 +567,7 @@ impl<'s> Lexer<'s> {
         }
         let body = std::str::from_utf8(&self.src[start..self.pos])
             .map_err(|_| self.error("string literal is not valid UTF-8"))?;
-        self.push(kind, format!("{prefix}{body}"), line, col);
+        self.push_at(kind, format!("{prefix}{body}"), line, col, token_start);
         Ok(())
     }
 
@@ -568,7 +591,7 @@ impl<'s> Lexer<'s> {
         }
         let body = std::str::from_utf8(&self.src[start..self.pos])
             .map_err(|_| self.error("character literal is not valid UTF-8"))?;
-        self.push(TokenKind::Char, body.to_string(), line, col);
+        self.push_at(TokenKind::Char, body.to_string(), line, col, start);
         Ok(())
     }
 
@@ -651,13 +674,14 @@ impl<'s> Lexer<'s> {
 
     fn lex_operator(&mut self) -> Result<(), LexError> {
         let (line, col) = (self.line, self.col);
+        let start = self.pos;
         let rest = &self.src[self.pos..];
         for op in MULTI_OPS {
             if rest.starts_with(op.as_bytes()) {
                 for _ in 0..op.len() {
                     self.bump();
                 }
-                self.push(TokenKind::Op, *op, line, col);
+                self.push_at(TokenKind::Op, *op, line, col, start);
                 return Ok(());
             }
         }
@@ -674,7 +698,7 @@ impl<'s> Lexer<'s> {
                 self.depth -= 1;
             }
             self.bump();
-            self.push(TokenKind::Op, c.to_string(), line, col);
+            self.push_at(TokenKind::Op, c.to_string(), line, col, start);
             return Ok(());
         }
         Err(self.error(format!("unexpected character `{c}`")))
@@ -922,6 +946,26 @@ mod tests {
             toks.iter()
                 .any(|t| t.kind == TokenKind::Ident && t.text == "x"),
             "identifier after the blank run must still lex"
+        );
+    }
+
+    #[test]
+    fn content_tokens_retain_exact_source_byte_bounds() {
+        let source = "module scene\n    value = f\"é {value}\"\n";
+        let tokens = lex(source).unwrap();
+        let module = tokens.iter().find(|token| token.text == "module").unwrap();
+        let scene = tokens.iter().find(|token| token.text == "scene").unwrap();
+        let value = tokens.iter().find(|token| token.text == "value").unwrap();
+        let fstring = tokens
+            .iter()
+            .find(|token| token.kind == TokenKind::FStr)
+            .unwrap();
+        assert_eq!((module.byte_start, module.byte_end), (0, 6));
+        assert_eq!((scene.byte_start, scene.byte_end), (7, 12));
+        assert_eq!((value.byte_start, value.byte_end), (17, 22));
+        assert_eq!(
+            &source.as_bytes()[fstring.byte_start..fstring.byte_end],
+            "f\"é {value}\"".as_bytes()
         );
     }
 }

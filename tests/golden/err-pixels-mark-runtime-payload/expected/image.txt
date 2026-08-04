@@ -1,3 +1,3 @@
-error[pixels P004]: `mark` object and material identities must be comptime enum variants at 48:41
+error[pixels P004]: `mark` object and material identities must be comptime enum variants at 33:29
 note: renderer call chain: examples.err_pixels_mark_runtime_payload::world
 help: use only the closed AaaByteExact field-operation and rigid-transform surface

@@ -1,2 +1,2 @@
-error[pixels P003]: renderer bodies may not store function value `leaf` at 42:36
+error[pixels P003]: renderer bodies may not store function value `leaf` at 28:16
 note: renderer call chain: examples.err_pixels_field_indirect_call::world

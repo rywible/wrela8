@@ -217,7 +217,10 @@ boundary.
 `Rgb` fields. Endpoints are finite `f32` literals with `min <= max`; vector
 ranges apply component-wise. Structs and arrays have no recursive shorthand.
 Every influencing numeric path resolves to exactly one range. Integers and
-enums need no numeric range.
+enums need no numeric range. A direct `[f32; N]` or tuple-of-`f32` parameter
+cannot attach contracts to its elements and therefore cannot influence a
+renderer. Put each influencing scalar/vector in a named struct field carrying
+`@range`, then store that finite wrapper in the array or tuple.
 
 `@rate(max_delta=..., max_second_delta=...)` is optional. Its finite,
 nonnegative values are measured per rendered frame. Omission is legal and
@@ -256,6 +259,17 @@ Metadata and deformation are:
 ```text
 mark sinusoidal_displace
 ```
+
+The closed scalar/vector helper surface used inside field and material
+helpers is:
+
+```text
+sqrt_scalar rsqrt_scalar sin_scalar cos_scalar
+dot3 cross3 length2 length3 normalize3
+```
+
+These helpers have ordinary Wrela bodies that define fallback semantics and
+dedicated symbolic nodes with versioned semantic operation IDs.
 
 Every operation has a real scalar Wrela implementation, a symbolic rule,
 range and derivative rules, structural bounds, a cost rule, a Rust reference,

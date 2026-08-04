@@ -1,0 +1,570 @@
+FieldGraph v1
+Renderers count=1
+  Renderer index=0 field=examples.check_pixels_field_ops::world material=examples.check_pixels_field_ops::shade params=SceneParams material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
+      World min=[-4,-4,-4] max=[4,4,4]
+      RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+    Param id=p0 path=SceneParams.offset indexes=[1] component=scalar ty=f32 range=[-0.125,0.125]
+    Param id=p1 path=SceneParams.capsule_a.x indexes=[2] component=0 ty=f32 range=[-1,1]
+    Param id=p2 path=SceneParams.capsule_a.y indexes=[2] component=1 ty=f32 range=[-1,1]
+    Param id=p3 path=SceneParams.capsule_a.z indexes=[2] component=2 ty=f32 range=[-1,1]
+    Param id=p4 path=SceneParams.capsule_b.x indexes=[3] component=0 ty=f32 range=[-1,1]
+    Param id=p5 path=SceneParams.capsule_b.y indexes=[3] component=1 ty=f32 range=[-1,1]
+    Param id=p6 path=SceneParams.capsule_b.z indexes=[3] component=2 ty=f32 range=[-1,1]
+    Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s1 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s2 dependency=parameter kind=Param param=p0
+    Scalar id=s3 dependency=parameter kind=Cross3 component=0 a=[s0,s0,s1] b=[s2,s1,s0]
+    Scalar id=s4 dependency=parameter kind=Cross3 component=1 a=[s0,s0,s1] b=[s2,s1,s0]
+    Scalar id=s5 dependency=parameter kind=Cross3 component=2 a=[s0,s0,s1] b=[s2,s1,s0]
+    Scalar id=s6 dependency=parameter kind=Normalize3 component=0 value=[s3,s4,s5] semantic=Normalize3F32V1
+    Scalar id=s7 dependency=parameter kind=Normalize3 component=1 value=[s3,s4,s5] semantic=Normalize3F32V1
+    Scalar id=s8 dependency=parameter kind=Normalize3 component=2 value=[s3,s4,s5] semantic=Normalize3F32V1
+    Scalar id=s9 dependency=constant kind=ConstF32 value=0.70710677 bits=0x3f3504f3
+    Scalar id=s10 dependency=constant kind=ConstF32 value=-0.70710677 bits=0xbf3504f3
+    Scalar id=s11 dependency=coordinate kind=Coord axis=x
+    Scalar id=s12 dependency=coordinate kind=Sub a=s11 b=s1
+    Scalar id=s13 dependency=coordinate kind=Coord axis=y
+    Scalar id=s14 dependency=coordinate kind=Sub a=s13 b=s0
+    Scalar id=s15 dependency=coordinate kind=Coord axis=z
+    Scalar id=s16 dependency=coordinate kind=Sub a=s15 b=s0
+    Scalar id=s17 dependency=coordinate kind=Dot3 a=[s9,s10,s0] b=[s12,s14,s16]
+    Scalar id=s18 dependency=coordinate kind=Sub a=s17 b=s0
+    Scalar id=s19 dependency=coordinate kind=Dot3 a=[s9,s9,s0] b=[s12,s14,s16]
+    Scalar id=s20 dependency=coordinate kind=Sub a=s19 b=s1
+    Scalar id=s21 dependency=coordinate kind=Dot3 a=[s0,s0,s1] b=[s12,s14,s16]
+    Scalar id=s22 dependency=coordinate kind=Sub a=s21 b=s0
+    Scalar id=s23 dependency=coordinate kind=Dot3 a=[s1,s0,s0] b=[s18,s20,s22]
+    Scalar id=s24 dependency=constant kind=ConstF32 value=2 bits=0x40000000
+    Scalar id=s25 dependency=coordinate kind=Sub a=s23 b=s24
+    Scalar id=s26 dependency=coordinate kind=Abs value=s25
+    Scalar id=s27 dependency=coordinate kind=Sub a=s23 b=s0
+    Scalar id=s28 dependency=coordinate kind=Abs value=s27
+    Scalar id=s29 dependency=constant kind=ConstF32 value=-2 bits=0xc0000000
+    Scalar id=s30 dependency=coordinate kind=Sub a=s23 b=s29
+    Scalar id=s31 dependency=coordinate kind=Abs value=s30
+    Scalar id=s32 dependency=coordinate kind=Compare op=Lt a=s28 b=s31
+    Scalar id=s33 dependency=coordinate kind=Select predicate=s32 a=s27 b=s30
+    Scalar id=s34 dependency=coordinate kind=Abs value=s33
+    Scalar id=s35 dependency=coordinate kind=Compare op=Lt a=s26 b=s34
+    Scalar id=s36 dependency=coordinate kind=Select predicate=s35 a=s25 b=s33
+    Scalar id=s37 dependency=coordinate kind=Dot3 a=[s0,s1,s0] b=[s18,s20,s22]
+    Scalar id=s38 dependency=coordinate kind=Sub a=s37 b=s24
+    Scalar id=s39 dependency=coordinate kind=Abs value=s38
+    Scalar id=s40 dependency=coordinate kind=Sub a=s37 b=s0
+    Scalar id=s41 dependency=coordinate kind=Abs value=s40
+    Scalar id=s42 dependency=coordinate kind=Sub a=s37 b=s29
+    Scalar id=s43 dependency=coordinate kind=Abs value=s42
+    Scalar id=s44 dependency=coordinate kind=Compare op=Lt a=s41 b=s43
+    Scalar id=s45 dependency=coordinate kind=Select predicate=s44 a=s40 b=s42
+    Scalar id=s46 dependency=coordinate kind=Abs value=s45
+    Scalar id=s47 dependency=coordinate kind=Compare op=Lt a=s39 b=s46
+    Scalar id=s48 dependency=coordinate kind=Select predicate=s47 a=s38 b=s45
+    Scalar id=s49 dependency=coordinate kind=Dot3 a=[s0,s0,s1] b=[s18,s20,s22]
+    Scalar id=s50 dependency=coordinate kind=Sub a=s49 b=s24
+    Scalar id=s51 dependency=coordinate kind=Abs value=s50
+    Scalar id=s52 dependency=coordinate kind=Sub a=s49 b=s0
+    Scalar id=s53 dependency=coordinate kind=Abs value=s52
+    Scalar id=s54 dependency=coordinate kind=Sub a=s49 b=s29
+    Scalar id=s55 dependency=coordinate kind=Abs value=s54
+    Scalar id=s56 dependency=coordinate kind=Compare op=Lt a=s53 b=s55
+    Scalar id=s57 dependency=coordinate kind=Select predicate=s56 a=s52 b=s54
+    Scalar id=s58 dependency=coordinate kind=Abs value=s57
+    Scalar id=s59 dependency=coordinate kind=Compare op=Lt a=s51 b=s58
+    Scalar id=s60 dependency=coordinate kind=Select predicate=s59 a=s50 b=s57
+    Scalar id=s61 dependency=coordinate+parameter kind=Dot3 a=[s36,s48,s60] b=[s6,s7,s8]
+    Scalar id=s62 dependency=coordinate+parameter kind=Add a=s61 b=s0
+    Scalar id=s63 dependency=constant kind=ConstF32 value=1.7071068 bits=0x3fda827a
+    Scalar id=s64 dependency=coordinate kind=Sub a=s36 b=s0
+    Scalar id=s65 dependency=coordinate kind=Sub a=s48 b=s0
+    Scalar id=s66 dependency=coordinate kind=Sub a=s60 b=s0
+    Scalar id=s67 dependency=coordinate kind=Length3 value=[s64,s65,s66]
+    Scalar id=s68 dependency=coordinate kind=Sub a=s67 b=s1
+    Scalar id=s69 dependency=coordinate+parameter kind=Min a=s62 b=s68
+    Scalar id=s70 dependency=coordinate kind=Abs value=s36
+    Scalar id=s71 dependency=coordinate kind=Sub a=s70 b=s1
+    Scalar id=s72 dependency=coordinate kind=Max a=s71 b=s0
+    Scalar id=s73 dependency=coordinate kind=Abs value=s48
+    Scalar id=s74 dependency=coordinate kind=Sub a=s73 b=s1
+    Scalar id=s75 dependency=coordinate kind=Max a=s74 b=s0
+    Scalar id=s76 dependency=coordinate kind=Abs value=s60
+    Scalar id=s77 dependency=coordinate kind=Sub a=s76 b=s1
+    Scalar id=s78 dependency=coordinate kind=Max a=s77 b=s0
+    Scalar id=s79 dependency=coordinate kind=Length3 value=[s72,s75,s78]
+    Scalar id=s80 dependency=coordinate kind=Max a=s74 b=s77
+    Scalar id=s81 dependency=coordinate kind=Max a=s71 b=s80
+    Scalar id=s82 dependency=coordinate kind=Min a=s81 b=s0
+    Scalar id=s83 dependency=coordinate kind=Add a=s79 b=s82
+    Scalar id=s84 dependency=constant kind=ConstF32 value=0.1 bits=0x3dcccccd
+    Scalar id=s85 dependency=coordinate kind=Sub a=s83 b=s84
+    Scalar id=s86 dependency=coordinate kind=Min a=s83 b=s85
+    Scalar id=s87 dependency=coordinate+parameter kind=Max a=s69 b=s86
+    Scalar id=s88 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s89 dependency=coordinate kind=Sub a=s11 b=s88
+    Scalar id=s90 dependency=coordinate kind=Sub a=s89 b=s0
+    Scalar id=s91 dependency=coordinate kind=Sub a=s13 b=s88
+    Scalar id=s92 dependency=coordinate kind=Sub a=s91 b=s0
+    Scalar id=s93 dependency=coordinate kind=Sub a=s15 b=s88
+    Scalar id=s94 dependency=coordinate kind=Sub a=s93 b=s0
+    Scalar id=s95 dependency=coordinate kind=Length3 value=[s90,s92,s94]
+    Scalar id=s96 dependency=coordinate kind=Sub a=s95 b=s84
+    Scalar id=s97 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
+    Scalar id=s98 dependency=parameter kind=Mul a=s2 b=s2
+    Scalar id=s99 dependency=constant kind=ConstF32 value=0.015625 bits=0x3c800000
+    Scalar id=s100 dependency=parameter kind=Add a=s98 b=s99
+    Scalar id=s101 dependency=parameter kind=Sqrt value=s100 semantic=SqrtF32V1
+    Scalar id=s102 dependency=parameter kind=Add a=s98 b=s1
+    Scalar id=s103 dependency=parameter kind=Rsqrt value=s102 semantic=RsqrtF32V1
+    Scalar id=s104 dependency=parameter kind=Add a=s101 b=s103
+    Scalar id=s105 dependency=parameter kind=SinRestricted value=s2 semantic=SinRestrictedF32V1
+    Scalar id=s106 dependency=parameter kind=Add a=s104 b=s105
+    Scalar id=s107 dependency=parameter kind=CosRestricted value=s2 semantic=CosRestrictedF32V1
+    Scalar id=s108 dependency=parameter kind=Add a=s106 b=s107
+    Scalar id=s109 dependency=parameter kind=Dot3 a=[s1,s0,s0] b=[s2,s1,s0]
+    Scalar id=s110 dependency=parameter kind=Add a=s108 b=s109
+    Scalar id=s111 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s112 dependency=parameter kind=Length2 value=[s2,s111]
+    Scalar id=s113 dependency=parameter kind=Add a=s110 b=s112
+    Scalar id=s114 dependency=parameter kind=Length3 value=[s2,s1,s0]
+    Scalar id=s115 dependency=parameter kind=Add a=s113 b=s114
+    Scalar id=s116 dependency=parameter kind=Add a=s97 b=s115
+    Scalar id=s117 dependency=coordinate kind=Add a=s11 b=s97
+    Scalar id=s118 dependency=coordinate kind=Sub a=s117 b=s0
+    Scalar id=s119 dependency=coordinate kind=Add a=s13 b=s0
+    Scalar id=s120 dependency=coordinate kind=Sub a=s119 b=s0
+    Scalar id=s121 dependency=coordinate kind=Add a=s15 b=s0
+    Scalar id=s122 dependency=coordinate kind=Sub a=s121 b=s0
+    Scalar id=s123 dependency=coordinate kind=Length3 value=[s118,s120,s122]
+    Scalar id=s124 dependency=coordinate+parameter kind=Sub a=s123 b=s116
+    Scalar id=s125 dependency=constant kind=ConstF32 value=-0.25 bits=0xbe800000
+    Scalar id=s126 dependency=constant kind=ConstF32 value=-0.0 bits=0x80000000
+    Scalar id=s127 dependency=coordinate+parameter kind=Min a=s124 b=s96
+    Scalar id=s128 dependency=constant kind=ConstF32 value=0.375 bits=0x3ec00000
+    Scalar id=s129 dependency=constant kind=ConstF32 value=-1 bits=0xbf800000
+    Scalar id=s130 dependency=coordinate kind=Dot3 a=[s0,s129,s0] b=[s11,s13,s15]
+    Scalar id=s131 dependency=coordinate kind=Sub a=s130 b=s0
+    Scalar id=s132 dependency=coordinate kind=Dot3 a=[s1,s0,s0] b=[s11,s13,s15]
+    Scalar id=s133 dependency=coordinate kind=Sub a=s132 b=s0
+    Scalar id=s134 dependency=coordinate kind=Dot3 a=[s0,s0,s1] b=[s11,s13,s15]
+    Scalar id=s135 dependency=coordinate kind=Sub a=s134 b=s0
+    Scalar id=s136 dependency=coordinate kind=Length3 value=[s131,s133,s135]
+    Scalar id=s137 dependency=coordinate kind=Sub a=s136 b=s128
+    Scalar id=s138 dependency=coordinate+parameter kind=Min a=s127 b=s137
+    Scalar id=s139 dependency=parameter kind=Param param=p1
+    Scalar id=s140 dependency=parameter kind=Param param=p2
+    Scalar id=s141 dependency=parameter kind=Param param=p3
+    Scalar id=s142 dependency=parameter kind=Param param=p4
+    Scalar id=s143 dependency=parameter kind=Param param=p5
+    Scalar id=s144 dependency=parameter kind=Param param=p6
+    Scalar id=s145 dependency=constant kind=ConstF32 value=0.2 bits=0x3e4ccccd
+    Scalar id=s146 dependency=coordinate+parameter kind=Sub a=s36 b=s139
+    Scalar id=s147 dependency=parameter kind=Sub a=s142 b=s139
+    Scalar id=s148 dependency=parameter kind=Sub a=s143 b=s140
+    Scalar id=s149 dependency=parameter kind=Sub a=s144 b=s141
+    Scalar id=s150 dependency=parameter kind=Dot3 a=[s147,s148,s149] b=[s147,s148,s149]
+    Scalar id=s151 dependency=parameter kind=Compare op=Gt a=s150 b=s0
+    Scalar id=s152 dependency=coordinate+parameter kind=Sub a=s48 b=s140
+    Scalar id=s153 dependency=coordinate+parameter kind=Sub a=s60 b=s141
+    Scalar id=s154 dependency=coordinate+parameter kind=Dot3 a=[s146,s152,s153] b=[s147,s148,s149]
+    Scalar id=s155 dependency=coordinate+parameter kind=Div numerator=s154 denominator=s150
+    Scalar id=s156 dependency=coordinate+parameter kind=Clamp value=s155 lo=s0 hi=s1
+    Scalar id=s157 dependency=coordinate+parameter kind=Select predicate=s151 a=s156 b=s0
+    Scalar id=s158 dependency=coordinate+parameter kind=Mul a=s147 b=s157
+    Scalar id=s159 dependency=coordinate+parameter kind=Sub a=s146 b=s158
+    Scalar id=s160 dependency=coordinate+parameter kind=Mul a=s148 b=s157
+    Scalar id=s161 dependency=coordinate+parameter kind=Sub a=s152 b=s160
+    Scalar id=s162 dependency=coordinate+parameter kind=Mul a=s149 b=s157
+    Scalar id=s163 dependency=coordinate+parameter kind=Sub a=s153 b=s162
+    Scalar id=s164 dependency=coordinate+parameter kind=Length3 value=[s159,s161,s163]
+    Scalar id=s165 dependency=coordinate+parameter kind=Sub a=s164 b=s145
+    Scalar id=s166 dependency=coordinate kind=Length2 value=[s36,s60]
+    Scalar id=s167 dependency=coordinate kind=Sub a=s166 b=s1
+    Scalar id=s168 dependency=coordinate kind=Max a=s167 b=s0
+    Scalar id=s169 dependency=coordinate kind=Length2 value=[s168,s75]
+    Scalar id=s170 dependency=coordinate kind=Max a=s167 b=s74
+    Scalar id=s171 dependency=coordinate kind=Min a=s170 b=s0
+    Scalar id=s172 dependency=coordinate kind=Add a=s169 b=s171
+    Scalar id=s173 dependency=coordinate+parameter kind=Min a=s165 b=s172
+    Scalar id=s174 dependency=coordinate+parameter kind=Min a=s173 b=s138
+    Scalar id=s175 dependency=coordinate+parameter kind=Neg value=s174
+    Scalar id=s176 dependency=coordinate+parameter kind=Max a=s87 b=s175
+    Scalar id=s177 dependency=coordinate kind=Add a=s48 b=s1
+    Scalar id=s178 dependency=coordinate kind=Clamp value=s177 lo=s0 hi=s24
+    Scalar id=s179 dependency=coordinate kind=Div numerator=s178 denominator=s24
+    Scalar id=s180 dependency=coordinate kind=Sub a=s1 b=s179
+    Scalar id=s181 dependency=coordinate kind=Mul a=s1 b=s180
+    Scalar id=s182 dependency=coordinate kind=Sub a=s166 b=s181
+    Scalar id=s183 dependency=coordinate kind=Max a=s182 b=s74
+    Scalar id=s184 dependency=coordinate+parameter kind=SmoothMin a=s176 b=s183 k=s84 semantic=SmoothMinF32V1
+    Scalar id=s185 dependency=coordinate kind=Length2 value=[s167,s48]
+    Scalar id=s186 dependency=coordinate kind=Sub a=s185 b=s145
+    Scalar id=s187 dependency=coordinate+parameter kind=Neg value=s184
+    Scalar id=s188 dependency=coordinate kind=Neg value=s186
+    Scalar id=s189 dependency=coordinate+parameter kind=SmoothMin a=s187 b=s188 k=s84 semantic=SmoothMinF32V1
+    Scalar id=s190 dependency=coordinate+parameter kind=Neg value=s189
+    Scalar id=s191 dependency=coordinate+parameter kind=Neg value=s190
+    Scalar id=s192 dependency=coordinate+parameter kind=SmoothMin a=s191 b=s62 k=s84 semantic=SmoothMinF32V1
+    Scalar id=s193 dependency=coordinate+parameter kind=Neg value=s192
+    Scalar id=s194 dependency=coordinate+parameter kind=Mul a=s193 b=s24
+    Scalar id=s195 dependency=coordinate kind=Mul a=s24 b=s23
+    Scalar id=s196 dependency=coordinate kind=Add a=s195 b=s0
+    Scalar id=s197 dependency=coordinate kind=SinRestricted value=s196 semantic=SinRestrictedF32V1
+    Scalar id=s198 dependency=coordinate kind=Mul a=s84 b=s197
+    Scalar id=s199 dependency=constant kind=ConstF32 value=0.4 bits=0x3ecccccd
+    Scalar id=s200 dependency=constant kind=ConstF32 value=0.8 bits=0x3f4ccccd
+    Scalar id=s201 dependency=coordinate+parameter kind=Add a=s194 b=s198
+    Scalar id=s202 dependency=surface kind=SurfaceNormal component=0
+    Scalar id=s203 dependency=parameter+surface kind=Mul a=s2 b=s202
+    Scalar id=s204 dependency=parameter+surface kind=Add a=s88 b=s203
+    Scalar id=s205 dependency=parameter+surface kind=FiniteOr value=s204 fallback=s0 semantic=FiniteColorF32V1
+    Scalar id=s206 dependency=parameter+surface kind=MaterialRoughness value=s205 semantic=MaterialRoughnessF32V1
+    Scalar id=s207 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s208 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Scalar id=s209 dependency=surface kind=SurfacePosition component=0
+    Scalar id=s210 dependency=surface kind=Compare op=Lt a=s209 b=s0
+    Field id=f0 scalar=s62 kind=Plane normal=[s6,s7,s8] offset=s0
+    Field id=f1 scalar=s62 kind=FiniteRepeat child=f0 axis=Z first=-1 count=3 period=s24
+    Field id=f2 scalar=s62 kind=FiniteRepeat child=f1 axis=Y first=-1 count=3 period=s24
+    Field id=f3 scalar=s62 kind=FiniteRepeat child=f2 axis=X first=-1 count=3 period=s24
+    Field id=f4 scalar=s62 kind=Transform child=f3 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f5 scalar=s68 kind=Sphere center=[s0,s0,s0] radius=s1
+    Field id=f6 scalar=s68 kind=FiniteRepeat child=f5 axis=Z first=-1 count=3 period=s24
+    Field id=f7 scalar=s68 kind=FiniteRepeat child=f6 axis=Y first=-1 count=3 period=s24
+    Field id=f8 scalar=s68 kind=FiniteRepeat child=f7 axis=X first=-1 count=3 period=s24
+    Field id=f9 scalar=s68 kind=Transform child=f8 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f10 scalar=s69 kind=HardUnion a=f4 b=f9
+    Field id=f11 scalar=s83 kind=Box center=[s0,s0,s0] half=[s1,s1,s1]
+    Field id=f12 scalar=s83 kind=FiniteRepeat child=f11 axis=Z first=-1 count=3 period=s24
+    Field id=f13 scalar=s83 kind=FiniteRepeat child=f12 axis=Y first=-1 count=3 period=s24
+    Field id=f14 scalar=s83 kind=FiniteRepeat child=f13 axis=X first=-1 count=3 period=s24
+    Field id=f15 scalar=s83 kind=Transform child=f14 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f16 scalar=s85 kind=RoundBox center=[s0,s0,s0] half=[s1,s1,s1] radius=s84
+    Field id=f17 scalar=s85 kind=FiniteRepeat child=f16 axis=Z first=-1 count=3 period=s24
+    Field id=f18 scalar=s85 kind=FiniteRepeat child=f17 axis=Y first=-1 count=3 period=s24
+    Field id=f19 scalar=s85 kind=FiniteRepeat child=f18 axis=X first=-1 count=3 period=s24
+    Field id=f20 scalar=s85 kind=Transform child=f19 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f21 scalar=s86 kind=HardUnion a=f15 b=f20
+    Field id=f22 scalar=s87 kind=HardIntersection a=f10 b=f21
+    Field id=f23 scalar=s96 kind=Capsule a=[s88,s88,s88] b=[s88,s88,s88] radius=s84
+    Field id=f24 scalar=s124 kind=Sphere center=[s0,s0,s0] radius=s116
+    Field id=f25 scalar=s124 kind=Transform child=f24 transform=Translate by=[s125,s126,s126]
+    Field id=f26 scalar=s127 kind=HardUnion a=f23 b=f25
+    Field id=f27 scalar=s137 kind=Sphere center=[s0,s0,s0] radius=s128
+    Field id=f28 scalar=s137 kind=Transform child=f27 transform=Rotate rows=[s0,s129,s0];[s1,s0,s0];[s0,s0,s1]
+    Field id=f29 scalar=s138 kind=HardUnion a=f26 b=f28
+    Field id=f30 scalar=s165 kind=Capsule a=[s139,s140,s141] b=[s142,s143,s144] radius=s145
+    Field id=f31 scalar=s165 kind=FiniteRepeat child=f30 axis=Z first=-1 count=3 period=s24
+    Field id=f32 scalar=s165 kind=FiniteRepeat child=f31 axis=Y first=-1 count=3 period=s24
+    Field id=f33 scalar=s165 kind=FiniteRepeat child=f32 axis=X first=-1 count=3 period=s24
+    Field id=f34 scalar=s165 kind=Transform child=f33 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f35 scalar=s172 kind=FiniteCylinder a=[s0,s129,s0] b=[s0,s1,s0] radius=s1
+    Field id=f36 scalar=s172 kind=FiniteRepeat child=f35 axis=Z first=-1 count=3 period=s24
+    Field id=f37 scalar=s172 kind=FiniteRepeat child=f36 axis=Y first=-1 count=3 period=s24
+    Field id=f38 scalar=s172 kind=FiniteRepeat child=f37 axis=X first=-1 count=3 period=s24
+    Field id=f39 scalar=s172 kind=Transform child=f38 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f40 scalar=s173 kind=HardUnion a=f34 b=f39
+    Field id=f41 scalar=s174 kind=HardUnion a=f29 b=f40
+    Field id=f42 scalar=s176 kind=HardSubtract a=f22 b=f41
+    Field id=f43 scalar=s183 kind=FiniteCone a=[s0,s129,s0] b=[s0,s1,s0] radius_a=s1 radius_b=s0
+    Field id=f44 scalar=s183 kind=FiniteRepeat child=f43 axis=Z first=-1 count=3 period=s24
+    Field id=f45 scalar=s183 kind=FiniteRepeat child=f44 axis=Y first=-1 count=3 period=s24
+    Field id=f46 scalar=s183 kind=FiniteRepeat child=f45 axis=X first=-1 count=3 period=s24
+    Field id=f47 scalar=s183 kind=Transform child=f46 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f48 scalar=s184 kind=SmoothUnion a=f42 b=f47 k=s84
+    Field id=f49 scalar=s186 kind=Torus center=[s0,s0,s0] axis=[s0,s1,s0] major=s1 minor=s145
+    Field id=f50 scalar=s186 kind=FiniteRepeat child=f49 axis=Z first=-1 count=3 period=s24
+    Field id=f51 scalar=s186 kind=FiniteRepeat child=f50 axis=Y first=-1 count=3 period=s24
+    Field id=f52 scalar=s186 kind=FiniteRepeat child=f51 axis=X first=-1 count=3 period=s24
+    Field id=f53 scalar=s186 kind=Transform child=f52 transform=RigidSequence steps=[Translate by=[s1,s0,s0],Rotate rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1],Translate by=[s0,s1,s0]] composed=Rigid translation=[s63,s9,s0] rows=[s9,s10,s0];[s9,s9,s0];[s0,s0,s1]
+    Field id=f54 scalar=s190 kind=SmoothIntersection a=f48 b=f53 k=s84
+    Field id=f55 scalar=s193 kind=SmoothSubtract a=f54 b=f4 k=s84
+    Field id=f56 scalar=s194 kind=Transform child=f55 transform=UniformScale scale=s24
+    Field id=f57 scalar=s201 kind=BoundedDisplace base=f56 displacement=s198 derivation=SinusoidalX bounds=[s84,s145,s199,s200]
+    Field id=f58 scalar=s201 kind=Mark child=f57 object=examples.check_pixels_field_ops::ObjectId::Scene material=examples.check_pixels_field_ops::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s111,s97,s88] opacity=s1 emissive=[s0,s0,s0] roughness=s206 metallic=s0 specular=s88 ior=s207 normal=geometric pattern=none
+    Material id=m1 kind=Sample base_color=[s208,s88,s97] opacity=s1 emissive=[s0,s0,s0] roughness=s206 metallic=s0 specular=s88 ior=s207 normal=geometric pattern=none
+    Material id=m2 kind=MaterialSelect predicate=s210 a=m0 b=m1
+    Identity kind=material enum=examples.check_pixels_field_ops::MaterialId variant=Surface
+    Identity kind=object enum=examples.check_pixels_field_ops::ObjectId variant=Scene
+    Obligation kind=scalar guarded-denominator-nonzero value=s150 when=s151
+    Obligation kind=scalar denominator-nonzero value=s24
+    Obligation kind=scalar restricted-trig-domain value=s2
+    Obligation kind=scalar restricted-trig-domain value=s196
+    Obligation kind=material-event predicate=s210
+    Origin kind=scalar id=s0 primary=examples.check_pixels_field_ops:82:27@bytes=1371..1374 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:82:34@bytes=1378..1381,examples.check_pixels_field_ops:83:20@bytes=1402..1405,examples.check_pixels_field_ops:83:34@bytes=1416..1419,examples.check_pixels_field_ops:84:20@bytes=1440..1443,examples.check_pixels_field_ops:84:27@bytes=1447..1450,examples.check_pixels_field_ops:85:27@bytes=1485..1486,examples.check_pixels_field_ops:85:45@bytes=1503..1506,examples.check_pixels_field_ops:85:52@bytes=1510..1513,examples.check_pixels_field_ops:88:45@bytes=1602..1605,examples.check_pixels_field_ops:89:44@bytes=1651..1654,examples.check_pixels_field_ops:90:16@bytes=1672..1675,examples.check_pixels_field_ops:90:23@bytes=1679..1682,examples.check_pixels_field_ops:94:16@bytes=1759..1762,examples.check_pixels_field_ops:94:30@bytes=1773..1776,examples.check_pixels_field_ops:95:23@bytes=1801..1804,examples.check_pixels_field_ops:95:30@bytes=1808..1811,examples.check_pixels_field_ops:96:16@bytes=1829..1832,examples.check_pixels_field_ops:96:30@bytes=1843..1846,examples.check_pixels_field_ops:97:16@bytes=1864..1867,examples.check_pixels_field_ops:97:23@bytes=1871..1874,examples.check_pixels_field_ops:99:33@bytes=1922..1923,examples.check_pixels_field_ops:100:33@bytes=1993..1994,examples.check_pixels_field_ops:101:31@bytes=2067..2068,examples.check_pixels_field_ops:102:17@bytes=2127..2130,examples.check_pixels_field_ops:103:51@bytes=2181..2184,examples.check_pixels_field_ops:105:14@bytes=2260..2261,examples.check_pixels_field_ops:106:15@bytes=2324..2325,examples.check_pixels_field_ops:106:33@bytes=2342..2345,examples.check_pixels_field_ops:106:40@bytes=2349..2352,examples.check_pixels_field_ops:106:47@bytes=2356..2359,examples.check_pixels_field_ops:107:12@bytes=2385..2386,examples.check_pixels_field_ops:108:18@bytes=2440..2441,examples.check_pixels_field_ops:109:16@bytes=2505..2506,examples.check_pixels_field_ops:110:24@bytes=2587..2588,examples.check_pixels_field_ops:111:20@bytes=2646..2647,examples.check_pixels_field_ops:112:14@bytes=2699..2700,examples.check_pixels_field_ops:115:16@bytes=2799..2802,examples.check_pixels_field_ops:115:31@bytes=2814..2817,examples.check_pixels_field_ops:116:23@bytes=2842..2845,examples.check_pixels_field_ops:116:30@bytes=2849..2852,examples.check_pixels_field_ops:117:16@bytes=2870..2873,examples.check_pixels_field_ops:117:23@bytes=2877..2880,examples.check_pixels_field_ops:119:15@bytes=2910..2911,examples.check_pixels_field_ops:119:37@bytes=2932..2935,examples.check_pixels_field_ops:119:44@bytes=2939..2942,examples.check_pixels_field_ops:119:51@bytes=2946..2949,examples.check_pixels_field_ops:120:34@bytes=2999..3002,examples.check_pixels_field_ops:120:41@bytes=3006..3009,examples.check_pixels_field_ops:131:15@bytes=3410..3411,examples.check_pixels_field_ops:133:16@bytes=3442..3445,examples.check_pixels_field_ops:133:23@bytes=3449..3452,examples.check_pixels_field_ops:133:30@bytes=3456..3459,examples.check_pixels_field_ops:136:25@bytes=3548..3549,examples.check_pixels_field_ops:148:88@bytes=4025..4028,examples.check_pixels_field_ops:154:29@bytes=4278..4281,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_field_ops:82:20@bytes=1364..1367 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:83:27@bytes=1409..1412,examples.check_pixels_field_ops:84:34@bytes=1454..1457,examples.check_pixels_field_ops:85:27@bytes=1485..1486,examples.check_pixels_field_ops:85:38@bytes=1496..1499,examples.check_pixels_field_ops:90:30@bytes=1686..1689,examples.check_pixels_field_ops:94:23@bytes=1766..1769,examples.check_pixels_field_ops:95:16@bytes=1794..1797,examples.check_pixels_field_ops:96:23@bytes=1836..1839,examples.check_pixels_field_ops:97:30@bytes=1878..1881,examples.check_pixels_field_ops:99:33@bytes=1922..1923,examples.check_pixels_field_ops:100:33@bytes=1993..1994,examples.check_pixels_field_ops:101:31@bytes=2067..2068,examples.check_pixels_field_ops:103:44@bytes=2174..2177,examples.check_pixels_field_ops:105:14@bytes=2260..2261,examples.check_pixels_field_ops:106:15@bytes=2324..2325,examples.check_pixels_field_ops:106:60@bytes=2369..2372,examples.check_pixels_field_ops:107:12@bytes=2385..2386,examples.check_pixels_field_ops:107:30@bytes=2403..2406,examples.check_pixels_field_ops:107:37@bytes=2410..2413,examples.check_pixels_field_ops:107:44@bytes=2417..2420,examples.check_pixels_field_ops:108:18@bytes=2440..2441,examples.check_pixels_field_ops:108:36@bytes=2458..2461,examples.check_pixels_field_ops:108:43@bytes=2465..2468,examples.check_pixels_field_ops:108:50@bytes=2472..2475,examples.check_pixels_field_ops:109:16@bytes=2505..2506,examples.check_pixels_field_ops:110:24@bytes=2587..2588,examples.check_pixels_field_ops:110:42@bytes=2605..2608,examples.check_pixels_field_ops:110:59@bytes=2622..2625,examples.check_pixels_field_ops:111:20@bytes=2646..2647,examples.check_pixels_field_ops:111:38@bytes=2664..2667,examples.check_pixels_field_ops:111:55@bytes=2681..2684,examples.check_pixels_field_ops:112:14@bytes=2699..2700,examples.check_pixels_field_ops:112:38@bytes=2723..2726,examples.check_pixels_field_ops:115:24@bytes=2807..2810,examples.check_pixels_field_ops:116:16@bytes=2835..2838,examples.check_pixels_field_ops:117:30@bytes=2884..2887,examples.check_pixels_field_ops:119:15@bytes=2910..2911,examples.check_pixels_field_ops:123:56@bytes=3148..3151,examples.check_pixels_field_ops:131:15@bytes=3410..3411,examples.check_pixels_field_ops:136:25@bytes=3548..3549,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_field_ops:103:24@bytes=2154..2155 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:122:35@bytes=3065..3066,examples.check_pixels_field_ops:123:38@bytes=3130..3131,examples.check_pixels_field_ops:124:21@bytes=3173..3174,examples.check_pixels_field_ops:125:21@bytes=3209..3210,examples.check_pixels_field_ops:127:23@bytes=3283..3284,examples.check_pixels_field_ops:158:37@bytes=4416..4417]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_field_ops:104:39@bytes=2224..2225 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s4 primary=examples.check_pixels_field_ops:104:39@bytes=2224..2225 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s5 primary=examples.check_pixels_field_ops:104:39@bytes=2224..2225 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_field_ops:104:32@bytes=2217..2218 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_field_ops:104:32@bytes=2217..2218 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_field_ops:104:32@bytes=2217..2218 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_field_ops:88:16@bytes=1573..1583 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:85:27@bytes=1485..1486,examples.check_pixels_field_ops:88:31@bytes=1588..1598,examples.check_pixels_field_ops:89:16@bytes=1623..1633,examples.check_pixels_field_ops:89:30@bytes=1637..1647]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_field_ops:88:30@bytes=1587..1588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:85:27@bytes=1485..1486]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_field_ops:0:0@bytes=0..0
+    Origin kind=scalar id=s12 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_field_ops:0:0@bytes=0..0
+    Origin kind=scalar id=s14 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_field_ops:0:0@bytes=0..0
+    Origin kind=scalar id=s16 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_field_ops:86:21@bytes=1536..1537 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s18 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.check_pixels_field_ops:86:21@bytes=1536..1537 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s20 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s21 primary=examples.check_pixels_field_ops:86:21@bytes=1536..1537 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s22 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s23 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s24 primary=examples.check_pixels_field_ops:99:67@bytes=1956..1959 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:99:33@bytes=1922..1923,examples.check_pixels_field_ops:100:33@bytes=1993..1994,examples.check_pixels_field_ops:100:72@bytes=2032..2035,examples.check_pixels_field_ops:101:31@bytes=2067..2068,examples.check_pixels_field_ops:101:70@bytes=2106..2109,examples.check_pixels_field_ops:111:20@bytes=2646..2647,examples.check_pixels_field_ops:147:42@bytes=3933..3936,examples.check_pixels_field_ops:148:77@bytes=4014..4017]
+    Origin kind=scalar id=s25 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s26 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s27 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s28 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s29 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:100:33@bytes=1993..1994,examples.check_pixels_field_ops:101:31@bytes=2067..2068]
+    Origin kind=scalar id=s30 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s31 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s32 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s33 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s34 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s35 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s36 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s37 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s38 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s39 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s40 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s41 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s42 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s43 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s44 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s45 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s46 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s47 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s48 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s49 primary=examples.check_pixels_field_ops:92:28@bytes=1725..1726 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s50 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s51 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s52 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s53 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s54 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s55 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s56 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s57 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s58 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s59 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s60 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s61 primary=examples.check_pixels_field_ops:105:14@bytes=2260..2261 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s62 primary=examples.check_pixels_field_ops:105:14@bytes=2260..2261 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s63 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s64 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s65 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s66 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s67 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s68 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s69 primary=examples.check_pixels_field_ops:143:27@bytes=3704..3705 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s70 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s71 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s72 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s73 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441,examples.check_pixels_field_ops:110:24@bytes=2587..2588,examples.check_pixels_field_ops:111:20@bytes=2646..2647]
+    Origin kind=scalar id=s74 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441,examples.check_pixels_field_ops:110:24@bytes=2587..2588,examples.check_pixels_field_ops:111:20@bytes=2646..2647]
+    Origin kind=scalar id=s75 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441,examples.check_pixels_field_ops:110:24@bytes=2587..2588]
+    Origin kind=scalar id=s76 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s77 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s78 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s79 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s80 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s81 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s82 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s83 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:108:18@bytes=2440..2441]
+    Origin kind=scalar id=s84 primary=examples.check_pixels_field_ops:108:63@bytes=2485..2488 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:140:16@bytes=3646..3649,examples.check_pixels_field_ops:146:74@bytes=3865..3868,examples.check_pixels_field_ops:146:85@bytes=3876..3879,examples.check_pixels_field_ops:146:96@bytes=3887..3890,examples.check_pixels_field_ops:148:36@bytes=3973..3974,examples.check_pixels_field_ops:148:62@bytes=3999..4002]
+    Origin kind=scalar id=s85 primary=examples.check_pixels_field_ops:108:18@bytes=2440..2441 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s86 primary=examples.check_pixels_field_ops:143:40@bytes=3717..3718 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s87 primary=examples.check_pixels_field_ops:143:21@bytes=3698..3699 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s88 primary=examples.check_pixels_field_ops:138:16@bytes=3576..3579 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:138:23@bytes=3583..3586,examples.check_pixels_field_ops:138:30@bytes=3590..3593,examples.check_pixels_field_ops:139:16@bytes=3611..3614,examples.check_pixels_field_ops:139:23@bytes=3618..3621,examples.check_pixels_field_ops:139:30@bytes=3625..3628,examples.check_pixels_field_ops:153:27@bytes=4237..4240,examples.check_pixels_field_ops:155:40@bytes=4322..4325,examples.check_pixels_field_ops:157:31@bytes=4367..4370,examples.check_pixels_field_ops:158:17@bytes=4396..4399,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s89 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s90 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s91 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s92 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s93 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s94 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s95 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s96 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s97 primary=examples.check_pixels_field_ops:120:26@bytes=2991..2995 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:134:28@bytes=3489..3490,examples.check_pixels_field_ops:153:19@bytes=4229..4233,examples.check_pixels_field_ops:155:32@bytes=4314..4318,examples.check_pixels_field_ops:157:38@bytes=4374..4378,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s98 primary=examples.check_pixels_field_ops:122:35@bytes=3065..3066 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:123:38@bytes=3130..3131]
+    Origin kind=scalar id=s99 primary=examples.check_pixels_field_ops:122:53@bytes=3083..3091 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s100 primary=examples.check_pixels_field_ops:122:51@bytes=3081..3082 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s101 primary=examples.check_pixels_field_ops:122:20@bytes=3050..3051 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s102 primary=examples.check_pixels_field_ops:123:54@bytes=3146..3147 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s103 primary=examples.check_pixels_field_ops:123:23@bytes=3115..3116 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s104 primary=examples.check_pixels_field_ops:123:9@bytes=3101..3102 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s105 primary=examples.check_pixels_field_ops:124:21@bytes=3173..3174 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s106 primary=examples.check_pixels_field_ops:124:9@bytes=3161..3162 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s107 primary=examples.check_pixels_field_ops:125:21@bytes=3209..3210 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s108 primary=examples.check_pixels_field_ops:125:9@bytes=3197..3198 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s109 primary=examples.check_pixels_field_ops:126:15@bytes=3239..3240 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s110 primary=examples.check_pixels_field_ops:126:9@bytes=3233..3234 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s111 primary=examples.check_pixels_field_ops:127:43@bytes=3303..3308 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:72:18@bytes=1164..1169,examples.check_pixels_field_ops:77:32@bytes=1251..1256,examples.check_pixels_field_ops:130:44@bytes=3392..3393,examples.check_pixels_field_ops:155:23@bytes=4305..4310,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s112 primary=examples.check_pixels_field_ops:127:18@bytes=3278..3279 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s113 primary=examples.check_pixels_field_ops:127:9@bytes=3269..3270 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s114 primary=examples.check_pixels_field_ops:128:18@bytes=3328..3329 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s115 primary=examples.check_pixels_field_ops:128:9@bytes=3319..3320 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s116 primary=examples.check_pixels_field_ops:134:43@bytes=3504..3505 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s117 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s118 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s119 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s120 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s121 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s122 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s123 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s124 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s125 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s126 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s127 primary=examples.check_pixels_field_ops:144:39@bytes=3764..3765 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s128 primary=examples.check_pixels_field_ops:119:64@bytes=2959..2964 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s129 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:100:33@bytes=1993..1994,examples.check_pixels_field_ops:101:31@bytes=2067..2068,examples.check_pixels_field_ops:110:24@bytes=2587..2588,examples.check_pixels_field_ops:111:20@bytes=2646..2647,examples.check_pixels_field_ops:115:23@bytes=2806..2807]
+    Origin kind=scalar id=s130 primary=examples.check_pixels_field_ops:113:26@bytes=2771..2772 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s131 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s132 primary=examples.check_pixels_field_ops:113:26@bytes=2771..2772 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s133 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s134 primary=examples.check_pixels_field_ops:113:26@bytes=2771..2772 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s135 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s136 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s137 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s138 primary=examples.check_pixels_field_ops:144:33@bytes=3758..3759 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s139 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s140 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s141 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s142 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s143 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s144 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s145 primary=examples.check_pixels_field_ops:109:70@bytes=2559..2562 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:112:56@bytes=2741..2744,examples.check_pixels_field_ops:148:36@bytes=3973..3974]
+    Origin kind=scalar id=s146 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s147 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s148 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s149 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s150 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s151 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s152 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s153 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s154 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s155 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s156 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s157 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s158 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s159 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s160 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s161 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s162 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s163 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s164 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s165 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s166 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:111:20@bytes=2646..2647,examples.check_pixels_field_ops:112:14@bytes=2699..2700]
+    Origin kind=scalar id=s167 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:112:14@bytes=2699..2700]
+    Origin kind=scalar id=s168 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s169 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s170 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s171 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s172 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s173 primary=examples.check_pixels_field_ops:144:20@bytes=3745..3746 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s174 primary=examples.check_pixels_field_ops:144:14@bytes=3739..3740 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s175 primary=examples.check_pixels_field_ops:142:20@bytes=3676..3677 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s176 primary=examples.check_pixels_field_ops:142:20@bytes=3676..3677 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s177 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s178 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s179 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s180 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s181 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s182 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s183 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s184 primary=examples.check_pixels_field_ops:146:62@bytes=3853..3854 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s185 primary=examples.check_pixels_field_ops:112:14@bytes=2699..2700 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s186 primary=examples.check_pixels_field_ops:112:14@bytes=2699..2700 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s187 primary=examples.check_pixels_field_ops:146:49@bytes=3840..3841 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s188 primary=examples.check_pixels_field_ops:146:49@bytes=3840..3841 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s189 primary=examples.check_pixels_field_ops:146:49@bytes=3840..3841 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s190 primary=examples.check_pixels_field_ops:146:49@bytes=3840..3841 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s191 primary=examples.check_pixels_field_ops:146:29@bytes=3820..3821 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s192 primary=examples.check_pixels_field_ops:146:29@bytes=3820..3821 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s193 primary=examples.check_pixels_field_ops:146:29@bytes=3820..3821 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s194 primary=examples.check_pixels_field_ops:147:27@bytes=3918..3919 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s195 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s196 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s197 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s198 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s199 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s200 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s201 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s202 primary=examples.check_pixels_field_ops:0:0@bytes=0..0
+    Origin kind=scalar id=s203 primary=examples.check_pixels_field_ops:158:37@bytes=4416..4417 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s204 primary=examples.check_pixels_field_ops:158:21@bytes=4400..4401 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s205 primary=examples.check_pixels_field_ops:159:35@bytes=4469..4470 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s206 primary=examples.check_pixels_field_ops:159:35@bytes=4469..4470 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s207 primary=examples.check_pixels_field_ops:159:35@bytes=4469..4470 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=scalar id=s208 primary=examples.check_pixels_field_ops:153:34@bytes=4244..4248 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:157:23@bytes=4359..4363,examples.check_pixels_field_ops:159:35@bytes=4469..4470]
+    Origin kind=scalar id=s209 primary=examples.check_pixels_field_ops:0:0@bytes=0..0
+    Origin kind=scalar id=s210 primary=examples.check_pixels_field_ops:154:27@bytes=4276..4277 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_field_ops:105:14@bytes=2260..2261 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f2 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f4 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f5 primary=examples.check_pixels_field_ops:106:15@bytes=2324..2325 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f6 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f7 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f8 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f9 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f10 primary=examples.check_pixels_field_ops:143:27@bytes=3704..3705 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f11 primary=examples.check_pixels_field_ops:107:12@bytes=2385..2386 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f12 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f13 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f14 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f15 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f16 primary=examples.check_pixels_field_ops:108:18@bytes=2440..2441 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f17 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f18 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f19 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f20 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f21 primary=examples.check_pixels_field_ops:143:40@bytes=3717..3718 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f22 primary=examples.check_pixels_field_ops:143:21@bytes=3698..3699 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f23 primary=examples.check_pixels_field_ops:136:25@bytes=3548..3549 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f24 primary=examples.check_pixels_field_ops:131:15@bytes=3410..3411 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f25 primary=examples.check_pixels_field_ops:120:18@bytes=2983..2984 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f26 primary=examples.check_pixels_field_ops:144:39@bytes=3764..3765 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f27 primary=examples.check_pixels_field_ops:119:15@bytes=2910..2911 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f28 primary=examples.check_pixels_field_ops:113:26@bytes=2771..2772 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f29 primary=examples.check_pixels_field_ops:144:33@bytes=3758..3759 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f30 primary=examples.check_pixels_field_ops:109:16@bytes=2505..2506 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f31 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f32 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f33 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f34 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f35 primary=examples.check_pixels_field_ops:110:24@bytes=2587..2588 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f36 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f37 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f38 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f39 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f40 primary=examples.check_pixels_field_ops:144:20@bytes=3745..3746 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f41 primary=examples.check_pixels_field_ops:144:14@bytes=3739..3740 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f42 primary=examples.check_pixels_field_ops:142:20@bytes=3676..3677 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f43 primary=examples.check_pixels_field_ops:111:20@bytes=2646..2647 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f44 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f45 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f46 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f47 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f48 primary=examples.check_pixels_field_ops:146:62@bytes=3853..3854 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f49 primary=examples.check_pixels_field_ops:112:14@bytes=2699..2700 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f50 primary=examples.check_pixels_field_ops:101:31@bytes=2067..2068 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f51 primary=examples.check_pixels_field_ops:100:33@bytes=1993..1994 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f52 primary=examples.check_pixels_field_ops:99:33@bytes=1922..1923 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f53 primary=examples.check_pixels_field_ops:85:27@bytes=1485..1486 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0] merged=[examples.check_pixels_field_ops:86:21@bytes=1536..1537,examples.check_pixels_field_ops:92:28@bytes=1725..1726]
+    Origin kind=field id=f54 primary=examples.check_pixels_field_ops:146:49@bytes=3840..3841 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f55 primary=examples.check_pixels_field_ops:146:29@bytes=3820..3821 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f56 primary=examples.check_pixels_field_ops:147:27@bytes=3918..3919 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f57 primary=examples.check_pixels_field_ops:148:36@bytes=3973..3974 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=field id=f58 primary=examples.check_pixels_field_ops:149:16@bytes=4045..4046 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_field_ops:159:35@bytes=4469..4470 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=material id=m1 primary=examples.check_pixels_field_ops:159:35@bytes=4469..4470 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Origin kind=material id=m2 primary=examples.check_pixels_field_ops:154:5@bytes=4254..4256 expansion=[examples.check_pixels_field_ops:0:0@bytes=0..0]
+    Roots field=f58 material=m2
+    SymbolicQuota steps=340/1000000 nodes=282/250000 unrolled_statements=0/250000 aggregate_elements=82/250000 call_depth=2/128
+Analysis status=pending

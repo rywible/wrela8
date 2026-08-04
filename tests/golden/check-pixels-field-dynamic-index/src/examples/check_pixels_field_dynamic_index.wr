@@ -11,8 +11,15 @@ struct Value:
     @range(min=0.25, max=2.0)
     radius: f32
 
+struct Center:
+    @range(min=-1.0, max=1.0)
+    position: Vec3
+
 struct Params:
     values: [Value; 2]
+    centers: [Center; 2]
+    @range(min=0.0, max=1.0)
+    tint: Rgb
     @range(min=0, max=1)
     index: usize
 
@@ -25,15 +32,16 @@ enum MaterialId:
 @field
 fn world(p: Vec3, read params: Params) -> Field:
     radius = params.values[params.index].radius
+    center = params.centers[params.index].position
     return mark(
-        sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=radius),
+        sphere(p, center, radius=radius),
         object=ObjectId.Scene,
         material=MaterialId.Surface,
     )
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: Params) -> MaterialSample:
-    return MaterialSample.standard(color=Rgb(r=0.0, g=0.0, b=0.0), roughness=0.5)
+    return MaterialSample.standard(color=params.tint, roughness=0.5)
 
 @image
 fn build() -> Image:

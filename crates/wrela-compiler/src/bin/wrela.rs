@@ -288,7 +288,16 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             let program = &programs[module];
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
-                    Ok(_checked_image) => {
+                    Ok(checked_image) => {
+                        if let Err(error) = wrela_compiler::pixels::compile_all(
+                            programs,
+                            module,
+                            &graph,
+                            &checked_image.renderer_configs,
+                        ) {
+                            print_sema_error(&eval::image_checks::pixels_error(error));
+                            return;
+                        }
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
                         for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
                             enum_variants
@@ -341,6 +350,23 @@ fn validate_renderer_stage(stage: &str, renderer_index: Option<usize>) -> Result
     }
 }
 
+fn select_renderer_index(count: usize, requested: Option<usize>) -> Result<usize, String> {
+    if let Some(index) = requested {
+        if index >= count {
+            return Err(format!(
+                "renderer index {index} is out of range; image declares {count} renderer(s)"
+            ));
+        }
+        return Ok(index);
+    }
+    if count != 1 {
+        return Err(format!(
+            "Pixels dump requires exactly one renderer, found {count}; use --renderer=<index>"
+        ));
+    }
+    Ok(0)
+}
+
 fn print_pixels_error(message: &str) {
     let message = message.strip_prefix("pixels: ").unwrap_or(message);
     print_line_diagnostic(&format!("error[pixels]: {message}"));
@@ -377,6 +403,18 @@ fn run_pixels_stage(
             return;
         }
     };
+    let symbolic_graphs = match wrela_compiler::pixels::compile_all(
+        programs,
+        module,
+        &graph,
+        &checked.renderer_configs,
+    ) {
+        Ok(program_set) => program_set.symbolic_graphs,
+        Err(error) => {
+            print_sema_error(&eval::image_checks::pixels_error(error));
+            return;
+        }
+    };
     if graph.renderers.is_empty() {
         if let Some(index) = renderer_index {
             print_pixels_error(&format!(
@@ -387,14 +425,22 @@ fn run_pixels_stage(
         }
         return;
     }
-    if let Some(index) = renderer_index {
-        if index >= graph.renderers.len() {
-            print_pixels_error(&format!(
-                "renderer index {index} is out of range; image declares {} renderer(s)",
-                graph.renderers.len()
-            ));
+    let selected_index = match select_renderer_index(graph.renderers.len(), renderer_index) {
+        Ok(index) => index,
+        Err(message) => {
+            print_pixels_error(&message);
             return;
         }
+    };
+    if stage == wrela_compiler::pixels::PixelsDumpStage::FieldGraph {
+        print!(
+            "{}",
+            wrela_compiler::pixels::dump_symbolic_graphs(
+                &[(selected_index, symbolic_graphs[selected_index].clone())],
+                &checked.renderer_configs,
+            )
+        );
+        return;
     }
     if !wrela_compiler::pixels::is_walking_skeleton(module, &graph) {
         print!(
@@ -402,7 +448,7 @@ fn run_pixels_stage(
             wrela_compiler::pixels::dump_uncompiled_configs(
                 stage,
                 &checked.renderer_configs,
-                renderer_index,
+                Some(selected_index),
             )
         );
         return;
@@ -414,9 +460,9 @@ fn run_pixels_stage(
         &checked.renderer_configs,
     ) {
         Ok(skeleton) => match stage {
-            wrela_compiler::pixels::PixelsDumpStage::FieldGraph => {
-                print!("{}", wrela_compiler::pixels::dump_field_graph(&skeleton))
-            }
+            wrela_compiler::pixels::PixelsDumpStage::FieldGraph => unreachable!(
+                "field-graph returns the sealed symbolic graph before legacy skeleton lowering"
+            ),
             wrela_compiler::pixels::PixelsDumpStage::FrameProgram => {
                 print!("{}", wrela_compiler::pixels::dump_frame_program(&skeleton))
             }
@@ -462,6 +508,15 @@ fn build_report(
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
                     Ok(checked_image) => {
+                        wrela_compiler::pixels::compile_all(
+                            programs,
+                            module,
+                            &graph,
+                            &checked_image.renderer_configs,
+                        )
+                        .map_err(|error| {
+                            render_sema_error(&eval::image_checks::pixels_error(error))
+                        })?;
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in file_paths {
                             let rel = report::address_to_relative_path(addr);
@@ -677,6 +732,13 @@ fn build_rtconfig(
                 .map_err(|e| render_sema_error(&eval::to_sema_error(e)))?;
             let checked_image = eval::image_checks::check_sealed(&graph, program, programs)
                 .map_err(|e| render_sema_error(&e))?;
+            wrela_compiler::pixels::compile_all(
+                programs,
+                module,
+                &graph,
+                &checked_image.renderer_configs,
+            )
+            .map_err(|error| render_sema_error(&eval::image_checks::pixels_error(error)))?;
             let mut layout_ctx =
                 layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
             layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
@@ -1791,7 +1853,18 @@ fn test_cmd(args: &[String]) -> ExitCode {
     };
     let checked_image = if program.image_fn.is_some() {
         match eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
-            Ok(checked_image) => Some(checked_image),
+            Ok(checked_image) => {
+                if let Err(error) = wrela_compiler::pixels::compile_all(
+                    &checked.programs,
+                    &program.module_path,
+                    &graph,
+                    &checked_image.renderer_configs,
+                ) {
+                    print_sema_error(&eval::image_checks::pixels_error(error));
+                    return ExitCode::FAILURE;
+                }
+                Some(checked_image)
+            }
             Err(e) => {
                 print_sema_error(&e);
                 return ExitCode::FAILURE;
@@ -2217,5 +2290,21 @@ mod tests {
         assert!(validate_renderer_stage("render-layout", Some(0)).is_ok());
         assert!(validate_renderer_stage("typed", Some(0)).is_err());
         assert!(validate_renderer_stage("typed", None).is_ok());
+    }
+
+    #[test]
+    fn pixels_renderer_selection_is_explicit_when_ambiguous() {
+        assert_eq!(select_renderer_index(1, None), Ok(0));
+        assert_eq!(select_renderer_index(2, Some(1)), Ok(1));
+        assert!(
+            select_renderer_index(2, None)
+                .unwrap_err()
+                .contains("--renderer=<index>")
+        );
+        assert!(
+            select_renderer_index(2, Some(2))
+                .unwrap_err()
+                .contains("out of range")
+        );
     }
 }

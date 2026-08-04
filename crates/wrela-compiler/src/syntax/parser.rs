@@ -102,6 +102,8 @@ impl Parser {
         Span {
             line: t.line,
             col: t.col,
+            byte_start: t.byte_start,
+            byte_end: t.byte_end,
         }
     }
 
@@ -2012,6 +2014,9 @@ fn split_fstring(token: &Token) -> FStringLit {
                         Span {
                             line: token.line,
                             col: lit_start_col,
+                            byte_start: token.byte_start
+                                + lit_start_col.saturating_sub(token.col) as usize,
+                            byte_end: token.byte_start + col.saturating_sub(token.col) as usize,
                         },
                         std::mem::take(&mut lit),
                     ));
@@ -2044,6 +2049,9 @@ fn split_fstring(token: &Token) -> FStringLit {
                     Span {
                         line: token.line,
                         col: interp_col,
+                        byte_start: token.byte_start
+                            + interp_col.saturating_sub(token.col) as usize,
+                        byte_end: token.byte_start + col.saturating_sub(token.col) as usize,
                     },
                     interp_text,
                 ));
@@ -2067,6 +2075,8 @@ fn split_fstring(token: &Token) -> FStringLit {
             Span {
                 line: token.line,
                 col: lit_start_col,
+                byte_start: token.byte_start + lit_start_col.saturating_sub(token.col) as usize,
+                byte_end: token.byte_end.saturating_sub(1),
             },
             lit,
         ));
@@ -2075,6 +2085,8 @@ fn split_fstring(token: &Token) -> FStringLit {
         span: Span {
             line: token.line,
             col: token.col,
+            byte_start: token.byte_start,
+            byte_end: token.byte_end,
         },
         parts,
     }

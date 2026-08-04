@@ -1,0 +1,62 @@
+FieldGraph v1
+Renderers count=1
+  Renderer index=0 field=examples.check_pixels_material_edge::world material=examples.check_pixels_material_edge::shade params=SceneParams material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
+      World min=[-4,-4,-4] max=[4,4,4]
+      RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+    Scalar id=s0 dependency=constant kind=ConstF32 value=-1 bits=0xbf800000
+    Scalar id=s1 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s2 dependency=coordinate kind=Coord axis=x
+    Scalar id=s3 dependency=coordinate kind=Coord axis=y
+    Scalar id=s4 dependency=coordinate kind=Coord axis=z
+    Scalar id=s5 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s0,s1,s1]
+    Scalar id=s6 dependency=coordinate kind=Add a=s5 b=s1
+    Scalar id=s7 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s8 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s7,s1,s1]
+    Scalar id=s9 dependency=coordinate kind=Add a=s8 b=s1
+    Scalar id=s10 dependency=coordinate kind=Min a=s9 b=s6
+    Scalar id=s11 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
+    Scalar id=s12 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s13 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s14 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s15 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Field id=f0 scalar=s6 kind=Plane normal=[s0,s1,s1] offset=s1
+    Field id=f1 scalar=s6 kind=Mark child=f0 object=examples.check_pixels_material_edge::MaterialId::Accent material=examples.check_pixels_material_edge::MaterialId::Accent
+    Field id=f2 scalar=s9 kind=Plane normal=[s7,s1,s1] offset=s1
+    Field id=f3 scalar=s9 kind=Mark child=f2 object=examples.check_pixels_material_edge::MaterialId::Ground material=examples.check_pixels_material_edge::MaterialId::Ground
+    Field id=f4 scalar=s10 kind=HardUnion a=f1 b=f3
+    Material id=m0 kind=Sample base_color=[s7,s11,s12] opacity=s7 emissive=[s1,s1,s1] roughness=s11 metallic=s1 specular=s13 ior=s14 normal=geometric pattern=none
+    Material id=m1 kind=Sample base_color=[s12,s11,s13] opacity=s7 emissive=[s1,s1,s1] roughness=s15 metallic=s1 specular=s13 ior=s14 normal=geometric pattern=none
+    Material id=m2 kind=IdentityTable enum=examples.check_pixels_material_edge::MaterialId cases=[Accent=m0,Ground=m1]
+    Identity kind=material enum=examples.check_pixels_material_edge::MaterialId variant=Accent
+    Identity kind=material enum=examples.check_pixels_material_edge::MaterialId variant=Ground
+    Identity kind=object enum=examples.check_pixels_material_edge::MaterialId variant=Accent
+    Identity kind=object enum=examples.check_pixels_material_edge::MaterialId variant=Ground
+    Origin kind=scalar id=s0 primary=examples.check_pixels_material_edge:47:34@bytes=991..992 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_material_edge:46:40@bytes=878..881 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:46:22@bytes=860..861,examples.check_pixels_material_edge:46:47@bytes=885..888,examples.check_pixels_material_edge:46:60@bytes=898..901,examples.check_pixels_material_edge:47:23@bytes=980..981,examples.check_pixels_material_edge:47:42@bytes=999..1002,examples.check_pixels_material_edge:47:49@bytes=1006..1009,examples.check_pixels_material_edge:47:62@bytes=1019..1022,examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:52:50@bytes=1260..1263,examples.check_pixels_material_edge:52:57@bytes=1267..1270,examples.check_pixels_material_edge:52:64@bytes=1274..1277,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s3 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s4 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_material_edge:46:33@bytes=871..874 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:46:22@bytes=860..861,examples.check_pixels_material_edge:47:23@bytes=980..981,examples.check_pixels_material_edge:47:35@bytes=992..995,examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:58@bytes=1520..1523]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_material_edge:48:17@bytes=1095..1096 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_material_edge:55:67@bytes=1411..1415 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:65@bytes=1527..1531,examples.check_pixels_material_edge:57:91@bytes=1553..1557]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_material_edge:55:58@bytes=1402..1407 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:73@bytes=1535..1540]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_material_edge:52:80@bytes=1290..1293 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:55:75@bytes=1419..1422,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_material_edge:52:37@bytes=1247..1248 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_material_edge:55:91@bytes=1435..1439 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390]
+    Origin kind=field id=f0 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_material_edge:47:17@bytes=974..975 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f2 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.check_pixels_material_edge:46:16@bytes=854..855 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f4 primary=examples.check_pixels_material_edge:48:17@bytes=1095..1096 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_material_edge:57:45@bytes=1507..1508 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m1 primary=examples.check_pixels_material_edge:55:45@bytes=1389..1390 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m2 primary=examples.check_pixels_material_edge:53:5@bytes=1299..1304 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Roots field=f4 material=m2
+    SymbolicQuota steps=55/1000000 nodes=33/250000 unrolled_statements=0/250000 aggregate_elements=15/250000 call_depth=1/128
+Analysis status=pending

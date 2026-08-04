@@ -1429,8 +1429,17 @@ pub fn double(x: u64) -> u64:
             },
         );
         let legality = Legality { verdicts };
-        let err = require_legal(&legality, "a", "comptime assert", Span { line: 5, col: 3 })
-            .expect_err("an Illegal verdict must produce a diagnostic");
+        let err = require_legal(
+            &legality,
+            "a",
+            "comptime assert",
+            Span {
+                line: 5,
+                col: 3,
+                ..Default::default()
+            },
+        )
+        .expect_err("an Illegal verdict must produce a diagnostic");
         assert_eq!(err.category, "comptime");
         assert_eq!(
             err.message,

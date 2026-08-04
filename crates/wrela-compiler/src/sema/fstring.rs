@@ -81,6 +81,10 @@ fn parse_interp_expr(src: &str, span: Span) -> Result<Expr, SemaError> {
             Span {
                 line: span.line,
                 col: span.col.saturating_add(e.col.saturating_sub(1)),
+                byte_start: span
+                    .byte_start
+                    .saturating_add(e.col.saturating_sub(1) as usize),
+                byte_end: span.byte_end,
             },
         )
     })?;
@@ -91,6 +95,10 @@ fn parse_interp_expr(src: &str, span: Span) -> Result<Expr, SemaError> {
             Span {
                 line: span.line,
                 col: span.col.saturating_add(e.col.saturating_sub(1)),
+                byte_start: span
+                    .byte_start
+                    .saturating_add(e.col.saturating_sub(1) as usize),
+                byte_end: span.byte_end,
             },
         )
     })

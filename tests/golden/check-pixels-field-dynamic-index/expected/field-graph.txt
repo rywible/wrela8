@@ -1,13 +1,103 @@
 FieldGraph v1
 Renderers count=1
-  Renderer index=0 params=Params field=world material=shade material_type=MaterialId
-    Compilation status=not-run
-    Display ref=driver#0
-    Mode width=64 height=32 refresh_hz=60 shade_hz=60
-    Profile value=AaaByteExact tone_curve=Linear
-    Depth near=0.1 far=10
-    World min=[-1,-1,-1] max=[1,1,1]
-    Contracts camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1] ao=false probes=false probe_initialization_worst_case_ms=0 initialization_deadline_ms=1
-    Parameter path=[0, 0, 0] type=f32 range=[0.25,2] rate=none
-    Parameter path=[0, 1, 0] type=f32 range=[0.25,2] rate=none
-    Parameter path=[1] type=usize range=[0,1] rate=none
+  Renderer index=0 field=examples.check_pixels_field_dynamic_index::world material=examples.check_pixels_field_dynamic_index::shade params=Params material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,10]
+      World min=[-1,-1,-1] max=[1,1,1]
+      RuntimeBounds camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=1
+    Param id=p0 path=Params.values[0].radius indexes=[0,0,0] component=scalar ty=f32 range=[0.25,2]
+    Param id=p1 path=Params.values[1].radius indexes=[0,1,0] component=scalar ty=f32 range=[0.25,2]
+    Param id=p2 path=Params.centers[0].position.x indexes=[1,0,0] component=0 ty=f32 range=[-1,1]
+    Param id=p3 path=Params.centers[0].position.y indexes=[1,0,0] component=1 ty=f32 range=[-1,1]
+    Param id=p4 path=Params.centers[0].position.z indexes=[1,0,0] component=2 ty=f32 range=[-1,1]
+    Param id=p5 path=Params.centers[1].position.x indexes=[1,1,0] component=0 ty=f32 range=[-1,1]
+    Param id=p6 path=Params.centers[1].position.y indexes=[1,1,0] component=1 ty=f32 range=[-1,1]
+    Param id=p7 path=Params.centers[1].position.z indexes=[1,1,0] component=2 ty=f32 range=[-1,1]
+    Param id=p8 path=Params.tint.r indexes=[2] component=0 ty=f32 range=[0,1]
+    Param id=p9 path=Params.tint.g indexes=[2] component=1 ty=f32 range=[0,1]
+    Param id=p10 path=Params.tint.b indexes=[2] component=2 ty=f32 range=[0,1]
+    Param id=p11 path=Params.index indexes=[3] component=scalar ty=usize range=[0,1] exact_integer=[0,1]
+    Scalar id=s0 dependency=parameter kind=Param param=p11
+    Scalar id=s1 dependency=parameter kind=Param param=p2
+    Scalar id=s2 dependency=parameter kind=Param param=p5
+    Scalar id=s3 dependency=parameter kind=SelectIndex index=s0 options=[s1,s2]
+    Scalar id=s4 dependency=parameter kind=Param param=p3
+    Scalar id=s5 dependency=parameter kind=Param param=p6
+    Scalar id=s6 dependency=parameter kind=SelectIndex index=s0 options=[s4,s5]
+    Scalar id=s7 dependency=parameter kind=Param param=p4
+    Scalar id=s8 dependency=parameter kind=Param param=p7
+    Scalar id=s9 dependency=parameter kind=SelectIndex index=s0 options=[s7,s8]
+    Scalar id=s10 dependency=parameter kind=Param param=p0
+    Scalar id=s11 dependency=parameter kind=Param param=p1
+    Scalar id=s12 dependency=parameter kind=SelectIndex index=s0 options=[s10,s11]
+    Scalar id=s13 dependency=coordinate kind=Coord axis=x
+    Scalar id=s14 dependency=coordinate+parameter kind=Sub a=s13 b=s3
+    Scalar id=s15 dependency=coordinate kind=Coord axis=y
+    Scalar id=s16 dependency=coordinate+parameter kind=Sub a=s15 b=s6
+    Scalar id=s17 dependency=coordinate kind=Coord axis=z
+    Scalar id=s18 dependency=coordinate+parameter kind=Sub a=s17 b=s9
+    Scalar id=s19 dependency=coordinate+parameter kind=Length3 value=[s14,s16,s18]
+    Scalar id=s20 dependency=coordinate+parameter kind=Sub a=s19 b=s12
+    Scalar id=s21 dependency=parameter kind=Param param=p8
+    Scalar id=s22 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s23 dependency=parameter kind=FiniteOr value=s21 fallback=s22 semantic=FiniteColorF32V1
+    Scalar id=s24 dependency=constant kind=ConstF32 value=-340282350000000000000000000000000000000 bits=0xff7fffff
+    Scalar id=s25 dependency=constant kind=ConstF32 value=340282350000000000000000000000000000000 bits=0x7f7fffff
+    Scalar id=s26 dependency=parameter kind=Clamp value=s23 lo=s24 hi=s25
+    Scalar id=s27 dependency=parameter kind=Param param=p9
+    Scalar id=s28 dependency=parameter kind=FiniteOr value=s27 fallback=s22 semantic=FiniteColorF32V1
+    Scalar id=s29 dependency=parameter kind=Clamp value=s28 lo=s24 hi=s25
+    Scalar id=s30 dependency=parameter kind=Param param=p10
+    Scalar id=s31 dependency=parameter kind=FiniteOr value=s30 fallback=s22 semantic=FiniteColorF32V1
+    Scalar id=s32 dependency=parameter kind=Clamp value=s31 lo=s24 hi=s25
+    Scalar id=s33 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s34 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s35 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Field id=f0 scalar=s20 kind=Sphere center=[s3,s6,s9] radius=s12
+    Field id=f1 scalar=s20 kind=Mark child=f0 object=examples.check_pixels_field_dynamic_index::ObjectId::Scene material=examples.check_pixels_field_dynamic_index::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s26,s29,s32] opacity=s33 emissive=[s22,s22,s22] roughness=s34 metallic=s22 specular=s34 ior=s35 normal=geometric pattern=none
+    Identity kind=material enum=examples.check_pixels_field_dynamic_index::MaterialId variant=Surface
+    Identity kind=object enum=examples.check_pixels_field_dynamic_index::ObjectId variant=Scene
+    Obligation kind=scalar dynamic-index-in-bounds index=s0 extent=2
+    Origin kind=scalar id=s0 primary=examples.check_pixels_field_dynamic_index:34:27@bytes=736..737 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0] merged=[examples.check_pixels_field_dynamic_index:35:28@bytes=785..786]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s4 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s5 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_field_dynamic_index:0:0@bytes=0..0
+    Origin kind=scalar id=s14 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_field_dynamic_index:0:0@bytes=0..0
+    Origin kind=scalar id=s16 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_field_dynamic_index:0:0@bytes=0..0
+    Origin kind=scalar id=s18 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s20 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s21 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s22 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0] merged=[examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074]
+    Origin kind=scalar id=s23 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s24 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s25 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s26 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s27 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s28 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s29 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s30 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s31 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s32 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=scalar id=s33 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0] merged=[examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074]
+    Origin kind=scalar id=s34 primary=examples.check_pixels_field_dynamic_index:44:65@bytes=1103..1106 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0] merged=[examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074]
+    Origin kind=scalar id=s35 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_field_dynamic_index:37:15@bytes=840..841 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_field_dynamic_index:36:16@bytes=824..825 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_field_dynamic_index:44:35@bytes=1073..1074 expansion=[examples.check_pixels_field_dynamic_index:0:0@bytes=0..0]
+    Roots field=f1 material=m0
+    SymbolicQuota steps=27/1000000 nodes=45/250000 unrolled_statements=0/250000 aggregate_elements=4/250000 call_depth=1/128
+Analysis status=pending

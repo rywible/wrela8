@@ -54,7 +54,7 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
             material=MaterialId.Ground,
         )
     return mark(
-        box(p, Vec3(x=1.0, y=1.0, z=1.0)),
+        sphere(p, Vec3(x=1.0, y=0.0, z=0.0), radius=1.0),
         object=ObjectId.Right,
         material=MaterialId.Ground,
     )
@@ -67,6 +67,7 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 fn pinned_scene_contract():
     assert FIXTURE_ID == 26, "fixture id must remain pinned"
     assert LEFT_ARM_SHAPE == 1, "adversarial scene value must remain pinned"
+    pinned_box = box(Vec3(x=0.0, y=0.0, z=0.0), Vec3(x=1.0, y=1.0, z=1.0))
 
 @image
 pub fn build() -> Image:

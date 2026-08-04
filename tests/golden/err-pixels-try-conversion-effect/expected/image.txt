@@ -1,2 +1,2 @@
-error[pixels P003]: renderer bodies may not panic on a reachable path at 55:36
+error[pixels P003]: renderer bodies may not panic on a reachable path at 25:14
 note: renderer call chain: examples.err_pixels_try_conversion_effect::world -> examples.err_pixels_try_conversion_effect::converted -> examples.err_pixels_try_conversion_effect::ConvertedError.from

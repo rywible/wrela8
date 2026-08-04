@@ -49,11 +49,13 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    sample = MaterialSample.standard(color=Rgb(r=0.0, g=0.0, b=0.0), roughness=0.5)
     match surface.material:
         case .Ground:
-            return MaterialSample.standard(color=Rgb(r=0.125, g=0.25, b=0.5), roughness=0.75)
+            sample = MaterialSample.standard(color=Rgb(r=0.125, g=0.25, b=0.5), roughness=0.75)
         case .Accent:
-            return MaterialSample.standard(color=Rgb(r=1.0, g=0.25, b=0.125), roughness=0.25)
+            sample = MaterialSample.standard(color=Rgb(r=1.0, g=0.25, b=0.125), roughness=0.25)
+    return sample
 
 @test(runtime)
 fn pinned_scene_contract():

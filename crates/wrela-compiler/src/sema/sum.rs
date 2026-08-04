@@ -5,7 +5,11 @@ use crate::sema::types::{self, Type, TypeArg};
 use crate::syntax::ast::Span;
 
 fn no_span() -> Span {
-    Span { line: 0, col: 0 }
+    Span {
+        line: 0,
+        col: 0,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn sum_ctors(

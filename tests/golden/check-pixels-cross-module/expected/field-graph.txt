@@ -1,12 +1,60 @@
 FieldGraph v1
 Renderers count=1
-  Renderer index=0 params=SceneParams field=scene_world material=scene_shade material_type=MaterialId
-    Compilation status=not-run
-    Display ref=driver#0
-    Mode width=64 height=32 refresh_hz=60 shade_hz=60
-    Profile value=AaaByteExact tone_curve=Linear
-    Depth near=0.1 far=10
-    World min=[-2,-2,-2] max=[2,2,2]
-    Contracts camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1] ao=false probes=false probe_initialization_worst_case_ms=0 initialization_deadline_ms=1
-    Parameter path=[0] type=f32 range=[0.5,2] rate=none
-    Parameter path=[1] type=Point range=[-2,2] rate=none
+  Renderer index=0 field=lib.pixels_scene::world material=lib.pixels_scene::shade params=SceneParams material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,10]
+      World min=[-2,-2,-2] max=[2,2,2]
+      RuntimeBounds camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=1
+    Param id=p0 path=SceneParams.radius indexes=[0] component=scalar ty=f32 range=[0.5,2]
+    Param id=p1 path=SceneParams.offset.x indexes=[1] component=0 ty=f32 range=[-2,2]
+    Param id=p2 path=SceneParams.offset.y indexes=[1] component=1 ty=f32 range=[-2,2]
+    Param id=p3 path=SceneParams.offset.z indexes=[1] component=2 ty=f32 range=[-2,2]
+    Scalar id=s0 dependency=parameter kind=Param param=p1
+    Scalar id=s1 dependency=parameter kind=Param param=p2
+    Scalar id=s2 dependency=parameter kind=Param param=p3
+    Scalar id=s3 dependency=parameter kind=Param param=p0
+    Scalar id=s4 dependency=coordinate kind=Coord axis=x
+    Scalar id=s5 dependency=coordinate+parameter kind=Sub a=s4 b=s0
+    Scalar id=s6 dependency=coordinate kind=Coord axis=y
+    Scalar id=s7 dependency=coordinate+parameter kind=Sub a=s6 b=s1
+    Scalar id=s8 dependency=coordinate kind=Coord axis=z
+    Scalar id=s9 dependency=coordinate+parameter kind=Sub a=s8 b=s2
+    Scalar id=s10 dependency=coordinate+parameter kind=Length3 value=[s5,s7,s9]
+    Scalar id=s11 dependency=coordinate+parameter kind=Sub a=s10 b=s3
+    Scalar id=s12 dependency=constant kind=ConstF32 value=0.2 bits=0x3e4ccccd
+    Scalar id=s13 dependency=constant kind=ConstF32 value=0.3 bits=0x3e99999a
+    Scalar id=s14 dependency=constant kind=ConstF32 value=0.4 bits=0x3ecccccd
+    Scalar id=s15 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s16 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s17 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s18 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Field id=f0 scalar=s11 kind=Sphere center=[s0,s1,s2] radius=s3
+    Field id=f1 scalar=s11 kind=Mark child=f0 object=lib.pixels_scene::ObjectId::Scene material=lib.pixels_scene::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s12,s13,s14] opacity=s15 emissive=[s16,s16,s16] roughness=s17 metallic=s16 specular=s17 ior=s18 normal=geometric pattern=none
+    Identity kind=material enum=lib.pixels_scene::MaterialId variant=Surface
+    Identity kind=object enum=lib.pixels_scene::ObjectId variant=Scene
+    Origin kind=scalar id=s0 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s1 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s2 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s3 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s4 primary=lib.pixels_scene:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=lib.pixels_scene:0:0@bytes=0..0
+    Origin kind=scalar id=s7 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=lib.pixels_scene:0:0@bytes=0..0
+    Origin kind=scalar id=s9 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=lib.pixels_scene:31:40@bytes=817..820 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s13 primary=lib.pixels_scene:31:47@bytes=824..827 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s14 primary=lib.pixels_scene:31:54@bytes=831..834 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s15 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s16 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s17 primary=lib.pixels_constants:3:36@bytes=64..67 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s18 primary=lib.pixels_scene:31:27@bytes=804..805 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=lib.pixels_scene:23:15@bytes=562..563 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=lib.pixels_scene:31:27@bytes=804..805 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Roots field=f1 material=m0
+    SymbolicQuota steps=21/1000000 nodes=30/250000 unrolled_statements=0/250000 aggregate_elements=3/250000 call_depth=1/128
+Analysis status=pending

@@ -1155,7 +1155,17 @@ pub(crate) fn run_image_pipeline_once(
     programs.insert(module_addr.to_string(), program.clone());
     let text = match eval::interp::eval_image(program, &fn_name) {
         Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
-            Ok(_) => {
+            Ok(checked) => {
+                if let Err(error) = wrela_compiler::pixels::compile_all(
+                    &programs,
+                    module_addr,
+                    &graph,
+                    &checked.renderer_configs,
+                ) {
+                    return Some(render_sema_error_diag(&eval::image_checks::pixels_error(
+                        error,
+                    )));
+                }
                 let build_input = report::BuildInput {
                     path: report::address_to_relative_path(module_addr),
                     digest: report::sha256_hex(input.as_bytes()),

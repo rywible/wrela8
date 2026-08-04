@@ -2,6 +2,8 @@
 pub struct Span {
     pub line: u32,
     pub col: u32,
+    pub byte_start: usize,
+    pub byte_end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

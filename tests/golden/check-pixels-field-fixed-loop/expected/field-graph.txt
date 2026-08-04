@@ -1,12 +1,64 @@
 FieldGraph v1
 Renderers count=1
-  Renderer index=0 params=Params field=world material=shade material_type=MaterialId
-    Compilation status=not-run
-    Display ref=driver#0
-    Mode width=64 height=32 refresh_hz=60 shade_hz=60
-    Profile value=AaaByteExact tone_curve=Linear
-    Depth near=0.1 far=10
-    World min=[-1,-1,-1] max=[1,1,1]
-    Contracts camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1] ao=false probes=false probe_initialization_worst_case_ms=0 initialization_deadline_ms=1
-    Parameter path=[1, 0, 0] type=f32 range=[0.25,2] rate=none
-    Parameter path=[1, 1, 0] type=f32 range=[0.25,2] rate=none
+  Renderer index=0 field=examples.check_pixels_field_fixed_loop::world material=examples.check_pixels_field_fixed_loop::shade params=Params material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,10]
+      World min=[-1,-1,-1] max=[1,1,1]
+      RuntimeBounds camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=1
+    Param id=p0 path=Params.motions[0].radius indexes=[1,0,0] component=scalar ty=f32 range=[0.25,2]
+    Param id=p1 path=Params.motions[1].radius indexes=[1,1,0] component=scalar ty=f32 range=[0.25,2]
+    Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s1 dependency=parameter kind=Param param=p1
+    Scalar id=s2 dependency=coordinate kind=Coord axis=x
+    Scalar id=s3 dependency=coordinate kind=Sub a=s2 b=s0
+    Scalar id=s4 dependency=coordinate kind=Coord axis=y
+    Scalar id=s5 dependency=coordinate kind=Sub a=s4 b=s0
+    Scalar id=s6 dependency=coordinate kind=Coord axis=z
+    Scalar id=s7 dependency=coordinate kind=Sub a=s6 b=s0
+    Scalar id=s8 dependency=coordinate kind=Length3 value=[s3,s5,s7]
+    Scalar id=s9 dependency=coordinate+parameter kind=Sub a=s8 b=s1
+    Scalar id=s10 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s11 dependency=coordinate kind=Sub a=s8 b=s10
+    Scalar id=s12 dependency=parameter kind=Param param=p0
+    Scalar id=s13 dependency=coordinate+parameter kind=Sub a=s8 b=s12
+    Scalar id=s14 dependency=coordinate+parameter kind=Min a=s11 b=s13
+    Scalar id=s15 dependency=coordinate+parameter kind=Min a=s14 b=s9
+    Scalar id=s16 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s17 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Field id=f0 scalar=s9 kind=Sphere center=[s0,s0,s0] radius=s1
+    Field id=f1 scalar=s11 kind=Sphere center=[s0,s0,s0] radius=s10
+    Field id=f2 scalar=s13 kind=Sphere center=[s0,s0,s0] radius=s12
+    Field id=f3 scalar=s14 kind=HardUnion a=f1 b=f2
+    Field id=f4 scalar=s15 kind=HardUnion a=f0 b=f3
+    Field id=f5 scalar=s15 kind=Mark child=f4 object=examples.check_pixels_field_fixed_loop::ObjectId::Scene material=examples.check_pixels_field_fixed_loop::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s0,s0,s0] opacity=s10 emissive=[s0,s0,s0] roughness=s16 metallic=s0 specular=s16 ior=s17 normal=geometric pattern=none
+    Identity kind=material enum=examples.check_pixels_field_fixed_loop::MaterialId variant=Surface
+    Identity kind=object enum=examples.check_pixels_field_fixed_loop::ObjectId variant=Scene
+    Origin kind=scalar id=s0 primary=examples.check_pixels_field_fixed_loop:27:31@bytes=616..619 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=605..606,examples.check_pixels_field_fixed_loop:27:38@bytes=623..626,examples.check_pixels_field_fixed_loop:27:45@bytes=630..633,examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:30:35@bytes=744..747,examples.check_pixels_field_fixed_loop:30:42@bytes=751..754,examples.check_pixels_field_fixed_loop:30:49@bytes=758..761,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950,examples.check_pixels_field_fixed_loop:36:30@bytes=960..963,examples.check_pixels_field_fixed_loop:36:37@bytes=967..970,examples.check_pixels_field_fixed_loop:36:44@bytes=974..977,examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224,examples.check_pixels_field_fixed_loop:42:48@bytes=1236..1239,examples.check_pixels_field_fixed_loop:42:55@bytes=1243..1246,examples.check_pixels_field_fixed_loop:42:62@bytes=1250..1253]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
+    Origin kind=scalar id=s3 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s4 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
+    Origin kind=scalar id=s7 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_field_fixed_loop:26:24@bytes=582..585 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=605..606,examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950,examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s16 primary=examples.check_pixels_field_fixed_loop:42:78@bytes=1266..1269 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734]
+    Origin kind=field id=f2 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f4 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f5 primary=examples.check_pixels_field_fixed_loop:38:16@bytes=1031..1032 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Roots field=f5 material=m0
+    SymbolicQuota steps=63/1000000 nodes=33/250000 unrolled_statements=2/250000 aggregate_elements=15/250000 call_depth=1/128
+Analysis status=pending

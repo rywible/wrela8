@@ -23,12 +23,17 @@ enum MaterialId:
 
 @field
 fn world(p: Vec3, read params: Params) -> Field:
-    result = sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0)
+    base_radius: f32 = 1.0
+    result = sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=base_radius)
+    if true:
+        branch_radius: f32 = base_radius
+        result = sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=branch_radius)
     @budget(bound=2)
-    for i in 0..2:
+    for motion in params.motions:
+        iteration_radius: f32 = motion.radius
         result = union(
             result,
-            sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=params.motions[i.to[usize]()].radius),
+            sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=iteration_radius),
         )
     return mark(result, object=ObjectId.Scene, material=MaterialId.Surface)
 

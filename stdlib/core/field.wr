@@ -54,7 +54,7 @@ fn max_scalar(a: f32, b: f32) -> f32:
 fn clamp_scalar(x: f32, lo: f32, hi: f32) -> f32:
     return min_scalar(max_scalar(x, lo), hi)
 
-fn sqrt_scalar(x: f32) -> f32:
+pub fn sqrt_scalar(x: f32) -> f32:
     if x <= 0.0:
         return 0.0
     max_finite: f32 = 340282346638528859811704183484516925440.0
@@ -73,14 +73,33 @@ fn sqrt_scalar(x: f32) -> f32:
         i = i + 1
     return guess
 
-fn length2(v: Vec2) -> f32:
+pub fn rsqrt_scalar(x: f32) -> f32:
+    root = sqrt_scalar(x)
+    if root <= 0.0:
+        return 0.0
+    return 1.0 / root
+
+pub fn length2(v: Vec2) -> f32:
     return sqrt_scalar(v.x * v.x + v.y * v.y)
 
-fn length3(v: Vec3) -> f32:
+pub fn length3(v: Vec3) -> f32:
     return sqrt_scalar(v.x * v.x + v.y * v.y + v.z * v.z)
 
-fn dot3(a: Vec3, b: Vec3) -> f32:
+pub fn dot3(a: Vec3, b: Vec3) -> f32:
     return a.x * b.x + a.y * b.y + a.z * b.z
+
+pub fn cross3(a: Vec3, b: Vec3) -> Vec3:
+    return Vec3(
+        x=a.y * b.z - a.z * b.y,
+        y=a.z * b.x - a.x * b.z,
+        z=a.x * b.y - a.y * b.x,
+    )
+
+pub fn normalize3(v: Vec3) -> Vec3:
+    length = length3(v)
+    if length <= 0.0:
+        return Vec3(x=0.0, y=0.0, z=0.0)
+    return Vec3(x=v.x / length, y=v.y / length, z=v.z / length)
 
 pub fn plane(p: Vec3, normal: Vec3, offset: f32) -> Field:
     return Field(value=dot3(p, normal) + offset)
@@ -197,7 +216,7 @@ pub fn smooth_subtract(a: Field, b: Field, k: f32) -> Field:
 pub fn mark[O, M](field: Field, object: O, material: M) -> Field:
     return field
 
-fn sin_scalar(angle: f32) -> f32:
+pub fn sin_scalar(angle: f32) -> f32:
     # Deterministic range reduction followed by the odd degree-11 Taylor
     # polynomial. The compiler recognizes sinusoidal_displace structurally,
     # but this body remains the source-level scalar meaning.
@@ -231,6 +250,10 @@ fn sin_scalar(angle: f32) -> f32:
         )
     )
 
+pub fn cos_scalar(angle: f32) -> f32:
+    half_pi: f32 = 1.5707963267948966
+    return sin_scalar(angle + half_pi)
+
 # The compiler lowers this closed form and derives amplitude, gradient,
 # Hessian, and third-derivative bounds. Authors never provide those bounds.
 pub fn sinusoidal_displace(
@@ -253,3 +276,18 @@ fn scalar_length_semantics_cover_large_exact_radius():
         radius=128.0,
     )
     assert surface.value == 0.0, "large exact radius remains on the sphere surface"
+
+@test
+fn scalar_vector_intrinsic_source_semantics_are_pinned():
+    x = Vec3(x=1.0, y=0.0, z=0.0)
+    y = Vec3(x=0.0, y=1.0, z=0.0)
+    cross = cross3(x, y)
+    normalized = normalize3(Vec3(x=4.0, y=0.0, z=0.0))
+    assert dot3(x, y) == 0.0, "orthogonal dot product must be exact"
+    assert cross.x == 0.0 and cross.y == 0.0 and cross.z == 1.0, "cross order is normative"
+    assert length2(Vec2(x=3.0, y=4.0)) == 5.0, "length2 uses source sqrt semantics"
+    assert length3(Vec3(x=0.0, y=0.0, z=4.0)) == 4.0, "length3 stays fused"
+    assert normalized.x == 1.0 and normalized.y == 0.0 and normalized.z == 0.0, "normalize guard and division order are normative"
+    assert rsqrt_scalar(16.0) == 0.25, "rsqrt source guard is normative"
+    assert sin_scalar(0.0) == 0.0, "sin zero is exact"
+    assert cos_scalar(0.0) == sin_scalar(1.5707963267948966), "cos is the pinned shifted sin"

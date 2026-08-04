@@ -376,6 +376,12 @@ pub struct TypedProgram {
     pub effects: EffectMap,
     pub imported: ImportedDecls,
     pub pixels_fns: BTreeMap<String, PixelsFnMeta>,
+    /// Canonical declaring module for every constant name visible while this
+    /// module was checked.
+    pub const_decl_modules: BTreeMap<String, String>,
+    /// Canonical declaration name paired with `const_decl_modules`; imported
+    /// aliases retain their target declaration identity here.
+    pub const_decl_names: BTreeMap<String, String>,
     /// Canonical declaring module for every function name visible while this
     /// module was checked. This includes generic functions, which do not
     /// otherwise have an entry in `fns`.

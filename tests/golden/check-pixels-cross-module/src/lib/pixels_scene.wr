@@ -2,6 +2,7 @@ module lib.pixels_scene
 
 from core.field import Field as F, Rgb, Vec3 as Point, mark as tag, sphere as ball
 from core.render import MaterialSample as Sample, SurfaceContext as Surface
+from lib.pixels_constants import SURFACE_ROUGHNESS as ROUGHNESS
 
 pub struct Params:
     @range(min=0.5, max=2.0)
@@ -27,4 +28,4 @@ pub fn world(p: Point, read params: Params) -> F:
 
 @material
 pub fn shade(surface: Surface[MaterialId], read params: Params) -> Sample:
-    return Sample.standard(color=Rgb(r=0.2, g=0.3, b=0.4), roughness=0.5)
+    return Sample.standard(color=Rgb(r=0.2, g=0.3, b=0.4), roughness=ROUGHNESS)

@@ -1,2 +1,2 @@
-error[pixels P003]: renderer bodies may not panic on a reachable path at 47:36
+error[pixels P003]: renderer bodies may not panic on a reachable path at 22:14
 note: renderer call chain: examples.err_pixels_operator_effect::world -> examples.err_pixels_operator_effect::Warp.subtract

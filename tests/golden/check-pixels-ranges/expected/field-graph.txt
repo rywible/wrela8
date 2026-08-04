@@ -1,0 +1,54 @@
+FieldGraph v1
+Renderers count=1
+  Renderer index=0 field=examples.check_pixels_ranges::world material=examples.check_pixels_ranges::shade params=Params material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,10]
+      World min=[-4,-4,-4] max=[4,4,4]
+      RuntimeBounds camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=1
+    Param id=p0 path=Params.position.x indexes=[2] component=0 ty=f32 range=[-2,2]
+      Rate max_delta=0.25 max_second_delta=0.0625
+    Param id=p1 path=Params.position.y indexes=[2] component=1 ty=f32 range=[-2,2]
+      Rate max_delta=0.25 max_second_delta=0.0625
+    Param id=p2 path=Params.position.z indexes=[2] component=2 ty=f32 range=[-2,2]
+      Rate max_delta=0.25 max_second_delta=0.0625
+    Scalar id=s0 dependency=parameter kind=Param param=p0
+    Scalar id=s1 dependency=parameter kind=Param param=p1
+    Scalar id=s2 dependency=parameter kind=Param param=p2
+    Scalar id=s3 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s4 dependency=coordinate kind=Coord axis=x
+    Scalar id=s5 dependency=coordinate+parameter kind=Sub a=s4 b=s0
+    Scalar id=s6 dependency=coordinate kind=Coord axis=y
+    Scalar id=s7 dependency=coordinate+parameter kind=Sub a=s6 b=s1
+    Scalar id=s8 dependency=coordinate kind=Coord axis=z
+    Scalar id=s9 dependency=coordinate+parameter kind=Sub a=s8 b=s2
+    Scalar id=s10 dependency=coordinate+parameter kind=Length3 value=[s5,s7,s9]
+    Scalar id=s11 dependency=coordinate+parameter kind=Sub a=s10 b=s3
+    Scalar id=s12 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s13 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s14 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Field id=f0 scalar=s11 kind=Sphere center=[s0,s1,s2] radius=s3
+    Field id=f1 scalar=s11 kind=Mark child=f0 object=examples.check_pixels_ranges::ObjectId::Scene material=examples.check_pixels_ranges::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s12,s12,s12] opacity=s3 emissive=[s12,s12,s12] roughness=s13 metallic=s12 specular=s13 ior=s14 normal=geometric pattern=none
+    Identity kind=material enum=examples.check_pixels_ranges::MaterialId variant=Surface
+    Identity kind=object enum=examples.check_pixels_ranges::ObjectId variant=Scene
+    Origin kind=scalar id=s0 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_ranges:31:47@bytes=729..732 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0] merged=[examples.check_pixels_ranges:31:19@bytes=701..702,examples.check_pixels_ranges:36:35@bytes=940..941]
+    Origin kind=scalar id=s4 primary=examples.check_pixels_ranges:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_ranges:0:0@bytes=0..0
+    Origin kind=scalar id=s7 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_ranges:0:0@bytes=0..0
+    Origin kind=scalar id=s9 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0] merged=[examples.check_pixels_ranges:36:35@bytes=940..941,examples.check_pixels_ranges:36:48@bytes=953..956,examples.check_pixels_ranges:36:55@bytes=960..963,examples.check_pixels_ranges:36:62@bytes=967..970]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_ranges:36:78@bytes=983..986 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0] merged=[examples.check_pixels_ranges:36:35@bytes=940..941]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_ranges:36:35@bytes=940..941 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_ranges:31:19@bytes=701..702 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_ranges:32:16@bytes=749..750 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_ranges:36:35@bytes=940..941 expansion=[examples.check_pixels_ranges:0:0@bytes=0..0]
+    Roots field=f1 material=m0
+    SymbolicQuota steps=18/1000000 nodes=26/250000 unrolled_statements=0/250000 aggregate_elements=3/250000 call_depth=1/128
+Analysis status=pending

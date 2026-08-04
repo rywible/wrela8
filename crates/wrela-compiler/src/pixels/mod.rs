@@ -1,29 +1,8 @@
 //! Pixels compiler subsystem.
 //!
-//! The P-1 walking skeleton below accepts exactly one directly marked plane.
-//! It is deliberately replaced by the symbolic compiler in P2-P8; expanding
-//! this matcher is not a supported extension path.
-
-pub mod config;
-pub mod diagnostics;
-pub mod dump;
-pub mod legality;
-pub mod params;
-
-pub use dump::{
-    PixelsDumpStage, dump_field_graph, dump_frame_program, dump_render_layout,
-    dump_uncompiled_configs, dump_zero_renderers,
-};
-
-pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
-    module == "examples.boot_pixels_walking_skeleton"
-        && graph.name.as_ref().is_some_and(|name| {
-            matches!(
-                &name.value,
-                Value::Str(bytes) if bytes.as_slice() == b"boot-pixels-walking-skeleton"
-            )
-        })
-}
+//! The P2 symbolic compiler owns field/material acceptance and dumps. The
+//! isolated P-1 plane skeleton remains only for the already-reviewed
+//! frame-program/render-layout and generated-actor compatibility fixture.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,6 +13,104 @@ use crate::sema::typed::{
     TypedForIter, TypedProgram, TypedStmt, TypedStmtKind,
 };
 use crate::sema::types::{self, Type, TypeArg};
+
+pub mod arena;
+pub mod canonicalize;
+pub mod config;
+pub mod diagnostics;
+pub mod dump;
+pub mod field_intrinsics;
+pub mod graph;
+pub mod ids;
+pub mod legality;
+pub mod material_graph;
+pub mod material_intrinsics;
+pub mod params;
+pub mod quota;
+pub mod scalar;
+pub mod symbolic;
+
+pub use dump::{
+    PixelsDumpStage, dump_frame_program, dump_render_layout, dump_symbolic_graphs,
+    dump_uncompiled_configs, dump_zero_renderers,
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PixelsProgramSet {
+    pub symbolic_graphs: Vec<symbolic::SymbolicGraph>,
+}
+
+fn compile_symbolic_renderer(
+    programs: &BTreeMap<String, TypedProgram>,
+    owner_module: &str,
+    config: &config::RendererConfig,
+    renderer_index: usize,
+) -> Result<symbolic::SymbolicGraph, diagnostics::PixelsError> {
+    let mut graph =
+        symbolic::compile(programs, owner_module, config, renderer_index).map_err(|failure| {
+            diagnostics::PixelsError::Diagnostic(diagnostics::PixelsDiagnostic::from_prefixed(
+                failure.message,
+                failure.primary,
+                "P014",
+            ))
+        })?;
+    canonicalize::run(&mut graph).map_err(|message| {
+        diagnostics::PixelsError::Diagnostic(diagnostics::PixelsDiagnostic::from_prefixed(
+            message,
+            crate::syntax::ast::Span::default(),
+            "P014",
+        ))
+    })?;
+    Ok(graph)
+}
+
+/// Compile every renderer only after the generic sealed-image checks have
+/// completed. This is the single P2 build gate used by dumps, builds, tests,
+/// fuzzing, and determinism reproduction.
+pub fn compile_all(
+    programs: &BTreeMap<String, TypedProgram>,
+    owner_module: &str,
+    image: &ImageGraph,
+    configs: &config::RendererConfigs,
+) -> Result<PixelsProgramSet, diagnostics::PixelsError> {
+    if image.renderers.len() != configs.renderers.len() {
+        return Err(diagnostics::PixelsError::Diagnostic(
+            diagnostics::PixelsDiagnostic::new(
+                "P009",
+                "sealed renderer configuration count does not match the image graph",
+                crate::syntax::ast::Span::default(),
+            ),
+        ));
+    }
+    let symbolic_graphs = image
+        .renderers
+        .iter()
+        .zip(&configs.renderers)
+        .enumerate()
+        .map(|(renderer_index, (renderer, config))| {
+            compile_symbolic_renderer(programs, owner_module, config, renderer_index).map_err(
+                |mut error| {
+                    let diagnostics::PixelsError::Diagnostic(diagnostic) = &mut error;
+                    if diagnostic.primary == crate::syntax::ast::Span::default() {
+                        diagnostic.primary = renderer.span;
+                    }
+                    error
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PixelsProgramSet { symbolic_graphs })
+}
+
+pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
+    module == "examples.boot_pixels_walking_skeleton"
+        && graph.name.as_ref().is_some_and(|name| {
+            matches!(
+                &name.value,
+                Value::Str(bytes) if bytes.as_slice() == b"boot-pixels-walking-skeleton"
+            )
+        })
+}
 
 pub const FRAME_PROGRAM_HEADER_BYTES: usize = 80;
 pub const FRAME_PROGRAM_MAGIC: &[u8; 8] = b"WRELAPX\0";
@@ -94,6 +171,51 @@ pub(crate) struct LocatedFn {
     pub(crate) key: String,
     pub(crate) decl_name: String,
     pub(crate) function: TypedFn,
+}
+
+#[derive(Clone)]
+pub(crate) struct LocatedConst {
+    pub(crate) module: String,
+    pub(crate) name: String,
+    pub(crate) constant: crate::sema::typed::TypedConst,
+}
+
+pub(crate) fn located_constant(
+    programs: &BTreeMap<String, TypedProgram>,
+    current_module: &str,
+    name: &str,
+) -> Option<LocatedConst> {
+    let visible = program_for_decl_module(programs, current_module)?;
+    let declaration_module = visible
+        .const_decl_modules
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| current_module.to_string());
+    let declaration_name = visible
+        .const_decl_names
+        .get(name)
+        .map(String::as_str)
+        .unwrap_or(name);
+    if let Some(constant) = program_for_decl_module(programs, &declaration_module)
+        .and_then(|program| program.consts.get(declaration_name))
+        .cloned()
+    {
+        return Some(LocatedConst {
+            module: declaration_module,
+            name: declaration_name.to_string(),
+            constant,
+        });
+    }
+    visible
+        .consts
+        .get(name)
+        .or_else(|| visible.imported.consts.get(name))
+        .cloned()
+        .map(|constant| LocatedConst {
+            module: declaration_module,
+            name: declaration_name.to_string(),
+            constant,
+        })
 }
 
 pub(crate) fn root_function(
@@ -287,6 +409,12 @@ pub(crate) fn is_core_field_function(located: &LocatedFn) -> bool {
     is_core_field_function_identity(&located.module, &located.key, &located.decl_name)
 }
 
+pub(crate) fn is_core_scalar_function(located: &LocatedFn) -> bool {
+    is_core_field_module(&located.module)
+        && !call_base(&located.key).contains('.')
+        && scalar::classify_intrinsic(&located.decl_name).is_some()
+}
+
 fn is_core_field_function_identity(module: &str, key: &str, decl_name: &str) -> bool {
     is_core_field_module(module)
         && !call_base(key).contains('.')
@@ -299,6 +427,10 @@ pub(crate) fn is_core_field_vector_method(located: &LocatedFn) -> bool {
 
 pub(crate) fn is_core_field_vector_method_identity(module: &str, key: &str) -> bool {
     is_core_field_module(module) && matches!(call_base(key), "Vec3.add" | "Vec3.subtract")
+}
+
+pub(crate) fn is_core_field_value_method(located: &LocatedFn) -> bool {
+    is_core_field_module(&located.module) && call_base(&located.key) == "Field.union"
 }
 
 fn is_core_field_module(module: &str) -> bool {
@@ -361,6 +493,26 @@ pub(crate) fn instantiated_struct<'a>(
             crate::sema::typed::TypedInstantiation::Fn(_)
             | crate::sema::typed::TypedInstantiation::Enum(_) => None,
         })
+}
+
+pub(crate) fn typed_struct_decl<'a>(
+    programs: &'a BTreeMap<String, TypedProgram>,
+    module: &str,
+    ty: &Type,
+) -> Option<(&'a str, &'a crate::sema::typed::TypedStruct)> {
+    let Type::Named(name, args) = ty else {
+        return None;
+    };
+    let context = program_for_decl_module(programs, module)?;
+    let (declaring_module, declaration_name) = nominal_decl(context, name)?;
+    let declaration = program_for_decl_module(programs, declaring_module)?;
+    let strukt = if args.is_empty() {
+        declaration.structs.get(declaration_name)?
+    } else {
+        instantiated_struct(context, name, args)
+            .or_else(|| instantiated_struct(declaration, declaration_name, args))?
+    };
+    Some((declaring_module, strukt))
 }
 
 pub(crate) fn instantiated_enum<'a>(
@@ -1165,9 +1317,29 @@ mod tests {
                     .and_then(|tail| tail.split(['(', '[']).next())
             })
             .collect();
-        let census: BTreeSet<&str> = FIELD_OPERATIONS.iter().copied().collect();
-        assert_eq!(census, public_functions);
-        assert!(census.contains("mark"));
+        let field_census: BTreeSet<&str> = FIELD_OPERATIONS.iter().copied().collect();
+        let scalar_census: BTreeSet<&str> = [
+            "sqrt_scalar",
+            "rsqrt_scalar",
+            "sin_scalar",
+            "cos_scalar",
+            "dot3",
+            "cross3",
+            "length2",
+            "length3",
+            "normalize3",
+        ]
+        .into_iter()
+        .collect();
+        assert!(field_census.is_disjoint(&scalar_census));
+        assert_eq!(
+            field_census
+                .union(&scalar_census)
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            public_functions
+        );
+        assert!(field_census.contains("mark"));
     }
 
     #[test]

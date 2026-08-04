@@ -465,7 +465,11 @@ mod tests {
     use super::*;
 
     fn span() -> Span {
-        Span { line: 1, col: 1 }
+        Span {
+            line: 1,
+            col: 1,
+            ..Default::default()
+        }
     }
 
     #[test]

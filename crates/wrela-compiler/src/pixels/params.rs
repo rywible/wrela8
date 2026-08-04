@@ -33,6 +33,43 @@ struct Origin {
     exact_comptime_integer: Option<i128>,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct OriginKey {
+    path: Vec<usize>,
+    projection: Vec<usize>,
+    ty: String,
+    module: String,
+    unmodified: bool,
+    range: Option<(u64, u64, bool, Option<(i128, i128)>)>,
+    rate: Option<(u64, u64)>,
+    exact_comptime_integer: Option<i128>,
+}
+
+impl Origin {
+    fn key(&self) -> OriginKey {
+        OriginKey {
+            path: self.path.clone(),
+            projection: self.projection.clone(),
+            ty: crate::sema::types::render_type(&self.ty),
+            module: self.module.clone(),
+            unmodified: self.unmodified,
+            range: self.contracts.range.map(|range| {
+                (
+                    range.min.to_bits(),
+                    range.max.to_bits(),
+                    range.integer,
+                    range.exact_integer,
+                )
+            }),
+            rate: self
+                .contracts
+                .rate
+                .map(|rate| (rate.max_delta.to_bits(), rate.max_second_delta.to_bits())),
+            exact_comptime_integer: self.exact_comptime_integer,
+        }
+    }
+}
+
 struct Collector<'a> {
     programs: &'a BTreeMap<String, TypedProgram>,
     active: BTreeSet<String>,
@@ -82,9 +119,10 @@ impl<'a> Collector<'a> {
 
     fn merge_origins(groups: impl IntoIterator<Item = Vec<Origin>>) -> Vec<Origin> {
         let mut merged = Vec::new();
+        let mut keys = BTreeSet::new();
         for group in groups {
             for origin in group {
-                if !merged.contains(&origin) {
+                if keys.insert(origin.key()) {
                     merged.push(origin);
                 }
             }
@@ -104,11 +142,21 @@ impl<'a> Collector<'a> {
         branches: impl IntoIterator<Item = BTreeMap<String, Vec<Origin>>>,
     ) -> BTreeMap<String, Vec<Origin>> {
         let mut merged = base.clone();
+        let mut keys = base
+            .iter()
+            .map(|(name, origins)| {
+                (
+                    name.clone(),
+                    origins.iter().map(Origin::key).collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         for branch in branches {
             for (name, origins) in branch {
+                let entry_keys = keys.entry(name.clone()).or_default();
                 let entry = merged.entry(name).or_default();
                 for origin in origins {
-                    if !entry.contains(&origin) {
+                    if entry_keys.insert(origin.key()) {
                         entry.push(origin);
                     }
                 }
@@ -494,6 +542,17 @@ impl<'a> Collector<'a> {
                         self.record_origins(argument_origins)?;
                     }
                     return Ok(Vec::new());
+                }
+                if resolved
+                    .as_ref()
+                    .is_some_and(super::is_core_scalar_function)
+                {
+                    let mut origins =
+                        Self::merge_origins(std::iter::once(receiver_origins).chain(origins));
+                    for origin in &mut origins {
+                        origin.unmodified = false;
+                    }
+                    return Ok(origins);
                 }
                 if resolved
                     .as_ref()

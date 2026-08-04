@@ -564,12 +564,13 @@ fn verify_deep() -> Result<(), String> {
 }
 
 pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
-    produce_report_and_image_with_discovery_order(target, false)
+    produce_report_and_image_with_discovery_order(target, false, false)
 }
 
 fn produce_report_and_image_with_discovery_order(
     target: &Path,
     reverse_imports: bool,
+    include_field_graph: bool,
 ) -> Result<(String, Option<Vec<u8>>), String> {
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
@@ -690,6 +691,35 @@ fn produce_report_and_image_with_discovery_order(
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
                     Ok(checked_image) => {
+                        let symbolic_graphs = match wrela_compiler::pixels::compile_all(
+                            &programs,
+                            module,
+                            &graph,
+                            &checked_image.renderer_configs,
+                        ) {
+                            Ok(program_set) => program_set.symbolic_graphs,
+                            Err(error) => {
+                                return Ok((
+                                    render_sema_error(&eval::image_checks::pixels_error(error)),
+                                    None,
+                                ));
+                            }
+                        };
+                        let field_graph = if include_field_graph
+                            && !checked_image.renderer_configs.renderers.is_empty()
+                        {
+                            let compiled = symbolic_graphs
+                                .iter()
+                                .enumerate()
+                                .map(|(index, graph)| (index, graph.clone()))
+                                .collect::<Vec<_>>();
+                            Some(wrela_compiler::pixels::dump_symbolic_graphs(
+                                &compiled,
+                                &checked_image.renderer_configs,
+                            ))
+                        } else {
+                            None
+                        };
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in &file_paths {
                             if path.to_string_lossy()
@@ -724,6 +754,10 @@ fn produce_report_and_image_with_discovery_order(
                             .collect();
                         match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
+                                if let Some(field_graph) = &field_graph {
+                                    text.push_str("\nDeterminism FieldGraph\n");
+                                    text.push_str(field_graph);
+                                }
                                 let mut layout_types = Vec::new();
                                 for (key, module) in &modules_by_addr {
                                     let specialized = sema::specialize::specialize(module)
@@ -829,7 +863,9 @@ fn report_determinism() -> Result<(), String> {
     let golden_dir = root().join("tests/golden");
     let targets: Vec<PathBuf> = golden_case_dirs(&golden_dir)?
         .into_iter()
-        .filter(|c| c.join("expected/report.txt").exists())
+        .filter(|c| {
+            c.join("expected/report.txt").exists() || c.join("expected/field-graph.txt").exists()
+        })
         .collect();
 
     let cursor = std::sync::atomic::AtomicUsize::new(0);
@@ -866,8 +902,10 @@ fn report_determinism() -> Result<(), String> {
                             continue;
                         }
                     };
-                    let first = produce_report_and_image(&target);
-                    let second = produce_report_and_image_with_discovery_order(&target, true);
+                    let first =
+                        produce_report_and_image_with_discovery_order(&target, false, true);
+                    let second =
+                        produce_report_and_image_with_discovery_order(&target, true, true);
                     match (first, second) {
                         (Ok(a), Ok(b)) => {
                             collected
@@ -897,7 +935,7 @@ fn report_determinism() -> Result<(), String> {
 
     if failures.is_empty() {
         println!(
-            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across normal and reversed module discovery"
+            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + field-graph + image where present) across normal and reversed module discovery"
         );
         Ok(())
     } else {
@@ -2120,10 +2158,16 @@ pub(crate) fn build_runtime_test_image(
         None => wrela_compiler::eval::image::ImageGraph::default(),
     };
     let checked_image = if program.image_fn.is_some() {
-        Some(
-            wrela_compiler::eval::image_checks::check_sealed(&graph, program, programs)
-                .map_err(|error| error.message)?,
+        let checked = wrela_compiler::eval::image_checks::check_sealed(&graph, program, programs)
+            .map_err(|error| error.message)?;
+        wrela_compiler::pixels::compile_all(
+            programs,
+            &program.module_path,
+            &graph,
+            &checked.renderer_configs,
         )
+        .map_err(|error| error.diagnostic().message.clone())?;
+        Some(checked)
     } else {
         None
     };

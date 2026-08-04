@@ -1,0 +1,2 @@
+error[pixels P003]: runtime f64 arithmetic and comparison are outside the closed renderer subset at 41:23
+note: renderer call chain: examples.err_pixels_runtime_f64::shade

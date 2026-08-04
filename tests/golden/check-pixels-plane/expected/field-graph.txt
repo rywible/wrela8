@@ -1,10 +1,40 @@
 FieldGraph v1
 Renderers count=1
-  Renderer index=0 params=SceneParams field=world material=shade material_type=MaterialId
-    Compilation status=not-run
-    Display ref=driver#0
-    Mode width=64 height=32 refresh_hz=60 shade_hz=60
-    Profile value=AaaByteExact tone_curve=Linear
-    Depth near=0.1 far=128
-    World min=[-4,-4,-4] max=[4,4,4]
-    Contracts camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1] ao=false probes=false probe_initialization_worst_case_ms=0 initialization_deadline_ms=10
+  Renderer index=0 field=examples.check_pixels_plane::world material=examples.check_pixels_plane::shade params=SceneParams material_type=MaterialId
+    Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
+      World min=[-4,-4,-4] max=[4,4,4]
+      RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+    Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s1 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s2 dependency=coordinate kind=Coord axis=x
+    Scalar id=s3 dependency=coordinate kind=Coord axis=y
+    Scalar id=s4 dependency=coordinate kind=Coord axis=z
+    Scalar id=s5 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s0,s1,s0]
+    Scalar id=s6 dependency=coordinate kind=Add a=s5 b=s0
+    Scalar id=s7 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
+    Scalar id=s8 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s9 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Scalar id=s10 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Field id=f0 scalar=s6 kind=Plane normal=[s0,s1,s0] offset=s0
+    Field id=f1 scalar=s6 kind=Mark child=f0 object=examples.check_pixels_plane::ObjectId::Ground material=examples.check_pixels_plane::MaterialId::Ground
+    Material id=m0 kind=Sample base_color=[s7,s8,s9] opacity=s1 emissive=[s0,s0,s0] roughness=s8 metallic=s0 specular=s8 ior=s10 normal=geometric pattern=none
+    Identity kind=material enum=examples.check_pixels_plane::MaterialId variant=Ground
+    Identity kind=object enum=examples.check_pixels_plane::ObjectId variant=Ground
+    Origin kind=scalar id=s0 primary=examples.check_pixels_plane:45:28@bytes=767..770 expansion=[examples.check_pixels_plane:0:0@bytes=0..0] merged=[examples.check_pixels_plane:45:17@bytes=756..757,examples.check_pixels_plane:45:42@bytes=781..784,examples.check_pixels_plane:45:55@bytes=794..797,examples.check_pixels_plane:50:35@bytes=1009..1010]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_plane:45:35@bytes=774..777 expansion=[examples.check_pixels_plane:0:0@bytes=0..0] merged=[examples.check_pixels_plane:45:17@bytes=756..757,examples.check_pixels_plane:50:35@bytes=1009..1010]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_plane:0:0@bytes=0..0
+    Origin kind=scalar id=s3 primary=examples.check_pixels_plane:0:0@bytes=0..0
+    Origin kind=scalar id=s4 primary=examples.check_pixels_plane:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=examples.check_pixels_plane:45:17@bytes=756..757 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_plane:45:17@bytes=756..757 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_plane:50:48@bytes=1022..1026 expansion=[examples.check_pixels_plane:0:0@bytes=0..0] merged=[examples.check_pixels_plane:50:35@bytes=1009..1010]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_plane:50:56@bytes=1030..1033 expansion=[examples.check_pixels_plane:0:0@bytes=0..0] merged=[examples.check_pixels_plane:50:35@bytes=1009..1010,examples.check_pixels_plane:50:80@bytes=1054..1057]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_plane:50:63@bytes=1037..1041 expansion=[examples.check_pixels_plane:0:0@bytes=0..0] merged=[examples.check_pixels_plane:50:35@bytes=1009..1010]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_plane:50:35@bytes=1009..1010 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_plane:45:17@bytes=756..757 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_plane:46:16@bytes=814..815 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_plane:50:35@bytes=1009..1010 expansion=[examples.check_pixels_plane:0:0@bytes=0..0]
+    Roots field=f1 material=m0
+    SymbolicQuota steps=20/1000000 nodes=22/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
+Analysis status=pending

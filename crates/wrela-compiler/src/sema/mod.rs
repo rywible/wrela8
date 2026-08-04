@@ -525,6 +525,9 @@ fn check_program_typed_tables(
         }
         if let Some(mut c) = const_entry {
             types::rekey_type_names(&mut c, &subs);
+            dst.const_decl_module.insert(local.clone(), origin.clone());
+            dst.const_decl_name
+                .insert(local.clone(), target_name.clone());
             dst.consts.insert(local.clone(), c);
             if let Some(v) = const_val_entry {
                 dst.const_values.insert(local.clone(), v);

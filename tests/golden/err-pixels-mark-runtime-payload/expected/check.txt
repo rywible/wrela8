@@ -28,9 +28,12 @@ Module path=field
   Fn max_scalar(a: read f32, b: read f32) -> f32
   Fn clamp_scalar(x: read f32, lo: read f32, hi: read f32) -> f32
   Fn sqrt_scalar(x: read f32) -> f32
+  Fn rsqrt_scalar(x: read f32) -> f32
   Fn length2(v: read Vec2) -> f32
   Fn length3(v: read Vec3) -> f32
   Fn dot3(a: read Vec3, b: read Vec3) -> f32
+  Fn cross3(a: read Vec3, b: read Vec3) -> Vec3
+  Fn normalize3(v: read Vec3) -> Vec3
   Fn plane(p: read Vec3, normal: read Vec3, offset: read f32) -> Field
   Fn sphere(p: read Vec3, center: read Vec3, radius: read f32) -> Field
   Fn box(p: read Vec3, half: read Vec3) -> Field
@@ -55,8 +58,10 @@ Module path=field
   Fn smooth_subtract(a: read Field, b: read Field, k: read f32) -> Field
   Fn mark[O, M](field: read Field, object: read O, material: read M) -> Field
   Fn sin_scalar(angle: read f32) -> f32
+  Fn cos_scalar(angle: read f32) -> f32
   Fn sinusoidal_displace(field: read Field, p: read Vec3, amplitude: read f32, frequency: read f32, phase: read f32) -> Field
   Fn scalar_length_semantics_cover_large_exact_radius() -> unit
+  Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
 Module path=render
   Struct RenderPath data
     pub field component: u32
