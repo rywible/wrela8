@@ -45,6 +45,10 @@ impl PixelsDiagnostic {
         Self::with_guidance(code, message, primary)
     }
 
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new("internal", message, Span::default())
+    }
+
     fn with_guidance(code: &'static str, message: &str, primary: Span) -> Self {
         let mut lines = message.lines();
         let mut diagnostic = Self::new(code, lines.next().unwrap_or_default(), primary);
@@ -95,6 +99,7 @@ impl PixelsDiagnostic {
             "P023" => "pixels P023",
             "P024" => "pixels P024",
             "P025" => "pixels P025",
+            "internal" => "internal",
             _ => "pixels",
         }
     }
@@ -166,5 +171,19 @@ mod tests {
             ["renderer call chain: world -> warp".to_string()]
         );
         assert_eq!(diagnostic.help.len(), 1);
+    }
+
+    #[test]
+    fn internal_stage_failure_is_not_reclassified_as_p020() {
+        let diagnostic = PixelsDiagnostic::internal(
+            "pixels::support: child budget missing after topological traversal",
+        );
+        assert_eq!(diagnostic.code, "internal");
+        assert_eq!(diagnostic.category(), "internal");
+        assert_eq!(
+            diagnostic.message,
+            "pixels::support: child budget missing after topological traversal"
+        );
+        assert_eq!(diagnostic.primary, Span::default());
     }
 }

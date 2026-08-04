@@ -102,11 +102,12 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
     zero: f32 = 0.0
     dynamic_axis = Vec3(x=params.offset, y=1.0, z=0.0)
     derived_normal = normalize3(cross3(row_z, dynamic_axis))
-    a = plane(repeated, derived_normal, offset=identity(zero))
+    a = plane(rigid, derived_normal, offset=identity(zero))
     b = sphere(repeated, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0)
     c = box(repeated, Vec3(x=1.0, y=1.0, z=1.0))
     d = round_box(repeated, Vec3(x=1.0, y=1.0, z=1.0), radius=0.1)
-    e = capsule(repeated, params.capsule_a, params.capsule_b, radius=0.2)
+    separated_b = params.capsule_b.add(Vec3(x=3.0, y=0.0, z=0.0))
+    e = capsule(repeated, params.capsule_a, separated_b, radius=0.2)
     f = finite_cylinder(repeated, radius=1.0, half_height=1.0)
     g = finite_cone(repeated, radius=1.0, half_height=1.0)
     h = torus(repeated, major_radius=1.0, minor_radius=0.2)
@@ -143,10 +144,10 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
         intersection(union(a, b), union(c, d)),
         union(union(e, f), union(union(i, degenerate), j)),
     )
-    smooth = smooth_subtract(smooth_intersection(smooth_union(hard, g, k=0.1), h, k=0.1), a, k=0.1)
+    smooth = smooth_subtract(smooth_intersection(smooth_union(g, h, k=0.1), g, k=0.1), h, k=0.1)
     scaled = uniform_scale(smooth, scale=2.0)
     displaced = sinusoidal_displace(scaled, rigid, amplitude=0.1, frequency=2.0, phase=0.0)
-    return mark(displaced, object=ObjectId.Scene, material=MaterialId.Surface)
+    return mark(union(hard, displaced), object=ObjectId.Scene, material=MaterialId.Surface)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:

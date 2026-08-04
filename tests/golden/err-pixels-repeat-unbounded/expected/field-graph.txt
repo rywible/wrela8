@@ -1,0 +1,1 @@
+error[pixels P012]: repetition has no finite relevant-instance bound: world=Aabb64 { min: [-64.0, -64.0, -64.0], max: [64.0, 64.0, 64.0] } period=F64Interval { lo: -2.0, hi: 2.0 } at 63:41

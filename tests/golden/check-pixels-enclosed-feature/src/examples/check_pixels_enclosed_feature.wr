@@ -23,7 +23,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 8
-# production Pixels stage is not implemented; implemented in task P3.4
+# P3 structural world bounds discover this feature without sampling.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID

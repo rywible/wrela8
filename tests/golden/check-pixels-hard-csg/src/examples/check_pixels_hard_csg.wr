@@ -9,8 +9,10 @@ from core.field import (
     mark,
     sphere,
     subtract,
+    sinusoidal_displace,
     translate,
     union,
+    uniform_scale,
 )
 from core.render import (
     AoConfig,
@@ -27,7 +29,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 2
-# production Pixels stage is not implemented; implemented in task P3.6
+# P3 partitions these hard operations into explicit occupancy logic.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -48,6 +50,8 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
     left = sphere(p, Vec3(x=-1.0, y=0.0, z=0.0), radius=1.0)
     right = box(translate(p, Vec3(x=1.0, y=0.0, z=0.0)), Vec3(x=1.0, y=1.0, z=1.0))
     shell = subtract(union(left, right), intersection(left, right))
+    shell = uniform_scale(shell, 1.25)
+    shell = sinusoidal_displace(shell, p, amplitude=0.0625, frequency=1.0, phase=0.0)
     return mark(shell, object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material

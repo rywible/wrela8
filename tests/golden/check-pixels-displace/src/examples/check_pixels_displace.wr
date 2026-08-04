@@ -23,7 +23,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 5
-# production Pixels stage is not implemented; implemented in task P3.8
+# P3 derives all deformation bounds from the authored sinusoid.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID

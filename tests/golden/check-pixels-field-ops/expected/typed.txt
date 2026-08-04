@@ -803,6 +803,8 @@ Program
         Float text=6.283185307179586 ty=f32
       Let name=pi ty=f32
         Float text=3.141592653589793 ty=f32
+      Let name=half_pi ty=f32
+        Float text=1.5707963267948966 ty=f32
       Let name=x ty=f32
         Binary op=% ty=f32
           Local name=angle ty=f32
@@ -828,6 +830,28 @@ Program
             Binary op=+ ty=f32
               Local name=x ty=f32
               Local name=two_pi ty=f32
+      If
+        Binary op=> ty=bool
+          Local name=x ty=f32
+          Local name=half_pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=- ty=f32
+              Local name=pi ty=f32
+              Local name=x ty=f32
+      If
+        Binary op=< ty=bool
+          Local name=x ty=f32
+          Neg ty=f32
+            Local name=half_pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=- ty=f32
+              Neg ty=f32
+                Local name=pi ty=f32
+              Local name=x ty=f32
       Let name=x2 ty=f32
         Binary op=* ty=f32
           Local name=x ty=f32
@@ -1609,6 +1633,18 @@ Program
               Local name=safe_color ty=Rgb
             Field name=roughness
               Local name=clamped ty=f32
+    AssocFn name=textured ret=MaterialSample
+      Param name=color mode=read ty=Rgb
+      Param name=roughness mode=read ty=f32
+      Param name=texture_id mode=read ty=u32
+      Param name=width mode=read ty=u32
+      Param name=height mode=read ty=u32
+      Param name=filter mode=read ty=TextureFilter
+      Body
+        Return
+          Call key=MaterialSample.standard ty=MaterialSample
+            Local name=color ty=Rgb
+            Local name=roughness ty=f32
   Struct name=ProbeConfig
     AssocFn name=disabled ret=ProbeConfig
       Body
@@ -1998,7 +2034,7 @@ Program
             Local name=dynamic_axis ty=Vec3
       Let name=a ty=Field
         Call key=plane ty=Field
-          Local name=repeated ty=Vec3
+          Local name=rigid ty=Vec3
           Local name=derived_normal ty=Vec3
           Call key=fn:identity[f32] ty=f32
             Local name=zero ty=f32
@@ -2034,13 +2070,24 @@ Program
             Field name=z
               Float text=1.0 ty=f32
           Float text=0.1 ty=f32
+      Let name=separated_b ty=Vec3
+        Call key=Vec3.add ty=Vec3
+          Receiver
+            Field name=capsule_b ty=Vec3
+              Local name=params ty=SceneParams
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=3.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
       Let name=e ty=Field
         Call key=capsule ty=Field
           Local name=repeated ty=Vec3
           Field name=capsule_a ty=Vec3
             Local name=params ty=SceneParams
-          Field name=capsule_b ty=Vec3
-            Local name=params ty=SceneParams
+          Local name=separated_b ty=Vec3
           Float text=0.2 ty=f32
       Let name=f ty=Field
         Call key=finite_cylinder ty=Field
@@ -2207,12 +2254,12 @@ Program
         Call key=smooth_subtract ty=Field
           Call key=smooth_intersection ty=Field
             Call key=smooth_union ty=Field
-              Local name=hard ty=Field
               Local name=g ty=Field
+              Local name=h ty=Field
               Float text=0.1 ty=f32
-            Local name=h ty=Field
+            Local name=g ty=Field
             Float text=0.1 ty=f32
-          Local name=a ty=Field
+          Local name=h ty=Field
           Float text=0.1 ty=f32
       Let name=scaled ty=Field
         Call key=uniform_scale ty=Field
@@ -2227,7 +2274,9 @@ Program
           Float text=0.0 ty=f32
       Return
         Call key=fn:mark[ObjectId, MaterialId] ty=Field
-          Local name=displaced ty=Field
+          Call key=union ty=Field
+            Local name=hard ty=Field
+            Local name=displaced ty=Field
           EnumConstruct enum=ObjectId variant=Scene ty=ObjectId
           EnumConstruct enum=MaterialId variant=Surface ty=MaterialId
   Struct name=RadiusSpec

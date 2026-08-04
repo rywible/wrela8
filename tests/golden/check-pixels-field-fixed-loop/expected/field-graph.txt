@@ -8,7 +8,7 @@ Renderers count=1
     Param id=p0 path=Params.motions[0].radius indexes=[1,0,0] component=scalar ty=f32 range=[0.25,2]
     Param id=p1 path=Params.motions[1].radius indexes=[1,1,0] component=scalar ty=f32 range=[0.25,2]
     Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
-    Scalar id=s1 dependency=parameter kind=Param param=p1
+    Scalar id=s1 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
     Scalar id=s2 dependency=coordinate kind=Coord axis=x
     Scalar id=s3 dependency=coordinate kind=Sub a=s2 b=s0
     Scalar id=s4 dependency=coordinate kind=Coord axis=y
@@ -16,49 +16,227 @@ Renderers count=1
     Scalar id=s6 dependency=coordinate kind=Coord axis=z
     Scalar id=s7 dependency=coordinate kind=Sub a=s6 b=s0
     Scalar id=s8 dependency=coordinate kind=Length3 value=[s3,s5,s7]
-    Scalar id=s9 dependency=coordinate+parameter kind=Sub a=s8 b=s1
-    Scalar id=s10 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
-    Scalar id=s11 dependency=coordinate kind=Sub a=s8 b=s10
-    Scalar id=s12 dependency=parameter kind=Param param=p0
-    Scalar id=s13 dependency=coordinate+parameter kind=Sub a=s8 b=s12
-    Scalar id=s14 dependency=coordinate+parameter kind=Min a=s11 b=s13
-    Scalar id=s15 dependency=coordinate+parameter kind=Min a=s14 b=s9
-    Scalar id=s16 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
-    Scalar id=s17 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s9 dependency=coordinate kind=Sub a=s8 b=s1
+    Scalar id=s10 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s11 dependency=parameter kind=Param param=p0
+    Scalar id=s12 dependency=parameter kind=Mul a=s1 b=s11
+    Scalar id=s13 dependency=coordinate+parameter kind=Sub a=s2 b=s12
+    Scalar id=s14 dependency=coordinate+parameter kind=Abs value=s13
+    Scalar id=s15 dependency=parameter kind=Mul a=s0 b=s11
+    Scalar id=s16 dependency=coordinate+parameter kind=Sub a=s2 b=s15
+    Scalar id=s17 dependency=coordinate+parameter kind=Abs value=s16
+    Scalar id=s18 dependency=coordinate+parameter kind=Compare op=Lt a=s14 b=s17
+    Scalar id=s19 dependency=coordinate+parameter kind=Select predicate=s18 a=s13 b=s16
+    Scalar id=s20 dependency=coordinate+parameter kind=Sub a=s19 b=s0
+    Scalar id=s21 dependency=coordinate+parameter kind=Length3 value=[s20,s5,s7]
+    Scalar id=s22 dependency=coordinate+parameter kind=Sub a=s21 b=s10
+    Scalar id=s23 dependency=coordinate+parameter kind=Min a=s9 b=s22
+    Scalar id=s24 dependency=parameter kind=Param param=p1
+    Scalar id=s25 dependency=parameter kind=Mul a=s1 b=s24
+    Scalar id=s26 dependency=coordinate+parameter kind=Sub a=s2 b=s25
+    Scalar id=s27 dependency=coordinate+parameter kind=Abs value=s26
+    Scalar id=s28 dependency=parameter kind=Mul a=s0 b=s24
+    Scalar id=s29 dependency=coordinate+parameter kind=Sub a=s2 b=s28
+    Scalar id=s30 dependency=coordinate+parameter kind=Abs value=s29
+    Scalar id=s31 dependency=coordinate+parameter kind=Compare op=Lt a=s27 b=s30
+    Scalar id=s32 dependency=coordinate+parameter kind=Select predicate=s31 a=s26 b=s29
+    Scalar id=s33 dependency=coordinate+parameter kind=Sub a=s32 b=s0
+    Scalar id=s34 dependency=coordinate+parameter kind=Length3 value=[s33,s5,s7]
+    Scalar id=s35 dependency=coordinate+parameter kind=Sub a=s34 b=s10
+    Scalar id=s36 dependency=coordinate+parameter kind=Min a=s23 b=s35
+    Scalar id=s37 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s38 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
     Field id=f0 scalar=s9 kind=Sphere center=[s0,s0,s0] radius=s1
-    Field id=f1 scalar=s11 kind=Sphere center=[s0,s0,s0] radius=s10
-    Field id=f2 scalar=s13 kind=Sphere center=[s0,s0,s0] radius=s12
-    Field id=f3 scalar=s14 kind=HardUnion a=f1 b=f2
-    Field id=f4 scalar=s15 kind=HardUnion a=f0 b=f3
-    Field id=f5 scalar=s15 kind=Mark child=f4 object=examples.check_pixels_field_fixed_loop::ObjectId::Scene material=examples.check_pixels_field_fixed_loop::MaterialId::Surface
-    Material id=m0 kind=Sample base_color=[s0,s0,s0] opacity=s10 emissive=[s0,s0,s0] roughness=s16 metallic=s0 specular=s16 ior=s17 normal=geometric pattern=none
+    Field id=f1 scalar=s22 kind=Sphere center=[s0,s0,s0] radius=s10
+    Field id=f2 scalar=s22 kind=FiniteRepeat child=f1 axis=X first=0 count=2 period=s11
+    Field id=f3 scalar=s23 kind=HardUnion a=f0 b=f2
+    Field id=f4 scalar=s35 kind=Sphere center=[s0,s0,s0] radius=s10
+    Field id=f5 scalar=s35 kind=FiniteRepeat child=f4 axis=X first=0 count=2 period=s24
+    Field id=f6 scalar=s36 kind=HardUnion a=f3 b=f5
+    Field id=f7 scalar=s36 kind=Mark child=f6 object=examples.check_pixels_field_fixed_loop::ObjectId::Scene material=examples.check_pixels_field_fixed_loop::MaterialId::Surface
+    Material id=m0 kind=Sample base_color=[s0,s0,s0] opacity=s1 emissive=[s0,s0,s0] roughness=s37 metallic=s0 specular=s37 ior=s38 normal=geometric pattern=none
     Identity kind=material enum=examples.check_pixels_field_fixed_loop::MaterialId variant=Surface
     Identity kind=object enum=examples.check_pixels_field_fixed_loop::ObjectId variant=Scene
-    Origin kind=scalar id=s0 primary=examples.check_pixels_field_fixed_loop:27:31@bytes=616..619 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=605..606,examples.check_pixels_field_fixed_loop:27:38@bytes=623..626,examples.check_pixels_field_fixed_loop:27:45@bytes=630..633,examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:30:35@bytes=744..747,examples.check_pixels_field_fixed_loop:30:42@bytes=751..754,examples.check_pixels_field_fixed_loop:30:49@bytes=758..761,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950,examples.check_pixels_field_fixed_loop:36:30@bytes=960..963,examples.check_pixels_field_fixed_loop:36:37@bytes=967..970,examples.check_pixels_field_fixed_loop:36:44@bytes=974..977,examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224,examples.check_pixels_field_fixed_loop:42:48@bytes=1236..1239,examples.check_pixels_field_fixed_loop:42:55@bytes=1243..1246,examples.check_pixels_field_fixed_loop:42:62@bytes=1250..1253]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s0 primary=examples.check_pixels_field_fixed_loop:27:31@bytes=633..636 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=622..623,examples.check_pixels_field_fixed_loop:27:38@bytes=640..643,examples.check_pixels_field_fixed_loop:27:45@bytes=647..650,examples.check_pixels_field_fixed_loop:30:24@bytes=750..751,examples.check_pixels_field_fixed_loop:30:35@bytes=761..764,examples.check_pixels_field_fixed_loop:30:42@bytes=768..771,examples.check_pixels_field_fixed_loop:30:49@bytes=775..778,examples.check_pixels_field_fixed_loop:36:19@bytes=966..967,examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000,examples.check_pixels_field_fixed_loop:38:24@bytes=1070..1073,examples.check_pixels_field_fixed_loop:38:31@bytes=1077..1080,examples.check_pixels_field_fixed_loop:38:38@bytes=1084..1087,examples.check_pixels_field_fixed_loop:46:35@bytes=1352..1353,examples.check_pixels_field_fixed_loop:46:48@bytes=1365..1368,examples.check_pixels_field_fixed_loop:46:55@bytes=1372..1375,examples.check_pixels_field_fixed_loop:46:62@bytes=1379..1382]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_field_fixed_loop:26:24@bytes=599..602 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=622..623,examples.check_pixels_field_fixed_loop:30:24@bytes=750..751,examples.check_pixels_field_fixed_loop:36:19@bytes=966..967,examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000,examples.check_pixels_field_fixed_loop:46:35@bytes=1352..1353]
     Origin kind=scalar id=s2 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
-    Origin kind=scalar id=s3 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751]
     Origin kind=scalar id=s4 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
-    Origin kind=scalar id=s5 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
+    Origin kind=scalar id=s5 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751,examples.check_pixels_field_fixed_loop:36:19@bytes=966..967]
     Origin kind=scalar id=s6 primary=examples.check_pixels_field_fixed_loop:0:0@bytes=0..0
-    Origin kind=scalar id=s7 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
-    Origin kind=scalar id=s8 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950]
-    Origin kind=scalar id=s9 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_field_fixed_loop:26:24@bytes=582..585 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:27:20@bytes=605..606,examples.check_pixels_field_fixed_loop:30:24@bytes=733..734,examples.check_pixels_field_fixed_loop:36:19@bytes=949..950,examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734]
-    Origin kind=scalar id=s12 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=scalar id=s13 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=scalar id=s14 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=scalar id=s15 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=scalar id=s16 primary=examples.check_pixels_field_fixed_loop:42:78@bytes=1266..1269 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224]
-    Origin kind=scalar id=s17 primary=examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=605..606 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=733..734]
-    Origin kind=field id=f2 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=949..950 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=field id=f3 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=field id=f4 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=909..910 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=field id=f5 primary=examples.check_pixels_field_fixed_loop:38:16@bytes=1031..1032 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_field_fixed_loop:42:35@bytes=1223..1224 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
-    Roots field=f5 material=m0
-    SymbolicQuota steps=63/1000000 nodes=33/250000 unrolled_statements=2/250000 aggregate_elements=15/250000 call_depth=1/128
-Analysis status=pending
+    Origin kind=scalar id=s7 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751,examples.check_pixels_field_fixed_loop:36:19@bytes=966..967]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_field_fixed_loop:39:24@bytes=1113..1118 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s16 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s18 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s20 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s21 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s22 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s23 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=926..927 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s24 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s25 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s26 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s27 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s28 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s29 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s30 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s31 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s32 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s33 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s34 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s35 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s36 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=926..927 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=scalar id=s37 primary=examples.check_pixels_field_fixed_loop:46:78@bytes=1395..1398 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:46:35@bytes=1352..1353]
+    Origin kind=scalar id=s38 primary=examples.check_pixels_field_fixed_loop:46:35@bytes=1352..1353 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_field_fixed_loop:27:20@bytes=622..623 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0] merged=[examples.check_pixels_field_fixed_loop:30:24@bytes=750..751]
+    Origin kind=field id=f1 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f2 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=926..927 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f4 primary=examples.check_pixels_field_fixed_loop:36:19@bytes=966..967 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f5 primary=examples.check_pixels_field_fixed_loop:37:32@bytes=999..1000 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f6 primary=examples.check_pixels_field_fixed_loop:34:23@bytes=926..927 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=field id=f7 primary=examples.check_pixels_field_fixed_loop:42:16@bytes=1160..1161 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_field_fixed_loop:46:35@bytes=1352..1353 expansion=[examples.check_pixels_field_fixed_loop:0:0@bytes=0..0]
+    Roots field=f7 material=m0
+    SymbolicQuota steps=71/1000000 nodes=56/250000 unrolled_statements=2/250000 aggregate_elements=15/250000 call_depth=1/128
+  StructuralRenderer index=0 field_key=examples.check_pixels_field_fixed_loop::world material_key=examples.check_pixels_field_fixed_loop::shade
+    ParameterLayout slots=2 packed_bytes=8 dependency_schema=a8cf2bf72c1fa6663036605623df21798022a254fe6cfd8fd9f7bbeb8f8f2c87
+      FrameDependencies runtime_bytes=72 camera_contract=[0.1, 10.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 0.0] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[0.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
+        FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
+        FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
+        FrameInput path=frame.camera.right use=Camera type=F32 count=3 offset=24 runtime=true
+        FrameInput path=frame.camera.up use=Camera type=F32 count=3 offset=36 runtime=true
+        FrameInput path=frame.lights[*].coefficients use=Light type=F32 count=0 offset=48 runtime=true
+        FrameInput path=frame.exposure use=Exposure type=F32 count=1 offset=48 runtime=true
+        FrameInput path=frame.environment use=Light type=F32 count=3 offset=52 runtime=true
+        FrameInput path=frame.frame_index use=Probe type=U64 count=1 offset=64 runtime=true
+        FrameInput path=sealed.tone_curve_id use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.ao_version use=Post type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.probe_version use=Probe type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.output_mode use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.frame_phase use=Post type=U64 count=1 offset=0 runtime=false
+      Slot id=p0 path=[1,0,0] component=scalar type=F32 range=[0.25,2] rate=none immutable=false uses=[Geometry] offset=0
+      Slot id=p1 path=[1,1,0] component=scalar type=F32 range=[0.25,2] rate=none immutable=false uses=[Geometry] offset=4
+    ScalarProof id=s0 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s1 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s2 value=[-1,1] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s3 value=[-1,1] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s4 value=[-1,1] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s5 value=[-1,1] value_rule=sub-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s6 value=[-1,1] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s7 value=[-1,1] value_rule=sub-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s8 value=[0,1.732050895690918] value_rule=length3 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+    ScalarProof id=s9 value=[-1,0.732050895690918] value_rule=sub-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-one-lipschitz-primitive
+    ScalarProof id=s10 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s11 value=[0.25,2] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s12 value=[0.25,2] value_rule=mul-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s13 value=[-3,0.75] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s14 value=[0,3] value_rule=abs-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s15 value=[0,0] value_rule=mul-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=0
+    ScalarProof id=s16 value=[-1,1] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=0
+    ScalarProof id=s17 value=[0,1] value_rule=abs-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+      ParameterDerivative param=p0 upper=0
+    ScalarProof id=s18 value=[0,1] value_rule=compare world_derivative=[2,0,0] gradient_norm=2 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s19 value=[-3,1] value_rule=select-union world_derivative=[4,0,0] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=select-union
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s20 value=[-3,1] value_rule=sub-f32 world_derivative=[4,0,0] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s21 value=[0,3.316624641418457] value_rule=length3 world_derivative=[4,1,1] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s22 value=[-0.125,3.191624641418457] value_rule=sub-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s23 value=[-1,0.732050895690918] value_rule=min-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-hard-branch-max
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s24 value=[0.25,2] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
+      ParameterDerivative param=p1 upper=1
+    ScalarProof id=s25 value=[0.25,2] value_rule=mul-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p1 upper=1
+    ScalarProof id=s26 value=[-3,0.75] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p1 upper=1
+    ScalarProof id=s27 value=[0,3] value_rule=abs-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+      ParameterDerivative param=p1 upper=1
+    ScalarProof id=s28 value=[0,0] value_rule=mul-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p1 upper=0
+    ScalarProof id=s29 value=[-1,1] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p1 upper=0
+    ScalarProof id=s30 value=[0,1] value_rule=abs-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+      ParameterDerivative param=p1 upper=0
+    ScalarProof id=s31 value=[0,1] value_rule=compare world_derivative=[2,0,0] gradient_norm=2 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
+      ParameterDerivative param=p1 upper=1
+    ScalarProof id=s32 value=[-3,1] value_rule=select-union world_derivative=[4,0,0] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=select-union
+      ParameterDerivative param=p1 upper=2
+    ScalarProof id=s33 value=[-3,1] value_rule=sub-f32 world_derivative=[4,0,0] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=additive-chain
+      ParameterDerivative param=p1 upper=2
+    ScalarProof id=s34 value=[0,3.316624641418457] value_rule=length3 world_derivative=[4,1,1] gradient_norm=4 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+      ParameterDerivative param=p1 upper=2
+    ScalarProof id=s35 value=[-0.125,3.191624641418457] value_rule=sub-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+      ParameterDerivative param=p1 upper=2
+    ScalarProof id=s36 value=[-1,0.732050895690918] value_rule=min-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=unbounded-rate frame_second_delta=unbounded-rate hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+      ParameterDerivative param=p0 upper=2
+      ParameterDerivative param=p1 upper=2
+    ScalarProof id=s37 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s38 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    WorldBound field=f0 bounds=[-1.000015258789063,-1.000015258789063,-1.000015258789063]-[1.000015258789063,1.000015258789063,1.000015258789063] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f1 bounds=[-0.12501525878906256,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906256,0.12501525878906256,0.12501525878906256] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f2 bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[2.125015258789063,0.12501525878906256,0.12501525878906256] rule=finite-repeat-enumeration contributors=[first=0 count=2 period=F64Interval { lo: 0.25, hi: 2.0 }] pruned=none
+    WorldBound field=f3 bounds=[-1.000015258789063,-1.000015258789063,-1.000015258789063]-[2.125015258789063,1.000015258789063,1.000015258789063] rule=hard-union contributors=[left=Some(Aabb64 { min: [-1.000015258789063, -1.000015258789063, -1.000015258789063], max: [1.000015258789063, 1.000015258789063, 1.000015258789063] }),right=Some(Aabb64 { min: [-0.12501525878906258, -0.12501525878906256, -0.12501525878906256], max: [2.125015258789063, 0.12501525878906256, 0.12501525878906256] })] pruned=none
+    WorldBound field=f4 bounds=[-0.12501525878906256,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906256,0.12501525878906256,0.12501525878906256] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f5 bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[2.125015258789063,0.12501525878906256,0.12501525878906256] rule=finite-repeat-enumeration contributors=[first=0 count=2 period=F64Interval { lo: 0.25, hi: 2.0 }] pruned=none
+    WorldBound field=f6 bounds=[-1.000015258789063,-1.000015258789063,-1.000015258789063]-[2.125015258789063,1.000015258789063,1.000015258789063] rule=hard-union contributors=[left=Some(Aabb64 { min: [-1.000015258789063, -1.000015258789063, -1.000015258789063], max: [2.125015258789063, 1.000015258789063, 1.000015258789063] }),right=Some(Aabb64 { min: [-0.12501525878906258, -0.12501525878906256, -0.12501525878906256], max: [2.125015258789063, 0.12501525878906256, 0.12501525878906256] })] pruned=none
+    WorldBound field=f7 bounds=[-1.000015258789063,-1.000015258789063,-1.000015258789063]-[2.125015258789063,1.000015258789063,1.000015258789063] rule=identity-mark contributors=[f6] pruned=none
+    Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f1 max=[0,0] leaves=f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f1]
+    Support field=f2 max=[0,0] leaves=f1@0>f2@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f1]
+    Support field=f3 max=[0,0] leaves=f0@0>f3@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f1@0>f2@0>f3@1:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f4 max=[0,0] leaves=f4@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f4]
+    Support field=f5 max=[0,0] leaves=f4@0>f5@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f4]
+    Support field=f6 max=[0,0] leaves=f0@0>f3@0>f6@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f1@0>f2@0>f3@1>f6@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f4@0>f5@0>f6@1:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f7 max=[0,0] leaves=f0@0>f3@0>f6@0>f7@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f1@0>f2@0>f3@1>f6@0>f7@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f4@0>f5@0>f6@1>f7@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    IdentitySet id=0 pairs=[examples.check_pixels_field_fixed_loop::ObjectId::Scene=>examples.check_pixels_field_fixed_loop::MaterialId::Surface]
+    SmoothObject id=o0 root=f0 scalar=s9 bounds=[-1,-1,-1]-[1,1,1] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
+    SmoothObject id=o1 root=f2 scalar=s22 bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906258,0.12501525878906256,0.12501525878906256] leaves=[f1@0>f2@0] support=[0,0] identity_set=0 repeats=[f2[f2]:X:0:[0.25,2]]
+    SmoothObject id=o2 root=f2 scalar=s22 bounds=[0.12498474121093743,-0.12501525878906256,-0.12501525878906256]-[1,0.12501525878906256,0.12501525878906256] leaves=[f1@0>f2@0] support=[0,0] identity_set=0 repeats=[f2[f2]:X:1:[0.25,2]]
+    SmoothObject id=o3 root=f5 scalar=s35 bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906258,0.12501525878906256,0.12501525878906256] leaves=[f4@0>f5@0] support=[0,0] identity_set=0 repeats=[f5[f5]:X:0:[0.25,2]]
+    SmoothObject id=o4 root=f5 scalar=s35 bounds=[0.12498474121093743,-0.12501525878906256,-0.12501525878906256]-[1,0.12501525878906256,0.12501525878906256] leaves=[f4@0>f5@0] support=[0,0] identity_set=0 repeats=[f5[f5]:X:1:[0.25,2]]
+    Csg constant=none instructions=[Push(ObjectId(0)),Push(ObjectId(1)),Push(ObjectId(2)),Or,Or,Push(ObjectId(3)),Push(ObjectId(4)),Or,Or] max_stack=3
+      Influence object=o0 false=constant:None:stack:3:instructions:[Push(ObjectId(1)),Push(ObjectId(2)),Or,Push(ObjectId(3)),Push(ObjectId(4)),Or,Or]:digest:e678255bca5363d063f76a7c5cc6c529548433da1695dc9fc5a3d0e4733c20ec true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+      Influence object=o1 false=constant:None:stack:3:instructions:[Push(ObjectId(0)),Push(ObjectId(2)),Or,Push(ObjectId(3)),Push(ObjectId(4)),Or,Or]:digest:88ebbef084069a554a87f0644aab0f6503bf7165626ba20e2153f07c9fd641db true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+      Influence object=o2 false=constant:None:stack:3:instructions:[Push(ObjectId(0)),Push(ObjectId(1)),Or,Push(ObjectId(3)),Push(ObjectId(4)),Or,Or]:digest:557842f56bc8af0dbce79fac7d7b68de0fea14b6f06b122a3fac2be3e1bfaaad true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+      Influence object=o3 false=constant:None:stack:3:instructions:[Push(ObjectId(0)),Push(ObjectId(1)),Push(ObjectId(2)),Or,Or,Push(ObjectId(4)),Or]:digest:c1572676d69344eb7fb852c5dccf768446dfe4b8a31ca1e56beb83710dded25b true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+      Influence object=o4 false=constant:None:stack:3:instructions:[Push(ObjectId(0)),Push(ObjectId(1)),Push(ObjectId(2)),Or,Or,Push(ObjectId(3)),Or]:digest:5535f97bfd06da00d3d04e0c5aa6fe77ea723c435a5501a31acc03a967176ba7 true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+    Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Quadric bounds=[-1,-1,-1]-[1,1,1] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(1) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
+    Feature id=g1 template=1 object=o1 primitive=f1 path=[f1@0>f2@0] kind=Quadric bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906258,0.12501525878906256,0.12501525878906256] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(10) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f2
+    Feature id=g2 template=1 object=o2 primitive=f1 path=[f1@0>f2@0] kind=Quadric bounds=[0.12498474121093743,-0.12501525878906256,-0.12501525878906256]-[1,0.12501525878906256,0.12501525878906256] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(10) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f2
+    Feature id=g3 template=2 object=o3 primitive=f4 path=[f4@0>f5@0] kind=Quadric bounds=[-0.12501525878906258,-0.12501525878906256,-0.12501525878906256]-[0.12501525878906258,0.12501525878906256,0.12501525878906256] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(10) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f5
+    Feature id=g4 template=2 object=o4 primitive=f4 path=[f4@0>f5@0] kind=Quadric bounds=[0.12498474121093743,-0.12501525878906256,-0.12501525878906256]-[1,0.12501525878906256,0.12501525878906256] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(10) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f5
+    RepeatTemplate object=o1 root=f2 instances=2 translations=2 wrap_events=1 fixed_instance=true
+      RepeatInstance object=o1 translations=[f2:X:0:period=[0.25,2]:offset=[0,0]]
+      RepeatInstance object=o2 translations=[f2:X:1:period=[0.25,2]:offset=[0.25,2]]
+      WrapEvent field=f2 axis=X cells=0..1 boundary=[0.12499999999999997,1.0000000000000004]
+    RepeatTemplate object=o3 root=f5 instances=2 translations=2 wrap_events=1 fixed_instance=true
+      RepeatInstance object=o3 translations=[f5:X:0:period=[0.25,2]:offset=[0,0]]
+      RepeatInstance object=o4 translations=[f5:X:1:period=[0.25,2]:offset=[0.25,2]]
+      WrapEvent field=f5 axis=X cells=0..1 boundary=[0.12499999999999997,1.0000000000000004]
+    Capacities workers=1 objects=5 feature_templates=3 feature_slots=5 repeated_instances=4 scalar_slots=39 derivative_slots=39 parameter_slots=2 csg_stack=3 projected_row=5 projected_tile=5 row_start_roots=10 active_sheets=10 event_generators=7 event_subdivisions=8 event_records=56 tile_row_runs=57 csg_events=10 transparent_layers=1 rebuild_queue=57 candidate_bytes=320 root_bytes=320 sheet_bytes=640 event_bytes=1792 run_bytes=1824 corridor_bytes=1368 fixed_q_bytes=912 shading_bytes=3648 transparency_bytes=1824 per_worker_scratch_bytes=12648 all_worker_scratch_bytes=12648 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=640 state_header_bytes=256 coefficient_snapshot_bytes=16 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=234952 instrumented_state_bytes=235336
+      CapacityDerivation field=feature_count value=5 why=[5 maximal smooth objects; 3 immutable fused primitive feature templates; 5 total feature slots after instantiating those templates across 5 objects; 2 repeat template records]
+      CapacityDerivation field=max_projected_features_per_row value=5 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
+      CapacityDerivation field=max_run_records_per_tile_row value=57 why=[7 generators; 5 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 2 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run]
+      CapacityDerivation field=renderer_state_bytes value=234952 why=[header=256; coefficient_snapshots=16; frame_snapshots=144; frame_complexes=131072; scratch=12648 (12648 * 1 workers); output=16384; probes=0; kinetic=640; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=235336 why=[production=234952; telemetry=384]
+    StructuralReport coefficient_bytes=8 objects=5 features=5 production_state_bytes=234952 instrumented_state_bytes=235336 dependency_schema=a8cf2bf72c1fa6663036605623df21798022a254fe6cfd8fd9f7bbeb8f8f2c87
+Analysis status=verified-structural

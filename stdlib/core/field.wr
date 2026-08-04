@@ -222,11 +222,16 @@ pub fn sin_scalar(angle: f32) -> f32:
     # but this body remains the source-level scalar meaning.
     two_pi: f32 = 6.283185307179586
     pi: f32 = 3.141592653589793
+    half_pi: f32 = 1.5707963267948966
     x = angle % two_pi
     if x > pi:
         x = x - two_pi
     if x < -pi:
         x = x + two_pi
+    if x > half_pi:
+        x = pi - x
+    if x < -half_pi:
+        x = -pi - x
     x2 = x * x
     c3: f32 = -0.16666666666666666
     c5: f32 = 0.008333333333333333

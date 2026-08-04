@@ -199,6 +199,22 @@ struct Checker<'a> {
     last_span: Span,
 }
 
+fn rotation_rows_are_orthonormal(rows: &[[f64; 3]; 3]) -> bool {
+    const ORTHONORMAL_TOLERANCE: f64 = f32::EPSILON as f64 * 8.0;
+    let dot = |left: &[f64; 3], right: &[f64; 3]| {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| left * right)
+            .sum::<f64>()
+    };
+    rows.iter()
+        .all(|row| (dot(row, row) - 1.0).abs() <= ORTHONORMAL_TOLERANCE)
+        && (0..3).all(|left| {
+            ((left + 1)..3)
+                .all(|right| dot(&rows[left], &rows[right]).abs() <= ORTHONORMAL_TOLERANCE)
+        })
+}
+
 #[derive(Default)]
 struct DirectCallCollector {
     calls: BTreeSet<String>,
@@ -479,18 +495,46 @@ impl<'a> Checker<'a> {
                 "P004: field operation `{name}` coordinate input must be derived from the renderer coordinate",
             )));
         }
+        let coefficient_indices: &[usize] = match name {
+            "plane" => &[1, 2],
+            "sphere" => &[1, 2],
+            "box" => &[1],
+            "round_box" => &[1, 2],
+            "capsule" => &[1, 2, 3],
+            "finite_cylinder" | "finite_cone" | "torus" => &[1, 2],
+            "translate" => &[1],
+            "rotate" => &[1, 2, 3],
+            "rigid_transform" => &[1, 2, 3, 4],
+            "finite_repeat_x" | "finite_repeat_y" | "finite_repeat_z" => &[1, 2, 3],
+            "uniform_scale" => &[1],
+            "smooth_union" | "smooth_intersection" | "smooth_subtract" => &[2],
+            "sinusoidal_displace" => &[2, 3, 4],
+            _ => &[],
+        };
+        for index in coefficient_indices {
+            if arg_dependencies
+                .get(*index)
+                .is_some_and(|dependency| dependency.has_coordinate())
+            {
+                return Err(self.reject(format!(
+                    "P004: field operation `{name}` coefficient argument {} may depend on renderer parameters but not on the renderer coordinate",
+                    index + 1,
+                )));
+            }
+        }
         if matches!(name, "rotate" | "rigid_transform") {
             let row_start = if name == "rotate" { 1 } else { 2 };
             let mut rows = [[0.0; 3]; 3];
+            let mut all_constant = true;
             for (row, argument) in rows.iter_mut().zip(&args[row_start..]) {
                 let Some(value) = argument.value.as_ref() else {
                     return Err(self.reject(format!(
-                        "P004: field operation `{name}` requires a compile-time rigid rotation"
+                        "P004: field operation `{name}` requires explicit `Vec3` rotation rows"
                     )));
                 };
                 let TypedExprKind::StructLiteral { fields, .. } = &value.kind else {
                     return Err(self.reject(format!(
-                        "P004: field operation `{name}` requires compile-time `Vec3` rotation rows"
+                        "P004: field operation `{name}` requires `Vec3` rotation rows"
                     )));
                 };
                 if !self.is_nominal_type(module, &value.ty, "Vec3", &["field", "core.field"])
@@ -501,36 +545,29 @@ impl<'a> Checker<'a> {
                     )));
                 }
                 for (component, (_, value)) in row.iter_mut().zip(fields) {
-                    *component = self.constant_number(module, value).ok_or_else(|| {
-                        self.reject(format!(
-                            "P004: field operation `{name}` rotation rows may not depend on renderer parameters"
-                        ))
-                    })?;
+                    if let Some(constant) = self.constant_number(module, value) {
+                        *component = constant;
+                    } else {
+                        all_constant = false;
+                    }
                 }
             }
-            // Rotation coefficients are f32 source values evaluated as f64 by
-            // the checker. Permit only the accumulated rounding error of the
-            // three f32 products in each dot product; a wider geometric
-            // tolerance would admit actual nonuniform scale.
-            const ORTHONORMAL_TOLERANCE: f64 = f32::EPSILON as f64 * 8.0;
-            let dot = |left: &[f64; 3], right: &[f64; 3]| {
-                left.iter()
-                    .zip(right)
-                    .map(|(left, right)| left * right)
-                    .sum::<f64>()
-            };
-            let orthonormal = rows
-                .iter()
-                .all(|row| (dot(row, row) - 1.0).abs() <= ORTHONORMAL_TOLERANCE)
-                && (0..3).all(|left| {
-                    ((left + 1)..3)
-                        .all(|right| dot(&rows[left], &rows[right]).abs() <= ORTHONORMAL_TOLERANCE)
-                });
-            if !orthonormal {
+            if !all_constant {
                 return Err(self.reject(format!(
-                    "P004: field operation `{name}` rotation rows are not orthonormal \
-                     within f32 roundoff"
+                    "P004: field operation `{name}` rotation rows must be compiler-proven rigid; \
+                     arbitrary parameterized matrix coefficients are not a rotation"
                 )));
+            } else {
+                // Rotation coefficients are f32 source values evaluated as
+                // f64 by the checker. Nonsingularity alone is insufficient:
+                // accepting a parameterized shear here would invalidate every
+                // downstream rigid-transform derivative contract.
+                if !rotation_rows_are_orthonormal(&rows) {
+                    return Err(self.reject(format!(
+                        "P004: field operation `{name}` rotation rows are not orthonormal \
+                         within f32 roundoff"
+                    )));
+                }
             }
         }
         if name == "mark" {
@@ -1450,6 +1487,20 @@ mod tests {
     }
 
     #[test]
+    fn rigid_rotation_validation_rejects_shear_rows() {
+        assert!(rotation_rows_are_orthonormal(&[
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]));
+        assert!(!rotation_rows_are_orthonormal(&[
+            [1.0, 0.01, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]));
+    }
+
+    #[test]
     fn constant_number_evaluates_arithmetic() {
         let literal = |text: &str| TypedExpr {
             ty: Type::F32,
@@ -1949,5 +2000,30 @@ mod tests {
         );
         assert_eq!(checker.last_span.line, 9);
         assert_eq!(checker.last_span.col, 8);
+    }
+
+    #[test]
+    fn coordinate_dependent_primitive_coefficients_fail_before_symbolic_lowering() {
+        let programs = BTreeMap::new();
+        let checker = Checker {
+            programs: &programs,
+            active: vec!["scene::world".to_string()],
+            kind: PixelsFnKind::Field,
+            last_span: Span::default(),
+        };
+        let error = checker
+            .validate_field_call(
+                "scene",
+                "sphere",
+                &[],
+                &[
+                    Dependency::Coordinate,
+                    Dependency::Comptime,
+                    Dependency::CoordinateAndParameter,
+                ],
+            )
+            .unwrap_err();
+        assert!(error.contains("coefficient argument 3"), "{error}");
+        assert!(error.contains("not on the renderer coordinate"), "{error}");
     }
 }

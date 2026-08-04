@@ -15,29 +15,95 @@ use crate::sema::typed::{
 use crate::sema::types::{self, Type, TypeArg};
 
 pub mod arena;
+pub mod bounds;
 pub mod canonicalize;
+pub mod capacities;
 pub mod config;
+pub mod csg;
+pub mod deform;
+pub mod derivative_bounds;
 pub mod diagnostics;
 pub mod dump;
+pub mod features;
 pub mod field_intrinsics;
 pub mod graph;
 pub mod ids;
 pub mod legality;
+pub mod material;
 pub mod material_graph;
 pub mod material_intrinsics;
+pub mod objects;
 pub mod params;
+pub mod primitive;
 pub mod quota;
+pub mod reference;
+pub mod repeat;
+pub mod report;
 pub mod scalar;
+pub mod support;
 pub mod symbolic;
+pub mod verify;
+pub mod world_bounds;
 
 pub use dump::{
-    PixelsDumpStage, dump_frame_program, dump_render_layout, dump_symbolic_graphs,
-    dump_uncompiled_configs, dump_zero_renderers,
+    PixelsDumpStage, dump_frame_program, dump_render_layout, dump_structural_graphs,
+    dump_symbolic_graphs, dump_uncompiled_configs, dump_zero_renderers,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PixelsProgramSet {
     pub symbolic_graphs: Vec<symbolic::SymbolicGraph>,
+    pub structural_programs: Vec<verify::VerifiedStructuralProgram>,
+}
+
+fn compile_structural_renderer(
+    graph: &symbolic::SymbolicGraph,
+    config: &config::RendererConfig,
+) -> Result<verify::VerifiedStructuralProgram, String> {
+    verify::check_input_depth(graph)?;
+    let params = params::derive_layout(graph, config)?;
+    let values = bounds::propagate(graph, config)?;
+    let derivatives = derivative_bounds::propagate(graph, &values)?;
+    let support = support::propagate(graph, &values)?;
+    let world_bounds = world_bounds::derive(graph, config, &values, &support)?;
+    let objects = objects::partition(graph, &values, &world_bounds, &support)?;
+    let csg = csg::compile(objects.csg.clone(), objects.objects.len())?;
+    let features = features::decompose(graph, &objects, &values, &world_bounds, &support)?;
+    let repeats = repeat::compile(graph, config, &objects)?;
+    let deformations = deform::compile(graph, &values)?;
+    let material_events = material::compile(graph, &values, &objects, &features)?;
+    let capacities = capacities::derive(
+        graph,
+        config,
+        &params,
+        &values,
+        &objects,
+        &csg,
+        &features,
+        &repeats,
+        &deformations,
+        &material_events,
+    )?;
+    let report = report::build(&params, &capacities);
+    verify::check(
+        graph,
+        config,
+        verify::StructuralProgram {
+            params,
+            values,
+            derivatives,
+            world_bounds,
+            support,
+            objects,
+            csg,
+            features,
+            repeats,
+            deformations,
+            material_events,
+            capacities,
+            report,
+        },
+    )
 }
 
 fn compile_symbolic_renderer(
@@ -99,7 +165,30 @@ pub fn compile_all(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(PixelsProgramSet { symbolic_graphs })
+    let structural_programs = symbolic_graphs
+        .iter()
+        .zip(&configs.renderers)
+        .zip(&image.renderers)
+        .map(|((graph, config), renderer)| {
+            compile_structural_renderer(graph, config).map_err(|message| {
+                let prefixed = message.starts_with('P')
+                    && message.get(1..4).is_some_and(|digits| {
+                        digits.chars().all(|character| character.is_ascii_digit())
+                    })
+                    && message.get(4..6) == Some(": ");
+                let diagnostic = if prefixed {
+                    diagnostics::PixelsDiagnostic::from_prefixed(message, renderer.span, "P020")
+                } else {
+                    diagnostics::PixelsDiagnostic::internal(message)
+                };
+                diagnostics::PixelsError::Diagnostic(diagnostic)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PixelsProgramSet {
+        symbolic_graphs,
+        structural_programs,
+    })
 }
 
 pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
@@ -558,7 +647,7 @@ pub(crate) fn is_core_material_constructor(
     let Some((receiver, method)) = call_base(spelling).rsplit_once('.') else {
         return false;
     };
-    matches!(method, "standard" | "clay" | "porcelain")
+    matches!(method, "standard" | "clay" | "porcelain" | "textured")
         && program_for_decl_module(programs, module).is_some_and(|program| {
             nominal_decl(program, receiver).is_some_and(|(declaring_module, declaration)| {
                 declaration == "MaterialSample"

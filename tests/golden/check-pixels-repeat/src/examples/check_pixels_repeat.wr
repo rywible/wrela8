@@ -7,6 +7,8 @@ from core.field import (
     finite_repeat_x,
     mark,
     sphere,
+    translate,
+    union,
 )
 from core.render import (
     AoConfig,
@@ -23,7 +25,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 4
-# production Pixels stage is not implemented; implemented in task P3.8
+# P3 enumerates these finite instances in stable signed-index order.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -43,7 +45,15 @@ enum MaterialId:
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
     q = finite_repeat_x(p, first=-2, count=5, period=2.0)
-    return mark(sphere(q, Vec3(x=0.0, y=0.0, z=0.0), radius=0.375), object=MaterialId.Ground, material=MaterialId.Ground)
+    regular = sphere(q, Vec3(x=0.0, y=0.0, z=0.0), radius=0.375)
+    recovered_point = finite_repeat_x(
+        translate(p, Vec3(x=-100.0, y=0.0, z=0.0)),
+        first=100,
+        count=1,
+        period=1.0,
+    )
+    recovered = sphere(recovered_point, Vec3(x=0.0, y=0.0, z=0.0), radius=0.25)
+    return mark(union(regular, recovered), object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:

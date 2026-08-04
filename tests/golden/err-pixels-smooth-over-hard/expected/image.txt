@@ -1,0 +1,3 @@
+error[pixels P004]: smooth CSG cannot enclose hard union, intersection, subtraction, or negation; keep hard operations outside maximal smooth subtrees at 25:55
+note: renderer call chain: examples.err_pixels_smooth_over_hard::world
+help: use only the closed AaaByteExact field-operation and rigid-transform surface

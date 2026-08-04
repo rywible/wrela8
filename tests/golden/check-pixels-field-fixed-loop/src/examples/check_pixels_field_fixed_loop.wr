@@ -1,6 +1,6 @@
 module examples.check_pixels_field_fixed_loop
 
-from core.field import Field, Rgb, Vec3, mark, sphere, union
+from core.field import Field, Rgb, Vec3, finite_repeat_x, mark, sphere, union
 from core.render import (
     AoConfig, CameraBounds, LightConfig, MaterialSample, ProbeConfig,
     RenderProfile, RgbRange, ScalarRange, SurfaceContext, ToneCurve,
@@ -33,7 +33,11 @@ fn world(p: Vec3, read params: Params) -> Field:
         iteration_radius: f32 = motion.radius
         result = union(
             result,
-            sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=iteration_radius),
+            sphere(
+                finite_repeat_x(p, first=0, count=2, period=iteration_radius),
+                Vec3(x=0.0, y=0.0, z=0.0),
+                radius=0.125,
+            ),
         )
     return mark(result, object=ObjectId.Scene, material=MaterialId.Surface)
 

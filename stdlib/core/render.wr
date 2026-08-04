@@ -199,6 +199,10 @@ pub struct SurfaceContext[M]:
     pub position: Vec3
     pub normal: Vec3
 
+pub enum TextureFilter:
+    Nearest
+    Bilinear
+
 pub struct MaterialSample:
     color: Rgb
     roughness: f32
@@ -240,6 +244,18 @@ pub struct MaterialSample:
         return MaterialSample.standard(color=color, roughness=roughness)
 
     pub fn porcelain(color: Rgb, roughness: f32) -> MaterialSample:
+        return MaterialSample.standard(color=color, roughness=roughness)
+
+    pub fn textured(
+        color: Rgb,
+        roughness: f32,
+        texture_id: u32,
+        width: u32,
+        height: u32,
+        filter: TextureFilter,
+    ) -> MaterialSample:
+        # The Pixels compiler intercepts this closed constructor and records
+        # the immutable texture descriptor. P9 supplies filtered sampling.
         return MaterialSample.standard(color=color, roughness=roughness)
 
     pub fn sample_color(read self) -> Rgb:

@@ -432,6 +432,16 @@ Every field node carries conservative value, world, Lipschitz, derivative,
 smooth-support, identity, and finiteness metadata where applicable.
 
 Each maximal smooth object owns the complete composed scalar root program.
+Hard union, intersection, subtraction, and negation are object-partition
+boundaries. Closed coordinate transforms and positive uniform scaling commute
+through hard min/max in source-f32 order. The compiler also distributes the
+closed common additive deformation through hard operations, reversing its
+offset under negation/subtraction. Smooth operations that enclose a hard
+operation are rejected because rounded source-f32 smooth minimum is not
+distributive over hard min/max; rewriting such a tree would change its authored
+zero set. Authors keep hard operations outside maximal smooth subtrees. This
+fail-closed frontier preserves the exact authored scalar bits and guarantees
+that every accepted hard boundary is exposed to object partitioning.
 Primitive candidate slabs are conservative sublevel domains where
 `leaf <= accumulated_support_budget`, not neighborhoods inferred only from
 leaf zeros. Polynomial sublevel boundaries may be isolated from
@@ -517,6 +527,30 @@ run, corridor, transparency, stack, shading, and probe capacities. Authors do
 not provide runtime completeness capacities. A successful build proves the
 encoded widths and total image memory fit. Diagnostic telemetry bytes derive
 from versioned schema enum counts, never observed scene data.
+
+The machine-v1 structural ceilings are versioned constants:
+
+| structural capacity | ceiling |
+|---|---:|
+| maximal smooth object instances | 1,024 |
+| fused feature slots, including instance-transformed slots | 2,048 |
+| repeated object instances | 1,024 |
+| packed parameter slots | 4,096 |
+| hard-CSG stack depth | 256 |
+| structural event records | 1,048,576 |
+| run records per tile row | 1,048,576 |
+| repeat-analysis candidate instances | 1,000,000 |
+| scalar/field/material structural depth | 1,024 |
+| per-root dyadic event isolation depth | 2 |
+| total mutable renderer state | 536,870,912 bytes |
+
+The compiler may derive a smaller exact count and may share immutable feature
+templates between repeated instances. It may not silently clamp a derived
+count to these ceilings; an excess is `P015` with its exact why-chain.
+Per-generator event storage is the proved root-count bound multiplied by
+`2^2` dyadic leaves. Root count and isolation depth are separate contributors:
+close roots may consume the full depth, and failure to isolate within it is a
+render error that prevents presentation rather than an unreserved allocation.
 
 ### 4.3 Canonical record details
 

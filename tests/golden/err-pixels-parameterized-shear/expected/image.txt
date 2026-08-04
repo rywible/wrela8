@@ -1,0 +1,3 @@
+error[pixels P004]: field operation `rotate` rotation rows must be compiler-proven rigid; arbitrary parameterized matrix coefficients are not a rotation at 26:13
+note: renderer call chain: examples.err_pixels_parameterized_shear::world
+help: use only the closed AaaByteExact field-operation and rigid-transform surface

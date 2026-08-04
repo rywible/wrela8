@@ -145,12 +145,16 @@ Module path=render
     pub field material: M
     pub field position: Vec3
     pub field normal: Vec3
+  Enum TextureFilter data
+    variant Nearest
+    variant Bilinear
   Struct MaterialSample data
     field color: Rgb
     field roughness: f32
     fn standard(color: read Rgb, roughness: read f32) -> MaterialSample
     fn clay(color: read Rgb, roughness: read f32) -> MaterialSample
     fn porcelain(color: read Rgb, roughness: read f32) -> MaterialSample
+    fn textured(color: read Rgb, roughness: read f32, texture_id: read u32, width: read u32, height: read u32, filter: read TextureFilter) -> MaterialSample
     fn sample_color(read self) -> Rgb
     fn sample_roughness(read self) -> f32
   Struct RenderFrame[P] data

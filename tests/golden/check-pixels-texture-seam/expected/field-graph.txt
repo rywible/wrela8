@@ -21,26 +21,72 @@ Renderers count=1
     Scalar id=s13 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
     Field id=f0 scalar=s9 kind=Sphere center=[s0,s0,s0] radius=s1
     Field id=f1 scalar=s9 kind=Mark child=f0 object=examples.check_pixels_texture_seam::MaterialId::Ground material=examples.check_pixels_texture_seam::MaterialId::Ground
-    Material id=m0 kind=Sample base_color=[s10,s11,s12] opacity=s1 emissive=[s0,s0,s0] roughness=s11 metallic=s0 specular=s11 ior=s13 normal=geometric pattern=none
+    Material id=m0 kind=Sample base_color=[s10,s11,s12] opacity=s1 emissive=[s0,s0,s0] roughness=s11 metallic=s0 specular=s11 ior=s13 normal=geometric pattern=immutable(asset=Checker2x2V1,id=19,2x2,filter=Bilinear,digest=f38d522927a4f3eebe2cc4647870653de12ad51f6937f0e49fb398a9324ec6d6,filter_error=[0,1])
     Identity kind=material enum=examples.check_pixels_texture_seam::MaterialId variant=Ground
     Identity kind=object enum=examples.check_pixels_texture_seam::MaterialId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.check_pixels_texture_seam:44:29@bytes=837..840 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:44:18@bytes=826..827,examples.check_pixels_texture_seam:44:36@bytes=844..847,examples.check_pixels_texture_seam:44:43@bytes=851..854,examples.check_pixels_texture_seam:49:35@bytes=1081..1082]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_texture_seam:44:56@bytes=864..867 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:44:18@bytes=826..827,examples.check_pixels_texture_seam:49:35@bytes=1081..1082]
+    Origin kind=scalar id=s0 primary=examples.check_pixels_texture_seam:45:29@bytes=863..866 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:45:18@bytes=852..853,examples.check_pixels_texture_seam:45:36@bytes=870..873,examples.check_pixels_texture_seam:45:43@bytes=877..880,examples.check_pixels_texture_seam:50:35@bytes=1107..1108]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_texture_seam:45:56@bytes=890..893 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:45:18@bytes=852..853,examples.check_pixels_texture_seam:50:35@bytes=1107..1108]
     Origin kind=scalar id=s2 primary=examples.check_pixels_texture_seam:0:0@bytes=0..0
-    Origin kind=scalar id=s3 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
     Origin kind=scalar id=s4 primary=examples.check_pixels_texture_seam:0:0@bytes=0..0
-    Origin kind=scalar id=s5 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s5 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
     Origin kind=scalar id=s6 primary=examples.check_pixels_texture_seam:0:0@bytes=0..0
-    Origin kind=scalar id=s7 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=scalar id=s8 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=scalar id=s9 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_texture_seam:49:48@bytes=1094..1098 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:49:35@bytes=1081..1082]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_texture_seam:49:56@bytes=1102..1105 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:49:35@bytes=1081..1082,examples.check_pixels_texture_seam:49:80@bytes=1126..1129]
-    Origin kind=scalar id=s12 primary=examples.check_pixels_texture_seam:49:63@bytes=1109..1113 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:49:35@bytes=1081..1082]
-    Origin kind=scalar id=s13 primary=examples.check_pixels_texture_seam:49:35@bytes=1081..1082 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.check_pixels_texture_seam:44:18@bytes=826..827 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.check_pixels_texture_seam:45:16@bytes=884..885 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_texture_seam:49:35@bytes=1081..1082 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_texture_seam:51:21@bytes=1129..1133 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:50:35@bytes=1107..1108]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_texture_seam:51:29@bytes=1137..1140 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:50:35@bytes=1107..1108,examples.check_pixels_texture_seam:52:19@bytes=1169..1172]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_texture_seam:51:36@bytes=1144..1148 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0] merged=[examples.check_pixels_texture_seam:50:35@bytes=1107..1108]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_texture_seam:50:35@bytes=1107..1108 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_texture_seam:45:18@bytes=852..853 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_texture_seam:46:16@bytes=910..911 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_texture_seam:50:35@bytes=1107..1108 expansion=[examples.check_pixels_texture_seam:0:0@bytes=0..0]
     Roots field=f1 material=m0
-    SymbolicQuota steps=20/1000000 nodes=25/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
-Analysis status=pending
+    SymbolicQuota steps=24/1000000 nodes=25/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
+  StructuralRenderer index=0 field_key=examples.check_pixels_texture_seam::world material_key=examples.check_pixels_texture_seam::shade
+    ParameterLayout slots=0 packed_bytes=0 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+      FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
+        FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
+        FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
+        FrameInput path=frame.camera.right use=Camera type=F32 count=3 offset=24 runtime=true
+        FrameInput path=frame.camera.up use=Camera type=F32 count=3 offset=36 runtime=true
+        FrameInput path=frame.lights[*].coefficients use=Light type=F32 count=0 offset=48 runtime=true
+        FrameInput path=frame.exposure use=Exposure type=F32 count=1 offset=48 runtime=true
+        FrameInput path=frame.environment use=Light type=F32 count=3 offset=52 runtime=true
+        FrameInput path=frame.frame_index use=Probe type=U64 count=1 offset=64 runtime=true
+        FrameInput path=sealed.tone_curve_id use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.ao_version use=Post type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.probe_version use=Probe type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.output_mode use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.frame_phase use=Post type=U64 count=1 offset=0 runtime=false
+    ScalarProof id=s0 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s1 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s2 value=[-4,4] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s3 value=[-4,4] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s4 value=[-4,4] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s5 value=[-4,4] value_rule=sub-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s6 value=[-4,4] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s7 value=[-4,4] value_rule=sub-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s8 value=[0,6.928203582763672] value_rule=length3 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+    ScalarProof id=s9 value=[-1,5.928203582763672] value_rule=sub-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s10 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s11 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s12 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s13 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    WorldBound field=f0 bounds=[-1.0000610351562504,-1.0000610351562504,-1.0000610351562504]-[1.0000610351562504,1.0000610351562504,1.0000610351562504] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f1 bounds=[-1.0000610351562504,-1.0000610351562504,-1.0000610351562504]-[1.0000610351562504,1.0000610351562504,1.0000610351562504] rule=identity-mark contributors=[f0] pruned=none
+    Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f1 max=[0,0] leaves=f0@0>f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    IdentitySet id=0 pairs=[examples.check_pixels_texture_seam::MaterialId::Ground=>examples.check_pixels_texture_seam::MaterialId::Ground]
+    SmoothObject id=o0 root=f0 scalar=s9 bounds=[-1.0000610351562504,-1.0000610351562504,-1.0000610351562504]-[1.0000610351562504,1.0000610351562504,1.0000610351562504] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
+    Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
+      Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+    Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Quadric bounds=[-1.0000610351562504,-1.0000610351562504,-1.0000610351562504]-[1.0000610351562504,1.0000610351562504,1.0000610351562504] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(1) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
+    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=14 derivative_slots=14 parameter_slots=0 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=2 active_sheets=2 event_generators=1 event_subdivisions=8 event_records=8 tile_row_runs=9 csg_events=2 transparent_layers=1 rebuild_queue=9 candidate_bytes=64 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=288 corridor_bytes=216 fixed_q_bytes=144 shading_bytes=576 transparency_bytes=288 per_worker_scratch_bytes=2024 all_worker_scratch_bytes=2024 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=223800 instrumented_state_bytes=224184
+      CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
+      CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
+      CapacityDerivation field=max_run_records_per_tile_row value=9 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run]
+      CapacityDerivation field=renderer_state_bytes value=223800 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=2024 (2024 * 1 workers); output=16384; probes=0; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=224184 why=[production=223800; telemetry=384]
+    StructuralReport coefficient_bytes=0 objects=1 features=1 production_state_bytes=223800 instrumented_state_bytes=224184 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+Analysis status=verified-structural

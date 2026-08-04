@@ -2,5 +2,6 @@
 
 Protects: UV wrap/filter events, bounded filtering, and stable seam ownership.
 Deterministic geometry: the seam joins exact fixed UV values `255/256` and `0`.
-First active: P9.
-P0 status: production Pixels stage is not implemented; implemented in task P9.3.
+First active: P3 for the immutable descriptor/filter/dimension contract; P9
+adds byte-exact filtered sampling and seam ownership.
+P0 status: activated; implemented in task P3.9.

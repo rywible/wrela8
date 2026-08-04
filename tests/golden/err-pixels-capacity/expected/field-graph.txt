@@ -1,0 +1,6 @@
+error[pixels P015]: renderer capacity `features` needs 6682 slots, which exceeds the machine-v1 ceiling of 2048 at 63:41
+note: 257 maximal smooth objects
+note: 26 immutable fused primitive feature templates
+note: 6682 total feature slots after instantiating those templates across 257 objects
+note: 1 repeat template records
+help: reduce renderer declarations, generated actors, or the sealed capacity request

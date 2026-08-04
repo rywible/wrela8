@@ -19,7 +19,7 @@ use super::graph::{
 };
 use super::ids::{FieldId, MaterialId, ParamId, ScalarId};
 use super::material_graph::{
-    MaterialArena, MaterialKind, MaterialNode, MaterialSampleNode, NormalModel,
+    MaterialArena, MaterialKind, MaterialNode, MaterialSampleNode, NormalModel, TextureFilterV1,
 };
 use super::material_intrinsics::MaterialIntrinsic;
 use super::quota::SymbolicQuota;
@@ -138,6 +138,11 @@ enum FieldTransformLayer {
 struct SymVec3 {
     values: [ScalarId; 3],
     transforms: Vec<LocatedCoordTransform>,
+    /// True only when this value is the renderer coordinate or was produced
+    /// from it by the closed coordinate-transform API. Scalar dependency
+    /// taint is deliberately insufficient: arbitrary coordinate arithmetic
+    /// is not a canonical geometric transform.
+    coordinate_provenance: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -753,6 +758,7 @@ impl<'a> Compiler<'a> {
                 Ok(SymVec3 {
                     values: self.param_vector_components(&proxy, module, span)?,
                     transforms: Vec::new(),
+                    coordinate_provenance: false,
                 })
             }
             SymValue::ParamAlternatives { values, index }
@@ -764,6 +770,7 @@ impl<'a> Compiler<'a> {
                     values: self
                         .param_alternative_vector_components(&values, index, module, span)?,
                     transforms: Vec::new(),
+                    coordinate_provenance: false,
                 })
             }
             other => Err(self.error(
@@ -781,14 +788,59 @@ impl<'a> Compiler<'a> {
             })
     }
 
-    fn vec3_has_coordinate(&self, value: &[ScalarId; 3]) -> Result<bool, String> {
-        Ok(matches!(
-            self.vec3_dependency(value)?,
+    fn dependency_has_coordinate(dependency: Dependency) -> bool {
+        matches!(
+            dependency,
             Dependency::Coordinate
                 | Dependency::CoordinateAndParameter
                 | Dependency::CoordinateAndSurface
                 | Dependency::CoordinateParameterAndSurface
-        ))
+        )
+    }
+
+    fn require_coordinate_free_scalar(
+        &self,
+        value: ScalarId,
+        operation: &str,
+        argument: &str,
+    ) -> Result<(), String> {
+        if Self::dependency_has_coordinate(self.scalar_dependency(value)?) {
+            return Err(self.error(
+                "P004",
+                format!(
+                    "field operation `{operation}` is not available in `AaaByteExact`: \
+                     geometric coefficient `{argument}` must be coordinate-free"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_coordinate_free_vec3(
+        &self,
+        value: [ScalarId; 3],
+        operation: &str,
+        argument: &str,
+    ) -> Result<(), String> {
+        for component in value {
+            self.require_coordinate_free_scalar(component, operation, argument)?;
+        }
+        Ok(())
+    }
+
+    fn is_renderer_coordinate_triplet(&self, values: [ScalarId; 3]) -> bool {
+        matches!(
+            (
+                self.scalar.get(values[0]).map(|node| &node.op),
+                self.scalar.get(values[1]).map(|node| &node.op),
+                self.scalar.get(values[2]).map(|node| &node.op),
+            ),
+            (
+                Ok(ScalarOp::CoordX),
+                Ok(ScalarOp::CoordY),
+                Ok(ScalarOp::CoordZ)
+            )
+        )
     }
 
     fn as_vec2(
@@ -1195,6 +1247,7 @@ impl<'a> Compiler<'a> {
                             Ok(SymValue::Vec3(SymVec3 {
                                 values,
                                 transforms: Vec::new(),
+                                coordinate_provenance: self.is_renderer_coordinate_triplet(values),
                             }))
                         }
                         Some("core.field::Vec2") | Some("field::Vec2") => {
@@ -1747,7 +1800,7 @@ impl<'a> Compiler<'a> {
                 )?
             };
         }
-        let left_has_coordinate = self.vec3_has_coordinate(&left.values)?;
+        let left_has_coordinate = left.coordinate_provenance;
         let mut transforms = left.transforms;
         if left_has_coordinate && !self.is_zero_vec3(right.values) {
             let translation = if subtract {
@@ -1764,7 +1817,11 @@ impl<'a> Compiler<'a> {
                 origin: self.origin(module, span),
             });
         }
-        Ok(SymValue::Vec3(SymVec3 { values, transforms }))
+        Ok(SymValue::Vec3(SymVec3 {
+            values,
+            transforms,
+            coordinate_provenance: left_has_coordinate,
+        }))
     }
 
     fn eval_scalar_intrinsic(
@@ -1831,6 +1888,7 @@ impl<'a> Compiler<'a> {
                 Ok(SymValue::Vec3(SymVec3 {
                     values,
                     transforms: Vec::new(),
+                    coordinate_provenance: false,
                 }))
             }
             ScalarIntrinsic::Length2 => {
@@ -1865,6 +1923,7 @@ impl<'a> Compiler<'a> {
                 Ok(SymValue::Vec3(SymVec3 {
                     values,
                     transforms: Vec::new(),
+                    coordinate_provenance: false,
                 }))
             }
         }
@@ -1880,13 +1939,14 @@ impl<'a> Compiler<'a> {
         match intrinsic {
             FieldIntrinsic::Translate => {
                 let point = self.as_vec3(args[0].clone(), module, span)?;
-                if !self.vec3_has_coordinate(&point.values)? {
+                if !point.coordinate_provenance {
                     return Err(self.error(
                         "P004",
                         "coordinate transform input must be derived from the renderer coordinate",
                     ));
                 }
                 let by = self.as_vec3(args[1].clone(), module, span)?;
+                self.require_coordinate_free_vec3(by.values, "translate", "by")?;
                 let mut values = [ScalarId(0); 3];
                 for component in 0..3 {
                     values[component] =
@@ -1899,11 +1959,15 @@ impl<'a> Compiler<'a> {
                         origin: self.origin(module, span),
                     });
                 }
-                Ok(SymValue::Vec3(SymVec3 { values, transforms }))
+                Ok(SymValue::Vec3(SymVec3 {
+                    values,
+                    transforms,
+                    coordinate_provenance: true,
+                }))
             }
             FieldIntrinsic::Rotate | FieldIntrinsic::RigidTransform => {
                 let point = self.as_vec3(args[0].clone(), module, span)?;
-                if !self.vec3_has_coordinate(&point.values)? {
+                if !point.coordinate_provenance {
                     return Err(self.error(
                         "P004",
                         "coordinate transform input must be derived from the renderer coordinate",
@@ -1921,6 +1985,16 @@ impl<'a> Compiler<'a> {
                 let row_z = self
                     .as_vec3(args[row_offset + 2].clone(), module, span)?
                     .values;
+                if let Some(translation) = translation {
+                    self.require_coordinate_free_vec3(
+                        translation,
+                        "rigid_transform",
+                        "translation",
+                    )?;
+                }
+                self.require_coordinate_free_vec3(row_x, "rotate", "row_x")?;
+                self.require_coordinate_free_vec3(row_y, "rotate", "row_y")?;
+                self.require_coordinate_free_vec3(row_z, "rotate", "row_z")?;
                 let source = if let Some(translation) = translation {
                     let mut shifted = [ScalarId(0); 3];
                     for component in 0..3 {
@@ -1968,7 +2042,11 @@ impl<'a> Compiler<'a> {
                     }),
                     (Some(_), true) | (None, true) => {}
                 }
-                Ok(SymValue::Vec3(SymVec3 { values, transforms }))
+                Ok(SymValue::Vec3(SymVec3 {
+                    values,
+                    transforms,
+                    coordinate_provenance: true,
+                }))
             }
             FieldIntrinsic::FiniteRepeatX
             | FieldIntrinsic::FiniteRepeatY
@@ -1976,19 +2054,11 @@ impl<'a> Compiler<'a> {
             FieldIntrinsic::UniformScale => {
                 let field = expect_field(args[0].clone())?;
                 let scale = self.as_scalar(args[1].clone(), module, span)?;
-                let scalar = self.mul(self.fields.get(field)?.scalar_value, scale, module, span)?;
+                self.require_coordinate_free_scalar(scale, "uniform_scale", "scale")?;
                 if self.is_const_f32(scale, 1.0) {
                     return Ok(SymValue::Field(field));
                 }
-                let id = self.field_node(
-                    FieldKind::Transform {
-                        child: field,
-                        transform: TransformProgram::UniformScale { scale },
-                    },
-                    scalar,
-                    module,
-                    span,
-                )?;
+                let id = self.uniform_scale_field(field, scale, module, span)?;
                 Ok(SymValue::Field(id))
             }
             FieldIntrinsic::Union | FieldIntrinsic::Intersection | FieldIntrinsic::Subtract => {
@@ -2044,7 +2114,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<SymValue, String> {
         let point = self.as_vec3(args[0].clone(), module, span)?;
-        if !self.vec3_has_coordinate(&point.values)? {
+        if !point.coordinate_provenance {
             return Err(self.error(
                 "P004",
                 "finite-repeat input must be derived from the renderer coordinate",
@@ -2060,6 +2130,7 @@ impl<'a> Compiler<'a> {
             return Err(self.error("P004", "finite repeat count must be positive"));
         }
         let period = self.as_scalar(args[3].clone(), module, span)?;
+        self.require_coordinate_free_scalar(period, "finite_repeat", "period")?;
         let axis = match intrinsic {
             FieldIntrinsic::FiniteRepeatX => Axis::X,
             FieldIntrinsic::FiniteRepeatY => Axis::Y,
@@ -2123,7 +2194,11 @@ impl<'a> Compiler<'a> {
             },
             origin: self.origin(module, span),
         });
-        Ok(SymValue::Vec3(SymVec3 { values, transforms }))
+        Ok(SymValue::Vec3(SymVec3 {
+            values,
+            transforms,
+            coordinate_provenance: true,
+        }))
     }
 
     fn eval_primitive(
@@ -2134,7 +2209,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<SymValue, String> {
         let point = self.as_vec3(args[0].clone(), module, span)?;
-        if !self.vec3_has_coordinate(&point.values)? {
+        if !point.coordinate_provenance {
             return Err(self.error(
                 "P004",
                 "field primitive point argument must be derived from the renderer coordinate",
@@ -2146,6 +2221,8 @@ impl<'a> Compiler<'a> {
             FieldIntrinsic::Plane => {
                 let normal = self.as_vec3(args[1].clone(), module, span)?.values;
                 let offset = self.as_scalar(args[2].clone(), module, span)?;
+                self.require_coordinate_free_vec3(normal, "plane", "normal")?;
+                self.require_coordinate_free_scalar(offset, "plane", "offset")?;
                 let dot = self.dot3(point.values, normal, module, span)?;
                 (
                     Primitive::Plane { normal, offset },
@@ -2155,6 +2232,8 @@ impl<'a> Compiler<'a> {
             FieldIntrinsic::Sphere => {
                 let center = self.as_vec3(args[1].clone(), module, span)?.values;
                 let radius = self.as_scalar(args[2].clone(), module, span)?;
+                self.require_coordinate_free_vec3(center, "sphere", "center")?;
+                self.require_coordinate_free_scalar(radius, "sphere", "radius")?;
                 let q = self.vec_sub(point.values, center, module, span)?;
                 let length = self.length3(q, module, span)?;
                 (
@@ -2164,10 +2243,17 @@ impl<'a> Compiler<'a> {
             }
             FieldIntrinsic::Box | FieldIntrinsic::RoundBox => {
                 let half = self.as_vec3(args[1].clone(), module, span)?.values;
+                let operation = if intrinsic == FieldIntrinsic::RoundBox {
+                    "round_box"
+                } else {
+                    "box"
+                };
+                self.require_coordinate_free_vec3(half, operation, "half")?;
                 let center = [zero; 3];
                 let base = self.box_scalar(point.values, half, module, span)?;
                 if intrinsic == FieldIntrinsic::RoundBox {
                     let radius = self.as_scalar(args[2].clone(), module, span)?;
+                    self.require_coordinate_free_scalar(radius, operation, "radius")?;
                     (
                         Primitive::RoundBox {
                             center,
@@ -2184,12 +2270,21 @@ impl<'a> Compiler<'a> {
                 let a = self.as_vec3(args[1].clone(), module, span)?.values;
                 let b = self.as_vec3(args[2].clone(), module, span)?.values;
                 let radius = self.as_scalar(args[3].clone(), module, span)?;
+                self.require_coordinate_free_vec3(a, "capsule", "a")?;
+                self.require_coordinate_free_vec3(b, "capsule", "b")?;
+                self.require_coordinate_free_scalar(radius, "capsule", "radius")?;
                 let scalar = self.capsule_scalar(point.values, a, b, radius, module, span)?;
-                (Primitive::Capsule { a, b, radius }, scalar)
+                if a == b {
+                    (Primitive::Sphere { center: a, radius }, scalar)
+                } else {
+                    (Primitive::Capsule { a, b, radius }, scalar)
+                }
             }
             FieldIntrinsic::FiniteCylinder => {
                 let radius = self.as_scalar(args[1].clone(), module, span)?;
                 let half = self.as_scalar(args[2].clone(), module, span)?;
+                self.require_coordinate_free_scalar(radius, "finite_cylinder", "radius")?;
+                self.require_coordinate_free_scalar(half, "finite_cylinder", "half_height")?;
                 let neg_half = self.neg(half, module, span)?;
                 let a = [zero, neg_half, zero];
                 let b = [zero, half, zero];
@@ -2211,6 +2306,8 @@ impl<'a> Compiler<'a> {
             FieldIntrinsic::FiniteCone => {
                 let radius = self.as_scalar(args[1].clone(), module, span)?;
                 let half = self.as_scalar(args[2].clone(), module, span)?;
+                self.require_coordinate_free_scalar(radius, "finite_cone", "radius")?;
+                self.require_coordinate_free_scalar(half, "finite_cone", "half_height")?;
                 let neg_half = self.neg(half, module, span)?;
                 let a = [zero, neg_half, zero];
                 let b = [zero, half, zero];
@@ -2249,6 +2346,8 @@ impl<'a> Compiler<'a> {
             FieldIntrinsic::Torus => {
                 let major = self.as_scalar(args[1].clone(), module, span)?;
                 let minor = self.as_scalar(args[2].clone(), module, span)?;
+                self.require_coordinate_free_scalar(major, "torus", "major")?;
+                self.require_coordinate_free_scalar(minor, "torus", "minor")?;
                 let radial_length =
                     self.length2([point.values[0], point.values[2]], module, span)?;
                 let radial = self.sub(radial_length, major, module, span)?;
@@ -3275,6 +3374,13 @@ impl<'a> Compiler<'a> {
         module: &str,
         span: Span,
     ) -> Result<FieldId, String> {
+        if self.field_contains_hard_boundary(left)? || self.field_contains_hard_boundary(right)? {
+            return Err(self.error(
+                "P004",
+                "smooth CSG cannot enclose hard union, intersection, subtraction, or negation; \
+                 keep hard operations outside maximal smooth subtrees",
+            ));
+        }
         let a = self.fields.get(left)?.scalar_value;
         let b = self.fields.get(right)?.scalar_value;
         let (kind, scalar) = match intrinsic {
@@ -3317,6 +3423,172 @@ impl<'a> Compiler<'a> {
         self.field_node(kind, scalar, module, span)
     }
 
+    fn field_contains_hard_boundary(&self, root: FieldId) -> Result<bool, String> {
+        let mut stack = vec![root];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match &self.fields.get(id)?.kind {
+                FieldKind::HardUnion { .. }
+                | FieldKind::HardIntersection { .. }
+                | FieldKind::HardSubtract { .. }
+                | FieldKind::Neg { .. } => return Ok(true),
+                FieldKind::Primitive(_) => {}
+                FieldKind::SmoothUnion { a, b, .. }
+                | FieldKind::SmoothIntersection { a, b, .. }
+                | FieldKind::SmoothSubtract { a, b, .. } => stack.extend([*a, *b]),
+                FieldKind::Transform { child, .. }
+                | FieldKind::FiniteRepeat { child, .. }
+                | FieldKind::Mark { child, .. } => stack.push(*child),
+                FieldKind::BoundedDisplace { base, .. } => stack.push(*base),
+            }
+        }
+        Ok(false)
+    }
+
+    fn uniform_scale_field(
+        &mut self,
+        field: FieldId,
+        scale: ScalarId,
+        module: &str,
+        span: Span,
+    ) -> Result<FieldId, String> {
+        let kind = self.fields.get(field)?.kind.clone();
+        match kind {
+            FieldKind::HardUnion { a, b } => {
+                let a = self.uniform_scale_field(a, scale, module, span)?;
+                let b = self.uniform_scale_field(b, scale, module, span)?;
+                self.field_binary(FieldIntrinsic::Union, a, b, module, span)
+            }
+            FieldKind::HardIntersection { a, b } => {
+                let a = self.uniform_scale_field(a, scale, module, span)?;
+                let b = self.uniform_scale_field(b, scale, module, span)?;
+                self.field_binary(FieldIntrinsic::Intersection, a, b, module, span)
+            }
+            FieldKind::HardSubtract { a, b } => {
+                let a = self.uniform_scale_field(a, scale, module, span)?;
+                let b = self.uniform_scale_field(b, scale, module, span)?;
+                self.field_binary(FieldIntrinsic::Subtract, a, b, module, span)
+            }
+            FieldKind::Neg { child } => {
+                let child = self.uniform_scale_field(child, scale, module, span)?;
+                let scalar = self.neg(self.fields.get(child)?.scalar_value, module, span)?;
+                self.field_node(FieldKind::Neg { child }, scalar, module, span)
+            }
+            FieldKind::Mark {
+                child,
+                object_source,
+                material_source,
+            } => {
+                let child = self.uniform_scale_field(child, scale, module, span)?;
+                let scalar = self.fields.get(child)?.scalar_value;
+                self.field_node(
+                    FieldKind::Mark {
+                        child,
+                        object_source,
+                        material_source,
+                    },
+                    scalar,
+                    module,
+                    span,
+                )
+            }
+            _ => {
+                let scalar = self.mul(self.fields.get(field)?.scalar_value, scale, module, span)?;
+                self.field_node(
+                    FieldKind::Transform {
+                        child: field,
+                        transform: TransformProgram::UniformScale { scale },
+                    },
+                    scalar,
+                    module,
+                    span,
+                )
+            }
+        }
+    }
+
+    fn displace_hard_partitioned(
+        &mut self,
+        field: FieldId,
+        displacement: ScalarId,
+        contract: &DerivedDeformContract,
+        module: &str,
+        span: Span,
+    ) -> Result<FieldId, String> {
+        let kind = self.fields.get(field)?.kind.clone();
+        match kind {
+            FieldKind::HardUnion { a, b } => {
+                let a = self.displace_hard_partitioned(a, displacement, contract, module, span)?;
+                let b = self.displace_hard_partitioned(b, displacement, contract, module, span)?;
+                self.field_binary(FieldIntrinsic::Union, a, b, module, span)
+            }
+            FieldKind::HardIntersection { a, b } => {
+                let a = self.displace_hard_partitioned(a, displacement, contract, module, span)?;
+                let b = self.displace_hard_partitioned(b, displacement, contract, module, span)?;
+                self.field_binary(FieldIntrinsic::Intersection, a, b, module, span)
+            }
+            FieldKind::HardSubtract { a, b } => {
+                let a = self.displace_hard_partitioned(a, displacement, contract, module, span)?;
+                let neg_displacement = self.neg(displacement, module, span)?;
+                let b =
+                    self.displace_hard_partitioned(b, neg_displacement, contract, module, span)?;
+                self.field_binary(FieldIntrinsic::Subtract, a, b, module, span)
+            }
+            FieldKind::Neg { child } => {
+                let neg_displacement = self.neg(displacement, module, span)?;
+                let child = self.displace_hard_partitioned(
+                    child,
+                    neg_displacement,
+                    contract,
+                    module,
+                    span,
+                )?;
+                let scalar = self.neg(self.fields.get(child)?.scalar_value, module, span)?;
+                self.field_node(FieldKind::Neg { child }, scalar, module, span)
+            }
+            FieldKind::Mark {
+                child,
+                object_source,
+                material_source,
+            } => {
+                let child =
+                    self.displace_hard_partitioned(child, displacement, contract, module, span)?;
+                let scalar = self.fields.get(child)?.scalar_value;
+                self.field_node(
+                    FieldKind::Mark {
+                        child,
+                        object_source,
+                        material_source,
+                    },
+                    scalar,
+                    module,
+                    span,
+                )
+            }
+            _ => {
+                let scalar = self.add(
+                    self.fields.get(field)?.scalar_value,
+                    displacement,
+                    module,
+                    span,
+                )?;
+                self.field_node(
+                    FieldKind::BoundedDisplace {
+                        base: field,
+                        displacement,
+                        contract: contract.clone(),
+                    },
+                    scalar,
+                    module,
+                    span,
+                )
+            }
+        }
+    }
+
     fn eval_displace(
         &mut self,
         args: Vec<SymValue>,
@@ -3325,7 +3597,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<SymValue, String> {
         let base = expect_field(args[0].clone())?;
         let point = self.as_vec3(args[1].clone(), module, span)?;
-        if !self.vec3_has_coordinate(&point.values)? {
+        if !point.coordinate_provenance {
             return Err(self.error(
                 "P004",
                 "displacement point argument must be derived from the renderer coordinate",
@@ -3340,6 +3612,9 @@ impl<'a> Compiler<'a> {
         let amplitude = self.as_scalar(args[2].clone(), module, span)?;
         let frequency = self.as_scalar(args[3].clone(), module, span)?;
         let phase = self.as_scalar(args[4].clone(), module, span)?;
+        self.require_coordinate_free_scalar(amplitude, "sinusoidal_displace", "amplitude")?;
+        self.require_coordinate_free_scalar(frequency, "sinusoidal_displace", "frequency")?;
+        self.require_coordinate_free_scalar(phase, "sinusoidal_displace", "phase")?;
         let frequency_x = self.mul(frequency, point.values[0], module, span)?;
         let angle = self.add(frequency_x, phase, module, span)?;
         self.obligations.push(PendingObligation::Scalar(
@@ -3352,38 +3627,44 @@ impl<'a> Compiler<'a> {
             span,
         )?;
         let displacement = self.mul(amplitude, wave, module, span)?;
-        let scalar = self.add(
-            self.fields.get(base)?.scalar_value,
-            displacement,
-            module,
-            span,
-        )?;
-        let amplitude_bound = self.abs(amplitude, module, span)?;
+        let value_factor =
+            self.const_f32(super::scalar::SOURCE_TRIG_VALUE_FACTOR_V1, module, span)?;
+        let gradient_factor =
+            self.const_f32(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1, module, span)?;
+        let hessian_factor =
+            self.const_f32(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1, module, span)?;
+        let third_factor =
+            self.const_f32(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1, module, span)?;
+        let amplitude_abs = self.abs(amplitude, module, span)?;
+        let amplitude_bound = self.mul(amplitude_abs, value_factor, module, span)?;
         let amplitude_frequency = self.mul(amplitude, frequency, module, span)?;
-        let gradient_bound = self.abs(amplitude_frequency, module, span)?;
+        let gradient_abs = self.abs(amplitude_frequency, module, span)?;
+        let gradient_bound = self.mul(gradient_abs, gradient_factor, module, span)?;
         let frequency2 = self.mul(frequency, frequency, module, span)?;
         let amplitude_frequency2 = self.mul(amplitude, frequency2, module, span)?;
-        let hessian_bound = self.abs(amplitude_frequency2, module, span)?;
+        let hessian_abs = self.abs(amplitude_frequency2, module, span)?;
+        let hessian_bound = self.mul(hessian_abs, hessian_factor, module, span)?;
         let frequency3 = self.mul(frequency2, frequency, module, span)?;
         let amplitude_frequency3 = self.mul(amplitude, frequency3, module, span)?;
-        let third_derivative_bound = self.abs(amplitude_frequency3, module, span)?;
+        let third_abs = self.abs(amplitude_frequency3, module, span)?;
+        let third_derivative_bound = self.mul(third_abs, third_factor, module, span)?;
         let contract = DerivedDeformContract {
             amplitude_bound,
             gradient_bound,
             hessian_bound,
             third_derivative_bound,
+            coordinate_x: point.values[0],
+            frequency,
+            phase,
             derivation: ClosedDeformDerivation::SinusoidalX,
         };
-        Ok(SymValue::Field(self.field_node(
-            FieldKind::BoundedDisplace {
-                base,
-                displacement,
-                contract,
-            },
-            scalar,
-            module,
-            span,
-        )?))
+        // The common additive deformation commutes with min/max under the
+        // pinned f32 ordering. Push it through hard CSG (flipping the offset
+        // under negation) so every emitted local object remains a maximal
+        // smooth subtree while the authored scalar bits are preserved.
+        let partitioned =
+            self.displace_hard_partitioned(base, displacement, &contract, module, span)?;
+        Ok(SymValue::Field(partitioned))
     }
 
     fn eval_material_constructor(
@@ -3399,7 +3680,8 @@ impl<'a> Compiler<'a> {
         match intrinsic {
             MaterialIntrinsic::Standard
             | MaterialIntrinsic::Clay
-            | MaterialIntrinsic::Porcelain => {}
+            | MaterialIntrinsic::Porcelain
+            | MaterialIntrinsic::Textured => {}
         }
         let color = self.as_rgb(
             args.first()
@@ -3463,6 +3745,53 @@ impl<'a> Compiler<'a> {
         )?;
         let half = self.const_f32(0.5, module, span)?;
         let ior = self.const_f32(1.5, module, span)?;
+        let pattern = if intrinsic == MaterialIntrinsic::Textured {
+            let stable_id =
+                u32::try_from(expect_const_int(args.get(2).cloned().ok_or_else(
+                    || self.error("P004", "textured material lacks texture id"),
+                )?)?)
+                .map_err(|_| self.error("P004", "texture id must fit u32"))?;
+            let authored_width =
+                u32::try_from(expect_const_int(args.get(3).cloned().ok_or_else(
+                    || self.error("P004", "textured material lacks width"),
+                )?)?)
+                .map_err(|_| self.error("P004", "texture width must fit u32"))?;
+            let authored_height =
+                u32::try_from(expect_const_int(args.get(4).cloned().ok_or_else(
+                    || self.error("P004", "textured material lacks height"),
+                )?)?)
+                .map_err(|_| self.error("P004", "texture height must fit u32"))?;
+            let filter = expect_identity(
+                args.get(5)
+                    .cloned()
+                    .ok_or_else(|| self.error("P004", "textured material lacks filter"))?,
+            )?;
+            let filter = match filter.variant.as_str() {
+                "Nearest" => TextureFilterV1::Nearest,
+                "Bilinear" => TextureFilterV1::Bilinear,
+                other => {
+                    return Err(self.error(
+                        "P004",
+                        format!("unsupported immutable texture filter `{other}`"),
+                    ));
+                }
+            };
+            let texture = super::material_graph::compiler_texture(stable_id, filter)
+                .map_err(|message| self.error("P004", message))?;
+            if (authored_width, authored_height) != (texture.width, texture.height) {
+                return Err(self.error(
+                    "P004",
+                    format!(
+                        "field operation `texture_lookup` is not available in `AaaByteExact`: \
+                         compiler-owned asset {stable_id} has sealed dimensions {}x{}, not {}x{}",
+                        texture.width, texture.height, authored_width, authored_height
+                    ),
+                ));
+            }
+            Some(texture)
+        } else {
+            None
+        };
         let sample = MaterialSampleNode {
             base_color: safe_color,
             opacity: one,
@@ -3472,7 +3801,7 @@ impl<'a> Compiler<'a> {
             specular_level: half,
             ior,
             normal: NormalModel::Geometric,
-            pattern: None,
+            pattern,
         };
         Ok(SymValue::Material(self.material_node(
             MaterialKind::Sample(sample),
@@ -3636,13 +3965,17 @@ impl<'a> Compiler<'a> {
                                 module,
                                 stmt.span,
                             )?;
-                            self.obligations
-                                .push(PendingObligation::MaterialEvent { predicate });
-                            Flow::Return(SymValue::Material(self.material_node(
-                                MaterialKind::Select { predicate, a, b },
-                                module,
-                                stmt.span,
-                            )?))
+                            if a == b {
+                                Flow::Return(SymValue::Material(a))
+                            } else {
+                                self.obligations
+                                    .push(PendingObligation::MaterialEvent { predicate });
+                                Flow::Return(SymValue::Material(self.material_node(
+                                    MaterialKind::Select { predicate, a, b },
+                                    module,
+                                    stmt.span,
+                                )?))
+                            }
                         }
                         _ => {
                             return Err(self.error(
@@ -3782,8 +4115,6 @@ impl<'a> Compiler<'a> {
                 SymValue::Bool(SymBool::Runtime(predicate)) => {
                     let branch =
                         expect_material(self.branch_return_with_tail(&elif.body, tail, module)?)?;
-                    self.obligations
-                        .push(PendingObligation::MaterialEvent { predicate });
                     runtime_branches.push((predicate, branch));
                 }
                 other => {
@@ -3799,6 +4130,11 @@ impl<'a> Compiler<'a> {
             None => expect_material(self.branch_return_with_tail(else_branch, tail, module)?)?,
         };
         for (predicate, branch) in runtime_branches.into_iter().rev() {
+            if branch == fallback {
+                continue;
+            }
+            self.obligations
+                .push(PendingObligation::MaterialEvent { predicate });
             fallback = self.material_node(
                 MaterialKind::Select {
                     predicate,
@@ -4138,6 +4474,7 @@ impl<'a> Compiler<'a> {
                 args.push(SymValue::Vec3(SymVec3 {
                     values: [x, y, z],
                     transforms: Vec::new(),
+                    coordinate_provenance: true,
                 }));
             }
             PixelsFnKind::Material => {
@@ -4184,10 +4521,12 @@ impl<'a> Compiler<'a> {
                     SymValue::Vec3(SymVec3 {
                         values: [px, py, pz],
                         transforms: Vec::new(),
+                        coordinate_provenance: false,
                     }),
                     SymValue::Vec3(SymVec3 {
                         values: [nx, ny, nz],
                         transforms: Vec::new(),
+                        coordinate_provenance: false,
                     }),
                 ]));
             }
@@ -4391,7 +4730,7 @@ fn compare_structural_keys(
     if let Some(ordering) = memo.get(&(left, right)) {
         return Ok(*ordering);
     }
-    if depth >= 4096 {
+    if depth >= super::capacities::PixelsCeilings::MACHINE_V1.structural_depth as usize {
         return Err("P014: structural-key comparison depth quota exhausted".to_string());
     }
     let left_node = arena
@@ -4678,6 +5017,7 @@ mod tests {
     fn test_config() -> RendererConfig {
         RendererConfig {
             declaration_index: 0,
+            worker_count: 1,
             params_type: Type::Unit,
             field: "world".to_string(),
             material: "shade".to_string(),
@@ -4785,6 +5125,122 @@ mod tests {
             .unwrap();
         let debug_id = first.scalar.debug_id(first_id).unwrap();
         assert!(second.scalar.debug_get(debug_id).is_err());
+    }
+
+    #[test]
+    fn nonlinear_coordinate_taint_is_not_canonical_coordinate_provenance() {
+        let programs = BTreeMap::new();
+        let config = test_config();
+        let mut compiler = test_compiler(&programs, &config);
+        let span = Span::default();
+        let x = compiler
+            .scalar_node(ScalarOp::CoordX, Dependency::Coordinate, "scene", span)
+            .unwrap();
+        let half = compiler.const_f32(0.5, "scene", span).unwrap();
+        let nonlinear_x = compiler.mul(x, half, "scene", span).unwrap();
+        let y = compiler
+            .scalar_node(ScalarOp::CoordY, Dependency::Coordinate, "scene", span)
+            .unwrap();
+        let z = compiler
+            .scalar_node(ScalarOp::CoordZ, Dependency::Coordinate, "scene", span)
+            .unwrap();
+        let zero = compiler.const_f32(0.0, "scene", span).unwrap();
+        let one = compiler.const_f32(1.0, "scene", span).unwrap();
+        let error = compiler
+            .eval_primitive(
+                FieldIntrinsic::Sphere,
+                vec![
+                    SymValue::Vec3(SymVec3 {
+                        values: [nonlinear_x, y, z],
+                        transforms: Vec::new(),
+                        coordinate_provenance: false,
+                    }),
+                    SymValue::Vec3(SymVec3 {
+                        values: [zero; 3],
+                        transforms: Vec::new(),
+                        coordinate_provenance: false,
+                    }),
+                    SymValue::F32(one),
+                ],
+                "scene",
+                span,
+            )
+            .unwrap_err();
+        assert!(error.contains("point argument must be derived"));
+    }
+
+    #[test]
+    fn scale_and_deformation_are_partitioned_through_hard_union() {
+        let programs = BTreeMap::new();
+        let config = test_config();
+        let mut compiler = test_compiler(&programs, &config);
+        let span = Span::default();
+        let zero = compiler.const_f32(0.0, "scene", span).unwrap();
+        let one = compiler.const_f32(1.0, "scene", span).unwrap();
+        let left = compiler
+            .field_node(
+                FieldKind::Primitive(Primitive::Sphere {
+                    center: [zero; 3],
+                    radius: one,
+                }),
+                zero,
+                "scene",
+                span,
+            )
+            .unwrap();
+        let right = compiler
+            .field_node(
+                FieldKind::Primitive(Primitive::Sphere {
+                    center: [one, zero, zero],
+                    radius: one,
+                }),
+                one,
+                "scene",
+                span,
+            )
+            .unwrap();
+        let hard = compiler
+            .field_binary(FieldIntrinsic::Union, left, right, "scene", span)
+            .unwrap();
+        let scale = compiler.const_f32(2.0, "scene", span).unwrap();
+        let scaled = compiler
+            .uniform_scale_field(hard, scale, "scene", span)
+            .unwrap();
+        let FieldKind::HardUnion { a, b } = compiler.fields.get(scaled).unwrap().kind else {
+            panic!("uniform scale must expose the hard frontier");
+        };
+        assert!(matches!(
+            compiler.fields.get(a).unwrap().kind,
+            FieldKind::Transform { .. }
+        ));
+        assert!(matches!(
+            compiler.fields.get(b).unwrap().kind,
+            FieldKind::Transform { .. }
+        ));
+        let contract = DerivedDeformContract {
+            amplitude_bound: one,
+            gradient_bound: one,
+            hessian_bound: one,
+            third_derivative_bound: one,
+            coordinate_x: zero,
+            frequency: one,
+            phase: zero,
+            derivation: ClosedDeformDerivation::SinusoidalX,
+        };
+        let displaced = compiler
+            .displace_hard_partitioned(hard, one, &contract, "scene", span)
+            .unwrap();
+        let FieldKind::HardUnion { a, b } = compiler.fields.get(displaced).unwrap().kind else {
+            panic!("deformation must expose the hard frontier");
+        };
+        assert!(matches!(
+            compiler.fields.get(a).unwrap().kind,
+            FieldKind::BoundedDisplace { .. }
+        ));
+        assert!(matches!(
+            compiler.fields.get(b).unwrap().kind,
+            FieldKind::BoundedDisplace { .. }
+        ));
     }
 
     #[test]
@@ -4930,6 +5386,7 @@ mod tests {
                 vec![SymValue::Vec3(SymVec3 {
                     values: [runtime, zero, zero],
                     transforms: Vec::new(),
+                    coordinate_provenance: false,
                 })],
                 "core.field",
                 Span::default(),
@@ -4997,10 +5454,12 @@ mod tests {
                 kind: CoordTransform::Translate([one, zero, zero]),
                 origin: transform_origin,
             }],
+            coordinate_provenance: true,
         });
         let center = SymValue::Vec3(SymVec3 {
             values: [zero; 3],
             transforms: Vec::new(),
+            coordinate_provenance: false,
         });
         let SymValue::Field(root) = compiler
             .eval_primitive(

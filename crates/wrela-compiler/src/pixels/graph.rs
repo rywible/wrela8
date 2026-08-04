@@ -110,6 +110,9 @@ pub struct DerivedDeformContract {
     pub gradient_bound: ScalarId,
     pub hessian_bound: ScalarId,
     pub third_derivative_bound: ScalarId,
+    pub coordinate_x: ScalarId,
+    pub frequency: ScalarId,
+    pub phase: ScalarId,
     pub derivation: ClosedDeformDerivation,
 }
 

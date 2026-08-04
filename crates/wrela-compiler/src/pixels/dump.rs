@@ -6,6 +6,7 @@ use super::graph::{FieldKind, Primitive, TransformProgram};
 use super::material_graph::{MaterialKind, NormalModel};
 use super::scalar::{ProofObligation, ScalarOp};
 use super::symbolic::SymbolicGraph;
+use super::verify::VerifiedStructuralProgram;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelsDumpStage {
@@ -316,7 +317,450 @@ pub fn dump_symbolic_graphs(
             graph.quota.max_call_depth,
         ));
     }
-    out.push_str("Analysis status=pending\n");
+    out.push_str("Analysis status=symbolic-only\n");
+    out
+}
+
+pub fn dump_structural_graphs(
+    graphs: &[(usize, SymbolicGraph, VerifiedStructuralProgram)],
+    configs: &RendererConfigs,
+) -> String {
+    let symbolic = graphs
+        .iter()
+        .map(|(index, graph, _)| (*index, graph.clone()))
+        .collect::<Vec<_>>();
+    let mut out = dump_symbolic_graphs(&symbolic, configs);
+    out = out.replace("    Obligation kind=", "    DischargedObligation kind=");
+    let suffix = "Analysis status=symbolic-only\n";
+    debug_assert!(out.ends_with(suffix));
+    out.truncate(out.len() - suffix.len());
+    for (index, graph, verified) in graphs {
+        let program = verified.program();
+        out.push_str(&format!(
+            "  StructuralRenderer index={} field_key={} material_key={}\n",
+            index, graph.field_key, graph.material_key,
+        ));
+        out.push_str(&format!(
+            "    ParameterLayout slots={} packed_bytes={} dependency_schema={}\n",
+            program.params.slots.len(),
+            program.params.packed_bytes,
+            program.params.digest_schema.schema_digest,
+        ));
+        let dependencies = &program.params.frame_dependencies;
+        out.push_str(&format!(
+            "      FrameDependencies runtime_bytes={} camera_contract={:?} lights={}:[{}] environment={:?}:{:?} exposure={:?} post={} ao_version={} probe_version={} output={} phase={}:{}\n",
+            dependencies.runtime_bytes,
+            dependencies.camera_contract,
+            dependencies.light_capacity,
+            dependencies.light_kinds.join(","),
+            dependencies.environment_min,
+            dependencies.environment_max,
+            dependencies.exposure,
+            dependencies.post_id,
+            dependencies.ao_version,
+            dependencies.probe_version,
+            dependencies.output_mode,
+            dependencies.deterministic_frame_phase[0],
+            dependencies.deterministic_frame_phase[1],
+        ));
+        for field in &dependencies.fields {
+            out.push_str(&format!(
+                "        FrameInput path={} use={:?} type={:?} count={} offset={} runtime={}\n",
+                field.path,
+                field.use_kind,
+                field.scalar_ty,
+                field.element_count,
+                field.packed_offset,
+                field.runtime,
+            ));
+        }
+        for slot in &program.params.slots {
+            out.push_str(&format!(
+                "      Slot id={} path={} component={} type={:?} range=[{},{}] rate={} immutable={} uses=[{}] offset={}\n",
+                slot.id,
+                format_path(&slot.path),
+                slot.component
+                    .map(|component| component.to_string())
+                    .unwrap_or_else(|| "scalar".to_string()),
+                slot.scalar_ty,
+                format_f64(slot.range.min),
+                format_f64(slot.range.max),
+                slot.rate
+                    .map(|rate| format!(
+                        "{},{}",
+                        format_f64(rate.max_delta),
+                        format_f64(rate.max_second_delta)
+                    ))
+                    .unwrap_or_else(|| "none".to_string()),
+                slot.immutable,
+                slot.uses
+                    .iter()
+                    .map(|use_kind| format!("{use_kind:?}"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                slot.packed_offset,
+            ));
+        }
+        for (id, bound) in &program.values.scalar {
+            let derivative = &program.derivatives.scalar[id];
+            out.push_str(&format!(
+                "    ScalarProof id={} value=[{},{}] value_rule={} world_derivative=[{},{},{}] gradient_norm={} frame_delta={} frame_second_delta={} hessian_norm={} third_norm={} smooth={} derivative_rule={}\n",
+                id,
+                format_f64(bound.value.lo),
+                format_f64(bound.value.hi),
+                bound.rule,
+                format_f64(derivative.world_components[0]),
+                format_f64(derivative.world_components[1]),
+                format_f64(derivative.world_components[2]),
+                format_f64(derivative.world_gradient_norm),
+                derivative
+                    .frame_delta
+                    .map(format_f64)
+                    .unwrap_or_else(|| "unbounded-rate".to_string()),
+                derivative
+                    .frame_second_delta
+                    .map(format_f64)
+                    .unwrap_or_else(|| "unbounded-rate".to_string()),
+                format_f64(derivative.hessian_norm),
+                format_f64(derivative.third_derivative_norm),
+                !derivative.nonsmooth,
+                derivative.rule,
+            ));
+            for (param, value) in &derivative.parameter {
+                out.push_str(&format!(
+                    "      ParameterDerivative param={} upper={}\n",
+                    param,
+                    format_f64(*value),
+                ));
+            }
+        }
+        for (id, bound) in &program.world_bounds.fields {
+            out.push_str(&format!(
+                "    WorldBound field={} bounds={} rule={} contributors=[{}] pruned={}\n",
+                id,
+                bound
+                    .bounds
+                    .map(|bounds| format!(
+                        "[{},{},{}]-[{},{},{}]",
+                        format_f64(bounds.min[0]),
+                        format_f64(bounds.min[1]),
+                        format_f64(bounds.min[2]),
+                        format_f64(bounds.max[0]),
+                        format_f64(bounds.max[1]),
+                        format_f64(bounds.max[2]),
+                    ))
+                    .unwrap_or_else(|| "empty".to_string()),
+                bound.rule,
+                bound.contributors.join(","),
+                bound.pruned_reason.unwrap_or("none"),
+            ));
+        }
+        for (id, support) in &program.support.fields {
+            out.push_str(&format!(
+                "    Support field={} max=[{},{}] leaves={} path=[{}]\n",
+                id,
+                format_f64(support.max_budget.lo),
+                format_f64(support.max_budget.hi),
+                support
+                    .leaf_supports
+                    .iter()
+                    .map(|leaf| format!(
+                        "{}:smooth=[{},{}]:deform=[{},{}]:value_to_distance=[{},{}]",
+                        leaf.path
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(">"),
+                        format_f64(leaf.smooth_budget.lo),
+                        format_f64(leaf.smooth_budget.hi),
+                        format_f64(leaf.deformation_expand.lo),
+                        format_f64(leaf.deformation_expand.hi),
+                        format_f64(leaf.value_to_distance.lo),
+                        format_f64(leaf.value_to_distance.hi),
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                support
+                    .maximum_path
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+            if let Some(gap) = &support.gap_sensitive {
+                out.push_str(&format!(
+                    "      GapBudget left={} left_negated={} right={} right_negated={} gap_lower={} bulge_upper={} k=[{},{}]\n",
+                    gap.left,
+                    gap.left_negated,
+                    gap.right,
+                    gap.right_negated,
+                    format_f64(gap.gap_lower),
+                    format_f64(gap.bulge_upper),
+                    format_f64(gap.k.lo),
+                    format_f64(gap.k.hi),
+                ));
+            }
+        }
+        for identity in &program.objects.identities {
+            out.push_str(&format!(
+                "    IdentitySet id={} pairs=[{}]\n",
+                identity.id,
+                identity
+                    .pairs
+                    .iter()
+                    .map(|pair| format!(
+                        "{}::{}=>{}::{}",
+                        pair.object.enum_key,
+                        pair.object.variant,
+                        pair.material.enum_key,
+                        pair.material.variant,
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        for object in &program.objects.objects {
+            out.push_str(&format!(
+                "    SmoothObject id={} root={} scalar={} bounds=[{},{},{}]-[{},{},{}] leaves=[{}] support=[{},{}] identity_set={} repeats=[{}]\n",
+                object.id,
+                object.source_root,
+                object.scalar_root,
+                format_f64(object.bounds.min[0]),
+                format_f64(object.bounds.min[1]),
+                format_f64(object.bounds.min[2]),
+                format_f64(object.bounds.max[0]),
+                format_f64(object.bounds.max[1]),
+                format_f64(object.bounds.max[2]),
+                object
+                    .primitive_occurrences
+                    .iter()
+                    .map(|path| path
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(">"))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                format_f64(object.support_max.lo),
+                format_f64(object.support_max.hi),
+                object.identity_set,
+                object
+                    .repeat_instances
+                    .iter()
+                    .map(|instance| format!(
+                        "{}[{}]:{:?}:{}:[{},{}]",
+                        instance.repeat_field,
+                        instance
+                            .equivalent_fields
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        instance.axis,
+                        instance.index,
+                        format_f64(instance.period.lo),
+                        format_f64(instance.period.hi),
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        out.push_str(&format!(
+            "    Csg constant={} instructions=[{}] max_stack={}\n",
+            program
+                .csg
+                .constant
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            format_bounded_debug_list(&program.csg.instructions),
+            program.csg.max_stack,
+        ));
+        for influence in &program.csg.influence {
+            out.push_str(&format!(
+                "      Influence object={} false=constant:{:?}:stack:{}:instructions:[{}]:digest:{} true=constant:{:?}:stack:{}:instructions:[{}]:digest:{}\n",
+                influence.object,
+                influence.when_false.constant,
+                influence.when_false.max_stack,
+                format_bounded_debug_list(&influence.when_false.instructions),
+                influence.when_false.digest,
+                influence.when_true.constant,
+                influence.when_true.max_stack,
+                format_bounded_debug_list(&influence.when_true.instructions),
+                influence.when_true.digest,
+            ));
+        }
+        for feature in &program.features {
+            out.push_str(&format!(
+                "    Feature id={} template={} object={} primitive={} path=[{}] kind={:?} bounds=[{},{},{}]-[{},{},{}] support={} validity=[{}] orientation={:?} identity_set={} semantic_root={}\n",
+                feature.id,
+                feature.template_id,
+                feature.object,
+                feature.primitive,
+                feature
+                    .occurrence_path
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(">"),
+                feature.kind,
+                format_f64(feature.world_bounds.min[0]),
+                format_f64(feature.world_bounds.min[1]),
+                format_f64(feature.world_bounds.min[2]),
+                format_f64(feature.world_bounds.max[0]),
+                format_f64(feature.world_bounds.max[1]),
+                format_f64(feature.world_bounds.max[2]),
+                format_f64(feature.support_expand),
+                format!(
+                    "{:?}:shared={}",
+                    feature.validity.constraints, feature.validity.shared_boundary
+                ),
+                feature.orientation,
+                feature.identity_set,
+                feature.scalar_semantic_root,
+            ));
+        }
+        for repeat in &program.repeats {
+            out.push_str(&format!(
+                "    RepeatTemplate object={} root={} instances={} translations={} wrap_events={} fixed_instance={}\n",
+                repeat.object,
+                repeat.source_root,
+                repeat.instance_count,
+                repeat.affine_translation_count,
+                repeat.wrap_event_families,
+                repeat.certificate_must_fix_instance,
+            ));
+            for instance in &repeat.instances {
+                out.push_str(&format!(
+                    "      RepeatInstance object={} translations=[{}]\n",
+                    instance.object,
+                    instance
+                        .translations
+                        .iter()
+                        .map(|translation| format!(
+                            "{}:{:?}:{}:period=[{},{}]:offset=[{},{}]",
+                            translation.repeat_field,
+                            translation.axis,
+                            translation.index,
+                            format_f64(translation.period.lo),
+                            format_f64(translation.period.hi),
+                            format_f64(translation.translation.lo),
+                            format_f64(translation.translation.hi),
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ));
+            }
+            for event in &repeat.wrap_events {
+                out.push_str(&format!(
+                    "      WrapEvent field={} axis={:?} cells={}..{} boundary=[{},{}]\n",
+                    event.repeat_field,
+                    event.axis,
+                    event.left_index,
+                    event.right_index,
+                    format_f64(event.boundary.lo),
+                    format_f64(event.boundary.hi),
+                ));
+            }
+        }
+        for deformation in &program.deformations {
+            out.push_str(&format!(
+                "    Deformation field={} displacement={} derivation={:?} amplitude={} gradient={} hessian={} third={} coordinate_x={} frequency=[{},{}] phase=[{},{}]\n",
+                deformation.field,
+                deformation.displacement,
+                deformation.derivation,
+                format_f64(deformation.amplitude),
+                format_f64(deformation.gradient),
+                format_f64(deformation.hessian),
+                format_f64(deformation.third_derivative),
+                deformation.coordinate_x,
+                format_f64(deformation.frequency.lo),
+                format_f64(deformation.frequency.hi),
+                format_f64(deformation.phase.lo),
+                format_f64(deformation.phase.hi),
+            ));
+        }
+        for event in &program.material_events {
+            out.push_str(&format!(
+                "    MaterialEvent predicate={} kind={:?} crossings={} owners=[{}] features=[{}] source={}:{}:{}\n",
+                event.predicate,
+                event.kind,
+                event.crossing_bound,
+                format_bounded_id_list(&event.owners),
+                format_bounded_id_list(&event.feature_owners),
+                event.origin.primary.module,
+                event.origin.primary.span.line,
+                event.origin.primary.span.col,
+            ));
+        }
+        let capacity = &program.capacities;
+        out.push_str(&format!(
+            "    Capacities workers={} objects={} feature_templates={} feature_slots={} repeated_instances={} scalar_slots={} derivative_slots={} parameter_slots={} csg_stack={} projected_row={} projected_tile={} row_start_roots={} active_sheets={} event_generators={} event_subdivisions={} event_records={} tile_row_runs={} csg_events={} transparent_layers={} rebuild_queue={} candidate_bytes={} root_bytes={} sheet_bytes={} event_bytes={} run_bytes={} corridor_bytes={} fixed_q_bytes={} shading_bytes={} transparency_bytes={} per_worker_scratch_bytes={} all_worker_scratch_bytes={} telemetry_production_bytes={} telemetry_instrumented_bytes={} output_tile_bytes={} output_double_buffer_bytes={} probe_bytes={} kinetic_bytes={} state_header_bytes={} coefficient_snapshot_bytes={} frame_snapshot_bytes={} frame_complex_double_buffer_bytes={} tile_descriptor_bytes={} tile_ownership_bytes={} failure_record_bytes={} production_state_bytes={} instrumented_state_bytes={}\n",
+            capacity.worker_count,
+            capacity.object_count,
+            capacity.feature_template_count,
+            capacity.feature_count,
+            capacity.repeated_instance_count,
+            capacity.scalar_program_slots,
+            capacity.derivative_program_slots,
+            capacity.parameter_slots,
+            capacity.max_csg_stack,
+            capacity.max_projected_features_per_row,
+            capacity.max_projected_features_per_tile,
+            capacity.max_object_roots_per_row_start,
+            capacity.max_active_sheet_records_per_row,
+            capacity.event_generator_count,
+            capacity.max_event_subdivisions,
+            capacity.max_event_records,
+            capacity.max_run_records_per_tile_row,
+            capacity.max_csg_events_per_row,
+            capacity.max_transparent_layers,
+            capacity.max_local_rebuild_queue,
+            capacity.candidate_bytes,
+            capacity.root_bytes,
+            capacity.sheet_bytes,
+            capacity.event_bytes,
+            capacity.run_bytes,
+            capacity.corridor_bytes,
+            capacity.fixed_q_bytes,
+            capacity.shading_bytes,
+            capacity.transparency_bytes,
+            capacity.per_worker_scratch_bytes,
+            capacity.all_worker_scratch_bytes,
+            capacity.telemetry_bytes_production,
+            capacity.telemetry_bytes_instrumented,
+            capacity.output_tile_bytes,
+            capacity.output_double_buffer_bytes,
+            capacity.probe_bytes,
+            capacity.kinetic_certificate_bytes,
+            capacity.state_header_bytes,
+            capacity.coefficient_snapshot_bytes,
+            capacity.frame_dependency_snapshot_bytes,
+            capacity.frame_complex_double_buffer_bytes,
+            capacity.tile_descriptor_bytes,
+            capacity.tile_ownership_bytes,
+            capacity.failure_record_bytes,
+            capacity.total_renderer_state_bytes,
+            capacity.total_renderer_state_bytes_instrumented,
+        ));
+        for derivation in &capacity.derivations {
+            out.push_str(&format!(
+                "      CapacityDerivation field={} value={} why=[{}]\n",
+                derivation.field,
+                derivation.value,
+                derivation.why.join("; "),
+            ));
+        }
+        out.push_str(&format!(
+            "    StructuralReport coefficient_bytes={} objects={} features={} production_state_bytes={} instrumented_state_bytes={} dependency_schema={}\n",
+            program.report.coefficient_bytes,
+            program.report.object_count,
+            program.report.feature_count,
+            program.report.renderer_state_bytes,
+            program.report.renderer_state_bytes_instrumented,
+            program.report.dependency_schema_digest,
+        ));
+    }
+    out.push_str("Analysis status=verified-structural\n");
     out
 }
 
@@ -329,11 +773,54 @@ fn format_path(path: &[usize]) -> String {
     format!("[{body}]")
 }
 
+fn format_bounded_id_list<T: ToString>(values: &[T]) -> String {
+    let text = values
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if values.len() <= 16 {
+        text
+    } else {
+        format!(
+            "count={},sha256={}",
+            values.len(),
+            wrela_machine::sha256::sha256_hex(text.as_bytes())
+        )
+    }
+}
+
+fn format_bounded_debug_list<T: std::fmt::Debug>(values: &[T]) -> String {
+    if values.len() <= 16 {
+        values
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        let text = values
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "count={},sha256={}",
+            values.len(),
+            wrela_machine::sha256::sha256_hex(text.as_bytes())
+        )
+    }
+}
+
 fn format_f64(value: f64) -> String {
     if value == 0.0 && value.is_sign_negative() {
         "-0.0".to_string()
     } else {
-        value.to_string()
+        let shortest = value.to_string();
+        if shortest.len() <= 24 {
+            shortest
+        } else {
+            format!("{value:.17e}")
+        }
     }
 }
 
@@ -342,7 +829,12 @@ fn format_f32_bits(bits: u32) -> String {
     if value == 0.0 && value.is_sign_negative() {
         "-0.0".to_string()
     } else {
-        value.to_string()
+        let shortest = value.to_string();
+        if shortest.len() <= 16 {
+            shortest
+        } else {
+            format!("{value:.9e}")
+        }
     }
 }
 
@@ -623,7 +1115,20 @@ fn render_material(kind: &MaterialKind) -> String {
                 NormalModel::Geometric => "geometric".to_string(),
                 NormalModel::AnalyticSlope { x, y } => format!("analytic-slope({x},{y})"),
             },
-            sample.pattern.as_deref().unwrap_or("none")
+            sample.pattern.as_ref().map_or_else(
+                || "none".to_string(),
+                |texture| format!(
+                    "immutable(asset={},id={},{}x{},filter={:?},digest={},filter_error=[{},{}])",
+                    texture.asset,
+                    texture.stable_id,
+                    texture.width,
+                    texture.height,
+                    texture.filter,
+                    texture.content_digest,
+                    f32::from_bits(texture.filter_error_min_bits),
+                    f32::from_bits(texture.filter_error_max_bits),
+                ),
+            )
         ),
         MaterialKind::Select { predicate, a, b } => {
             format!("kind=MaterialSelect predicate={predicate} a={a} b={b}")
@@ -774,6 +1279,7 @@ mod tests {
         let configs = RendererConfigs {
             renderers: vec![RendererConfig {
                 declaration_index: 0,
+                worker_count: 1,
                 params_type: crate::sema::types::Type::U32,
                 field: "world".to_string(),
                 material: "shade".to_string(),

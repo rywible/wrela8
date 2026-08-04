@@ -9,6 +9,10 @@ use crate::sema::typed::{
 };
 use crate::sema::types::Type;
 
+use super::ids::{MaterialId, ParamId, ScalarId};
+use super::material_graph::MaterialKind;
+use super::scalar::ScalarOp;
+use super::symbolic::SymbolicGraph;
 use super::{LocatedFn, call_base, called_function, root_function};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +21,474 @@ pub struct ParameterContract {
     pub ty: Type,
     pub range: NumericRange,
     pub rate: Option<RateContract>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParamUse {
+    Geometry,
+    Material,
+    Camera,
+    Light,
+    Exposure,
+    Post,
+    Probe,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarType {
+    F32,
+    F64,
+    U8,
+    U16,
+    U32,
+    U64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Usize,
+    Isize,
+}
+
+impl ScalarType {
+    pub fn size(self) -> u32 {
+        match self {
+            Self::U8 | Self::I8 => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::F32 | Self::U32 | Self::I32 => 4,
+            Self::F64 | Self::U64 | Self::I64 | Self::Usize | Self::Isize => 8,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScalarRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScalarRate {
+    pub max_delta: f64,
+    pub max_second_delta: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamSlot {
+    pub id: ParamId,
+    pub path: Vec<usize>,
+    pub component: Option<u8>,
+    pub scalar_ty: ScalarType,
+    pub range: ScalarRange,
+    pub rate: Option<ScalarRate>,
+    pub immutable: bool,
+    pub uses: BTreeSet<ParamUse>,
+    pub packed_offset: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyDigestSchema {
+    pub fields: Vec<&'static str>,
+    pub schema_digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParameterLayout {
+    pub slots: Vec<ParamSlot>,
+    pub packed_bytes: u32,
+    pub frame_dependencies: FrameDependencyTuple,
+    pub digest_schema: DependencyDigestSchema,
+}
+
+/// One exact field in the runtime/sealed frame-dependency tuple. Runtime
+/// fields name bytes supplied by `RenderFrame`; sealed fields name immutable
+/// renderer coefficients that are hashed alongside them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameInputDependency {
+    pub path: String,
+    pub use_kind: ParamUse,
+    pub scalar_ty: ScalarType,
+    pub element_count: u32,
+    pub packed_offset: u32,
+    pub runtime: bool,
+}
+
+/// Complete non-`P` state hashed by the frame dependency digest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrameDependencyTuple {
+    pub fields: Vec<FrameInputDependency>,
+    pub runtime_bytes: u32,
+    pub camera_contract: [f64; 9],
+    pub light_capacity: u32,
+    pub light_kinds: Vec<String>,
+    pub environment_min: [f32; 3],
+    pub environment_max: [f32; 3],
+    pub exposure: [f32; 2],
+    pub post_id: String,
+    pub ao_version: u32,
+    pub probe_version: u32,
+    pub output_mode: String,
+    pub deterministic_frame_phase: [u32; 2],
+}
+
+fn frame_dependency_tuple(
+    config: &super::config::RendererConfig,
+) -> Result<FrameDependencyTuple, String> {
+    let mut fields = Vec::new();
+    let mut offset = 0_u32;
+    let mut runtime = |path: &str,
+                       use_kind: ParamUse,
+                       scalar_ty: ScalarType,
+                       element_count: u32|
+     -> Result<(), String> {
+        offset = align_up(offset, scalar_ty.size())?;
+        let packed_offset = offset;
+        offset = offset
+            .checked_add(
+                scalar_ty
+                    .size()
+                    .checked_mul(element_count)
+                    .ok_or_else(|| "P015: frame dependency byte count overflow".to_string())?,
+            )
+            .ok_or_else(|| "P015: frame dependency byte count overflow".to_string())?;
+        fields.push(FrameInputDependency {
+            path: path.to_string(),
+            use_kind,
+            scalar_ty,
+            element_count,
+            packed_offset,
+            runtime: true,
+        });
+        Ok(())
+    };
+    runtime("frame.camera.eye", ParamUse::Camera, ScalarType::F32, 3)?;
+    runtime("frame.camera.forward", ParamUse::Camera, ScalarType::F32, 3)?;
+    runtime("frame.camera.right", ParamUse::Camera, ScalarType::F32, 3)?;
+    runtime("frame.camera.up", ParamUse::Camera, ScalarType::F32, 3)?;
+    runtime(
+        "frame.lights[*].coefficients",
+        ParamUse::Light,
+        ScalarType::F32,
+        config
+            .light_capacity
+            .checked_mul(15)
+            .ok_or_else(|| "P015: light coefficient count overflow".to_string())?,
+    )?;
+    runtime("frame.exposure", ParamUse::Exposure, ScalarType::F32, 1)?;
+    runtime("frame.environment", ParamUse::Light, ScalarType::F32, 3)?;
+    runtime("frame.frame_index", ParamUse::Probe, ScalarType::U64, 1)?;
+    let runtime_bytes = offset;
+    for (path, use_kind, scalar_ty) in [
+        ("sealed.tone_curve_id", ParamUse::Post, ScalarType::U64),
+        ("sealed.ao_version", ParamUse::Post, ScalarType::U32),
+        ("sealed.probe_version", ParamUse::Probe, ScalarType::U32),
+        ("sealed.output_mode", ParamUse::Post, ScalarType::U64),
+        ("sealed.frame_phase", ParamUse::Post, ScalarType::U64),
+    ] {
+        fields.push(FrameInputDependency {
+            path: path.to_string(),
+            use_kind,
+            scalar_ty,
+            element_count: 1,
+            packed_offset: 0,
+            runtime: false,
+        });
+    }
+    Ok(FrameDependencyTuple {
+        fields,
+        runtime_bytes,
+        camera_contract: [
+            config.near,
+            config.far,
+            f64::from(config.world_min.x),
+            f64::from(config.world_min.y),
+            f64::from(config.world_min.z),
+            f64::from(config.world_max.x),
+            f64::from(config.world_max.y),
+            f64::from(config.world_max.z),
+            f64::from(config.camera_max_motion),
+        ],
+        light_capacity: config.light_capacity,
+        light_kinds: config.light_kinds.clone(),
+        environment_min: config.environment.min,
+        environment_max: config.environment.max,
+        exposure: [config.exposure.min, config.exposure.max],
+        post_id: config.tone_curve.clone(),
+        ao_version: u32::from(config.ao_enabled),
+        probe_version: u32::from(config.probes_enabled),
+        output_mode: format!(
+            "{}:{}x{}:display{}",
+            config.profile, config.width, config.height, config.display_index
+        ),
+        deterministic_frame_phase: [config.refresh_hz, config.shade_hz],
+    })
+}
+
+fn scalar_type(ty: &Type, component: Option<u8>) -> Result<ScalarType, String> {
+    if component.is_some() {
+        return Ok(ScalarType::F32);
+    }
+    Ok(match ty {
+        Type::F32 => ScalarType::F32,
+        Type::F64 => ScalarType::F64,
+        Type::U8 => ScalarType::U8,
+        Type::U16 => ScalarType::U16,
+        Type::U32 => ScalarType::U32,
+        Type::U64 => ScalarType::U64,
+        Type::Usize => ScalarType::Usize,
+        Type::I8 => ScalarType::I8,
+        Type::I16 => ScalarType::I16,
+        Type::I32 => ScalarType::I32,
+        Type::I64 => ScalarType::I64,
+        Type::Isize => ScalarType::Isize,
+        other => {
+            return Err(format!(
+                "pixels::params: parameter leaf has unsupported packed type `{}`",
+                crate::sema::types::render_type(other)
+            ));
+        }
+    })
+}
+
+pub(crate) fn scalar_children(op: &ScalarOp) -> Vec<ScalarId> {
+    match op {
+        ScalarOp::ConstF32(_)
+        | ScalarOp::ConstF64(_)
+        | ScalarOp::CoordX
+        | ScalarOp::CoordY
+        | ScalarOp::CoordZ
+        | ScalarOp::SurfacePosition(_)
+        | ScalarOp::SurfaceNormal(_)
+        | ScalarOp::Param(_) => Vec::new(),
+        ScalarOp::Neg(value)
+        | ScalarOp::Abs(value)
+        | ScalarOp::Sqrt(value, _)
+        | ScalarOp::Rsqrt(value, _)
+        | ScalarOp::SinRestricted(value, _)
+        | ScalarOp::CosRestricted(value, _)
+        | ScalarOp::MaterialRoughness { value, .. } => vec![*value],
+        ScalarOp::Add(a, b)
+        | ScalarOp::Sub(a, b)
+        | ScalarOp::Mul(a, b)
+        | ScalarOp::Div(a, b)
+        | ScalarOp::Min(a, b)
+        | ScalarOp::Max(a, b)
+        | ScalarOp::Compare { a, b, .. }
+        | ScalarOp::FiniteOr {
+            value: a,
+            fallback: b,
+            ..
+        } => vec![*a, *b],
+        ScalarOp::Clamp { value, lo, hi } => vec![*value, *lo, *hi],
+        ScalarOp::Dot3(a, b) => a.iter().chain(b).copied().collect(),
+        ScalarOp::Cross3Component { a, b, .. } => a.iter().chain(b).copied().collect(),
+        ScalarOp::Length2(values) => values.to_vec(),
+        ScalarOp::Length3(values) | ScalarOp::Normalize3Component { value: values, .. } => {
+            values.to_vec()
+        }
+        ScalarOp::Select { predicate, a, b } => vec![*predicate, *a, *b],
+        ScalarOp::SelectIndex { index, options } => std::iter::once(*index)
+            .chain(options.iter().copied())
+            .collect(),
+        ScalarOp::SmoothMin { a, b, k, .. } => vec![*a, *b, *k],
+    }
+}
+
+fn mark_scalar_use(
+    graph: &SymbolicGraph,
+    id: ScalarId,
+    use_kind: ParamUse,
+    uses: &mut BTreeMap<ParamId, BTreeSet<ParamUse>>,
+    seen: &mut BTreeSet<(ScalarId, ParamUse)>,
+) -> Result<(), String> {
+    if !seen.insert((id, use_kind)) {
+        return Ok(());
+    }
+    let node = graph.scalar.get(id)?;
+    if let ScalarOp::Param(param) = node.op {
+        uses.entry(param).or_default().insert(use_kind);
+    }
+    for child in scalar_children(&node.op) {
+        mark_scalar_use(graph, child, use_kind, uses, seen)?;
+    }
+    Ok(())
+}
+
+fn mark_material_use(
+    graph: &SymbolicGraph,
+    id: MaterialId,
+    uses: &mut BTreeMap<ParamId, BTreeSet<ParamUse>>,
+    seen_material: &mut BTreeSet<MaterialId>,
+    seen_scalar: &mut BTreeSet<(ScalarId, ParamUse)>,
+) -> Result<(), String> {
+    if !seen_material.insert(id) {
+        return Ok(());
+    }
+    match &graph.materials.get(id)?.kind {
+        MaterialKind::Sample(sample) => {
+            let mut scalars = Vec::new();
+            scalars.extend(sample.base_color);
+            scalars.push(sample.opacity);
+            scalars.extend(sample.emissive);
+            scalars.extend([
+                sample.roughness,
+                sample.metallic,
+                sample.specular_level,
+                sample.ior,
+            ]);
+            if let super::material_graph::NormalModel::AnalyticSlope { x, y } = sample.normal {
+                scalars.extend([x, y]);
+            }
+            for scalar in scalars {
+                mark_scalar_use(graph, scalar, ParamUse::Material, uses, seen_scalar)?;
+            }
+        }
+        MaterialKind::Select { predicate, a, b } => {
+            mark_scalar_use(graph, *predicate, ParamUse::Material, uses, seen_scalar)?;
+            mark_material_use(graph, *a, uses, seen_material, seen_scalar)?;
+            mark_material_use(graph, *b, uses, seen_material, seen_scalar)?;
+        }
+        MaterialKind::IdentityTable { cases, .. } => {
+            for (_, material) in cases {
+                mark_material_use(graph, *material, uses, seen_material, seen_scalar)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn align_up(value: u32, alignment: u32) -> Result<u32, String> {
+    let mask = alignment
+        .checked_sub(1)
+        .ok_or_else(|| "pixels::params: zero alignment".to_string())?;
+    value
+        .checked_add(mask)
+        .map(|value| value & !mask)
+        .ok_or_else(|| "P015: packed parameter offset overflow".to_string())
+}
+
+pub fn derive_layout(
+    graph: &SymbolicGraph,
+    config: &super::config::RendererConfig,
+) -> Result<ParameterLayout, String> {
+    let mut uses = BTreeMap::<ParamId, BTreeSet<ParamUse>>::new();
+    let mut seen_scalar = BTreeSet::new();
+    mark_scalar_use(
+        graph,
+        graph.fields.get(graph.field_root)?.scalar_value,
+        ParamUse::Geometry,
+        &mut uses,
+        &mut seen_scalar,
+    )?;
+    mark_material_use(
+        graph,
+        graph.material_root,
+        &mut uses,
+        &mut BTreeSet::new(),
+        &mut seen_scalar,
+    )?;
+
+    let mut referenced = graph
+        .params
+        .iter()
+        .filter(|param| uses.contains_key(&param.id))
+        .collect::<Vec<_>>();
+    referenced.sort_by_key(|param| (param.path.clone(), param.component, param.id));
+
+    let mut offset = 0_u32;
+    let mut slots = Vec::with_capacity(referenced.len());
+    for param in referenced {
+        let ty = scalar_type(&param.ty, param.component)?;
+        offset = align_up(offset, ty.size())?;
+        let packed_offset = offset;
+        offset = offset
+            .checked_add(ty.size())
+            .ok_or_else(|| "P015: packed parameter byte count overflow".to_string())?;
+        let rate = param.rate.map(|(max_delta, max_second_delta)| ScalarRate {
+            max_delta,
+            max_second_delta,
+        });
+        slots.push(ParamSlot {
+            id: param.id,
+            path: param.path.clone(),
+            component: param.component,
+            scalar_ty: ty,
+            range: ScalarRange {
+                min: param.range_min,
+                max: param.range_max,
+            },
+            rate,
+            immutable: rate
+                .is_some_and(|rate| rate.max_delta == 0.0 && rate.max_second_delta == 0.0),
+            uses: uses.remove(&param.id).unwrap_or_default(),
+            packed_offset,
+        });
+    }
+    let snapshot_alignment = slots
+        .iter()
+        .map(|slot| slot.scalar_ty.size())
+        .max()
+        .unwrap_or(1);
+    let packed_bytes = align_up(offset, snapshot_alignment)?;
+    let fields = vec![
+        "packed-parameter-bytes",
+        "camera-coefficients",
+        "light-coefficients",
+        "exposure-post-ids",
+        "ao-version",
+        "probe-version",
+        "output-mode",
+        "deterministic-frame-phase",
+    ];
+    let frame_dependencies = frame_dependency_tuple(config)?;
+    let mut schema = fields.join("\n");
+    for slot in &slots {
+        schema.push_str("\nslot path=");
+        schema.push_str(
+            &slot
+                .path
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join("."),
+        );
+        schema.push_str(&format!(
+            " component={:?} type={:?} offset={} size={} uses=",
+            slot.component,
+            slot.scalar_ty,
+            slot.packed_offset,
+            slot.scalar_ty.size(),
+        ));
+        schema.push_str(
+            &slot
+                .uses
+                .iter()
+                .map(|use_kind| format!("{use_kind:?}"))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    for field in &frame_dependencies.fields {
+        schema.push_str(&format!(
+            "\nframe path={} use={:?} type={:?} count={} offset={} runtime={}",
+            field.path,
+            field.use_kind,
+            field.scalar_ty,
+            field.element_count,
+            field.packed_offset,
+            field.runtime,
+        ));
+    }
+    let schema_digest = wrela_machine::sha256::sha256_hex(schema.as_bytes());
+    Ok(ParameterLayout {
+        slots,
+        packed_bytes,
+        frame_dependencies,
+        digest_schema: DependencyDigestSchema {
+            fields,
+            schema_digest,
+        },
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -492,11 +964,6 @@ impl<'a> Collector<'a> {
                                 "smooth_union" | "smooth_intersection" | "smooth_subtract"
                             ) {
                                 "P011"
-                            } else if matches!(
-                                operation,
-                                "finite_repeat_x" | "finite_repeat_y" | "finite_repeat_z"
-                            ) {
-                                "P012"
                             } else {
                                 "P004"
                             };
@@ -514,12 +981,6 @@ impl<'a> Collector<'a> {
                     .filter(|located| super::is_core_field_function(located))
                     .map(|located| located.decl_name.as_str())
                     .unwrap_or(name);
-                if matches!(
-                    canonical_name,
-                    "finite_repeat_x" | "finite_repeat_y" | "finite_repeat_z"
-                ) {
-                    positive_contract(3, "period", canonical_name)?;
-                }
                 if matches!(
                     canonical_name,
                     "smooth_union" | "smooth_intersection" | "smooth_subtract"
@@ -933,6 +1394,59 @@ pub fn collect_parameter_contracts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pixels::config::{RgbRangeConfig, ScalarRangeConfig, Vec3Config};
+
+    #[test]
+    fn coefficient_snapshot_stride_preserves_maximum_slot_alignment() {
+        assert_eq!(align_up(9, 8).unwrap(), 16);
+        assert_eq!(align_up(12, 4).unwrap(), 12);
+    }
+
+    fn dependency_config(ao_enabled: bool) -> super::super::config::RendererConfig {
+        super::super::config::RendererConfig {
+            declaration_index: 0,
+            worker_count: 1,
+            params_type: Type::Unit,
+            field: String::new(),
+            material: String::new(),
+            material_type: Type::Unit,
+            display_index: 0,
+            width: 1,
+            height: 1,
+            refresh_hz: 60,
+            shade_hz: 60,
+            profile: "AaaByteExact".to_string(),
+            tone_curve: "Linear".to_string(),
+            near: 0.1,
+            far: 10.0,
+            world_min: Vec3Config {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
+            world_max: Vec3Config {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            camera_max_motion: 0.0,
+            light_capacity: 0,
+            light_kinds: Vec::new(),
+            exposure: ScalarRangeConfig {
+                min: -1.0,
+                max: 1.0,
+            },
+            environment: RgbRangeConfig {
+                min: [0.0; 3],
+                max: [1.0; 3],
+            },
+            ao_enabled,
+            probes_enabled: false,
+            probe_initialization_worst_case_ms: 0,
+            initialization_deadline_ms: 1,
+            parameter_contracts: Vec::new(),
+        }
+    }
 
     #[test]
     fn integer_ranges_are_optional_but_retained_when_present() {
@@ -953,6 +1467,18 @@ mod tests {
         }
         assert!(!is_optional_integer_range(&Type::Bool));
         assert!(requires_parameter_range(&Type::F32));
+    }
+
+    #[test]
+    fn frame_dependency_tuple_seals_ao_mode() {
+        let disabled = frame_dependency_tuple(&dependency_config(false)).unwrap();
+        let enabled = frame_dependency_tuple(&dependency_config(true)).unwrap();
+        assert_eq!(disabled.ao_version, 0);
+        assert_eq!(enabled.ao_version, 1);
+        assert!(enabled.fields.iter().any(|field| {
+            field.path == "sealed.ao_version" && field.use_kind == ParamUse::Post && !field.runtime
+        }));
+        assert_ne!(disabled, enabled);
     }
 
     #[test]

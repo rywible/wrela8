@@ -403,13 +403,13 @@ fn run_pixels_stage(
             return;
         }
     };
-    let symbolic_graphs = match wrela_compiler::pixels::compile_all(
+    let program_set = match wrela_compiler::pixels::compile_all(
         programs,
         module,
         &graph,
         &checked.renderer_configs,
     ) {
-        Ok(program_set) => program_set.symbolic_graphs,
+        Ok(program_set) => program_set,
         Err(error) => {
             print_sema_error(&eval::image_checks::pixels_error(error));
             return;
@@ -435,8 +435,12 @@ fn run_pixels_stage(
     if stage == wrela_compiler::pixels::PixelsDumpStage::FieldGraph {
         print!(
             "{}",
-            wrela_compiler::pixels::dump_symbolic_graphs(
-                &[(selected_index, symbolic_graphs[selected_index].clone())],
+            wrela_compiler::pixels::dump_structural_graphs(
+                &[(
+                    selected_index,
+                    program_set.symbolic_graphs[selected_index].clone(),
+                    program_set.structural_programs[selected_index].clone(),
+                )],
                 &checked.renderer_configs,
             )
         );
@@ -508,7 +512,7 @@ fn build_report(
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
                     Ok(checked_image) => {
-                        wrela_compiler::pixels::compile_all(
+                        let pixels_programs = wrela_compiler::pixels::compile_all(
                             programs,
                             module,
                             &graph,
@@ -559,6 +563,12 @@ fn build_report(
                         }
                         match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
+                                if !pixels_programs.structural_programs.is_empty() {
+                                    wrela_compiler::pixels::report::append_program_set(
+                                        &mut text,
+                                        &pixels_programs,
+                                    );
+                                }
                                 let name = first_field_value(&text, "Name value=")
                                     .unwrap_or("")
                                     .to_string();

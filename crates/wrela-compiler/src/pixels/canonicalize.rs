@@ -3,14 +3,550 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::arena::Arena;
+#[cfg(test)]
+use super::arena::NodeOrigin;
 use super::graph::{FieldKind, FieldNode, Primitive, TransformProgram};
 use super::ids::{FieldId, MaterialId, ParamId, ScalarId};
 use super::material_graph::{MaterialKind, MaterialNode, NormalModel};
+#[cfg(test)]
+use super::scalar::SemanticOpId;
 use super::scalar::{Dependency, ProofObligation, ScalarNode, ScalarOp};
 use super::symbolic::{PendingObligation, SymbolicGraph};
 
 pub fn run(graph: &mut SymbolicGraph) -> Result<(), String> {
     run_once(graph)
+}
+
+/// Test-only model of a tempting real-number lattice normalization. It is
+/// retained as a regression oracle: authoritative f32 SmoothMin is not
+/// distributive, so production canonicalization must never invoke this pass.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HardNormalForm {
+    Leaf { field: FieldId, negated: bool },
+    And(Box<HardNormalForm>, Box<HardNormalForm>),
+    Or(Box<HardNormalForm>, Box<HardNormalForm>),
+}
+
+#[cfg(test)]
+fn is_plain_leaf(form: &HardNormalForm, field: FieldId) -> bool {
+    matches!(
+        form,
+        HardNormalForm::Leaf {
+            field: found,
+            negated: false,
+        } if *found == field
+    )
+}
+
+#[cfg(test)]
+struct HardNormalizer<'a> {
+    graph: &'a mut SymbolicGraph,
+    memo: BTreeMap<FieldId, HardNormalForm>,
+}
+
+#[cfg(test)]
+impl HardNormalizer<'_> {
+    fn check_quota(&mut self) -> Result<(), String> {
+        let total = self
+            .graph
+            .scalar
+            .len()
+            .checked_add(self.graph.fields.len())
+            .and_then(|count| count.checked_add(self.graph.materials.len()))
+            .ok_or_else(|| "P015: hard-CSG normalization size overflow".to_string())?;
+        if total >= self.graph.quota.max_nodes {
+            return Err(format!(
+                "P015: hard-CSG normalization exceeds the symbolic node ceiling of {}",
+                self.graph.quota.max_nodes
+            ));
+        }
+        Ok(())
+    }
+
+    fn scalar(
+        &mut self,
+        op: ScalarOp,
+        dependency: Dependency,
+        origin: &NodeOrigin,
+    ) -> Result<ScalarId, String> {
+        self.check_quota()?;
+        self.graph
+            .scalar
+            .push(ScalarNode { op, dependency }, origin.clone())
+    }
+
+    fn scalar_dependency(&self, id: ScalarId) -> Result<Dependency, String> {
+        Ok(self.graph.scalar.get(id)?.dependency)
+    }
+
+    fn unary_scalar(
+        &mut self,
+        op: impl FnOnce(ScalarId) -> ScalarOp,
+        value: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<ScalarId, String> {
+        self.scalar(op(value), self.scalar_dependency(value)?, origin)
+    }
+
+    fn binary_scalar(
+        &mut self,
+        op: impl FnOnce(ScalarId, ScalarId) -> ScalarOp,
+        a: ScalarId,
+        b: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<ScalarId, String> {
+        let dependency = self
+            .scalar_dependency(a)?
+            .combine(self.scalar_dependency(b)?);
+        self.scalar(op(a, b), dependency, origin)
+    }
+
+    fn smooth_scalar(
+        &mut self,
+        a: ScalarId,
+        b: ScalarId,
+        k: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<ScalarId, String> {
+        let dependency = self
+            .scalar_dependency(a)?
+            .combine(self.scalar_dependency(b)?)
+            .combine(self.scalar_dependency(k)?);
+        self.scalar(
+            ScalarOp::SmoothMin {
+                a,
+                b,
+                k,
+                semantic: SemanticOpId::SmoothMinF32V1,
+            },
+            dependency,
+            origin,
+        )
+    }
+
+    fn field(
+        &mut self,
+        kind: FieldKind,
+        scalar_value: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<FieldId, String> {
+        self.check_quota()?;
+        self.graph
+            .fields
+            .push(FieldNode { kind, scalar_value }, origin.clone())
+    }
+
+    fn negate_leaf(&mut self, child: FieldId, origin: &NodeOrigin) -> Result<FieldId, String> {
+        let child_scalar = self.graph.fields.get(child)?.scalar_value;
+        let scalar = self.unary_scalar(ScalarOp::Neg, child_scalar, origin)?;
+        self.field(FieldKind::Neg { child }, scalar, origin)
+    }
+
+    fn negate(
+        &mut self,
+        form: HardNormalForm,
+        origin: &NodeOrigin,
+    ) -> Result<HardNormalForm, String> {
+        Ok(match form {
+            HardNormalForm::Leaf { field, negated } => HardNormalForm::Leaf {
+                field,
+                negated: !negated,
+            },
+            HardNormalForm::And(a, b) => HardNormalForm::Or(
+                Box::new(self.negate(*a, origin)?),
+                Box::new(self.negate(*b, origin)?),
+            ),
+            HardNormalForm::Or(a, b) => HardNormalForm::And(
+                Box::new(self.negate(*a, origin)?),
+                Box::new(self.negate(*b, origin)?),
+            ),
+        })
+    }
+
+    fn map_unary(
+        &mut self,
+        form: HardNormalForm,
+        source: &FieldKind,
+        origin: &NodeOrigin,
+    ) -> Result<HardNormalForm, String> {
+        Ok(match form {
+            HardNormalForm::Leaf {
+                field: child,
+                negated,
+            } => {
+                let child_scalar = self.graph.fields.get(child)?.scalar_value;
+                let (kind, scalar) = match source {
+                    FieldKind::Transform { transform, .. } => {
+                        let scalar = match transform {
+                            TransformProgram::UniformScale { scale } => {
+                                self.binary_scalar(ScalarOp::Mul, child_scalar, *scale, origin)?
+                            }
+                            _ => child_scalar,
+                        };
+                        (
+                            FieldKind::Transform {
+                                child,
+                                transform: transform.clone(),
+                            },
+                            scalar,
+                        )
+                    }
+                    FieldKind::FiniteRepeat {
+                        axis,
+                        first,
+                        count,
+                        period,
+                        ..
+                    } => (
+                        FieldKind::FiniteRepeat {
+                            child,
+                            axis: *axis,
+                            first: *first,
+                            count: *count,
+                            period: *period,
+                        },
+                        child_scalar,
+                    ),
+                    FieldKind::BoundedDisplace {
+                        displacement,
+                        contract,
+                        ..
+                    } => {
+                        let displacement = if negated {
+                            self.unary_scalar(ScalarOp::Neg, *displacement, origin)?
+                        } else {
+                            *displacement
+                        };
+                        (
+                            FieldKind::BoundedDisplace {
+                                base: child,
+                                displacement,
+                                contract: contract.clone(),
+                            },
+                            self.binary_scalar(ScalarOp::Add, child_scalar, displacement, origin)?,
+                        )
+                    }
+                    FieldKind::Mark {
+                        object_source,
+                        material_source,
+                        ..
+                    } => (
+                        FieldKind::Mark {
+                            child,
+                            object_source: object_source.clone(),
+                            material_source: material_source.clone(),
+                        },
+                        child_scalar,
+                    ),
+                    _ => {
+                        return Err(
+                            "pixels::canonicalize: non-unary field passed to hard normalizer"
+                                .to_string(),
+                        );
+                    }
+                };
+                HardNormalForm::Leaf {
+                    field: self.field(kind, scalar, origin)?,
+                    negated,
+                }
+            }
+            HardNormalForm::And(a, b) => HardNormalForm::And(
+                Box::new(self.map_unary(*a, source, origin)?),
+                Box::new(self.map_unary(*b, source, origin)?),
+            ),
+            HardNormalForm::Or(a, b) => HardNormalForm::Or(
+                Box::new(self.map_unary(*a, source, origin)?),
+                Box::new(self.map_unary(*b, source, origin)?),
+            ),
+        })
+    }
+
+    fn smooth_min_leaf(
+        &mut self,
+        a: FieldId,
+        a_negated: bool,
+        b: FieldId,
+        b_negated: bool,
+        k: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<HardNormalForm, String> {
+        let a_scalar = self.graph.fields.get(a)?.scalar_value;
+        let b_scalar = self.graph.fields.get(b)?.scalar_value;
+        let (field_kind, scalar, negated) = match (a_negated, b_negated) {
+            (false, false) => (
+                FieldKind::SmoothUnion { a, b, k },
+                self.smooth_scalar(a_scalar, b_scalar, k, origin)?,
+                false,
+            ),
+            (true, true) => {
+                let neg_a = self.unary_scalar(ScalarOp::Neg, a_scalar, origin)?;
+                let neg_b = self.unary_scalar(ScalarOp::Neg, b_scalar, origin)?;
+                let smooth = self.smooth_scalar(neg_a, neg_b, k, origin)?;
+                (
+                    FieldKind::SmoothIntersection { a, b, k },
+                    self.unary_scalar(ScalarOp::Neg, smooth, origin)?,
+                    true,
+                )
+            }
+            (true, false) => {
+                let neg_a = self.unary_scalar(ScalarOp::Neg, a_scalar, origin)?;
+                let smooth = self.smooth_scalar(neg_a, b_scalar, k, origin)?;
+                (
+                    FieldKind::SmoothSubtract { a, b, k },
+                    self.unary_scalar(ScalarOp::Neg, smooth, origin)?,
+                    true,
+                )
+            }
+            (false, true) => {
+                let neg_b = self.unary_scalar(ScalarOp::Neg, b_scalar, origin)?;
+                let smooth = self.smooth_scalar(a_scalar, neg_b, k, origin)?;
+                (
+                    FieldKind::SmoothSubtract { a: b, b: a, k },
+                    self.unary_scalar(ScalarOp::Neg, smooth, origin)?,
+                    true,
+                )
+            }
+        };
+        Ok(HardNormalForm::Leaf {
+            field: self.field(field_kind, scalar, origin)?,
+            negated,
+        })
+    }
+
+    fn smooth_leaf(
+        &mut self,
+        kind: u8,
+        a: FieldId,
+        a_negated: bool,
+        b: FieldId,
+        b_negated: bool,
+        k: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<HardNormalForm, String> {
+        if kind == 0 {
+            self.smooth_min_leaf(a, a_negated, b, b_negated, k, origin)
+        } else if kind == 1 {
+            let result = self.smooth_min_leaf(a, !a_negated, b, !b_negated, k, origin)?;
+            self.negate(result, origin)
+        } else {
+            Err("pixels::canonicalize: unknown smooth normal form".to_string())
+        }
+    }
+
+    fn lift_smooth(
+        &mut self,
+        kind: u8,
+        a: HardNormalForm,
+        b: HardNormalForm,
+        k: ScalarId,
+        origin: &NodeOrigin,
+    ) -> Result<HardNormalForm, String> {
+        Ok(match a {
+            HardNormalForm::And(left, right) => HardNormalForm::And(
+                Box::new(self.lift_smooth(kind, *left, b.clone(), k, origin)?),
+                Box::new(self.lift_smooth(kind, *right, b, k, origin)?),
+            ),
+            HardNormalForm::Or(left, right) => HardNormalForm::Or(
+                Box::new(self.lift_smooth(kind, *left, b.clone(), k, origin)?),
+                Box::new(self.lift_smooth(kind, *right, b, k, origin)?),
+            ),
+            HardNormalForm::Leaf {
+                field: a,
+                negated: a_negated,
+            } => match b {
+                HardNormalForm::And(left, right) => HardNormalForm::And(
+                    Box::new(self.lift_smooth(
+                        kind,
+                        HardNormalForm::Leaf {
+                            field: a,
+                            negated: a_negated,
+                        },
+                        *left,
+                        k,
+                        origin,
+                    )?),
+                    Box::new(self.lift_smooth(
+                        kind,
+                        HardNormalForm::Leaf {
+                            field: a,
+                            negated: a_negated,
+                        },
+                        *right,
+                        k,
+                        origin,
+                    )?),
+                ),
+                HardNormalForm::Or(left, right) => HardNormalForm::Or(
+                    Box::new(self.lift_smooth(
+                        kind,
+                        HardNormalForm::Leaf {
+                            field: a,
+                            negated: a_negated,
+                        },
+                        *left,
+                        k,
+                        origin,
+                    )?),
+                    Box::new(self.lift_smooth(
+                        kind,
+                        HardNormalForm::Leaf {
+                            field: a,
+                            negated: a_negated,
+                        },
+                        *right,
+                        k,
+                        origin,
+                    )?),
+                ),
+                HardNormalForm::Leaf {
+                    field: b,
+                    negated: b_negated,
+                } => self.smooth_leaf(kind, a, a_negated, b, b_negated, k, origin)?,
+            },
+        })
+    }
+
+    fn normalize(&mut self, id: FieldId) -> Result<HardNormalForm, String> {
+        if let Some(form) = self.memo.get(&id) {
+            return Ok(form.clone());
+        }
+        let node = self.graph.fields.get(id)?.clone();
+        let origin = self.graph.fields.origin(id)?.clone();
+        let form = match &node.kind {
+            FieldKind::Primitive(_) => HardNormalForm::Leaf {
+                field: id,
+                negated: false,
+            },
+            FieldKind::HardUnion { a, b } => {
+                HardNormalForm::Or(Box::new(self.normalize(*a)?), Box::new(self.normalize(*b)?))
+            }
+            FieldKind::HardIntersection { a, b } => {
+                HardNormalForm::And(Box::new(self.normalize(*a)?), Box::new(self.normalize(*b)?))
+            }
+            FieldKind::HardSubtract { a, b } => {
+                let right = self.normalize(*b)?;
+                HardNormalForm::And(
+                    Box::new(self.normalize(*a)?),
+                    Box::new(self.negate(right, &origin)?),
+                )
+            }
+            FieldKind::Neg { child } => {
+                let child = self.normalize(*child)?;
+                self.negate(child, &origin)?
+            }
+            FieldKind::SmoothUnion { a, b, k } => {
+                let a_form = self.normalize(*a)?;
+                let b_form = self.normalize(*b)?;
+                if is_plain_leaf(&a_form, *a) && is_plain_leaf(&b_form, *b) {
+                    HardNormalForm::Leaf {
+                        field: id,
+                        negated: false,
+                    }
+                } else {
+                    self.lift_smooth(0, a_form, b_form, *k, &origin)?
+                }
+            }
+            FieldKind::SmoothIntersection { a, b, k } => {
+                let a_form = self.normalize(*a)?;
+                let b_form = self.normalize(*b)?;
+                if is_plain_leaf(&a_form, *a) && is_plain_leaf(&b_form, *b) {
+                    HardNormalForm::Leaf {
+                        field: id,
+                        negated: false,
+                    }
+                } else {
+                    self.lift_smooth(1, a_form, b_form, *k, &origin)?
+                }
+            }
+            FieldKind::SmoothSubtract { a, b, k } => {
+                let a_form = self.normalize(*a)?;
+                let b_form = self.normalize(*b)?;
+                if is_plain_leaf(&a_form, *a) && is_plain_leaf(&b_form, *b) {
+                    HardNormalForm::Leaf {
+                        field: id,
+                        negated: false,
+                    }
+                } else {
+                    let b_form = self.negate(b_form, &origin)?;
+                    self.lift_smooth(1, a_form, b_form, *k, &origin)?
+                }
+            }
+            FieldKind::Transform { child, .. }
+            | FieldKind::FiniteRepeat { child, .. }
+            | FieldKind::Mark { child, .. } => {
+                let child_form = self.normalize(*child)?;
+                if is_plain_leaf(&child_form, *child) {
+                    HardNormalForm::Leaf {
+                        field: id,
+                        negated: false,
+                    }
+                } else {
+                    self.map_unary(child_form, &node.kind, &origin)?
+                }
+            }
+            FieldKind::BoundedDisplace { base, .. } => {
+                let base_form = self.normalize(*base)?;
+                if is_plain_leaf(&base_form, *base) {
+                    HardNormalForm::Leaf {
+                        field: id,
+                        negated: false,
+                    }
+                } else {
+                    self.map_unary(base_form, &node.kind, &origin)?
+                }
+            }
+        };
+        self.memo.insert(id, form.clone());
+        Ok(form)
+    }
+
+    fn reify(&mut self, form: HardNormalForm, origin: &NodeOrigin) -> Result<FieldId, String> {
+        match form {
+            HardNormalForm::Leaf { field, negated } => {
+                if negated {
+                    self.negate_leaf(field, origin)
+                } else {
+                    Ok(field)
+                }
+            }
+            HardNormalForm::And(a, b) => {
+                let a = self.reify(*a, origin)?;
+                let b = self.reify(*b, origin)?;
+                let scalar = self.binary_scalar(
+                    ScalarOp::Max,
+                    self.graph.fields.get(a)?.scalar_value,
+                    self.graph.fields.get(b)?.scalar_value,
+                    origin,
+                )?;
+                self.field(FieldKind::HardIntersection { a, b }, scalar, origin)
+            }
+            HardNormalForm::Or(a, b) => {
+                let a = self.reify(*a, origin)?;
+                let b = self.reify(*b, origin)?;
+                let scalar = self.binary_scalar(
+                    ScalarOp::Min,
+                    self.graph.fields.get(a)?.scalar_value,
+                    self.graph.fields.get(b)?.scalar_value,
+                    origin,
+                )?;
+                self.field(FieldKind::HardUnion { a, b }, scalar, origin)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn normalize_hard_boundaries(graph: &mut SymbolicGraph) -> Result<(), String> {
+    let original_root = graph.field_root;
+    let root_origin = graph.fields.origin(original_root)?.clone();
+    let mut normalizer = HardNormalizer {
+        graph,
+        memo: BTreeMap::new(),
+    };
+    let form = normalizer.normalize(original_root)?;
+    normalizer.graph.field_root = normalizer.reify(form, &root_origin)?;
+    Ok(())
 }
 
 fn run_once(graph: &mut SymbolicGraph) -> Result<(), String> {
@@ -118,7 +654,7 @@ fn run_once(graph: &mut SymbolicGraph) -> Result<(), String> {
     let mut field_cse = BTreeMap::new();
     for old in field_order {
         let node = graph.fields.get(old)?;
-        let kind = remap_field(&node.kind, &field_map, &scalar_map)?;
+        let kind = remap_field(&node.kind, &field_map, &scalar_map, &scalar)?;
         let scalar_value = mapped(&scalar_map, node.scalar_value, "scalar")?;
         if let FieldKind::Transform { child, transform } = &kind
             && is_identity_transform(transform, &scalar)
@@ -148,6 +684,15 @@ fn run_once(graph: &mut SymbolicGraph) -> Result<(), String> {
     for old in material_order {
         let node = graph.materials.get(old)?;
         let kind = remap_material(&node.kind, &material_map, &scalar_map)?;
+        if let MaterialKind::Select { a, b, .. } = &kind
+            && a == b
+        {
+            materials
+                .origin_mut(*a)?
+                .merge(graph.materials.origin(old)?);
+            material_map.insert(old, *a);
+            continue;
+        }
         let id = if let Some(id) = material_cse.get(&kind).copied() {
             materials
                 .origin_mut(id)?
@@ -163,6 +708,13 @@ fn run_once(graph: &mut SymbolicGraph) -> Result<(), String> {
         };
         material_map.insert(old, id);
     }
+    let active_material_predicates = materials
+        .iter()
+        .filter_map(|(_, node)| match &node.kind {
+            MaterialKind::Select { predicate, .. } => Some(*predicate),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
 
     let mut obligations = Vec::new();
     let mut obligation_keys = BTreeSet::new();
@@ -202,6 +754,7 @@ fn run_once(graph: &mut SymbolicGraph) -> Result<(), String> {
             PendingObligation::MaterialEvent { predicate } => scalar_map
                 .get(predicate)
                 .copied()
+                .filter(|predicate| active_material_predicates.contains(predicate))
                 .map(|predicate| PendingObligation::MaterialEvent { predicate }),
         };
         if let Some(remapped) = remapped
@@ -704,6 +1257,7 @@ fn remap_scalar(
 fn remap_primitive(
     primitive: &Primitive,
     scalar: &BTreeMap<ScalarId, ScalarId>,
+    scalar_arena: &super::scalar::ScalarArena,
 ) -> Result<Primitive, String> {
     let one = |id| mapped(scalar, id, "scalar");
     Ok(match primitive {
@@ -728,11 +1282,27 @@ fn remap_primitive(
             half: map_scalar_array(scalar, *half)?,
             radius: one(*radius)?,
         },
-        Primitive::Capsule { a, b, radius } => Primitive::Capsule {
-            a: map_scalar_array(scalar, *a)?,
-            b: map_scalar_array(scalar, *b)?,
-            radius: one(*radius)?,
-        },
+        Primitive::Capsule { a, b, radius } => {
+            let a = map_scalar_array(scalar, *a)?;
+            let b = map_scalar_array(scalar, *b)?;
+            let radius = one(*radius)?;
+            let same_constant_point = a.iter().zip(&b).all(|(a, b)| {
+                super::scalar::constant_value(scalar_arena, *a)
+                    .zip(super::scalar::constant_value(scalar_arena, *b))
+                    .is_some_and(|(a, b)| a.to_bits() == b.to_bits())
+            });
+            let same_scalar_point = a.iter().zip(&b).all(|(a, b)| {
+                matches!(
+                    (scalar_arena.get(*a), scalar_arena.get(*b)),
+                    (Ok(a), Ok(b)) if a.op == b.op
+                )
+            });
+            if a == b || same_constant_point || same_scalar_point {
+                Primitive::Sphere { center: a, radius }
+            } else {
+                Primitive::Capsule { a, b, radius }
+            }
+        }
         Primitive::FiniteCylinder { a, b, radius } => Primitive::FiniteCylinder {
             a: map_scalar_array(scalar, *a)?,
             b: map_scalar_array(scalar, *b)?,
@@ -810,12 +1380,13 @@ fn remap_field(
     kind: &FieldKind,
     field: &BTreeMap<FieldId, FieldId>,
     scalar: &BTreeMap<ScalarId, ScalarId>,
+    scalar_arena: &super::scalar::ScalarArena,
 ) -> Result<FieldKind, String> {
     let f = |id| mapped(field, id, "field");
     let s = |id| mapped(scalar, id, "scalar");
     Ok(match kind {
         FieldKind::Primitive(primitive) => {
-            FieldKind::Primitive(remap_primitive(primitive, scalar)?)
+            FieldKind::Primitive(remap_primitive(primitive, scalar, scalar_arena)?)
         }
         FieldKind::HardUnion { a, b } => FieldKind::HardUnion {
             a: f(*a)?,
@@ -874,6 +1445,9 @@ fn remap_field(
                 gradient_bound: s(contract.gradient_bound)?,
                 hessian_bound: s(contract.hessian_bound)?,
                 third_derivative_bound: s(contract.third_derivative_bound)?,
+                coordinate_x: s(contract.coordinate_x)?,
+                frequency: s(contract.frequency)?,
+                phase: s(contract.phase)?,
                 derivation: contract.derivation,
             },
         },
@@ -948,10 +1522,16 @@ mod tests {
             ScalarOp::CoordZ => point[2],
             ScalarOp::Add(a, b) => eval_scalar(arena, a, point) + eval_scalar(arena, b, point),
             ScalarOp::Mul(a, b) => eval_scalar(arena, a, point) * eval_scalar(arena, b, point),
+            ScalarOp::Neg(value) => -eval_scalar(arena, value, point),
             ScalarOp::Min(a, b) => {
                 let a = eval_scalar(arena, a, point);
                 let b = eval_scalar(arena, b, point);
                 if a < b { a } else { b }
+            }
+            ScalarOp::Max(a, b) => {
+                let a = eval_scalar(arena, a, point);
+                let b = eval_scalar(arena, b, point);
+                if a > b { a } else { b }
             }
             ScalarOp::SmoothMin { a, b, k, .. } => source_smooth_min(
                 eval_scalar(arena, a, point),
@@ -967,6 +1547,195 @@ mod tests {
         let source = include_str!("canonicalize.rs");
         assert!(!source.contains("format!(\"{:?}\""));
         assert!(!source.contains(&["Hash", "Map"].concat()));
+    }
+
+    #[test]
+    fn nested_hard_union_preserves_authored_f32_scalar_order() {
+        let mut scalar = ScalarArena::new(1);
+        let mut push_scalar = |op, dependency, label| {
+            scalar
+                .push(ScalarNode { op, dependency }, NodeOrigin::synthetic(label))
+                .unwrap()
+        };
+        let zero = push_scalar(
+            ScalarOp::ConstF32(0.0f32.to_bits()),
+            Dependency::Constant,
+            "zero",
+        );
+        let one = push_scalar(
+            ScalarOp::ConstF32(1.0f32.to_bits()),
+            Dependency::Constant,
+            "one",
+        );
+        let k = push_scalar(ScalarOp::ConstF32(0x3bf0_eb6b), Dependency::Constant, "k");
+        let x = push_scalar(ScalarOp::CoordX, Dependency::Coordinate, "x");
+        let y = push_scalar(ScalarOp::CoordY, Dependency::Coordinate, "y");
+        let z = push_scalar(ScalarOp::CoordZ, Dependency::Coordinate, "z");
+        let hard_scalar = push_scalar(ScalarOp::Min(x, y), Dependency::Coordinate, "hard");
+        let smooth_scalar = push_scalar(
+            ScalarOp::SmoothMin {
+                a: hard_scalar,
+                b: z,
+                k,
+                semantic: SemanticOpId::SmoothMinF32V1,
+            },
+            Dependency::Coordinate,
+            "smooth",
+        );
+
+        let mut fields = FieldArena::new(2);
+        let primitive = |value| Primitive::Plane {
+            normal: [one, zero, zero],
+            offset: value,
+        };
+        let x_field = fields
+            .push(
+                FieldNode {
+                    kind: FieldKind::Primitive(primitive(x)),
+                    scalar_value: x,
+                },
+                NodeOrigin::synthetic("x-field"),
+            )
+            .unwrap();
+        let y_field = fields
+            .push(
+                FieldNode {
+                    kind: FieldKind::Primitive(primitive(y)),
+                    scalar_value: y,
+                },
+                NodeOrigin::synthetic("y-field"),
+            )
+            .unwrap();
+        let z_field = fields
+            .push(
+                FieldNode {
+                    kind: FieldKind::Primitive(primitive(z)),
+                    scalar_value: z,
+                },
+                NodeOrigin::synthetic("z-field"),
+            )
+            .unwrap();
+        let hard = fields
+            .push(
+                FieldNode {
+                    kind: FieldKind::HardUnion {
+                        a: x_field,
+                        b: y_field,
+                    },
+                    scalar_value: hard_scalar,
+                },
+                NodeOrigin::synthetic("hard-field"),
+            )
+            .unwrap();
+        let root = fields
+            .push(
+                FieldNode {
+                    kind: FieldKind::SmoothUnion {
+                        a: hard,
+                        b: z_field,
+                        k,
+                    },
+                    scalar_value: smooth_scalar,
+                },
+                NodeOrigin::synthetic("smooth-field"),
+            )
+            .unwrap();
+
+        let mut materials = MaterialArena::new(3);
+        let material_root = materials
+            .push(
+                MaterialNode {
+                    kind: MaterialKind::Sample(MaterialSampleNode {
+                        base_color: [zero; 3],
+                        opacity: one,
+                        emissive: [zero; 3],
+                        roughness: zero,
+                        metallic: zero,
+                        specular_level: zero,
+                        ior: one,
+                        normal: NormalModel::Geometric,
+                        pattern: None,
+                    }),
+                },
+                NodeOrigin::synthetic("material"),
+            )
+            .unwrap();
+        let mut graph = SymbolicGraph {
+            renderer_index: 0,
+            field_key: "scene::world".to_string(),
+            material_key: "scene::shade".to_string(),
+            params_type: Type::Unit,
+            material_type: Type::Unit,
+            params: Vec::new(),
+            scalar,
+            fields,
+            materials,
+            field_root: root,
+            material_root,
+            obligations: Vec::new(),
+            quota: SymbolicQuota::default(),
+        };
+        let before = graph.clone();
+        let mut rejected_real_lattice_rewrite = before.clone();
+        normalize_hard_boundaries(&mut rejected_real_lattice_rewrite).unwrap();
+        run_once(&mut rejected_real_lattice_rewrite).unwrap();
+        run(&mut graph).unwrap();
+
+        let root = graph.fields.get(graph.field_root).unwrap();
+        let FieldKind::SmoothUnion { a, b: _, .. } = root.kind else {
+            panic!("canonicalization must retain the authored smooth root")
+        };
+        assert!(matches!(
+            graph.fields.get(a).unwrap().kind,
+            FieldKind::HardUnion { .. }
+        ));
+        for x in [-1.0_f32, -0.125, 0.0, 0.125, 1.0] {
+            for y in [-1.0_f32, -0.125, 0.0, 0.125, 1.0] {
+                for z in [-1.0_f32, -0.125, 0.0, 0.125, 1.0] {
+                    let expected = eval_scalar(
+                        &before.scalar,
+                        before.fields.get(before.field_root).unwrap().scalar_value,
+                        [x, y, z],
+                    );
+                    let actual = eval_scalar(
+                        &graph.scalar,
+                        graph.fields.get(graph.field_root).unwrap().scalar_value,
+                        [x, y, z],
+                    );
+                    assert_eq!(expected.to_bits(), actual.to_bits());
+                }
+            }
+        }
+        let adjacent = [
+            f32::from_bits(0x3af0_ebb3),
+            f32::from_bits(0x3af0_ebb4),
+            f32::from_bits(0x3af0_eb23),
+        ];
+        let expected = eval_scalar(
+            &before.scalar,
+            before.fields.get(before.field_root).unwrap().scalar_value,
+            adjacent,
+        );
+        let actual = eval_scalar(
+            &graph.scalar,
+            graph.fields.get(graph.field_root).unwrap().scalar_value,
+            adjacent,
+        );
+        assert_eq!(expected.to_bits(), 0x0000_0000);
+        assert_eq!(actual.to_bits(), expected.to_bits());
+        let rewritten = eval_scalar(
+            &rejected_real_lattice_rewrite.scalar,
+            rejected_real_lattice_rewrite
+                .fields
+                .get(rejected_real_lattice_rewrite.field_root)
+                .unwrap()
+                .scalar_value,
+            adjacent,
+        );
+        assert_eq!(rewritten.to_bits(), 0xaf00_0000);
+        let once = graph.clone();
+        run(&mut graph).unwrap();
+        assert_eq!(graph, once);
     }
 
     #[test]
@@ -1125,7 +1894,7 @@ mod tests {
             )
             .unwrap();
         let mut materials = MaterialArena::new(3);
-        let material_root = materials
+        let material_sample = materials
             .push(
                 MaterialNode {
                     kind: MaterialKind::Sample(MaterialSampleNode {
@@ -1143,6 +1912,18 @@ mod tests {
                 NodeOrigin::synthetic("material"),
             )
             .unwrap();
+        let material_root = materials
+            .push(
+                MaterialNode {
+                    kind: MaterialKind::Select {
+                        predicate: field_value,
+                        a: material_sample,
+                        b: material_sample,
+                    },
+                },
+                NodeOrigin::synthetic("redundant-material-select"),
+            )
+            .unwrap();
         let mut graph = SymbolicGraph {
             renderer_index: 0,
             field_key: "scene::world".to_string(),
@@ -1155,11 +1936,14 @@ mod tests {
             materials,
             field_root: identity_root,
             material_root,
-            obligations: vec![PendingObligation::Scalar(
-                ProofObligation::DenominatorNonZero {
+            obligations: vec![
+                PendingObligation::Scalar(ProofObligation::DenominatorNonZero {
                     denominator: negative_zero,
+                }),
+                PendingObligation::MaterialEvent {
+                    predicate: field_value,
                 },
-            )],
+            ],
             quota: SymbolicQuota::default(),
         };
         let before = graph.clone();
@@ -1216,6 +2000,11 @@ mod tests {
         assert_eq!(
             graph.scalar.get(sample.roughness).unwrap().dependency,
             Dependency::Constant
+        );
+        assert_eq!(
+            graph.obligations.len(),
+            1,
+            "folding identical material branches must remove their hard event obligation"
         );
         let PendingObligation::Scalar(ProofObligation::DenominatorNonZero { denominator }) =
             graph.obligations[0]

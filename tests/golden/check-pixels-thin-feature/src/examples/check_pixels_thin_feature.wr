@@ -22,7 +22,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 7
-# production Pixels stage is not implemented; implemented in task P3.7
+# P3 fused-feature decomposition retains this subpixel geometry.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID

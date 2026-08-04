@@ -71,4 +71,70 @@ Renderers count=1
     Origin kind=material id=m0 primary=examples.check_pixels_tile_boundary:49:35@bytes=1089..1090 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
     Roots field=f2 material=m0
     SymbolicQuota steps=24/1000000 nodes=39/250000 unrolled_statements=0/250000 aggregate_elements=9/250000 call_depth=1/128
-Analysis status=pending
+  StructuralRenderer index=0 field_key=examples.check_pixels_tile_boundary::world material_key=examples.check_pixels_tile_boundary::shade
+    ParameterLayout slots=0 packed_bytes=0 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+      FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
+        FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
+        FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
+        FrameInput path=frame.camera.right use=Camera type=F32 count=3 offset=24 runtime=true
+        FrameInput path=frame.camera.up use=Camera type=F32 count=3 offset=36 runtime=true
+        FrameInput path=frame.lights[*].coefficients use=Light type=F32 count=0 offset=48 runtime=true
+        FrameInput path=frame.exposure use=Exposure type=F32 count=1 offset=48 runtime=true
+        FrameInput path=frame.environment use=Light type=F32 count=3 offset=52 runtime=true
+        FrameInput path=frame.frame_index use=Probe type=U64 count=1 offset=64 runtime=true
+        FrameInput path=sealed.tone_curve_id use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.ao_version use=Post type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.probe_version use=Probe type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.output_mode use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.frame_phase use=Post type=U64 count=1 offset=0 runtime=false
+    ScalarProof id=s0 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s1 value=[0.03125,0.03125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s2 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s3 value=[-4,4] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s4 value=[-5,3] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s5 value=[0,5] value_rule=abs-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+    ScalarProof id=s6 value=[-0.03125,4.96875] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=additive-chain
+    ScalarProof id=s7 value=[0,4.96875] value_rule=max-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s8 value=[-4,4] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s9 value=[-4,4] value_rule=sub-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s10 value=[0,4] value_rule=abs-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+    ScalarProof id=s11 value=[-1,3] value_rule=sub-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=additive-chain
+    ScalarProof id=s12 value=[0,3] value_rule=max-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s13 value=[-4,4] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s14 value=[-4,4] value_rule=sub-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s15 value=[0,4] value_rule=abs-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=abs
+    ScalarProof id=s16 value=[-1,3] value_rule=sub-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=additive-chain
+    ScalarProof id=s17 value=[0,3] value_rule=max-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s18 value=[0,6.533641815185547] value_rule=length3 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+    ScalarProof id=s19 value=[-1,3] value_rule=max-f32 world_derivative=[0,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s20 value=[-0.03125,4.96875] value_rule=max-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s21 value=[-0.03125,0] value_rule=min-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=hard-extremum
+    ScalarProof id=s22 value=[-0.03125,6.533641815185547] value_rule=add-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s23 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s24 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s25 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s26 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    WorldBound field=f0 bounds=[-0.031311035156250014,-1.0000610351562504,-1.0000610351562504]-[0.031311035156250014,1.0000610351562504,1.0000610351562504] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f1 bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] rule=rigid-transform contributors=[f0] pruned=none
+    WorldBound field=f2 bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] rule=identity-mark contributors=[f1] pruned=none
+    Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f1 max=[0,0] leaves=f0@0>f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f2 max=[0,0] leaves=f0@0>f1@0>f2@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    IdentitySet id=0 pairs=[examples.check_pixels_tile_boundary::MaterialId::Ground=>examples.check_pixels_tile_boundary::MaterialId::Ground]
+    SmoothObject id=o0 root=f1 scalar=s22 bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] leaves=[f0@0>f1@0] support=[0,0] identity_set=0 repeats=[]
+    Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
+      Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+    Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 0, sign: -1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Feature id=g1 template=1 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 0, sign: 1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Feature id=g2 template=2 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 1, sign: -1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Feature id=g3 template=3 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 1, sign: 1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Feature id=g4 template=4 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 2, sign: -1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Feature id=g5 template=5 object=o0 primitive=f0 path=[f0@0>f1@0] kind=Plane bounds=[0.9686889648437499,-1.0000610351562507,-1.0000610351562507]-[1.0313110351562502,1.0000610351562507,1.0000610351562507] support=0 validity=[[BoxFace { axis: 2, sign: 1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(2)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
+    Capacities workers=1 objects=1 feature_templates=6 feature_slots=6 repeated_instances=0 scalar_slots=27 derivative_slots=27 parameter_slots=0 csg_stack=1 projected_row=6 projected_tile=6 row_start_roots=6 active_sheets=6 event_generators=30 event_subdivisions=4 event_records=120 tile_row_runs=121 csg_events=6 transparent_layers=1 rebuild_queue=121 candidate_bytes=384 root_bytes=192 sheet_bytes=384 event_bytes=3840 run_bytes=3872 corridor_bytes=2904 fixed_q_bytes=1936 shading_bytes=7744 transparency_bytes=3872 per_worker_scratch_bytes=25128 all_worker_scratch_bytes=25128 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=768 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=247544 instrumented_state_bytes=247928
+      CapacityDerivation field=feature_count value=6 why=[1 maximal smooth objects; 6 immutable fused primitive feature templates; 6 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
+      CapacityDerivation field=max_projected_features_per_row value=6 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
+      CapacityDerivation field=max_run_records_per_tile_row value=121 why=[30 generators; 6 primitive equation generators; 24 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run]
+      CapacityDerivation field=renderer_state_bytes value=247544 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=25128 (25128 * 1 workers); output=16384; probes=0; kinetic=768; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=247928 why=[production=247544; telemetry=384]
+    StructuralReport coefficient_bytes=0 objects=1 features=6 production_state_bytes=247544 instrumented_state_bytes=247928 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+Analysis status=verified-structural

@@ -23,7 +23,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 9
-# production Pixels stage is not implemented; implemented in task P3.9
+# P3 exposes this output-discontinuous material boundary structurally.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID

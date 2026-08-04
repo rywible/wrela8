@@ -85,6 +85,7 @@ pub struct RgbRangeConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RendererConfig {
     pub declaration_index: usize,
+    pub worker_count: u32,
     pub params_type: Type,
     pub field: String,
     pub material: String,
@@ -1167,6 +1168,13 @@ fn validate_renderers_inner(
         .map_err(|message| ConfigFailure::from_prefixed(message).at(renderer.span))?;
         configs.push(RendererConfig {
             declaration_index,
+            worker_count: u32::try_from(graph.cores).map_err(|_| {
+                coded(
+                    "P015",
+                    "renderer capacity `worker_count` exceeds the u32 encoding",
+                )
+                .at(renderer.span)
+            })?,
             params_type: renderer.params_type.clone(),
             field,
             material,

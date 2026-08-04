@@ -399,12 +399,22 @@ pub fn source_rsqrt(x: f32) -> f32 {
 pub fn source_sin(angle: f32) -> f32 {
     let two_pi = 6.283185307179586_f32;
     let pi = 3.141592653589793_f32;
+    let half_pi = 1.5707963267948966_f32;
     let mut x = angle % two_pi;
     if x > pi {
         x -= two_pi;
     }
     if x < -pi {
         x += two_pi;
+    }
+    // Fold into the polynomial's monotone core. Besides reducing error, this
+    // makes both sides of every modulo boundary meet at polynomial(0)=0;
+    // the authoritative source operation has no jump at odd multiples of π.
+    if x > half_pi {
+        x = pi - x;
+    }
+    if x < -half_pi {
+        x = -pi - x;
     }
     let x2 = x * x;
     let c3 = -0.16666666666666666_f32;
@@ -418,6 +428,13 @@ pub fn source_sin(angle: f32) -> f32 {
     let polynomial = c3 + x2 * polynomial;
     x * (1.0 + x2 * polynomial)
 }
+
+/// Absolute derivative multipliers for the pinned folded degree-11 source
+/// polynomial, including a conservative source-f32 operation envelope.
+pub const SOURCE_TRIG_VALUE_FACTOR_V1: f32 = 4.0;
+pub const SOURCE_TRIG_GRADIENT_FACTOR_V1: f32 = 8.0;
+pub const SOURCE_TRIG_HESSIAN_FACTOR_V1: f32 = 32.0;
+pub const SOURCE_TRIG_THIRD_FACTOR_V1: f32 = 128.0;
 
 pub fn source_cos(angle: f32) -> f32 {
     source_sin(angle + 1.5707963267948966_f32)

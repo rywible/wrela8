@@ -27,24 +27,24 @@ const FIXTURE_ID: u32 = 27
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.8"
-
 const PERIOD_RAW: i32 = 2
 const WORLD_HALF_EXTENT_RAW: i32 = 64
 
 struct SceneParams:
     @range(min=-2.0, max=2.0)
     phase: f32
-    count: u32
 
 enum MaterialId:
     Ground
 
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    q = finite_repeat_x(p, first=-2, count=params.count, period=2.0)
-    return mark(sphere(q, Vec3(x=0.0, y=0.0, z=0.0), radius=0.5), object=27, material=MaterialId.Ground)
+    q = finite_repeat_x(p, first=-2, count=4, period=params.phase)
+    return mark(
+        sphere(q, Vec3(x=0.0, y=0.0, z=0.0), radius=0.5),
+        object=MaterialId.Ground,
+        material=MaterialId.Ground,
+    )
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
@@ -72,8 +72,8 @@ pub fn build() -> Image:
         tone_curve=ToneCurve.Linear,
         near=0.1,
         far=128.0,
-        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
-        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        world_min=Vec3(x=-64.0, y=-64.0, z=-64.0),
+        world_max=Vec3(x=64.0, y=64.0, z=64.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
         light_config=LightConfig.fixed(capacity=0),
         exposure_range=ScalarRange(min=-1.0, max=1.0),

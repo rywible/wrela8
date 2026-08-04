@@ -803,6 +803,8 @@ Program
         Float text=6.283185307179586 ty=f32
       Let name=pi ty=f32
         Float text=3.141592653589793 ty=f32
+      Let name=half_pi ty=f32
+        Float text=1.5707963267948966 ty=f32
       Let name=x ty=f32
         Binary op=% ty=f32
           Local name=angle ty=f32
@@ -828,6 +830,28 @@ Program
             Binary op=+ ty=f32
               Local name=x ty=f32
               Local name=two_pi ty=f32
+      If
+        Binary op=> ty=bool
+          Local name=x ty=f32
+          Local name=half_pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=- ty=f32
+              Local name=pi ty=f32
+              Local name=x ty=f32
+      If
+        Binary op=< ty=bool
+          Local name=x ty=f32
+          Neg ty=f32
+            Local name=half_pi ty=f32
+        Then
+          Assign
+            Local name=x ty=f32
+            Binary op=- ty=f32
+              Neg ty=f32
+                Local name=pi ty=f32
+              Local name=x ty=f32
       Let name=x2 ty=f32
         Binary op=* ty=f32
           Local name=x ty=f32
@@ -1609,6 +1633,18 @@ Program
               Local name=safe_color ty=Rgb
             Field name=roughness
               Local name=clamped ty=f32
+    AssocFn name=textured ret=MaterialSample
+      Param name=color mode=read ty=Rgb
+      Param name=roughness mode=read ty=f32
+      Param name=texture_id mode=read ty=u32
+      Param name=width mode=read ty=u32
+      Param name=height mode=read ty=u32
+      Param name=filter mode=read ty=TextureFilter
+      Body
+        Return
+          Call key=MaterialSample.standard ty=MaterialSample
+            Local name=color ty=Rgb
+            Local name=roughness ty=f32
   Struct name=ProbeConfig
     AssocFn name=disabled ret=ProbeConfig
       Body

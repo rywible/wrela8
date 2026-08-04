@@ -501,7 +501,11 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
             "sphere(",
             "box(",
         ],
-        "err-pixels-repeat-unbounded" => &["count=params.count", "count: u32"],
+        "err-pixels-repeat-unbounded" => &[
+            "count=4",
+            "period=params.phase",
+            "world_min=Vec3(x=-64.0, y=-64.0, z=-64.0)",
+        ],
         "err-pixels-capacity" => &["count=257", "REQUIRED_FEATURES"],
         "err-pixels-projective-zero" => &["near=0.0", "DENOMINATOR_RAW"],
         "err-pixels-fixed-q" => &["scale=2147483648.0", "REQUIRED_RAW_BITS"],

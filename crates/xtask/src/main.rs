@@ -691,13 +691,13 @@ fn produce_report_and_image_with_discovery_order(
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, &programs) {
                     Ok(checked_image) => {
-                        let symbolic_graphs = match wrela_compiler::pixels::compile_all(
+                        let pixels_programs = match wrela_compiler::pixels::compile_all(
                             &programs,
                             module,
                             &graph,
                             &checked_image.renderer_configs,
                         ) {
-                            Ok(program_set) => program_set.symbolic_graphs,
+                            Ok(program_set) => program_set,
                             Err(error) => {
                                 return Ok((
                                     render_sema_error(&eval::image_checks::pixels_error(error)),
@@ -708,12 +708,16 @@ fn produce_report_and_image_with_discovery_order(
                         let field_graph = if include_field_graph
                             && !checked_image.renderer_configs.renderers.is_empty()
                         {
-                            let compiled = symbolic_graphs
+                            let compiled = pixels_programs
+                                .symbolic_graphs
                                 .iter()
+                                .zip(&pixels_programs.structural_programs)
                                 .enumerate()
-                                .map(|(index, graph)| (index, graph.clone()))
+                                .map(|(index, (graph, structural))| {
+                                    (index, graph.clone(), structural.clone())
+                                })
                                 .collect::<Vec<_>>();
-                            Some(wrela_compiler::pixels::dump_symbolic_graphs(
+                            Some(wrela_compiler::pixels::dump_structural_graphs(
                                 &compiled,
                                 &checked_image.renderer_configs,
                             ))
@@ -758,6 +762,11 @@ fn produce_report_and_image_with_discovery_order(
                                     text.push_str("\nDeterminism FieldGraph\n");
                                     text.push_str(field_graph);
                                 }
+                                text.push('\n');
+                                wrela_compiler::pixels::report::append_program_set(
+                                    &mut text,
+                                    &pixels_programs,
+                                );
                                 let mut layout_types = Vec::new();
                                 for (key, module) in &modules_by_addr {
                                     let specialized = sema::specialize::specialize(module)

@@ -6,7 +6,7 @@ from core.field import (
     Vec3,
     finite_repeat_x,
     mark,
-    sphere,
+    round_box,
 )
 from core.render import (
     AoConfig,
@@ -27,11 +27,8 @@ const FIXTURE_ID: u32 = 28
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P3.10"
-
-const REQUIRED_FEATURES: u32 = 257
-const ENCODED_LIMIT: u32 = 256
+const REQUIRED_FEATURES: u32 = 6682
+const ENCODED_LIMIT: u32 = 2048
 
 struct SceneParams:
     @range(min=-2.0, max=2.0)
@@ -41,10 +38,13 @@ struct SceneParams:
 enum MaterialId:
     Ground
 
+enum ObjectId:
+    Ground
+
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    q = finite_repeat_x(p, first=0, count=257, period=0.125)
-    return mark(sphere(q, Vec3(x=0.0, y=0.0, z=0.0), radius=0.0625), object=28, material=MaterialId.Ground)
+    q = finite_repeat_x(p, first=0, count=257, period=0.015625)
+    return mark(round_box(q, Vec3(x=0.00390625, y=0.00390625, z=0.00390625), radius=0.00390625), object=ObjectId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
@@ -53,7 +53,7 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 28, "fixture id must remain pinned"
-    assert REQUIRED_FEATURES == 257, "adversarial scene value must remain pinned"
+    assert REQUIRED_FEATURES == 6682, "adversarial scene value must remain pinned"
 
 @image
 pub fn build() -> Image:

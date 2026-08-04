@@ -24,7 +24,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 3
-# production Pixels stage is not implemented; implemented in task P3.5
+# P3 support shells cover the full authored smooth composition.
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
