@@ -1,0 +1,1 @@
+error[pixels P016]: projective denominator may reach zero inside the declared camera/world domain: renderer depth range requires 0 < near < far, found near=0 far=128 at 71:14

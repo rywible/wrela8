@@ -40,6 +40,7 @@ pub struct PixelsCeilings {
     pub repeat_analysis_candidates: u32,
     pub structural_depth: u32,
     pub event_isolation_depth: u32,
+    pub immutable_index_bytes: u64,
     pub renderer_state_bytes: u64,
 }
 
@@ -55,6 +56,7 @@ impl PixelsCeilings {
         repeat_analysis_candidates: 1_000_000,
         structural_depth: 1024,
         event_isolation_depth: 2,
+        immutable_index_bytes: 64 * 1024 * 1024,
         renderer_state_bytes: 512 * 1024 * 1024,
     };
 }
@@ -186,8 +188,358 @@ pub struct StructuralCapacities {
     pub derivations: Vec<CapacityDerivation>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectiveCapacities {
+    pub candidate_features_per_tile: u32,
+    pub row_start_roots: u32,
+    pub active_sheets_per_row: u32,
+    pub event_generators: u32,
+    pub competition_pairs_per_tile: u32,
+    pub row_event_intervals: u32,
+    pub root_stack_nodes: u32,
+    pub event_stack_nodes: u32,
+    pub runs_per_row: u32,
+    pub corridors_per_row: u32,
+    pub max_index_slice: u32,
+    pub polynomial_programs: u32,
+    pub rational_programs: u32,
+    pub polynomial_terms_per_program: u32,
+    pub coefficient_nodes: u32,
+    pub derivative_bundles: u32,
+    pub derivative_clusters: u32,
+    pub index_bytes: u64,
+    pub per_worker_scratch_bytes: u64,
+    pub all_worker_scratch_bytes: u64,
+    pub derivations: Vec<CapacityDerivation>,
+}
+
+fn verify_immutable_index_bytes(index_bytes: u64) -> Result<(), String> {
+    ceiling(
+        "immutable_index_bytes",
+        index_bytes,
+        PixelsCeilings::MACHINE_V1.immutable_index_bytes,
+        &[
+            format!("completed local indexes require {index_bytes} bytes"),
+            "P5 frame-program placement uses this sealed P4 immutable-index budget".to_string(),
+        ],
+    )
+}
+
+pub fn derive_projective(
+    structural: &StructuralCapacities,
+    projective: &super::projective::ProjectiveEquations,
+    derivatives: &super::derivatives::DerivativePrograms,
+    spans: &[super::projection_bounds::ProjectedFeatureSpan],
+    events: &super::events::EventPrograms,
+    competitions: &super::competition::CompetitionPrograms,
+    indexes: &super::index::LocalIndexes,
+) -> Result<ProjectiveCapacities, String> {
+    let ceilings = PixelsCeilings::MACHINE_V1;
+    let (candidate_features_per_row, candidate_features_per_tile) =
+        super::projection_bounds::exact_max_overlap(spans)?;
+    if candidate_features_per_row > structural.max_projected_features_per_row {
+        return Err(format!(
+            "P015: P4 projected row overlap {} exceeds the sealed P3 ceiling of {}",
+            candidate_features_per_row, structural.max_projected_features_per_row
+        ));
+    }
+    if candidate_features_per_tile > structural.max_projected_features_per_tile {
+        return Err(format!(
+            "P015: P4 projected tile overlap {} exceeds the sealed P3 ceiling of {}",
+            candidate_features_per_tile, structural.max_projected_features_per_tile
+        ));
+    }
+    let row_start_roots_u64 = indexes
+        .tile_features
+        .cells
+        .iter()
+        .map(|slice| {
+            let start = usize::try_from(slice.offset).map_err(|_| {
+                "pixels::capacities: feature index offset exceeds usize".to_string()
+            })?;
+            let end = slice
+                .offset
+                .checked_add(slice.count)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| "pixels::capacities: feature index end overflow".to_string())?;
+            let ids = indexes.tile_features.ids.get(start..end).ok_or_else(|| {
+                "pixels::capacities: feature index slice is out of bounds".to_string()
+            })?;
+            let ids = ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            derivatives
+                .clusters
+                .iter()
+                .filter(|cluster| {
+                    cluster.bundles.iter().any(|bundle| {
+                        derivatives
+                            .bundles
+                            .get(bundle.index())
+                            .is_some_and(|bundle| ids.contains(&bundle.feature.0))
+                    })
+                })
+                .try_fold(0_u64, |sum, cluster| {
+                    add(
+                        sum,
+                        u64::from(cluster.root_tube.maximum_object_roots),
+                        "p4_row_start_object_roots",
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let row_start_roots = u32::try_from(row_start_roots_u64)
+        .map_err(|_| "P015: P4 row-start root count exceeds u32".to_string())?;
+    let active_sheets_per_row = row_start_roots;
+    let event_generators = u32_count(events.generators.len(), "p4_event_generators")?;
+    let competition_pairs_per_tile = indexes
+        .tile_competitions
+        .cells
+        .iter()
+        .map(|slice| slice.count)
+        .max()
+        .unwrap_or(0);
+    let leaves_per_root = 1_u64
+        .checked_shl(ceilings.event_isolation_depth)
+        .ok_or_else(|| "P015: P4 event subdivision shift overflow".to_string())?;
+    let leaves_per_root_u32 = u32::try_from(leaves_per_root)
+        .map_err(|_| "P015: P4 event subdivision count exceeds u32".to_string())?;
+    let row_event_intervals_u64 = indexes
+        .tile_events
+        .cells
+        .iter()
+        .map(|slice| {
+            let start = usize::try_from(slice.offset)
+                .map_err(|_| "pixels::capacities: event index offset exceeds usize".to_string())?;
+            let end = slice
+                .offset
+                .checked_add(slice.count)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| "pixels::capacities: event index end overflow".to_string())?;
+            indexes
+                .tile_events
+                .ids
+                .get(start..end)
+                .ok_or_else(|| {
+                    "pixels::capacities: event index slice is out of bounds".to_string()
+                })?
+                .iter()
+                .try_fold(0_u64, |sum, id| {
+                    let id_index = usize::try_from(*id)
+                        .map_err(|_| "pixels::capacities: event ID exceeds usize".to_string())?;
+                    let event = events.generators.get(id_index).ok_or_else(|| {
+                        format!("pixels::capacities: event index names missing e{id}")
+                    })?;
+                    add(
+                        sum,
+                        u64::from(event.maximum_root_count),
+                        "p4_event_intervals",
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    ceiling(
+        "event_records",
+        row_event_intervals_u64,
+        ceilings.event_records.into(),
+        &[
+            format!("{event_generators} completed P4 event generators indexed by tile"),
+            "each generator contributes its sealed root count; isolation uses a shared stack"
+                .to_string(),
+        ],
+    )?;
+    let row_event_intervals = u32::try_from(row_event_intervals_u64)
+        .map_err(|_| "P015: P4 row event count exceeds u32".to_string())?;
+    let root_stack_nodes = u32::try_from(
+        row_start_roots_u64
+            .checked_mul(leaves_per_root)
+            .ok_or_else(|| "P015: P4 root stack count overflow".to_string())?,
+    )
+    .map_err(|_| "P015: P4 root stack count exceeds u32".to_string())?;
+    let event_stack_nodes = events
+        .generators
+        .iter()
+        .map(|event| u32::from(event.maximum_root_count).checked_mul(leaves_per_root_u32))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "P015: P4 event isolation stack count overflow".to_string())?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let runs_per_row_u64 = row_event_intervals_u64
+        .checked_add(1)
+        .ok_or_else(|| "P015: P4 run count overflow".to_string())?;
+    ceiling(
+        "run_records_per_tile_row",
+        runs_per_row_u64,
+        ceilings.run_records_per_tile_row.into(),
+        &[format!(
+            "{row_event_intervals} completed event intervals plus one terminal run"
+        )],
+    )?;
+    let runs_per_row = u32::try_from(runs_per_row_u64)
+        .map_err(|_| "P015: P4 run count exceeds u32".to_string())?;
+    let corridors_per_row = row_event_intervals;
+    let max_index_slice = [
+        &indexes.tile_features,
+        &indexes.tile_events,
+        &indexes.tile_competitions,
+        &indexes.row_block_repeats,
+        &indexes.tile_lights,
+        &indexes.tile_probes,
+    ]
+    .into_iter()
+    .flat_map(|index| index.cells.iter().map(|slice| slice.count))
+    .max()
+    .unwrap_or(0);
+    let polynomial_programs = u32_count(projective.polynomials.len(), "polynomial_programs")?;
+    let rational_programs = u32_count(projective.rationals.len(), "rational_programs")?;
+    let polynomial_terms_per_program = projective
+        .polynomials
+        .iter()
+        .map(|program| program.terms.len())
+        .max()
+        .map(|count| u32_count(count, "polynomial_terms"))
+        .transpose()?
+        .unwrap_or(0);
+    let coefficient_nodes = u32_count(projective.coefficients.nodes.len(), "coefficient_nodes")?;
+    let derivative_bundles = u32_count(derivatives.bundles.len(), "derivative_bundles")?;
+    let derivative_clusters = u32_count(derivatives.clusters.len(), "derivative_clusters")?;
+    let candidate_bytes = mul(
+        u64::from(candidate_features_per_tile),
+        CANDIDATE_RECORD_BYTES_V1,
+        "p4_candidate_bytes",
+    )?;
+    let root_bytes = mul(
+        u64::from(root_stack_nodes),
+        ROOT_RECORD_BYTES_V1,
+        "p4_root_bytes",
+    )?;
+    let sheet_bytes = mul(
+        u64::from(active_sheets_per_row),
+        SHEET_RECORD_BYTES_V1,
+        "p4_sheet_bytes",
+    )?;
+    let event_bytes = mul(
+        u64::from(event_stack_nodes),
+        EVENT_RECORD_BYTES_V1,
+        "p4_event_bytes",
+    )?;
+    let run_bytes = mul(u64::from(runs_per_row), RUN_RECORD_BYTES_V1, "p4_run_bytes")?;
+    let corridor_bytes = mul(
+        u64::from(corridors_per_row),
+        CORRIDOR_RECORD_BYTES_V1,
+        "p4_corridor_bytes",
+    )?;
+    let per_worker_scratch_bytes = [
+        candidate_bytes,
+        root_bytes,
+        sheet_bytes,
+        event_bytes,
+        run_bytes,
+        corridor_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, bytes| {
+        add(sum, bytes, "p4_per_worker_scratch_bytes")
+    })?;
+    let all_worker_scratch_bytes = mul(
+        per_worker_scratch_bytes,
+        u64::from(structural.worker_count),
+        "p4_all_worker_scratch_bytes",
+    )?;
+    verify_immutable_index_bytes(indexes.bytes)?;
+    ceiling(
+        "renderer_state_bytes",
+        all_worker_scratch_bytes,
+        ceilings.renderer_state_bytes,
+        &[
+            format!("P4 per-worker scratch={per_worker_scratch_bytes}"),
+            format!("workers={}", structural.worker_count),
+            "P5 adds fixed state classes before final placement".to_string(),
+        ],
+    )?;
+    Ok(ProjectiveCapacities {
+        candidate_features_per_tile,
+        row_start_roots,
+        active_sheets_per_row,
+        event_generators,
+        competition_pairs_per_tile,
+        row_event_intervals,
+        root_stack_nodes,
+        event_stack_nodes,
+        runs_per_row,
+        corridors_per_row,
+        max_index_slice,
+        polynomial_programs,
+        rational_programs,
+        polynomial_terms_per_program,
+        coefficient_nodes,
+        derivative_bundles,
+        derivative_clusters,
+        index_bytes: indexes.bytes,
+        per_worker_scratch_bytes,
+        all_worker_scratch_bytes,
+        derivations: vec![
+            CapacityDerivation {
+                field: "p4_candidate_features_per_tile",
+                value: u64::from(candidate_features_per_tile),
+                why: vec![format!(
+                    "exact endpoint/cell sweep gives row overlap {candidate_features_per_row} \
+                         within P3 ceiling {} and tile overlap {candidate_features_per_tile} \
+                         within P3 ceiling {}",
+                    structural.max_projected_features_per_row,
+                    structural.max_projected_features_per_tile,
+                )],
+            },
+            CapacityDerivation {
+                field: "p4_row_start_roots",
+                value: row_start_roots_u64,
+                why: vec![
+                    "exact tile overlap over composed-object root clusters".to_string(),
+                    format!(
+                        "smooth clusters retain up to 2^{} root/corridor leaves per predictor slab",
+                        ceilings.event_isolation_depth
+                    ),
+                ],
+            },
+            CapacityDerivation {
+                field: "p4_row_event_intervals",
+                value: row_event_intervals_u64,
+                why: vec![
+                    format!("{event_generators} completed local generators"),
+                    format!("{} competition pairs survive", competitions.pairs.len()),
+                    format!(
+                        "2^{} leaves per isolated root",
+                        ceilings.event_isolation_depth
+                    ),
+                ],
+            },
+            CapacityDerivation {
+                field: "p4_index_bytes",
+                value: indexes.bytes,
+                why: vec![
+                    "completed offset/count cells plus sorted contiguous ID tables".to_string(),
+                ],
+            },
+        ],
+    })
+}
+
 fn u32_count(value: usize, kind: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("P015: renderer capacity `{kind}` overflows u32"))
+}
+
+pub(crate) fn checked_event_isolation_depth(value: u32) -> Result<u8, String> {
+    u8::try_from(value).map_err(|_| {
+        format!("P015: event isolation depth {value} exceeds the u8 storage ceiling of 255")
+    })
 }
 
 fn add(a: u64, b: u64, kind: &str) -> Result<u64, String> {
@@ -198,15 +550,6 @@ fn add(a: u64, b: u64, kind: &str) -> Result<u64, String> {
 fn mul(a: u64, b: u64, kind: &str) -> Result<u64, String> {
     a.checked_mul(b)
         .ok_or_else(|| format!("P015: renderer capacity `{kind}` arithmetic overflow"))
-}
-
-fn ceil_u64(value: f64, kind: &str) -> Result<u64, String> {
-    if !value.is_finite() || value < 0.0 || value.ceil() > u64::MAX as f64 {
-        return Err(format!(
-            "P015: renderer capacity `{kind}` cannot represent derived value {value}"
-        ));
-    }
-    Ok(value.ceil() as u64)
 }
 
 fn ceiling(kind: &str, needed: u64, ceiling: u64, why: &[String]) -> Result<(), String> {
@@ -256,18 +599,7 @@ fn deformation_oscillation_bound(
     values: &ValueBounds,
     deform: &DeformationTemplate,
 ) -> Result<u64, String> {
-    let coordinate = values.get(deform.coordinate_x)?;
-    let angle = coordinate
-        .mul_outward(deform.frequency)?
-        .add_outward(deform.phase)?;
-    add(
-        ceil_u64(
-            angle.width() / std::f64::consts::PI,
-            "deformation_oscillations",
-        )?,
-        2,
-        "deformation_oscillations",
-    )
+    super::deform::oscillation_bound(deform, values)
 }
 
 pub fn derive(
@@ -771,6 +1103,14 @@ mod tests {
                 .unwrap_err()
                 .contains("257 sphere instances")
         );
+        assert!(
+            verify_immutable_index_bytes(PixelsCeilings::MACHINE_V1.immutable_index_bytes).is_ok()
+        );
+        assert!(
+            verify_immutable_index_bytes(PixelsCeilings::MACHINE_V1.immutable_index_bytes + 1)
+                .unwrap_err()
+                .contains("completed local indexes require 67108865 bytes")
+        );
     }
 
     #[test]
@@ -796,6 +1136,11 @@ mod tests {
         );
         assert_eq!(event_subdivision_capacity(10, 2).unwrap(), 40);
         assert_eq!(event_subdivision_capacity(33, 2).unwrap(), 132);
+        assert_eq!(checked_event_isolation_depth(255).unwrap(), 255);
+        assert_eq!(
+            checked_event_isolation_depth(256).unwrap_err(),
+            "P015: event isolation depth 256 exceeds the u8 storage ceiling of 255"
+        );
     }
 
     #[test]
@@ -822,6 +1167,8 @@ mod tests {
             hessian: 10_000.0,
             third_derivative: 1_000_000.0,
             coordinate_x: coordinate,
+            frequency_scalar: super::super::ids::ScalarId(2),
+            phase_scalar: super::super::ids::ScalarId(3),
             frequency: super::super::reference::interval::F64Interval::new(1.0, 100.0).unwrap(),
             phase: super::super::reference::interval::F64Interval::point(0.0).unwrap(),
         };

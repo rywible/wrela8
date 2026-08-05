@@ -330,6 +330,21 @@ contracts are finite, ordered, and compile-time. The output extent matches the
 display. The renderer and its generated workers receive deterministic
 placement and participate in the image dependency DAG.
 
+`CameraBounds.bounded(max_motion)` is a sealed version-1 world-relative camera
+contract, not merely a performance hint. The canonical eye has x/y at the
+renderer world-AABB center and z behind its minimum-z face by
+`near + max_motion`; its canonical forward/right/up basis is `+Z/+X/+Y`, its
+vertical field of view is 90 degrees, and its basis tolerance is the
+versioned renderer numeric tolerance. The complete accepted eye box expands
+each canonical eye component by `max_motion`, and the accepted basis box
+expands each corresponding canonical basis component by `max_motion` plus the
+numeric tolerance. Runtime camera inputs may be
+authored through any closed camera constructor, but canonicalization must
+produce a right-handed orthonormal basis and a pose inside this box; otherwise
+the frame fails with `FrameContractMismatch`. `max_motion` also bounds
+inter-frame eye displacement for temporal certificates. This finite absolute
+pose contract is what makes compile-time projected spans authoritative.
+
 The result is `ImageDecl[Renderer[P]]`. Its `handle()` method yields
 `Actor[Renderer[P]]` under the narrow sealed generic-actor exception; arbitrary
 generic actors remain rejected.
@@ -460,9 +475,40 @@ q = 1 / view_axis_depth, q > 0
 
 For degree-`d` implicit `phi`, the compiler uses
 `Phi(u,v,q) = q^d * phi(eye + r(u,v)/q)`. Positive-q roots are preserved.
+Affine inverse-depth features also carry a canonical rational program
+`numerator/denominator`, its complete domain, and a strict-sign denominator
+proof. The verifier reconstructs both parts from the affine root equation.
+For a local scanline, composition substitutes both `q=q_hat(X)` and
+`u=u0+X`. The fixed-shape schedule records the source `u`, `q`, and explicit
+`X` degrees and expands both affine powers; treating `u` as a frozen
+coefficient is invalid.
+
+The version-1 source `Camera` keeps raw fields private and exposes closed
+constructors for canonical, eye/target/up, quaternion, and explicit-basis
+authorship. The noncanonical constructors return `Result`, reject
+zero/parallel/left-handed inputs, and normalize into the common
+eye/right/up/forward representation. Every runtime/reference camera evaluation
+validates orthonormality, handedness, and pose-box containment before using a
+sample; the compiler contract encloses every unit-basis component and its
+declared frame-rate motion.
 
 Local events include projected-bound entry/exit, feature validity, tangency,
 smooth-band, identity, depth-order, repeat, and material boundaries. An
+object derivative cluster names the full composed scalar DAG root, its sorted
+leaf predictor signature, derivative-bound sources, complete-domain Taylor
+remainder, and total predictor-slab/root-corridor capacity. Smooth-object
+capacity charges every bounded subdivision leaf of every predictor slab.
+Primitive zero equations
+are candidate slabs and never replace the composed smooth root. A smooth band
+has two boundary branches, `a-b-k=0` and `a-b+k=0`; its root capacity is twice
+the corresponding center-tie bound.
+
+Non-affine depth swaps use a quadratic local implicit-sheet difference. Their
+remainder program names both sheets' third-partial programs, the local
+scanline and common-q domains, and requires a strict runtime `G_q` proof. If
+that proof fails, the Taylor predictor is discarded and the complete
+q-difference interval is returned as ambiguity; it is never accepted as a
+signed ordering proof.
 omitted object, feature, or event has a domain-scoped exclusion record with
 strictly positive slack. Domain splits regenerate invalidated exclusions.
 Global parameter-box and spatial-box strict-sign exclusions remain valid
@@ -470,6 +516,21 @@ across all allowed parameter motion. Their proof payload records the
 normalized box, polynomial program, Bernstein degree and coefficient order or
 subdivision tree, outward conversion radius, sign, and minimum margin. A
 failed supported-shape proof emits the ordinary runtime predicate instead.
+Undeformed torus silhouettes use the local simultaneous oracle `G=G_q=0`
+with exact derivative program IDs, complete-domain Taylor bounds, and the
+degree-four/degree-three Bézout bound of twelve isolated scanline roots.
+Generic positive-q feature roots use outward interval Bernstein subdivision;
+a cell is accepted only after a strict derivative hull and opposite endpoint
+signs prove one simple root. An unresolved cell at the sealed ambiguity depth
+is retained as a corridor, so tangent/even-multiplicity roots cannot disappear;
+adjacent corridors are conservatively merged to the polynomial-degree
+capacity. Smooth
+band/tie ceilings multiply the owning sheet degree or deformation-oscillation
+bound by the summed opposite-operand bound, rather than treating the number of
+ray sheets as a scanline intersection count. Scalar numeric events serialize
+a quadratic world-space Taylor program with the feature-AABB diagonal and the
+complete `M3 * delta^3 / 3!` remainder; the verifier reconstructs those values
+bit-for-bit.
 
 ### 4.1 FrameProgram v1
 
@@ -537,6 +598,7 @@ The machine-v1 structural ceilings are versioned constants:
 | repeated object instances | 1,024 |
 | packed parameter slots | 4,096 |
 | hard-CSG stack depth | 256 |
+| immutable local-index bytes | 64 MiB |
 | structural event records | 1,048,576 |
 | run records per tile row | 1,048,576 |
 | repeat-analysis candidate instances | 1,000,000 |
@@ -653,6 +715,17 @@ reasons are projected-bounds disjointness, support-shell disjointness,
 q-range disjointness, false CSG influence, false feature validity, or
 parameter-box disjointness, plus global parameter-box or spatial-box strict
 sign.
+
+P4 q-order candidates contain geometry features only: material-boundary
+families update material state on an existing sheet and never become geometry
+competition subjects. Opaque and potentially transmitting geometry remain
+mutually order-compatible because later transparency uses the same ordered
+surface sequence; opacity alone therefore cannot justify dropping a geometry
+pair. Same-feature diagonal pairs are suppressed by canonical unordered-pair
+construction. For hard CSG, small Boolean supports are checked exhaustively
+for a state in which both object cofactors differ; a proven absence is an
+audited exclusion, while supports above the versioned exhaustive ceiling
+retain the pair.
 
 The frame-program directory entry is exactly 16 bytes and encodes
 `kind: u16`, `record_bytes: u16`, `count: u32`, `offset: u32`, and

@@ -1,6 +1,6 @@
 module render
 
-from core.field import Rgb, Vec3
+from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 
 pub struct RenderPath:
     pub component: u32
@@ -17,11 +17,139 @@ pub struct RenderInvariant:
 pub struct DisplayError:
     pub code: u32
 
+pub enum CameraError:
+    DegenerateForward
+    DegenerateUp
+    DegenerateQuaternion
+    InvalidBasis
+
 pub struct Camera:
-    pub eye: Vec3
-    pub forward: Vec3
-    pub right: Vec3
-    pub up: Vec3
+    eye: Vec3
+    forward: Vec3
+    right: Vec3
+    up: Vec3
+
+    # Authored forms are closed constructors. Successful construction always
+    # produces the same canonical eye/right/up/forward representation.
+    pub fn canonical(eye: Vec3) -> Camera:
+        return Camera(
+            eye=eye,
+            forward=Vec3(x=0.0, y=0.0, z=1.0),
+            right=Vec3(x=1.0, y=0.0, z=0.0),
+            up=Vec3(x=0.0, y=1.0, z=0.0),
+        )
+
+    pub fn look_at(eye: Vec3, target: Vec3, authored_up: Vec3) -> Result[Camera, CameraError]:
+        forward_seed = target.subtract(eye)
+        forward_length = length3(forward_seed)
+        if not forward_length > 0.0:
+            return Err(CameraError.DegenerateForward)
+        forward = Vec3(
+            x=forward_seed.x / forward_length,
+            y=forward_seed.y / forward_length,
+            z=forward_seed.z / forward_length,
+        )
+        right_seed = cross3(authored_up, forward)
+        right_length = length3(right_seed)
+        if not right_length > 0.0:
+            return Err(CameraError.DegenerateUp)
+        right = Vec3(
+            x=right_seed.x / right_length,
+            y=right_seed.y / right_length,
+            z=right_seed.z / right_length,
+        )
+        up = cross3(forward, right)
+        return Ok(Camera(eye=eye, forward=forward, right=right, up=up))
+
+    pub fn quaternion(eye: Vec3, rotation: Vec4) -> Result[Camera, CameraError]:
+        ax = rotation.x
+        if ax < 0.0:
+            ax = -ax
+        ay = rotation.y
+        if ay < 0.0:
+            ay = -ay
+        az = rotation.z
+        if az < 0.0:
+            az = -az
+        aw = rotation.w
+        if aw < 0.0:
+            aw = -aw
+        max_finite: f32 = 340282346638528859811704183484516925440.0
+        if not ax <= max_finite or not ay <= max_finite or not az <= max_finite or not aw <= max_finite:
+            return Err(CameraError.DegenerateQuaternion)
+        scale = ax
+        if ay > scale:
+            scale = ay
+        if az > scale:
+            scale = az
+        if aw > scale:
+            scale = aw
+        if not scale > 0.0:
+            return Err(CameraError.DegenerateQuaternion)
+        scaled_x = rotation.x / scale
+        scaled_y = rotation.y / scale
+        scaled_z = rotation.z / scale
+        scaled_w = rotation.w / scale
+        norm_squared = scaled_x * scaled_x + scaled_y * scaled_y + scaled_z * scaled_z + scaled_w * scaled_w
+        if not norm_squared > 0.0:
+            return Err(CameraError.DegenerateQuaternion)
+        inverse_norm = 1.0 / sqrt_scalar(norm_squared)
+        x = scaled_x * inverse_norm
+        y = scaled_y * inverse_norm
+        z = scaled_z * inverse_norm
+        w = scaled_w * inverse_norm
+        right = Vec3(
+            x=1.0 - 2.0 * (y * y + z * z),
+            y=2.0 * (x * y + w * z),
+            z=2.0 * (x * z - w * y),
+        )
+        up = Vec3(
+            x=2.0 * (x * y - w * z),
+            y=1.0 - 2.0 * (x * x + z * z),
+            z=2.0 * (y * z + w * x),
+        )
+        forward = Vec3(
+            x=2.0 * (x * z + w * y),
+            y=2.0 * (y * z - w * x),
+            z=1.0 - 2.0 * (x * x + y * y),
+        )
+        return Ok(Camera(eye=eye, forward=forward, right=right, up=up))
+
+    pub fn explicit(eye: Vec3, authored_forward: Vec3, authored_right: Vec3, authored_up: Vec3) -> Result[Camera, CameraError]:
+        forward_length = length3(authored_forward)
+        if not forward_length > 0.0:
+            return Err(CameraError.DegenerateForward)
+        forward = Vec3(
+            x=authored_forward.x / forward_length,
+            y=authored_forward.y / forward_length,
+            z=authored_forward.z / forward_length,
+        )
+        projection = dot3(authored_right, forward)
+        right_seed = Vec3(
+            x=authored_right.x - projection * forward.x,
+            y=authored_right.y - projection * forward.y,
+            z=authored_right.z - projection * forward.z,
+        )
+        right_length = length3(right_seed)
+        if not right_length > 0.0:
+            return Err(CameraError.InvalidBasis)
+        right = Vec3(
+            x=right_seed.x / right_length,
+            y=right_seed.y / right_length,
+            z=right_seed.z / right_length,
+        )
+        up = cross3(forward, right)
+        authored_up_length = length3(authored_up)
+        if not authored_up_length > 0.0:
+            return Err(CameraError.DegenerateUp)
+        authored_up_direction = Vec3(
+            x=authored_up.x / authored_up_length,
+            y=authored_up.y / authored_up_length,
+            z=authored_up.z / authored_up_length,
+        )
+        if not dot3(up, authored_up_direction) > 0.0:
+            return Err(CameraError.InvalidBasis)
+        return Ok(Camera(eye=eye, forward=forward, right=right, up=up))
 
 pub enum LightKind:
     Disabled
@@ -121,8 +249,16 @@ pub struct RgbRange:
         )
 
 pub struct CameraBounds:
+    # Version 1 seals a world-relative pose box. The renderer declaration
+    # centers eye x/y on the world AABB, places eye z behind its minimum-z
+    # face, bounds basis-component displacement from the canonical
+    # forward-facing pose, and uses a 90-degree vertical field of view.
     max_motion: f32
 
+    # max_motion is the absolute eye/basis component radius about the
+    # canonical pose and the maximum accepted inter-frame component change.
+    # A camera authored with look_at/quaternion/explicit must fit this box;
+    # turns up to a component delta of 1 require bounded(1.0).
     pub fn bounded(max_motion: f32) -> CameraBounds:
         return CameraBounds(max_motion=max_motion)
 

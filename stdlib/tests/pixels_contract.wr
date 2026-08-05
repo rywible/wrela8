@@ -1,7 +1,7 @@
 module pixels_contract
 
-from core.field import Rgb, Vec3
-from core.render import Light, LightConfig, LightFrame, LightKind, MaterialSample
+from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
+from core.render import Camera, Light, LightConfig, LightFrame, LightKind, MaterialSample
 
 @test
 fn dyadic_fixture_coordinates_are_exact():
@@ -18,6 +18,57 @@ fn canonical_scene_vector_subtraction_typechecks():
     assert q.x == 1.5, "canonical scene expression subtracts x"
     assert q.y == 3.0, "canonical scene expression subtracts y"
     assert q.z == 6.0, "canonical scene expression subtracts z"
+
+@test
+fn camera_authored_forms_validate_before_producing_a_frame_camera():
+    zero = Vec3(x=0.0, y=0.0, z=0.0)
+    target = Vec3(x=0.0, y=0.0, z=1.0)
+    up = Vec3(x=0.0, y=1.0, z=0.0)
+    match Camera.look_at(eye=zero, target=target, authored_up=up):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "canonical look-at camera must build"
+    match Camera.look_at(eye=zero, target=target, authored_up=zero):
+        case .Err(.DegenerateUp):
+            pass
+        case _:
+            assert false, "zero look-at up must be rejected"
+    match Camera.quaternion(
+        eye=zero,
+        rotation=Vec4(x=0.0, y=0.0, z=0.0, w=1.0),
+    ):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "identity quaternion must build"
+    max_finite: f32 = 340282346638528859811704183484516925440.0
+    match Camera.quaternion(
+        eye=zero,
+        rotation=Vec4(x=max_finite, y=max_finite, z=max_finite, w=max_finite),
+    ):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "largest finite quaternion components normalize without overflow"
+    match Camera.quaternion(
+        eye=zero,
+        rotation=Vec4(x=0.0, y=0.0, z=0.0, w=0.0),
+    ):
+        case .Err(.DegenerateQuaternion):
+            pass
+        case _:
+            assert false, "zero quaternion must be rejected"
+    match Camera.explicit(
+        eye=zero,
+        authored_forward=target,
+        authored_right=Vec3(x=1.0, y=0.0, z=0.0),
+        authored_up=Vec3(x=0.0, y=-1.0, z=0.0),
+    ):
+        case .Err(.InvalidBasis):
+            pass
+        case _:
+            assert false, "left-handed explicit basis must be rejected"
 
 @test
 fn nonempty_fixed_capacity_light_frame_typechecks():

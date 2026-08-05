@@ -96,9 +96,12 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
         Vec3(x=0.0, y=1.0, z=0.0),
         Vec3(x=0.0, y=0.0, z=1.0),
     )
-    repeated_x = finite_repeat_x(rigid, first=-1, count=3, period=2.0)
-    repeated_y = finite_repeat_y(repeated_x, first=-1, count=3, period=2.0)
-    repeated = finite_repeat_z(repeated_y, first=-1, count=3, period=2.0)
+    # This exhaustive intrinsic fixture needs each finite-repeat lowering, not
+    # their 3³ Cartesian expansion; check-pixels-repeat pins multi-instance
+    # boundaries and capacity behavior without creating a quadratic pair dump.
+    repeated_x = finite_repeat_x(rigid, first=0, count=1, period=2.0)
+    repeated_y = finite_repeat_y(repeated_x, first=0, count=1, period=2.0)
+    repeated = finite_repeat_z(repeated_y, first=0, count=1, period=2.0)
     zero: f32 = 0.0
     dynamic_axis = Vec3(x=params.offset, y=1.0, z=0.0)
     derived_normal = normalize3(cross3(row_z, dynamic_axis))
@@ -146,7 +149,7 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
     )
     smooth = smooth_subtract(smooth_intersection(smooth_union(g, h, k=0.1), g, k=0.1), h, k=0.1)
     scaled = uniform_scale(smooth, scale=2.0)
-    displaced = sinusoidal_displace(scaled, rigid, amplitude=0.1, frequency=2.0, phase=0.0)
+    displaced = sinusoidal_displace(scaled, rigid, amplitude=0.1, frequency=0.25, phase=0.0)
     return mark(union(hard, displaced), object=ObjectId.Scene, material=MaterialId.Surface)
 
 @material

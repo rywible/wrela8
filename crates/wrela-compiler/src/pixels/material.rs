@@ -136,15 +136,14 @@ fn predicate_crossing_bound(
     values: &ValueBounds,
     predicate: ScalarId,
 ) -> Result<Option<(u32, MaterialEventKind)>, String> {
-    let interval = values.get(predicate)?;
-    if interval.lo == interval.hi {
-        return Ok(None);
-    }
     let ScalarOp::Compare { a, b, .. } = graph.scalar.get(predicate)?.op else {
         return Err(format!(
             "P014: material discontinuity {predicate} has no finite analytic crossing family"
         ));
     };
+    // Even when structural interval propagation proves this comparison stable,
+    // retain the analytic obligation. The projective omission pass owns the
+    // complete-box strict-sign proof and its auditable exclusion record.
     if a == b {
         return Ok(None);
     }

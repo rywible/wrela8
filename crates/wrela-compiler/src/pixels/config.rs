@@ -1111,9 +1111,10 @@ fn validate_renderers_inner(
         let far = float(renderer, "far")?;
         if near <= 0.0 || near >= far {
             return Err(coded(
-                "P007",
+                "P016",
                 format!(
-                    "renderer depth range requires 0 < near < far, found near={near} far={far}"
+                    "projective denominator may reach zero inside the declared camera/world domain: \
+                     renderer depth range requires 0 < near < far, found near={near} far={far}"
                 ),
             )
             .at(arg(renderer, "near")?.span));

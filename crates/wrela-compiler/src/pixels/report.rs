@@ -24,8 +24,41 @@ pub fn build(params: &ParameterLayout, capacities: &StructuralCapacities) -> Str
     }
 }
 
-pub fn append_program_set(output: &mut String, program_set: &super::PixelsProgramSet) {
-    output.push_str("PixelsStructuralReport v1\n");
+fn feature_source_label(
+    graph: &super::symbolic::SymbolicGraph,
+    structural: &super::verify::StructuralProgram,
+    feature: super::ids::FeatureId,
+) -> Result<(super::ids::FieldId, String), String> {
+    let feature = structural
+        .features
+        .get(feature.index())
+        .ok_or_else(|| format!("pixels::report: competition names missing feature {feature}"))?;
+    let origin = graph.fields.origin(feature.primitive)?;
+    let site = &origin.primary;
+    Ok((
+        feature.primitive,
+        format!(
+            "{}:{}:{}@bytes={}..{}",
+            site.module, site.span.line, site.span.col, site.span.byte_start, site.span.byte_end,
+        ),
+    ))
+}
+
+pub fn append_program_set(
+    output: &mut String,
+    program_set: &super::PixelsProgramSet,
+) -> Result<(), String> {
+    if program_set.symbolic_graphs.len() != program_set.structural_programs.len()
+        || program_set.projective_programs.len() != program_set.structural_programs.len()
+    {
+        return Err(format!(
+            "pixels::report: renderer table counts differ: symbolic={} structural={} projective={}",
+            program_set.symbolic_graphs.len(),
+            program_set.structural_programs.len(),
+            program_set.projective_programs.len(),
+        ));
+    }
+    output.push_str("PixelsCompilerReport v2\n");
     output.push_str(&format!(
         "  Renderers count={}\n",
         program_set.structural_programs.len()
@@ -101,5 +134,90 @@ pub fn append_program_set(output: &mut String, program_set: &super::PixelsProgra
                 derivation.why.join("; "),
             ));
         }
+        let projective = program_set.projective_programs[index].program();
+        let capacities = &projective.capacities;
+        output.push_str(&format!(
+            "    Projective features={} polynomials={} coefficients={} derivative_bundles={} derivative_clusters={} events={} competition_pairs={} exclusions={} index_bytes={}\n",
+            projective.equations.features.len(),
+            capacities.polynomial_programs,
+            capacities.coefficient_nodes,
+            capacities.derivative_bundles,
+            capacities.derivative_clusters,
+            capacities.event_generators,
+            projective.competitions.pairs.len(),
+            projective.exclusions.records.len(),
+            capacities.index_bytes,
+        ));
+        output.push_str(&format!(
+            "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_terms_per_program={} per_worker_scratch_bytes={} all_worker_scratch_bytes={}\n",
+            capacities.candidate_features_per_tile,
+            capacities.row_start_roots,
+            capacities.active_sheets_per_row,
+            capacities.competition_pairs_per_tile,
+            capacities.row_event_intervals,
+            capacities.root_stack_nodes,
+            capacities.event_stack_nodes,
+            capacities.runs_per_row,
+            capacities.corridors_per_row,
+            capacities.max_index_slice,
+            capacities.polynomial_terms_per_program,
+            capacities.per_worker_scratch_bytes,
+            capacities.all_worker_scratch_bytes,
+        ));
+        output.push_str(&format!(
+            "    CompetitionPruning projected={} q={} csg_global={} csg_pair={} strict_order={} same_feature={} material_only={}\n",
+            projective.competitions.pruned_projected,
+            projective.competitions.pruned_q,
+            projective.competitions.pruned_csg_global,
+            projective.competitions.pruned_csg_pair,
+            projective.competitions.pruned_strict_order,
+            projective.competitions.suppressed_same_feature,
+            projective.competitions.suppressed_material_only,
+        ));
+        let graph = &program_set.symbolic_graphs[index];
+        let structural = verified.program();
+        for exclusion in projective.exclusions.records.iter().filter(|record| {
+            matches!(
+                record.subject,
+                super::exclusions::ExclusionSubject::Competition(_)
+            )
+        }) {
+            let super::exclusions::ExclusionSubject::Competition(subject) = exclusion.subject
+            else {
+                unreachable!()
+            };
+            let (a_primitive, a_source) = feature_source_label(graph, structural, subject.a)?;
+            let (b_primitive, b_source) = feature_source_label(graph, structural, subject.b)?;
+            output.push_str(&format!(
+                "    CompetitionOmission a={} a_primitive={} a_source={} b={} b_primitive={} b_source={} exclusion={} reason={} proof={} domain={} dependencies=[{}] margin=[{},{}]\n",
+                subject.a,
+                a_primitive,
+                a_source,
+                subject.b,
+                b_primitive,
+                b_source,
+                exclusion.id,
+                exclusion.reason.stable_name(),
+                exclusion.proof,
+                exclusion.domain,
+                exclusion
+                    .dependencies
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                exclusion.margin.lo,
+                exclusion.margin.hi,
+            ));
+        }
+        for derivation in &capacities.derivations {
+            output.push_str(&format!(
+                "    ProjectiveCapacity field={} value={} why=[{}]\n",
+                derivation.field,
+                derivation.value,
+                derivation.why.join("; "),
+            ));
+        }
     }
+    Ok(())
 }

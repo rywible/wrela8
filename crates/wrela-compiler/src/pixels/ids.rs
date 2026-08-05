@@ -28,6 +28,15 @@ dense_id!(FeatureId, "g");
 dense_id!(MaterialId, "m");
 dense_id!(ParamId, "p");
 dense_id!(EventTemplateId, "e");
+dense_id!(CoeffId, "c");
+dense_id!(PolyProgramId, "poly");
+dense_id!(RationalProgramId, "rat");
+dense_id!(PredicateProgramId, "pred");
+dense_id!(DerivativeBundleId, "d");
+dense_id!(CompetitionPairId, "pair");
+dense_id!(ExclusionId, "x");
+dense_id!(DomainId, "domain");
+dense_id!(ProofRecordId, "proof");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgramRendererId(pub u16);
@@ -66,6 +75,15 @@ dense_impl!(FeatureId);
 dense_impl!(MaterialId);
 dense_impl!(ParamId);
 dense_impl!(EventTemplateId);
+dense_impl!(CoeffId);
+dense_impl!(PolyProgramId);
+dense_impl!(RationalProgramId);
+dense_impl!(PredicateProgramId);
+dense_impl!(DerivativeBundleId);
+dense_impl!(CompetitionPairId);
+dense_impl!(ExclusionId);
+dense_impl!(DomainId);
+dense_impl!(ProofRecordId);
 
 #[cfg(test)]
 mod tests {
@@ -80,6 +98,15 @@ mod tests {
         assert_eq!(MaterialId(5).to_string(), "m5");
         assert_eq!(ParamId(6).to_string(), "p6");
         assert_eq!(EventTemplateId(8).to_string(), "e8");
+        assert_eq!(CoeffId(10).to_string(), "c10");
+        assert_eq!(PolyProgramId(11).to_string(), "poly11");
+        assert_eq!(RationalProgramId(12).to_string(), "rat12");
+        assert_eq!(PredicateProgramId(12).to_string(), "pred12");
+        assert_eq!(DerivativeBundleId(13).to_string(), "d13");
+        assert_eq!(CompetitionPairId(14).to_string(), "pair14");
+        assert_eq!(ExclusionId(15).to_string(), "x15");
+        assert_eq!(DomainId(16).to_string(), "domain16");
+        assert_eq!(ProofRecordId(17).to_string(), "proof17");
         assert_eq!(ProgramRendererId(9).to_string(), "r9");
     }
 }

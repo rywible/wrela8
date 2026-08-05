@@ -244,4 +244,1225 @@ Renderers count=1
       CapacityDerivation field=renderer_state_bytes value=240120 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=17704 (17704 * 1 workers); output=16384; probes=0; kinetic=768; tile_descriptors=65536; tile_ownership=8192; failure=64]
       CapacityDerivation field=instrumented_renderer_state_bytes value=240504 why=[production=240120; telemetry=384]
     StructuralReport coefficient_bytes=0 objects=6 features=6 production_state_bytes=240120 instrumented_state_bytes=240504 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
-Analysis status=verified-structural
+    ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
+    CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
+    Coefficient id=c0 op=const:2
+    Coefficient id=c1 op=const:4
+    Coefficient id=c2 op=const:100
+    Coefficient id=c3 op=const:-1
+    Coefficient id=c4 op=const:-2
+    Coefficient id=c5 op=scalar:s0
+    Coefficient id=c6 op=scalar:s1
+    Coefficient id=c7 op=scalar:s3
+    Coefficient id=c8 op=scalar:s16
+    Coefficient id=c9 op=scalar:s17
+    Coefficient id=c10 op=scalar:s21
+    Coefficient id=c11 op=camera:eye:0
+    Coefficient id=c12 op=camera:eye:1
+    Coefficient id=c13 op=camera:eye:2
+    Coefficient id=c14 op=camera:forward:0
+    Coefficient id=c15 op=camera:forward:1
+    Coefficient id=c16 op=camera:forward:2
+    Coefficient id=c17 op=camera:right:0
+    Coefficient id=c18 op=camera:right:1
+    Coefficient id=c19 op=camera:right:2
+    Coefficient id=c20 op=camera:up:0
+    Coefficient id=c21 op=camera:up:1
+    Coefficient id=c22 op=camera:up:2
+    Coefficient id=c23 op=camera:eye_rate:0
+    Coefficient id=c24 op=camera:eye_rate:1
+    Coefficient id=c25 op=camera:eye_rate:2
+    Coefficient id=c26 op=camera:forward_rate:0
+    Coefficient id=c27 op=camera:forward_rate:1
+    Coefficient id=c28 op=camera:forward_rate:2
+    Coefficient id=c29 op=camera:right_rate:0
+    Coefficient id=c30 op=camera:right_rate:1
+    Coefficient id=c31 op=camera:right_rate:2
+    Coefficient id=c32 op=camera:up_rate:0
+    Coefficient id=c33 op=camera:up_rate:1
+    Coefficient id=c34 op=camera:up_rate:2
+    Coefficient id=c35 op=mul:c0:c10
+    Coefficient id=c36 op=mul:c2:c8
+    Coefficient id=c37 op=mul:c3:c10
+    Coefficient id=c38 op=mul:c4:c10
+    Coefficient id=c39 op=mul:c6:c6
+    Coefficient id=c40 op=mul:c9:c9
+    Coefficient id=c41 op=mul:c14:c14
+    Coefficient id=c42 op=mul:c14:c17
+    Coefficient id=c43 op=mul:c14:c20
+    Coefficient id=c44 op=mul:c14:c23
+    Coefficient id=c45 op=mul:c14:c26
+    Coefficient id=c46 op=mul:c14:c29
+    Coefficient id=c47 op=mul:c14:c32
+    Coefficient id=c48 op=mul:c15:c15
+    Coefficient id=c49 op=mul:c15:c18
+    Coefficient id=c50 op=mul:c15:c21
+    Coefficient id=c51 op=mul:c15:c24
+    Coefficient id=c52 op=mul:c15:c27
+    Coefficient id=c53 op=mul:c15:c30
+    Coefficient id=c54 op=mul:c15:c33
+    Coefficient id=c55 op=mul:c16:c16
+    Coefficient id=c56 op=mul:c16:c19
+    Coefficient id=c57 op=mul:c16:c22
+    Coefficient id=c58 op=mul:c16:c25
+    Coefficient id=c59 op=mul:c16:c28
+    Coefficient id=c60 op=mul:c16:c31
+    Coefficient id=c61 op=mul:c16:c34
+    Coefficient id=c62 op=mul:c17:c17
+    Coefficient id=c63 op=mul:c17:c20
+    Coefficient id=c64 op=mul:c17:c23
+    Coefficient id=c65 op=mul:c17:c26
+    Coefficient id=c66 op=mul:c17:c29
+    Coefficient id=c67 op=mul:c17:c32
+    Coefficient id=c68 op=mul:c18:c18
+    Coefficient id=c69 op=mul:c18:c21
+    Coefficient id=c70 op=mul:c18:c24
+    Coefficient id=c71 op=mul:c18:c27
+    Coefficient id=c72 op=mul:c18:c30
+    Coefficient id=c73 op=mul:c18:c33
+    Coefficient id=c74 op=mul:c19:c19
+    Coefficient id=c75 op=mul:c19:c22
+    Coefficient id=c76 op=mul:c19:c25
+    Coefficient id=c77 op=mul:c19:c28
+    Coefficient id=c78 op=mul:c19:c31
+    Coefficient id=c79 op=mul:c19:c34
+    Coefficient id=c80 op=mul:c20:c20
+    Coefficient id=c81 op=mul:c20:c23
+    Coefficient id=c82 op=mul:c20:c26
+    Coefficient id=c83 op=mul:c20:c29
+    Coefficient id=c84 op=mul:c20:c32
+    Coefficient id=c85 op=mul:c21:c21
+    Coefficient id=c86 op=mul:c21:c24
+    Coefficient id=c87 op=mul:c21:c27
+    Coefficient id=c88 op=mul:c21:c30
+    Coefficient id=c89 op=mul:c21:c33
+    Coefficient id=c90 op=mul:c22:c22
+    Coefficient id=c91 op=mul:c22:c25
+    Coefficient id=c92 op=mul:c22:c28
+    Coefficient id=c93 op=mul:c22:c31
+    Coefficient id=c94 op=mul:c22:c34
+    Coefficient id=c95 op=neg:c5
+    Coefficient id=c96 op=neg:c7
+    Coefficient id=c97 op=neg:c10
+    Coefficient id=c98 op=add:c11:c95
+    Coefficient id=c99 op=add:c12:c95
+    Coefficient id=c100 op=add:c13:c95
+    Coefficient id=c101 op=add:c41:c48
+    Coefficient id=c102 op=add:c42:c42
+    Coefficient id=c103 op=add:c43:c43
+    Coefficient id=c104 op=add:c44:c44
+    Coefficient id=c105 op=add:c45:c45
+    Coefficient id=c106 op=add:c46:c46
+    Coefficient id=c107 op=add:c47:c47
+    Coefficient id=c108 op=add:c62:c68
+    Coefficient id=c109 op=add:c63:c63
+    Coefficient id=c110 op=add:c64:c64
+    Coefficient id=c111 op=add:c66:c66
+    Coefficient id=c112 op=add:c67:c67
+    Coefficient id=c113 op=add:c80:c85
+    Coefficient id=c114 op=add:c81:c81
+    Coefficient id=c115 op=add:c84:c84
+    Coefficient id=c116 op=neg:c35
+    Coefficient id=c117 op=neg:c36
+    Coefficient id=c118 op=neg:c37
+    Coefficient id=c119 op=neg:c38
+    Coefficient id=c120 op=neg:c39
+    Coefficient id=c121 op=neg:c40
+    Coefficient id=c122 op=add:c49:c102
+    Coefficient id=c123 op=add:c50:c103
+    Coefficient id=c124 op=add:c51:c104
+    Coefficient id=c125 op=add:c52:c105
+    Coefficient id=c126 op=add:c53:c106
+    Coefficient id=c127 op=add:c54:c107
+    Coefficient id=c128 op=add:c55:c101
+    Coefficient id=c129 op=add:c69:c109
+    Coefficient id=c130 op=add:c70:c110
+    Coefficient id=c131 op=add:c72:c111
+    Coefficient id=c132 op=add:c73:c112
+    Coefficient id=c133 op=add:c74:c108
+    Coefficient id=c134 op=add:c86:c114
+    Coefficient id=c135 op=add:c89:c115
+    Coefficient id=c136 op=add:c90:c113
+    Coefficient id=c137 op=add:c95:c99
+    Coefficient id=c138 op=add:c95:c100
+    Coefficient id=c139 op=add:c96:c98
+    Coefficient id=c140 op=add:c97:c98
+    Coefficient id=c141 op=add:c98:c116
+    Coefficient id=c142 op=add:c98:c118
+    Coefficient id=c143 op=add:c98:c119
+    Coefficient id=c144 op=mul:c14:c98
+    Coefficient id=c145 op=mul:c15:c99
+    Coefficient id=c146 op=mul:c16:c100
+    Coefficient id=c147 op=mul:c17:c98
+    Coefficient id=c148 op=mul:c18:c99
+    Coefficient id=c149 op=mul:c19:c100
+    Coefficient id=c150 op=mul:c20:c98
+    Coefficient id=c151 op=mul:c21:c99
+    Coefficient id=c152 op=mul:c22:c100
+    Coefficient id=c153 op=mul:c23:c98
+    Coefficient id=c154 op=mul:c24:c99
+    Coefficient id=c155 op=mul:c25:c100
+    Coefficient id=c156 op=mul:c26:c98
+    Coefficient id=c157 op=mul:c27:c99
+    Coefficient id=c158 op=mul:c28:c100
+    Coefficient id=c159 op=mul:c29:c98
+    Coefficient id=c160 op=mul:c30:c99
+    Coefficient id=c161 op=mul:c31:c100
+    Coefficient id=c162 op=mul:c32:c98
+    Coefficient id=c163 op=mul:c33:c99
+    Coefficient id=c164 op=mul:c34:c100
+    Coefficient id=c165 op=mul:c98:c98
+    Coefficient id=c166 op=mul:c99:c99
+    Coefficient id=c167 op=mul:c100:c100
+    Coefficient id=c168 op=add:c49:c122
+    Coefficient id=c169 op=add:c50:c123
+    Coefficient id=c170 op=add:c51:c124
+    Coefficient id=c171 op=add:c52:c125
+    Coefficient id=c172 op=add:c53:c126
+    Coefficient id=c173 op=add:c54:c127
+    Coefficient id=c174 op=add:c69:c129
+    Coefficient id=c175 op=add:c70:c130
+    Coefficient id=c176 op=add:c72:c131
+    Coefficient id=c177 op=add:c73:c132
+    Coefficient id=c178 op=add:c86:c134
+    Coefficient id=c179 op=add:c89:c135
+    Coefficient id=c180 op=add:c117:c139
+    Coefficient id=c181 op=add:c144:c144
+    Coefficient id=c182 op=add:c147:c147
+    Coefficient id=c183 op=add:c150:c150
+    Coefficient id=c184 op=add:c153:c153
+    Coefficient id=c185 op=add:c165:c166
+    Coefficient id=c186 op=add:c166:c167
+    Coefficient id=c187 op=mul:c0:c133
+    Coefficient id=c188 op=mul:c0:c136
+    Coefficient id=c189 op=mul:c14:c140
+    Coefficient id=c190 op=mul:c14:c141
+    Coefficient id=c191 op=mul:c14:c142
+    Coefficient id=c192 op=mul:c14:c143
+    Coefficient id=c193 op=mul:c15:c137
+    Coefficient id=c194 op=mul:c16:c138
+    Coefficient id=c195 op=mul:c17:c140
+    Coefficient id=c196 op=mul:c17:c141
+    Coefficient id=c197 op=mul:c17:c142
+    Coefficient id=c198 op=mul:c17:c143
+    Coefficient id=c199 op=mul:c18:c137
+    Coefficient id=c200 op=mul:c19:c138
+    Coefficient id=c201 op=mul:c20:c140
+    Coefficient id=c202 op=mul:c20:c141
+    Coefficient id=c203 op=mul:c20:c142
+    Coefficient id=c204 op=mul:c20:c143
+    Coefficient id=c205 op=mul:c21:c137
+    Coefficient id=c206 op=mul:c22:c138
+    Coefficient id=c207 op=mul:c23:c140
+    Coefficient id=c208 op=mul:c23:c141
+    Coefficient id=c209 op=mul:c23:c142
+    Coefficient id=c210 op=mul:c23:c143
+    Coefficient id=c211 op=mul:c24:c137
+    Coefficient id=c212 op=mul:c25:c138
+    Coefficient id=c213 op=mul:c26:c140
+    Coefficient id=c214 op=mul:c26:c141
+    Coefficient id=c215 op=mul:c26:c142
+    Coefficient id=c216 op=mul:c26:c143
+    Coefficient id=c217 op=mul:c27:c137
+    Coefficient id=c218 op=mul:c28:c138
+    Coefficient id=c219 op=mul:c29:c140
+    Coefficient id=c220 op=mul:c29:c141
+    Coefficient id=c221 op=mul:c29:c142
+    Coefficient id=c222 op=mul:c29:c143
+    Coefficient id=c223 op=mul:c30:c137
+    Coefficient id=c224 op=mul:c31:c138
+    Coefficient id=c225 op=mul:c32:c140
+    Coefficient id=c226 op=mul:c32:c141
+    Coefficient id=c227 op=mul:c32:c142
+    Coefficient id=c228 op=mul:c32:c143
+    Coefficient id=c229 op=mul:c33:c137
+    Coefficient id=c230 op=mul:c34:c138
+    Coefficient id=c231 op=mul:c137:c137
+    Coefficient id=c232 op=mul:c138:c138
+    Coefficient id=c233 op=mul:c140:c140
+    Coefficient id=c234 op=mul:c141:c141
+    Coefficient id=c235 op=mul:c142:c142
+    Coefficient id=c236 op=mul:c143:c143
+    Coefficient id=c237 op=add:c56:c168
+    Coefficient id=c238 op=add:c57:c169
+    Coefficient id=c239 op=add:c58:c170
+    Coefficient id=c240 op=add:c59:c171
+    Coefficient id=c241 op=add:c60:c172
+    Coefficient id=c242 op=add:c61:c173
+    Coefficient id=c243 op=add:c75:c174
+    Coefficient id=c244 op=add:c76:c175
+    Coefficient id=c245 op=add:c78:c176
+    Coefficient id=c246 op=add:c79:c177
+    Coefficient id=c247 op=add:c91:c178
+    Coefficient id=c248 op=add:c94:c179
+    Coefficient id=c249 op=add:c145:c181
+    Coefficient id=c250 op=add:c148:c182
+    Coefficient id=c251 op=add:c151:c183
+    Coefficient id=c252 op=add:c154:c184
+    Coefficient id=c253 op=add:c167:c185
+    Coefficient id=c254 op=add:c186:c233
+    Coefficient id=c255 op=add:c186:c234
+    Coefficient id=c256 op=add:c186:c235
+    Coefficient id=c257 op=add:c186:c236
+    Coefficient id=c258 op=add:c189:c189
+    Coefficient id=c259 op=add:c190:c190
+    Coefficient id=c260 op=add:c191:c191
+    Coefficient id=c261 op=add:c192:c192
+    Coefficient id=c262 op=add:c195:c195
+    Coefficient id=c263 op=add:c196:c196
+    Coefficient id=c264 op=add:c197:c197
+    Coefficient id=c265 op=add:c198:c198
+    Coefficient id=c266 op=add:c201:c201
+    Coefficient id=c267 op=add:c202:c202
+    Coefficient id=c268 op=add:c203:c203
+    Coefficient id=c269 op=add:c204:c204
+    Coefficient id=c270 op=add:c207:c207
+    Coefficient id=c271 op=add:c208:c208
+    Coefficient id=c272 op=add:c209:c209
+    Coefficient id=c273 op=add:c210:c210
+    Coefficient id=c274 op=add:c231:c232
+    Coefficient id=c275 op=mul:c14:c180
+    Coefficient id=c276 op=mul:c17:c180
+    Coefficient id=c277 op=mul:c20:c180
+    Coefficient id=c278 op=mul:c23:c180
+    Coefficient id=c279 op=mul:c26:c180
+    Coefficient id=c280 op=mul:c29:c180
+    Coefficient id=c281 op=mul:c32:c180
+    Coefficient id=c282 op=mul:c180:c180
+    Coefficient id=c283 op=add:c56:c237
+    Coefficient id=c284 op=add:c57:c238
+    Coefficient id=c285 op=add:c58:c239
+    Coefficient id=c286 op=add:c59:c240
+    Coefficient id=c287 op=add:c60:c241
+    Coefficient id=c288 op=add:c61:c242
+    Coefficient id=c289 op=add:c75:c243
+    Coefficient id=c290 op=add:c76:c244
+    Coefficient id=c291 op=add:c78:c245
+    Coefficient id=c292 op=add:c79:c246
+    Coefficient id=c293 op=add:c91:c247
+    Coefficient id=c294 op=add:c94:c248
+    Coefficient id=c295 op=add:c121:c253
+    Coefficient id=c296 op=add:c121:c254
+    Coefficient id=c297 op=add:c121:c255
+    Coefficient id=c298 op=add:c121:c256
+    Coefficient id=c299 op=add:c121:c257
+    Coefficient id=c300 op=add:c145:c249
+    Coefficient id=c301 op=add:c145:c258
+    Coefficient id=c302 op=add:c145:c259
+    Coefficient id=c303 op=add:c145:c260
+    Coefficient id=c304 op=add:c145:c261
+    Coefficient id=c305 op=add:c148:c250
+    Coefficient id=c306 op=add:c148:c262
+    Coefficient id=c307 op=add:c148:c263
+    Coefficient id=c308 op=add:c148:c264
+    Coefficient id=c309 op=add:c148:c265
+    Coefficient id=c310 op=add:c151:c251
+    Coefficient id=c311 op=add:c151:c266
+    Coefficient id=c312 op=add:c151:c267
+    Coefficient id=c313 op=add:c151:c268
+    Coefficient id=c314 op=add:c151:c269
+    Coefficient id=c315 op=add:c154:c252
+    Coefficient id=c316 op=add:c154:c270
+    Coefficient id=c317 op=add:c154:c271
+    Coefficient id=c318 op=add:c154:c272
+    Coefficient id=c319 op=add:c154:c273
+    Coefficient id=c320 op=add:c274:c282
+    Coefficient id=c321 op=add:c275:c275
+    Coefficient id=c322 op=add:c276:c276
+    Coefficient id=c323 op=add:c277:c277
+    Coefficient id=c324 op=add:c278:c278
+    Coefficient id=c325 op=add:c65:c287
+    Coefficient id=c326 op=add:c82:c288
+    Coefficient id=c327 op=add:c83:c292
+    Coefficient id=c328 op=add:c120:c320
+    Coefficient id=c329 op=add:c145:c301
+    Coefficient id=c330 op=add:c145:c302
+    Coefficient id=c331 op=add:c145:c303
+    Coefficient id=c332 op=add:c145:c304
+    Coefficient id=c333 op=add:c146:c300
+    Coefficient id=c334 op=add:c148:c306
+    Coefficient id=c335 op=add:c148:c307
+    Coefficient id=c336 op=add:c148:c308
+    Coefficient id=c337 op=add:c148:c309
+    Coefficient id=c338 op=add:c149:c305
+    Coefficient id=c339 op=add:c151:c311
+    Coefficient id=c340 op=add:c151:c312
+    Coefficient id=c341 op=add:c151:c313
+    Coefficient id=c342 op=add:c151:c314
+    Coefficient id=c343 op=add:c152:c310
+    Coefficient id=c344 op=add:c154:c316
+    Coefficient id=c345 op=add:c154:c317
+    Coefficient id=c346 op=add:c154:c318
+    Coefficient id=c347 op=add:c154:c319
+    Coefficient id=c348 op=add:c155:c315
+    Coefficient id=c349 op=add:c156:c285
+    Coefficient id=c350 op=add:c159:c290
+    Coefficient id=c351 op=add:c162:c293
+    Coefficient id=c352 op=add:c193:c321
+    Coefficient id=c353 op=add:c199:c322
+    Coefficient id=c354 op=add:c205:c323
+    Coefficient id=c355 op=add:c211:c324
+    Coefficient id=c356 op=add:c213:c285
+    Coefficient id=c357 op=add:c214:c285
+    Coefficient id=c358 op=add:c215:c285
+    Coefficient id=c359 op=add:c216:c285
+    Coefficient id=c360 op=add:c219:c290
+    Coefficient id=c361 op=add:c220:c290
+    Coefficient id=c362 op=add:c221:c290
+    Coefficient id=c363 op=add:c222:c290
+    Coefficient id=c364 op=add:c225:c293
+    Coefficient id=c365 op=add:c226:c293
+    Coefficient id=c366 op=add:c227:c293
+    Coefficient id=c367 op=add:c228:c293
+    Coefficient id=c368 op=add:c279:c285
+    Coefficient id=c369 op=add:c280:c290
+    Coefficient id=c370 op=add:c281:c293
+    Coefficient id=c371 op=mul:c0:c295
+    Coefficient id=c372 op=mul:c0:c296
+    Coefficient id=c373 op=mul:c0:c297
+    Coefficient id=c374 op=mul:c0:c298
+    Coefficient id=c375 op=mul:c0:c299
+    Coefficient id=c376 op=mul:c128:c295
+    Coefficient id=c377 op=mul:c128:c296
+    Coefficient id=c378 op=mul:c128:c297
+    Coefficient id=c379 op=mul:c128:c298
+    Coefficient id=c380 op=mul:c128:c299
+    Coefficient id=c381 op=mul:c133:c295
+    Coefficient id=c382 op=mul:c133:c296
+    Coefficient id=c383 op=mul:c133:c297
+    Coefficient id=c384 op=mul:c133:c298
+    Coefficient id=c385 op=mul:c133:c299
+    Coefficient id=c386 op=mul:c136:c295
+    Coefficient id=c387 op=mul:c136:c296
+    Coefficient id=c388 op=mul:c136:c297
+    Coefficient id=c389 op=mul:c136:c298
+    Coefficient id=c390 op=mul:c136:c299
+    Coefficient id=c391 op=mul:c283:c295
+    Coefficient id=c392 op=mul:c283:c296
+    Coefficient id=c393 op=mul:c283:c297
+    Coefficient id=c394 op=mul:c283:c298
+    Coefficient id=c395 op=mul:c283:c299
+    Coefficient id=c396 op=mul:c284:c295
+    Coefficient id=c397 op=mul:c284:c296
+    Coefficient id=c398 op=mul:c284:c297
+    Coefficient id=c399 op=mul:c284:c298
+    Coefficient id=c400 op=mul:c284:c299
+    Coefficient id=c401 op=mul:c289:c295
+    Coefficient id=c402 op=mul:c289:c296
+    Coefficient id=c403 op=mul:c289:c297
+    Coefficient id=c404 op=mul:c289:c298
+    Coefficient id=c405 op=mul:c289:c299
+    Coefficient id=c406 op=add:c65:c325
+    Coefficient id=c407 op=add:c82:c326
+    Coefficient id=c408 op=add:c83:c327
+    Coefficient id=c409 op=add:c146:c329
+    Coefficient id=c410 op=add:c146:c330
+    Coefficient id=c411 op=add:c146:c331
+    Coefficient id=c412 op=add:c146:c332
+    Coefficient id=c413 op=add:c146:c333
+    Coefficient id=c414 op=add:c149:c334
+    Coefficient id=c415 op=add:c149:c335
+    Coefficient id=c416 op=add:c149:c336
+    Coefficient id=c417 op=add:c149:c337
+    Coefficient id=c418 op=add:c149:c338
+    Coefficient id=c419 op=add:c152:c339
+    Coefficient id=c420 op=add:c152:c340
+    Coefficient id=c421 op=add:c152:c341
+    Coefficient id=c422 op=add:c152:c342
+    Coefficient id=c423 op=add:c152:c343
+    Coefficient id=c424 op=add:c155:c344
+    Coefficient id=c425 op=add:c155:c345
+    Coefficient id=c426 op=add:c155:c346
+    Coefficient id=c427 op=add:c155:c347
+    Coefficient id=c428 op=add:c155:c348
+    Coefficient id=c429 op=add:c156:c349
+    Coefficient id=c430 op=add:c159:c350
+    Coefficient id=c431 op=add:c162:c351
+    Coefficient id=c432 op=add:c193:c352
+    Coefficient id=c433 op=add:c199:c353
+    Coefficient id=c434 op=add:c205:c354
+    Coefficient id=c435 op=add:c211:c355
+    Coefficient id=c436 op=add:c213:c356
+    Coefficient id=c437 op=add:c214:c357
+    Coefficient id=c438 op=add:c215:c358
+    Coefficient id=c439 op=add:c216:c359
+    Coefficient id=c440 op=add:c219:c360
+    Coefficient id=c441 op=add:c220:c361
+    Coefficient id=c442 op=add:c221:c362
+    Coefficient id=c443 op=add:c222:c363
+    Coefficient id=c444 op=add:c225:c364
+    Coefficient id=c445 op=add:c226:c365
+    Coefficient id=c446 op=add:c227:c366
+    Coefficient id=c447 op=add:c228:c367
+    Coefficient id=c448 op=add:c279:c368
+    Coefficient id=c449 op=add:c280:c369
+    Coefficient id=c450 op=add:c281:c370
+    Coefficient id=c451 op=mul:c0:c328
+    Coefficient id=c452 op=mul:c1:c376
+    Coefficient id=c453 op=mul:c1:c377
+    Coefficient id=c454 op=mul:c1:c378
+    Coefficient id=c455 op=mul:c1:c379
+    Coefficient id=c456 op=mul:c1:c380
+    Coefficient id=c457 op=mul:c1:c381
+    Coefficient id=c458 op=mul:c1:c382
+    Coefficient id=c459 op=mul:c1:c383
+    Coefficient id=c460 op=mul:c1:c384
+    Coefficient id=c461 op=mul:c1:c385
+    Coefficient id=c462 op=mul:c1:c386
+    Coefficient id=c463 op=mul:c1:c387
+    Coefficient id=c464 op=mul:c1:c388
+    Coefficient id=c465 op=mul:c1:c389
+    Coefficient id=c466 op=mul:c1:c390
+    Coefficient id=c467 op=mul:c1:c391
+    Coefficient id=c468 op=mul:c1:c392
+    Coefficient id=c469 op=mul:c1:c393
+    Coefficient id=c470 op=mul:c1:c394
+    Coefficient id=c471 op=mul:c1:c395
+    Coefficient id=c472 op=mul:c1:c396
+    Coefficient id=c473 op=mul:c1:c397
+    Coefficient id=c474 op=mul:c1:c398
+    Coefficient id=c475 op=mul:c1:c399
+    Coefficient id=c476 op=mul:c1:c400
+    Coefficient id=c477 op=mul:c1:c401
+    Coefficient id=c478 op=mul:c1:c402
+    Coefficient id=c479 op=mul:c1:c403
+    Coefficient id=c480 op=mul:c1:c404
+    Coefficient id=c481 op=mul:c1:c405
+    Coefficient id=c482 op=mul:c128:c328
+    Coefficient id=c483 op=mul:c133:c328
+    Coefficient id=c484 op=mul:c136:c328
+    Coefficient id=c485 op=mul:c283:c328
+    Coefficient id=c486 op=mul:c284:c328
+    Coefficient id=c487 op=mul:c289:c328
+    Coefficient id=c488 op=add:c71:c406
+    Coefficient id=c489 op=add:c87:c407
+    Coefficient id=c490 op=add:c88:c408
+    Coefficient id=c491 op=add:c146:c409
+    Coefficient id=c492 op=add:c146:c410
+    Coefficient id=c493 op=add:c146:c411
+    Coefficient id=c494 op=add:c146:c412
+    Coefficient id=c495 op=add:c149:c414
+    Coefficient id=c496 op=add:c149:c415
+    Coefficient id=c497 op=add:c149:c416
+    Coefficient id=c498 op=add:c149:c417
+    Coefficient id=c499 op=add:c152:c419
+    Coefficient id=c500 op=add:c152:c420
+    Coefficient id=c501 op=add:c152:c421
+    Coefficient id=c502 op=add:c152:c422
+    Coefficient id=c503 op=add:c155:c424
+    Coefficient id=c504 op=add:c155:c425
+    Coefficient id=c505 op=add:c155:c426
+    Coefficient id=c506 op=add:c155:c427
+    Coefficient id=c507 op=add:c157:c429
+    Coefficient id=c508 op=add:c157:c436
+    Coefficient id=c509 op=add:c157:c437
+    Coefficient id=c510 op=add:c157:c438
+    Coefficient id=c511 op=add:c157:c439
+    Coefficient id=c512 op=add:c160:c430
+    Coefficient id=c513 op=add:c160:c440
+    Coefficient id=c514 op=add:c160:c441
+    Coefficient id=c515 op=add:c160:c442
+    Coefficient id=c516 op=add:c160:c443
+    Coefficient id=c517 op=add:c163:c431
+    Coefficient id=c518 op=add:c163:c444
+    Coefficient id=c519 op=add:c163:c445
+    Coefficient id=c520 op=add:c163:c446
+    Coefficient id=c521 op=add:c163:c447
+    Coefficient id=c522 op=add:c194:c432
+    Coefficient id=c523 op=add:c200:c433
+    Coefficient id=c524 op=add:c206:c434
+    Coefficient id=c525 op=add:c212:c435
+    Coefficient id=c526 op=add:c217:c448
+    Coefficient id=c527 op=add:c223:c449
+    Coefficient id=c528 op=add:c229:c450
+    Coefficient id=c529 op=mul:c1:c482
+    Coefficient id=c530 op=mul:c1:c483
+    Coefficient id=c531 op=mul:c1:c484
+    Coefficient id=c532 op=mul:c1:c485
+    Coefficient id=c533 op=mul:c1:c486
+    Coefficient id=c534 op=mul:c1:c487
+    Coefficient id=c535 op=mul:c413:c413
+    Coefficient id=c536 op=mul:c413:c418
+    Coefficient id=c537 op=mul:c413:c423
+    Coefficient id=c538 op=mul:c418:c418
+    Coefficient id=c539 op=mul:c418:c423
+    Coefficient id=c540 op=mul:c423:c423
+    Coefficient id=c541 op=neg:c452
+    Coefficient id=c542 op=neg:c453
+    Coefficient id=c543 op=neg:c454
+    Coefficient id=c544 op=neg:c455
+    Coefficient id=c545 op=neg:c456
+    Coefficient id=c546 op=neg:c457
+    Coefficient id=c547 op=neg:c458
+    Coefficient id=c548 op=neg:c459
+    Coefficient id=c549 op=neg:c460
+    Coefficient id=c550 op=neg:c461
+    Coefficient id=c551 op=neg:c462
+    Coefficient id=c552 op=neg:c463
+    Coefficient id=c553 op=neg:c464
+    Coefficient id=c554 op=neg:c465
+    Coefficient id=c555 op=neg:c466
+    Coefficient id=c556 op=neg:c467
+    Coefficient id=c557 op=neg:c468
+    Coefficient id=c558 op=neg:c469
+    Coefficient id=c559 op=neg:c470
+    Coefficient id=c560 op=neg:c471
+    Coefficient id=c561 op=neg:c472
+    Coefficient id=c562 op=neg:c473
+    Coefficient id=c563 op=neg:c474
+    Coefficient id=c564 op=neg:c475
+    Coefficient id=c565 op=neg:c476
+    Coefficient id=c566 op=neg:c477
+    Coefficient id=c567 op=neg:c478
+    Coefficient id=c568 op=neg:c479
+    Coefficient id=c569 op=neg:c480
+    Coefficient id=c570 op=neg:c481
+    Coefficient id=c571 op=add:c71:c488
+    Coefficient id=c572 op=add:c87:c489
+    Coefficient id=c573 op=add:c88:c490
+    Coefficient id=c574 op=add:c157:c507
+    Coefficient id=c575 op=add:c157:c508
+    Coefficient id=c576 op=add:c157:c509
+    Coefficient id=c577 op=add:c157:c510
+    Coefficient id=c578 op=add:c157:c511
+    Coefficient id=c579 op=add:c160:c512
+    Coefficient id=c580 op=add:c160:c513
+    Coefficient id=c581 op=add:c160:c514
+    Coefficient id=c582 op=add:c160:c515
+    Coefficient id=c583 op=add:c160:c516
+    Coefficient id=c584 op=add:c163:c517
+    Coefficient id=c585 op=add:c163:c518
+    Coefficient id=c586 op=add:c163:c519
+    Coefficient id=c587 op=add:c163:c520
+    Coefficient id=c588 op=add:c163:c521
+    Coefficient id=c589 op=add:c194:c522
+    Coefficient id=c590 op=add:c200:c523
+    Coefficient id=c591 op=add:c206:c524
+    Coefficient id=c592 op=add:c212:c525
+    Coefficient id=c593 op=add:c217:c526
+    Coefficient id=c594 op=add:c223:c527
+    Coefficient id=c595 op=add:c229:c528
+    Coefficient id=c596 op=add:c535:c541
+    Coefficient id=c597 op=add:c536:c536
+    Coefficient id=c598 op=add:c537:c537
+    Coefficient id=c599 op=add:c538:c546
+    Coefficient id=c600 op=add:c539:c539
+    Coefficient id=c601 op=add:c540:c551
+    Coefficient id=c602 op=mul:c491:c491
+    Coefficient id=c603 op=mul:c491:c495
+    Coefficient id=c604 op=mul:c491:c499
+    Coefficient id=c605 op=mul:c492:c492
+    Coefficient id=c606 op=mul:c492:c496
+    Coefficient id=c607 op=mul:c492:c500
+    Coefficient id=c608 op=mul:c493:c493
+    Coefficient id=c609 op=mul:c493:c497
+    Coefficient id=c610 op=mul:c493:c501
+    Coefficient id=c611 op=mul:c494:c494
+    Coefficient id=c612 op=mul:c494:c498
+    Coefficient id=c613 op=mul:c494:c502
+    Coefficient id=c614 op=mul:c495:c495
+    Coefficient id=c615 op=mul:c495:c499
+    Coefficient id=c616 op=mul:c496:c496
+    Coefficient id=c617 op=mul:c496:c500
+    Coefficient id=c618 op=mul:c497:c497
+    Coefficient id=c619 op=mul:c497:c501
+    Coefficient id=c620 op=mul:c498:c498
+    Coefficient id=c621 op=mul:c498:c502
+    Coefficient id=c622 op=mul:c499:c499
+    Coefficient id=c623 op=mul:c500:c500
+    Coefficient id=c624 op=mul:c501:c501
+    Coefficient id=c625 op=mul:c502:c502
+    Coefficient id=c626 op=neg:c529
+    Coefficient id=c627 op=neg:c530
+    Coefficient id=c628 op=neg:c531
+    Coefficient id=c629 op=neg:c532
+    Coefficient id=c630 op=neg:c533
+    Coefficient id=c631 op=neg:c534
+    Coefficient id=c632 op=add:c77:c571
+    Coefficient id=c633 op=add:c92:c572
+    Coefficient id=c634 op=add:c93:c573
+    Coefficient id=c635 op=add:c158:c574
+    Coefficient id=c636 op=add:c158:c575
+    Coefficient id=c637 op=add:c158:c576
+    Coefficient id=c638 op=add:c158:c577
+    Coefficient id=c639 op=add:c158:c578
+    Coefficient id=c640 op=add:c161:c579
+    Coefficient id=c641 op=add:c161:c580
+    Coefficient id=c642 op=add:c161:c581
+    Coefficient id=c643 op=add:c161:c582
+    Coefficient id=c644 op=add:c161:c583
+    Coefficient id=c645 op=add:c164:c584
+    Coefficient id=c646 op=add:c164:c585
+    Coefficient id=c647 op=add:c164:c586
+    Coefficient id=c648 op=add:c164:c587
+    Coefficient id=c649 op=add:c164:c588
+    Coefficient id=c650 op=add:c218:c593
+    Coefficient id=c651 op=add:c224:c594
+    Coefficient id=c652 op=add:c230:c595
+    Coefficient id=c653 op=add:c542:c602
+    Coefficient id=c654 op=add:c543:c605
+    Coefficient id=c655 op=add:c544:c608
+    Coefficient id=c656 op=add:c545:c611
+    Coefficient id=c657 op=add:c547:c614
+    Coefficient id=c658 op=add:c548:c616
+    Coefficient id=c659 op=add:c549:c618
+    Coefficient id=c660 op=add:c550:c620
+    Coefficient id=c661 op=add:c552:c622
+    Coefficient id=c662 op=add:c553:c623
+    Coefficient id=c663 op=add:c554:c624
+    Coefficient id=c664 op=add:c555:c625
+    Coefficient id=c665 op=add:c556:c597
+    Coefficient id=c666 op=add:c561:c598
+    Coefficient id=c667 op=add:c566:c600
+    Coefficient id=c668 op=add:c603:c603
+    Coefficient id=c669 op=add:c604:c604
+    Coefficient id=c670 op=add:c606:c606
+    Coefficient id=c671 op=add:c607:c607
+    Coefficient id=c672 op=add:c609:c609
+    Coefficient id=c673 op=add:c610:c610
+    Coefficient id=c674 op=add:c612:c612
+    Coefficient id=c675 op=add:c613:c613
+    Coefficient id=c676 op=add:c615:c615
+    Coefficient id=c677 op=add:c617:c617
+    Coefficient id=c678 op=add:c619:c619
+    Coefficient id=c679 op=add:c621:c621
+    Coefficient id=c680 op=mul:c589:c589
+    Coefficient id=c681 op=mul:c589:c590
+    Coefficient id=c682 op=mul:c589:c591
+    Coefficient id=c683 op=mul:c590:c590
+    Coefficient id=c684 op=mul:c590:c591
+    Coefficient id=c685 op=mul:c591:c591
+    Coefficient id=c686 op=add:c77:c632
+    Coefficient id=c687 op=add:c92:c633
+    Coefficient id=c688 op=add:c93:c634
+    Coefficient id=c689 op=add:c158:c635
+    Coefficient id=c690 op=add:c158:c636
+    Coefficient id=c691 op=add:c158:c637
+    Coefficient id=c692 op=add:c158:c638
+    Coefficient id=c693 op=add:c158:c639
+    Coefficient id=c694 op=add:c161:c640
+    Coefficient id=c695 op=add:c161:c641
+    Coefficient id=c696 op=add:c161:c642
+    Coefficient id=c697 op=add:c161:c643
+    Coefficient id=c698 op=add:c161:c644
+    Coefficient id=c699 op=add:c164:c645
+    Coefficient id=c700 op=add:c164:c646
+    Coefficient id=c701 op=add:c164:c647
+    Coefficient id=c702 op=add:c164:c648
+    Coefficient id=c703 op=add:c164:c649
+    Coefficient id=c704 op=add:c218:c650
+    Coefficient id=c705 op=add:c224:c651
+    Coefficient id=c706 op=add:c230:c652
+    Coefficient id=c707 op=add:c557:c668
+    Coefficient id=c708 op=add:c558:c670
+    Coefficient id=c709 op=add:c559:c672
+    Coefficient id=c710 op=add:c560:c674
+    Coefficient id=c711 op=add:c562:c669
+    Coefficient id=c712 op=add:c563:c671
+    Coefficient id=c713 op=add:c564:c673
+    Coefficient id=c714 op=add:c565:c675
+    Coefficient id=c715 op=add:c567:c676
+    Coefficient id=c716 op=add:c568:c677
+    Coefficient id=c717 op=add:c569:c678
+    Coefficient id=c718 op=add:c570:c679
+    Coefficient id=c719 op=add:c626:c680
+    Coefficient id=c720 op=add:c627:c683
+    Coefficient id=c721 op=add:c628:c685
+    Coefficient id=c722 op=add:c681:c681
+    Coefficient id=c723 op=add:c682:c682
+    Coefficient id=c724 op=add:c684:c684
+    Coefficient id=c725 op=add:c629:c722
+    Coefficient id=c726 op=add:c630:c723
+    Coefficient id=c727 op=add:c631:c724
+    Polynomial id=poly0 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c328
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c590
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c591
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c589
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly1 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c299
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c498
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c502
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c494
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly2 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c298
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c497
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c501
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c493
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly3 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c295
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c418
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c423
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c413
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly4 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c296
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c495
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c499
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c491
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly5 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c297
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c496
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c500
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c492
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c133
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c136
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c284
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c128
+    Polynomial id=poly6 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c590
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly7 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c591
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly8 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c451
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c590
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c591
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c589
+    Polynomial id=poly9 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+    Polynomial id=poly10 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+    Polynomial id=poly11 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c590
+    Polynomial id=poly12 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c188
+    Polynomial id=poly13 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c591
+    Polynomial id=poly14 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c451
+    Polynomial id=poly15 degrees=u0v0q0x0t0 terms=0 detail=exact
+    Polynomial id=poly16 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c592
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c705
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c706
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c704
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly17 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c498
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly18 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c502
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly19 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c375
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c498
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c502
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c494
+    Polynomial id=poly20 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c498
+    Polynomial id=poly21 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c502
+    Polynomial id=poly22 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c375
+    Polynomial id=poly23 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c506
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c698
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c703
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c693
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly24 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c497
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly25 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c501
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly26 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c374
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c497
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c501
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c493
+    Polynomial id=poly27 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c497
+    Polynomial id=poly28 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c501
+    Polynomial id=poly29 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c374
+    Polynomial id=poly30 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c505
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c697
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c702
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c692
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly31 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c418
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly32 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c423
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly33 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c371
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c418
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c423
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c413
+    Polynomial id=poly34 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c418
+    Polynomial id=poly35 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c423
+    Polynomial id=poly36 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c371
+    Polynomial id=poly37 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c428
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c694
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c699
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c689
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly38 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c495
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly39 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c499
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly40 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c372
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c495
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c499
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c491
+    Polynomial id=poly41 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c495
+    Polynomial id=poly42 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c499
+    Polynomial id=poly43 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c372
+    Polynomial id=poly44 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c503
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c695
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c700
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c690
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly45 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c496
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c283
+    Polynomial id=poly46 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c500
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c289
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c188
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c284
+    Polynomial id=poly47 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c373
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c496
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c500
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c492
+    Polynomial id=poly48 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c496
+    Polynomial id=poly49 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c500
+    Polynomial id=poly50 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c373
+    Polynomial id=poly51 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c504
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c696
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c701
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c691
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c291
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c688
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c686
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c294
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c687
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c286
+    Polynomial id=poly52 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c720
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c727
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c725
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c721
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c726
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c719
+    Polynomial id=poly53 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c660
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c718
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c710
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c664
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c714
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c656
+    Polynomial id=poly54 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c659
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c717
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c709
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c663
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c713
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c655
+    Polynomial id=poly55 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c599
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c667
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c665
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c601
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c666
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c596
+    Polynomial id=poly56 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c657
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c715
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c707
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c661
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c711
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c653
+    Polynomial id=poly57 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c658
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c716
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c708
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c662
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c712
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c654
+    CompositionPlan id=cp0 kind=specialized source_degree_u=2 source_degree_q=2 source_degree_x=0 q_hat_degree=2 composed_degree=4 source_terms=10 temporaries=19 coefficient_order=[0,1,2,3,4,5,6,7,8,9]
+      CompositionStep source_term=0 u_power=0 q_power=2 lifted_power_offset=6 coefficient_order=0
+      CompositionStep source_term=1 u_power=1 q_power=1 lifted_power_offset=4 coefficient_order=1
+      CompositionStep source_term=2 u_power=0 q_power=1 lifted_power_offset=3 coefficient_order=2
+      CompositionStep source_term=3 u_power=0 q_power=1 lifted_power_offset=3 coefficient_order=3
+      CompositionStep source_term=4 u_power=2 q_power=0 lifted_power_offset=2 coefficient_order=4
+      CompositionStep source_term=5 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=5
+      CompositionStep source_term=6 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=6
+      CompositionStep source_term=7 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=7
+      CompositionStep source_term=8 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=8
+      CompositionStep source_term=9 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=9
+      CorrectionFace id=0 sign=-1 output_order=[0,1,2,3,4] steps=composition-steps:10
+      CorrectionFace id=1 sign=1 output_order=[0,1,2,3,4] steps=composition-steps:10
+    ProjectiveFeature id=g0 root=poly0 rational=- q_degree=2 seed=stable-quadratic:leading=c328:enclosure=[16.622499999999945,21.22250000000005]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g1 root=poly1 rational=- q_degree=2 seed=stable-quadratic:leading=c299:enclosure=[30.66937499999996,39.14437500000005]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g2 root=poly2 rational=- q_degree=2 seed=stable-quadratic:leading=c298:enclosure=[19.669374999999963,26.144375000000032]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g3 root=poly3 rational=- q_degree=2 seed=stable-quadratic:leading=c295:enclosure=[16.54437499999997,21.144375000000025]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g4 root=poly4 rational=- q_degree=2 seed=stable-quadratic:leading=c296:enclosure=[19.669374999999967,26.144375000000032]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g5 root=poly5 rational=- q_degree=2 seed=stable-quadratic:leading=c297:enclosure=[30.66937499999996,39.14437500000005]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp0 roots=2 validity=[] orientation=outward deformed=false params=[]
+    DerivativeBundle id=d0 feature=g0 g=poly0 first=[poly6,poly7,poly8] second=[poly9,poly10,poly11,poly12,poly13,poly14] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly16 g_tt=none params=[]
+    DerivativeBundle id=d1 feature=g1 g=poly1 first=[poly17,poly18,poly19] second=[poly9,poly10,poly20,poly12,poly21,poly22] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly23 g_tt=none params=[]
+    DerivativeBundle id=d2 feature=g2 g=poly2 first=[poly24,poly25,poly26] second=[poly9,poly10,poly27,poly12,poly28,poly29] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly30 g_tt=none params=[]
+    DerivativeBundle id=d3 feature=g3 g=poly3 first=[poly31,poly32,poly33] second=[poly9,poly10,poly34,poly12,poly35,poly36] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly37 g_tt=none params=[]
+    DerivativeBundle id=d4 feature=g4 g=poly4 first=[poly38,poly39,poly40] second=[poly9,poly10,poly41,poly12,poly42,poly43] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly44 g_tt=none params=[]
+    DerivativeBundle id=d5 feature=g5 g=poly5 first=[poly45,poly46,poly47] second=[poly9,poly10,poly48,poly12,poly49,poly50] third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15] g_t=poly51 g_tt=none params=[]
+    DerivativeCluster object=o0 leaf_signature=[f0@0/f1@0/f2@0] bundles=[d0] smooth_root=s15 scalar_derivative_sources=[s15] value_domain=[-0.25,6.678203582763672] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=0.866236835767802 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    DerivativeCluster object=o1 leaf_signature=[f3@0/f4@0] bundles=[d1] smooth_root=s45 scalar_derivative_sources=[s45] value_domain=[-0.375,9.422958374023438] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.125183105468751 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    DerivativeCluster object=o2 leaf_signature=[f3@0/f4@0] bundles=[d2] smooth_root=s45 scalar_derivative_sources=[s45] value_domain=[-0.375,9.422958374023438] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.2992495376600053 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    DerivativeCluster object=o3 leaf_signature=[f3@0/f4@0] bundles=[d3] smooth_root=s45 scalar_derivative_sources=[s45] value_domain=[-0.375,9.422958374023438] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.299249537660005 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    DerivativeCluster object=o4 leaf_signature=[f3@0/f4@0] bundles=[d4] smooth_root=s45 scalar_derivative_sources=[s45] value_domain=[-0.375,9.422958374023438] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.2992495376600053 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    DerivativeCluster object=o5 leaf_signature=[f3@0/f4@0] bundles=[d5] smooth_root=s45 scalar_derivative_sources=[s45] value_domain=[-0.375,9.422958374023438] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.125183105468751 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    ProjectedSpan feature=g0 normalized=[-0.34869976693296395,0.34869976693296395]x[-0.6973995338659238,0.6973995338659238] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] q=[0.19606722181932512,0.3792973881292019] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g1 normalized=[-1,-0.09115536060260825]x[-1,1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] q=[0.16142567785133846,0.6356394261362855] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g2 normalized=[-1,0.09350067947060024]x[-1,1] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] q=[0.1727640401098543,0.5051069612515751] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g3 normalized=[-0.40848096594303346,0.40848096594303346]x[-0.8169619318860667,0.8169619318860667] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] q=[0.18911307863713775,0.4031967545244245] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g4 normalized=[-0.09350067947060024,1]x[-1,1] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] q=[0.1727640401098543,0.5051069612515751] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g5 normalized=[0.09115536060260825,1]x[-1,1] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] q=[0.16142567785133846,0.6356394261362855] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    Event id=e0 kind=projected-bound-enter participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=18 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e1 kind=projected-bound-exit participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=46 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e2 kind=silhouette participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly52:root=poly0 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e3 kind=near-clip participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e4 kind=far-clip participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e5 kind=fixed-point-reset-only participants=[feature:g0] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e6 kind=projected-bound-enter participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=0 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e7 kind=projected-bound-exit participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=32 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e8 kind=silhouette participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly53:root=poly1 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e9 kind=near-clip participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e10 kind=far-clip participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e11 kind=fixed-point-reset-only participants=[feature:g1] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e12 kind=projected-bound-enter participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=0 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e13 kind=projected-bound-exit participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=37 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e14 kind=silhouette participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly54:root=poly2 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e15 kind=near-clip participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e16 kind=far-clip participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e17 kind=fixed-point-reset-only participants=[feature:g2] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e18 kind=projected-bound-enter participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=16 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e19 kind=projected-bound-exit participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=48 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e20 kind=silhouette participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly55:root=poly3 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e21 kind=near-clip participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e22 kind=far-clip participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e23 kind=fixed-point-reset-only participants=[feature:g3] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e24 kind=projected-bound-enter participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=27 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e25 kind=projected-bound-exit participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=64 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e26 kind=silhouette participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly56:root=poly4 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e27 kind=near-clip participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e28 kind=far-clip participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e29 kind=fixed-point-reset-only participants=[feature:g4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e30 kind=projected-bound-enter participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=32 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e31 kind=projected-bound-exit participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=64 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e32 kind=silhouette participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly57:root=poly5 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e33 kind=near-clip participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e34 kind=far-clip participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e35 kind=fixed-point-reset-only participants=[feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e36 kind=repeat-boundary participants=[feature:g1,object:o1,field:f4] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-3.000000000000001,-2.999999999999999] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e37 kind=repeat-boundary participants=[feature:g2,object:o2,field:f4] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-3.000000000000001,-2.999999999999999] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e38 kind=repeat-boundary participants=[feature:g3,object:o3,field:f4] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-3.000000000000001,-2.999999999999999] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e39 kind=repeat-boundary participants=[feature:g4,object:o4,field:f4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-3.000000000000001,-2.999999999999999] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e40 kind=repeat-boundary participants=[feature:g5,object:o5,field:f4] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-3.000000000000001,-2.999999999999999] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e41 kind=repeat-boundary participants=[feature:g1,object:o1,field:f4] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-1.0000000000000004,-0.9999999999999998] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e42 kind=repeat-boundary participants=[feature:g2,object:o2,field:f4] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-1.0000000000000004,-0.9999999999999998] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e43 kind=repeat-boundary participants=[feature:g3,object:o3,field:f4] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-1.0000000000000004,-0.9999999999999998] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e44 kind=repeat-boundary participants=[feature:g4,object:o4,field:f4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-1.0000000000000004,-0.9999999999999998] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e45 kind=repeat-boundary participants=[feature:g5,object:o5,field:f4] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[-1.0000000000000004,-0.9999999999999998] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e46 kind=repeat-boundary participants=[feature:g1,object:o1,field:f4] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[0.9999999999999998,1.0000000000000004] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e47 kind=repeat-boundary participants=[feature:g2,object:o2,field:f4] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[0.9999999999999998,1.0000000000000004] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e48 kind=repeat-boundary participants=[feature:g3,object:o3,field:f4] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[0.9999999999999998,1.0000000000000004] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e49 kind=repeat-boundary participants=[feature:g4,object:o4,field:f4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[0.9999999999999998,1.0000000000000004] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e50 kind=repeat-boundary participants=[feature:g5,object:o5,field:f4] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[0.9999999999999998,1.0000000000000004] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e51 kind=repeat-boundary participants=[feature:g1,object:o1,field:f4] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[2.999999999999999,3.000000000000001] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e52 kind=repeat-boundary participants=[feature:g2,object:o2,field:f4] pixels=[0,37]x[0,32] tiles=[0,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[2.999999999999999,3.000000000000001] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e53 kind=repeat-boundary participants=[feature:g3,object:o3,field:f4] pixels=[16,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[2.999999999999999,3.000000000000001] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e54 kind=repeat-boundary participants=[feature:g4,object:o4,field:f4] pixels=[27,64]x[0,32] tiles=[1,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[2.999999999999999,3.000000000000001] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e55 kind=repeat-boundary participants=[feature:g5,object:o5,field:f4] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=1 subdivision=2 representation=repeat-affine:axis=x:boundary=[2.999999999999999,3.000000000000001] sides=negative=repeat-left:zero=ambiguous:positive=repeat-right
+    Event id=e56 kind=depth-swap participants=[feature:g0,feature:g1] pixels=[18,32]x[2,30] tiles=[1,2]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.8750000000000001,0.8750000000000001]:q_domain=[0.19606722181932512,0.3792973881292019]:fallback_difference=[-0.4395722043169605,0.21787171027786345]:fallback_remainder=0.43957220431696054:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e57 kind=depth-swap participants=[feature:g0,feature:g2] pixels=[18,37]x[2,30] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d2:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.1875000000000002,1.1875000000000002]:q_domain=[0.19606722181932512,0.3792973881292019]:fallback_difference=[-0.30903973943225,0.2065333480193476]:fallback_remainder=0.30903973943225005:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e58 kind=depth-swap participants=[feature:g0,feature:g3] pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d3:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.7500000000000002,1.7500000000000002]:q_domain=[0.19606722181932512,0.3792973881292019]:fallback_difference=[-0.2071295327050994,0.19018430949206416]:fallback_remainder=0.20712953270509943:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e59 kind=depth-swap participants=[feature:g0,feature:g4] pixels=[27,46]x[2,30] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d4:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.1875000000000002,1.1875000000000002]:q_domain=[0.19606722181932512,0.3792973881292019]:fallback_difference=[-0.30903973943225,0.2065333480193476]:fallback_remainder=0.30903973943225005:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e60 kind=depth-swap participants=[feature:g0,feature:g5] pixels=[32,46]x[2,30] tiles=[2,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d5:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.8750000000000001,0.8750000000000001]:q_domain=[0.19606722181932512,0.3792973881292019]:fallback_difference=[-0.4395722043169605,0.21787171027786345]:fallback_remainder=0.43957220431696054:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e61 kind=depth-swap participants=[feature:g1,feature:g2] pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d1:b=d2:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-2.0000000000000004,2.0000000000000004]:q_domain=[0.1727640401098543,0.5051069612515751]:fallback_difference=[-0.3436812834002367,0.4628753860264313]:fallback_remainder=0.46287538602643136:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e62 kind=depth-swap participants=[feature:g1,feature:g3] pixels=[16,32]x[0,32] tiles=[1,2]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d1:b=d3:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.0000000000000002,1.0000000000000002]:q_domain=[0.18911307863713775,0.4031967545244245]:fallback_difference=[-0.24177107667308606,0.4465263474991478]:fallback_remainder=0.4465263474991479:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e63 kind=depth-swap participants=[feature:g1,feature:g4] pixels=[27,32]x[0,32] tiles=[1,2]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d1:b=d4:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.31250000000000006,0.31250000000000006]:q_domain=[0.1727640401098543,0.5051069612515751]:fallback_difference=[-0.3436812834002367,0.4628753860264313]:fallback_remainder=0.46287538602643136:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e64 kind=depth-swap participants=[feature:g1,feature:g5] pixels=[31,33]x[0,32] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d1:b=d5:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.12500000000000003,0.12500000000000003]:q_domain=[0.16142567785133846,0.6356394261362855]:fallback_difference=[-0.47421374828494717,0.47421374828494717]:fallback_remainder=0.4742137482849472:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e65 kind=depth-swap participants=[feature:g2,feature:g3] pixels=[16,37]x[0,32] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d2:b=d3:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.3125000000000002,1.3125000000000002]:q_domain=[0.18911307863713775,0.4031967545244245]:fallback_difference=[-0.23043271441457022,0.31599388261443734]:fallback_remainder=0.3159938826144374:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e66 kind=depth-swap participants=[feature:g2,feature:g4] pixels=[27,37]x[0,32] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d2:b=d4:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.6250000000000001,0.6250000000000001]:q_domain=[0.1727640401098543,0.5051069612515751]:fallback_difference=[-0.3323429211417208,0.3323429211417208]:fallback_remainder=0.33234292114172087:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e67 kind=depth-swap participants=[feature:g2,feature:g5] pixels=[32,37]x[0,32] tiles=[2,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d2:b=d5:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-0.31250000000000006,0.31250000000000006]:q_domain=[0.1727640401098543,0.5051069612515751]:fallback_difference=[-0.4628753860264313,0.3436812834002367]:fallback_remainder=0.46287538602643136:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e68 kind=depth-swap participants=[feature:g3,feature:g4] pixels=[27,48]x[0,32] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d3:b=d4:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.3125000000000002,1.3125000000000002]:q_domain=[0.18911307863713775,0.4031967545244245]:fallback_difference=[-0.31599388261443734,0.23043271441457022]:fallback_remainder=0.3159938826144374:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e69 kind=depth-swap participants=[feature:g3,feature:g5] pixels=[32,48]x[0,32] tiles=[2,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d3:b=d5:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-1.0000000000000002,1.0000000000000002]:q_domain=[0.18911307863713775,0.4031967545244245]:fallback_difference=[-0.4465263474991478,0.24177107667308606]:fallback_remainder=0.4465263474991479:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    Event id=e70 kind=depth-swap participants=[feature:g4,feature:g5] pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d4:b=d5:order=2:next_order=3:a_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:b_third=[poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15,poly15]:x_domain=[-2.0000000000000004,2.0000000000000004]:q_domain=[0.1727640401098543,0.5051069612515751]:fallback_difference=[-0.4628753860264313,0.3436812834002367]:fallback_remainder=0.46287538602643136:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    CompetitionPair id=pair0 a=g0 b=g1 event=e56 pixels=[18,32]x[2,30] tiles=[1,2]x[0,2] q_overlap=[0.19606722181932512,0.3792973881292019]
+    CompetitionPair id=pair1 a=g0 b=g2 event=e57 pixels=[18,37]x[2,30] tiles=[1,3]x[0,2] q_overlap=[0.19606722181932512,0.3792973881292019]
+    CompetitionPair id=pair2 a=g0 b=g3 event=e58 pixels=[18,46]x[2,30] tiles=[1,3]x[0,2] q_overlap=[0.19606722181932512,0.3792973881292019]
+    CompetitionPair id=pair3 a=g0 b=g4 event=e59 pixels=[27,46]x[2,30] tiles=[1,3]x[0,2] q_overlap=[0.19606722181932512,0.3792973881292019]
+    CompetitionPair id=pair4 a=g0 b=g5 event=e60 pixels=[32,46]x[2,30] tiles=[2,3]x[0,2] q_overlap=[0.19606722181932512,0.3792973881292019]
+    CompetitionPair id=pair5 a=g1 b=g2 event=e61 pixels=[0,32]x[0,32] tiles=[0,2]x[0,2] q_overlap=[0.1727640401098543,0.5051069612515751]
+    CompetitionPair id=pair6 a=g1 b=g3 event=e62 pixels=[16,32]x[0,32] tiles=[1,2]x[0,2] q_overlap=[0.18911307863713775,0.4031967545244245]
+    CompetitionPair id=pair7 a=g1 b=g4 event=e63 pixels=[27,32]x[0,32] tiles=[1,2]x[0,2] q_overlap=[0.1727640401098543,0.5051069612515751]
+    CompetitionPair id=pair8 a=g1 b=g5 event=e64 pixels=[31,33]x[0,32] tiles=[1,3]x[0,2] q_overlap=[0.16142567785133846,0.6356394261362855]
+    CompetitionPair id=pair9 a=g2 b=g3 event=e65 pixels=[16,37]x[0,32] tiles=[1,3]x[0,2] q_overlap=[0.18911307863713775,0.4031967545244245]
+    CompetitionPair id=pair10 a=g2 b=g4 event=e66 pixels=[27,37]x[0,32] tiles=[1,3]x[0,2] q_overlap=[0.1727640401098543,0.5051069612515751]
+    CompetitionPair id=pair11 a=g2 b=g5 event=e67 pixels=[32,37]x[0,32] tiles=[2,3]x[0,2] q_overlap=[0.1727640401098543,0.5051069612515751]
+    CompetitionPair id=pair12 a=g3 b=g4 event=e68 pixels=[27,48]x[0,32] tiles=[1,3]x[0,2] q_overlap=[0.18911307863713775,0.4031967545244245]
+    CompetitionPair id=pair13 a=g3 b=g5 event=e69 pixels=[32,48]x[0,32] tiles=[2,3]x[0,2] q_overlap=[0.18911307863713775,0.4031967545244245]
+    CompetitionPair id=pair14 a=g4 b=g5 event=e70 pixels=[32,64]x[0,32] tiles=[2,4]x[0,2] q_overlap=[0.1727640401098543,0.5051069612515751]
+    CompetitionSummary considered=15 emitted=15 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=6 suppressed_material_only=0
+    Index name=tile_features cells=8 ids=28
+      Cell id=0 offset=0 count=2 values=[1,2]
+      Cell id=1 offset=2 count=5 values=[0,1,2,3,4]
+      Cell id=2 offset=7 count=5 values=[0,2,3,4,5]
+      Cell id=3 offset=12 count=2 values=[4,5]
+      Cell id=4 offset=14 count=2 values=[1,2]
+      Cell id=5 offset=16 count=5 values=[0,1,2,3,4]
+      Cell id=6 offset=21 count=5 values=[0,2,3,4,5]
+      Cell id=7 offset=26 count=2 values=[4,5]
+    Index name=tile_events cells=8 ids=312
+      Cell id=0 offset=0 count=21 values=[6,7,8,9,10,11,12,13,14,15,16,17,36,37,41,42,46,47,51,52,61]
+      Cell id=1 offset=21 count=57 values=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,36,37,38,39,41,42,43,44,46,47,48,49,51,52,53,54,56,57,58,59,61,62,63,64,65,66,68]
+      Cell id=2 offset=78 count=57 values=[0,1,2,3,4,5,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,37,38,39,40,42,43,44,45,47,48,49,50,52,53,54,55,57,58,59,60,64,65,66,67,68,69,70]
+      Cell id=3 offset=135 count=21 values=[24,25,26,27,28,29,30,31,32,33,34,35,39,40,44,45,49,50,54,55,70]
+      Cell id=4 offset=156 count=21 values=[6,7,8,9,10,11,12,13,14,15,16,17,36,37,41,42,46,47,51,52,61]
+      Cell id=5 offset=177 count=57 values=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,36,37,38,39,41,42,43,44,46,47,48,49,51,52,53,54,56,57,58,59,61,62,63,64,65,66,68]
+      Cell id=6 offset=234 count=57 values=[0,1,2,3,4,5,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,37,38,39,40,42,43,44,45,47,48,49,50,52,53,54,55,57,58,59,60,64,65,66,67,68,69,70]
+      Cell id=7 offset=291 count=21 values=[24,25,26,27,28,29,30,31,32,33,34,35,39,40,44,45,49,50,54,55,70]
+    Index name=tile_competitions cells=8 ids=48
+      Cell id=0 offset=0 count=1 values=[5]
+      Cell id=1 offset=1 count=11 values=[0,1,2,3,5,6,7,8,9,10,12]
+      Cell id=2 offset=12 count=11 values=[1,2,3,4,8,9,10,11,12,13,14]
+      Cell id=3 offset=23 count=1 values=[14]
+      Cell id=4 offset=24 count=1 values=[5]
+      Cell id=5 offset=25 count=11 values=[0,1,2,3,5,6,7,8,9,10,12]
+      Cell id=6 offset=36 count=11 values=[1,2,3,4,8,9,10,11,12,13,14]
+      Cell id=7 offset=47 count=1 values=[14]
+    Index name=row_block_repeats cells=2 ids=12
+      Cell id=0 offset=0 count=6 values=[0,1,2,3,4,5]
+      Cell id=1 offset=6 count=6 values=[0,1,2,3,4,5]
+    Index name=tile_lights cells=8 ids=0
+      Cell id=0 offset=0 count=0 values=[]
+      Cell id=1 offset=0 count=0 values=[]
+      Cell id=2 offset=0 count=0 values=[]
+      Cell id=3 offset=0 count=0 values=[]
+      Cell id=4 offset=0 count=0 values=[]
+      Cell id=5 offset=0 count=0 values=[]
+      Cell id=6 offset=0 count=0 values=[]
+      Cell id=7 offset=0 count=0 values=[]
+    Index name=tile_probes cells=8 ids=0
+      Cell id=0 offset=0 count=0 values=[]
+      Cell id=1 offset=0 count=0 values=[]
+      Cell id=2 offset=0 count=0 values=[]
+      Cell id=3 offset=0 count=0 values=[]
+      Cell id=4 offset=0 count=0 values=[]
+      Cell id=5 offset=0 count=0 values=[]
+      Cell id=6 offset=0 count=0 values=[]
+      Cell id=7 offset=0 count=0 values=[]
+    ObjectFeatureIndex object=o0 first=g0 count=1
+    ObjectFeatureIndex object=o1 first=g1 count=1
+    ObjectFeatureIndex object=o2 first=g2 count=1
+    ObjectFeatureIndex object=o3 first=g3 count=1
+    ObjectFeatureIndex object=o4 first=g4 count=1
+    ObjectFeatureIndex object=o5 first=g5 count=1
+    DirectIndexes feature_derivatives=[d0,d1,d2,d3,d4,d5] material_programs=[0:m0] bytes=2040
+    ProjectiveCapacities candidate_features_per_tile=5 row_start_roots=10 active_sheets_per_row=10 event_generators=71 competition_pairs_per_tile=11 row_event_intervals=149 root_stack_nodes=40 event_stack_nodes=32 runs_per_row=150 corridors_per_row=149 max_index_slice=57 polynomial_programs=58 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=728 derivative_bundles=6 derivative_clusters=6 index_bytes=2040 per_worker_scratch_bytes=11640 all_worker_scratch_bytes=11640
+      ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=5 why=[exact endpoint/cell sweep gives row overlap 6 within P3 ceiling 6 and tile overlap 5 within P3 ceiling 6]
+      ProjectiveCapacityDerivation field=p4_row_start_roots value=10 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
+      ProjectiveCapacityDerivation field=p4_row_event_intervals value=149 why=[71 completed local generators; 15 competition pairs survive; 2^2 leaves per isolated root]
+      ProjectiveCapacityDerivation field=p4_index_bytes value=2040 why=[completed offset/count cells plus sorted contiguous ID tables]
+Analysis status=verified-projective

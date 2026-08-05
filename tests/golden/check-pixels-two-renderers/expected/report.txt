@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/field.wr sha256=60da4f19bb3ef2811585acae73d7dd25477d16c795d549a0e106ff62f9c706d1
-  Input path=core/render.wr sha256=7d521ed811837be89316c9b7e2115fb0d6c802c09108bf571941b3d8e6f751f7
+  Input path=core/render.wr sha256=03f2dda792f03eef90dc696413a0c7a1785e584cc8f3006cc1634fd5a8e75238
   Input path=drivers/display.wr sha256=8c979e67ccfa9d45e377c55303c6d076e2d680e622c529e0dcf2bb7046b67a4b
   Input path=examples/check_pixels_two_renderers.wr sha256=4d28015d051d94574c5da12b069389afd08d4303dcb983063f9d2a3591a60abe
   Input path=examples/two_renderer_scene.wr sha256=e05783b6a087cbcf3e09ad3106acd894db7f04918b6bbf6363c75128e471762d
@@ -73,7 +73,7 @@ ImageReport v0
   OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=Display core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
   Placement id=driver#1 type=Display core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
-PixelsStructuralReport v1
+PixelsCompilerReport v2
   Renderers count=2
   Renderer index=0 coefficient_bytes=0 objects=1 features=1 production_state_bytes=222904 instrumented_state_bytes=223288 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
     Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=9 derivative_slots=9 parameter_slots=0 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=1 event_subdivisions=4 event_records=4 tile_row_runs=5 csg_events=1 transparent_layers=1 rebuild_queue=5
@@ -83,6 +83,13 @@ PixelsStructuralReport v1
     Capacity field=max_run_records_per_tile_row value=5 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run]
     Capacity field=renderer_state_bytes value=222904 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=1128 (1128 * 1 workers); output=16384; probes=0; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
     Capacity field=instrumented_renderer_state_bytes value=223288 why=[production=222904; telemetry=384]
+    Projective features=1 polynomials=8 coefficients=70 derivative_bundles=1 derivative_clusters=1 events=4 competition_pairs=0 exclusions=2 index_bytes=520
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 competition_pairs_per_tile=0 row_event_intervals=4 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=5 corridors_per_row=4 max_index_slice=4 polynomial_terms_per_program=4 per_worker_scratch_bytes=640 all_worker_scratch_bytes=640
+    CompetitionPruning projected=0 q=0 csg_global=0 csg_pair=0 strict_order=0 same_feature=1 material_only=0
+    ProjectiveCapacity field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
+    ProjectiveCapacity field=p4_row_start_roots value=1 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
+    ProjectiveCapacity field=p4_row_event_intervals value=4 why=[4 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
+    ProjectiveCapacity field=p4_index_bytes value=520 why=[completed offset/count cells plus sorted contiguous ID tables]
   Renderer index=1 coefficient_bytes=0 objects=1 features=1 production_state_bytes=223032 instrumented_state_bytes=223416 dependency_schema=2d9e44a44685c6d48b6c160a7c8259285b076a004ed60469bab30e14b96fe073
     Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=9 derivative_slots=9 parameter_slots=0 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=1 event_subdivisions=4 event_records=4 tile_row_runs=5 csg_events=1 transparent_layers=1 rebuild_queue=5
     Storage candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=128 run_bytes=160 corridor_bytes=120 fixed_q_bytes=80 shading_bytes=320 transparency_bytes=160 per_worker_scratch_bytes=1128 all_worker_scratch_bytes=1128 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=272 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 telemetry_production_bytes=0 telemetry_instrumented_bytes=384
@@ -91,6 +98,13 @@ PixelsStructuralReport v1
     Capacity field=max_run_records_per_tile_row value=5 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run]
     Capacity field=renderer_state_bytes value=223032 why=[header=256; coefficient_snapshots=0; frame_snapshots=272; frame_complexes=131072; scratch=1128 (1128 * 1 workers); output=16384; probes=0; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
     Capacity field=instrumented_renderer_state_bytes value=223416 why=[production=223032; telemetry=384]
+    Projective features=1 polynomials=8 coefficients=70 derivative_bundles=1 derivative_clusters=1 events=4 competition_pairs=0 exclusions=2 index_bytes=552
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 competition_pairs_per_tile=0 row_event_intervals=4 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=5 corridors_per_row=4 max_index_slice=4 polynomial_terms_per_program=4 per_worker_scratch_bytes=640 all_worker_scratch_bytes=640
+    CompetitionPruning projected=0 q=0 csg_global=0 csg_pair=0 strict_order=0 same_feature=1 material_only=0
+    ProjectiveCapacity field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
+    ProjectiveCapacity field=p4_row_start_roots value=1 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
+    ProjectiveCapacity field=p4_row_event_intervals value=4 why=[4 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
+    ProjectiveCapacity field=p4_index_bytes value=552 why=[completed offset/count cells plus sorted contiguous ID tables]
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
     Padding offset=0x0 size=40
     Field name=next_deadline type=u64 offset=0x28 size=8

@@ -712,9 +712,10 @@ fn produce_report_and_image_with_discovery_order(
                                 .symbolic_graphs
                                 .iter()
                                 .zip(&pixels_programs.structural_programs)
+                                .zip(&pixels_programs.projective_programs)
                                 .enumerate()
-                                .map(|(index, (graph, structural))| {
-                                    (index, graph.clone(), structural.clone())
+                                .map(|(index, ((graph, structural), projective))| {
+                                    (index, graph.clone(), structural.clone(), projective.clone())
                                 })
                                 .collect::<Vec<_>>();
                             Some(wrela_compiler::pixels::dump_structural_graphs(
@@ -766,7 +767,7 @@ fn produce_report_and_image_with_discovery_order(
                                 wrela_compiler::pixels::report::append_program_set(
                                     &mut text,
                                     &pixels_programs,
-                                );
+                                )?;
                                 let mut layout_types = Vec::new();
                                 for (key, module) in &modules_by_addr {
                                     let specialized = sema::specialize::specialize(module)

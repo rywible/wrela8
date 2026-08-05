@@ -440,6 +440,7 @@ fn run_pixels_stage(
                     selected_index,
                     program_set.symbolic_graphs[selected_index].clone(),
                     program_set.structural_programs[selected_index].clone(),
+                    program_set.projective_programs[selected_index].clone(),
                 )],
                 &checked.renderer_configs,
             )
@@ -567,7 +568,7 @@ fn build_report(
                                     wrela_compiler::pixels::report::append_program_set(
                                         &mut text,
                                         &pixels_programs,
-                                    );
+                                    )?;
                                 }
                                 let name = first_field_value(&text, "Name value=")
                                     .unwrap_or("")

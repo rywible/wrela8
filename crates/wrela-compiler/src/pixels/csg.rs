@@ -3,6 +3,8 @@
 use super::ids::ObjectId;
 use super::objects::CsgExpr;
 
+pub const MAX_EXHAUSTIVE_PAIR_INFLUENCE_OBJECTS_V1: usize = 16;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CsgInst {
     Push(ObjectId),
@@ -261,6 +263,89 @@ pub fn evaluate_cofactor(
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairInfluence {
+    MayJointlyInfluence,
+    ProvenDisjoint {
+        variable_count: u8,
+        states_checked: u32,
+    },
+}
+
+/// Prove whether two object boundaries can both affect the hard-CSG result in
+/// one occupancy state. Small Boolean supports are checked exhaustively. Large
+/// supports fail closed by retaining the pair instead of trusting a heuristic.
+pub fn pair_influence(
+    program: &CsgProgram,
+    a: ObjectId,
+    b: ObjectId,
+) -> Result<PairInfluence, String> {
+    if a == b {
+        return Ok(PairInfluence::MayJointlyInfluence);
+    }
+    let mut variables = program
+        .instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            CsgInst::Push(object) => Some(*object),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    variables.sort();
+    variables.dedup();
+    if variables.len() > MAX_EXHAUSTIVE_PAIR_INFLUENCE_OBJECTS_V1 {
+        return Ok(PairInfluence::MayJointlyInfluence);
+    }
+    let state_count = 1_u32
+        .checked_shl(
+            u32::try_from(variables.len())
+                .map_err(|_| "P015: CSG pair-influence variable count overflow".to_string())?,
+        )
+        .ok_or_else(|| "P015: CSG pair-influence state count overflow".to_string())?;
+    for bits in 0..state_count {
+        let occupancy = |object: ObjectId| {
+            variables
+                .binary_search(&object)
+                .ok()
+                .is_some_and(|index| bits & (1_u32 << index) != 0)
+        };
+        let a_false = evaluate(program, |object| {
+            if object == a {
+                false
+            } else {
+                occupancy(object)
+            }
+        })?;
+        let a_true = evaluate(
+            program,
+            |object| {
+                if object == a { true } else { occupancy(object) }
+            },
+        )?;
+        let b_false = evaluate(program, |object| {
+            if object == b {
+                false
+            } else {
+                occupancy(object)
+            }
+        })?;
+        let b_true = evaluate(
+            program,
+            |object| {
+                if object == b { true } else { occupancy(object) }
+            },
+        )?;
+        if a_false != a_true && b_false != b_true {
+            return Ok(PairInfluence::MayJointlyInfluence);
+        }
+    }
+    Ok(PairInfluence::ProvenDisjoint {
+        variable_count: u8::try_from(variables.len())
+            .map_err(|_| "P015: CSG pair-influence variable count overflow".to_string())?,
+        states_checked: state_count,
+    })
+}
+
 pub fn compile(expr: CsgExpr, object_count: usize) -> Result<CsgProgram, String> {
     let expr = simplify(expr);
     if let CsgExpr::Const(value) = &expr {
@@ -337,6 +422,52 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pair_influence_proves_mutually_exclusive_boolean_boundaries() {
+        // f = (a && c) || (b && !c): a can affect the result only while c is
+        // true and b only while c is false, so they cannot jointly influence.
+        let expr = CsgExpr::Or(
+            Box::new(CsgExpr::And(
+                Box::new(CsgExpr::Leaf(ObjectId(0))),
+                Box::new(CsgExpr::Leaf(ObjectId(2))),
+            )),
+            Box::new(CsgExpr::And(
+                Box::new(CsgExpr::Leaf(ObjectId(1))),
+                Box::new(CsgExpr::Not(Box::new(CsgExpr::Leaf(ObjectId(2))))),
+            )),
+        );
+        let program = compile(expr, 3).unwrap();
+        assert_eq!(
+            pair_influence(&program, ObjectId(0), ObjectId(1)).unwrap(),
+            PairInfluence::ProvenDisjoint {
+                variable_count: 3,
+                states_checked: 8,
+            }
+        );
+        assert_eq!(
+            pair_influence(&program, ObjectId(0), ObjectId(2)).unwrap(),
+            PairInfluence::MayJointlyInfluence
+        );
+    }
+
+    #[test]
+    fn pair_influence_fails_closed_above_the_exhaustive_ceiling() {
+        let expression = (1..=MAX_EXHAUSTIVE_PAIR_INFLUENCE_OBJECTS_V1).fold(
+            CsgExpr::Leaf(ObjectId(0)),
+            |left, index| {
+                CsgExpr::Or(
+                    Box::new(left),
+                    Box::new(CsgExpr::Leaf(ObjectId(index as u32))),
+                )
+            },
+        );
+        let program = compile(expression, MAX_EXHAUSTIVE_PAIR_INFLUENCE_OBJECTS_V1 + 1).unwrap();
+        assert_eq!(
+            pair_influence(&program, ObjectId(0), ObjectId(1)).unwrap(),
+            PairInfluence::MayJointlyInfluence
+        );
     }
 
     fn eval_expr(expr: &CsgExpr, bits: u32) -> bool {

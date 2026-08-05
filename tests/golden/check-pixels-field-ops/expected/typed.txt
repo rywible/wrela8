@@ -1270,6 +1270,565 @@ Program
             Field name=enabled
               Local name=enabled ty=bool
   Struct name=Camera
+    AssocFn name=canonical ret=Camera
+      Param name=eye mode=read ty=Vec3
+      Body
+        Return
+          StructLiteral name=Camera ty=Camera
+            Field name=eye
+              Local name=eye ty=Vec3
+            Field name=forward
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Float text=0.0 ty=f32
+                Field name=y
+                  Float text=0.0 ty=f32
+                Field name=z
+                  Float text=1.0 ty=f32
+            Field name=right
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Float text=1.0 ty=f32
+                Field name=y
+                  Float text=0.0 ty=f32
+                Field name=z
+                  Float text=0.0 ty=f32
+            Field name=up
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Float text=0.0 ty=f32
+                Field name=y
+                  Float text=1.0 ty=f32
+                Field name=z
+                  Float text=0.0 ty=f32
+    AssocFn name=explicit ret=Result[Camera, CameraError]
+      Param name=eye mode=read ty=Vec3
+      Param name=authored_forward mode=read ty=Vec3
+      Param name=authored_right mode=read ty=Vec3
+      Param name=authored_up mode=read ty=Vec3
+      Body
+        Let name=forward_length ty=f32
+          Call key=length3 ty=f32
+            Local name=authored_forward ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=forward_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateForward ty=CameraError
+        Let name=forward ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=authored_forward ty=Vec3
+                Local name=forward_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=authored_forward ty=Vec3
+                Local name=forward_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=authored_forward ty=Vec3
+                Local name=forward_length ty=f32
+        Let name=projection ty=f32
+          Call key=dot3 ty=f32
+            Local name=authored_right ty=Vec3
+            Local name=forward ty=Vec3
+        Let name=right_seed ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=- ty=f32
+                Field name=x ty=f32
+                  Local name=authored_right ty=Vec3
+                Binary op=* ty=f32
+                  Local name=projection ty=f32
+                  Field name=x ty=f32
+                    Local name=forward ty=Vec3
+            Field name=y
+              Binary op=- ty=f32
+                Field name=y ty=f32
+                  Local name=authored_right ty=Vec3
+                Binary op=* ty=f32
+                  Local name=projection ty=f32
+                  Field name=y ty=f32
+                    Local name=forward ty=Vec3
+            Field name=z
+              Binary op=- ty=f32
+                Field name=z ty=f32
+                  Local name=authored_right ty=Vec3
+                Binary op=* ty=f32
+                  Local name=projection ty=f32
+                  Field name=z ty=f32
+                    Local name=forward ty=Vec3
+        Let name=right_length ty=f32
+          Call key=length3 ty=f32
+            Local name=right_seed ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=right_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=InvalidBasis ty=CameraError
+        Let name=right ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+        Let name=up ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=forward ty=Vec3
+            Local name=right ty=Vec3
+        Let name=authored_up_length ty=f32
+          Call key=length3 ty=f32
+            Local name=authored_up ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=authored_up_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateUp ty=CameraError
+        Let name=authored_up_direction ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=authored_up ty=Vec3
+                Local name=authored_up_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=authored_up ty=Vec3
+                Local name=authored_up_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=authored_up ty=Vec3
+                Local name=authored_up_length ty=f32
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Call key=dot3 ty=f32
+                Local name=up ty=Vec3
+                Local name=authored_up_direction ty=Vec3
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=InvalidBasis ty=CameraError
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[Camera, CameraError]
+            StructLiteral name=Camera ty=Camera
+              Field name=eye
+                Local name=eye ty=Vec3
+              Field name=forward
+                Local name=forward ty=Vec3
+              Field name=right
+                Local name=right ty=Vec3
+              Field name=up
+                Local name=up ty=Vec3
+    AssocFn name=look_at ret=Result[Camera, CameraError]
+      Param name=eye mode=read ty=Vec3
+      Param name=target mode=read ty=Vec3
+      Param name=authored_up mode=read ty=Vec3
+      Body
+        Let name=forward_seed ty=Vec3
+          Call key=Vec3.subtract ty=Vec3
+            Receiver
+              Local name=target ty=Vec3
+            Local name=eye ty=Vec3
+        Let name=forward_length ty=f32
+          Call key=length3 ty=f32
+            Local name=forward_seed ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=forward_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateForward ty=CameraError
+        Let name=forward ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=forward_seed ty=Vec3
+                Local name=forward_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=forward_seed ty=Vec3
+                Local name=forward_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=forward_seed ty=Vec3
+                Local name=forward_length ty=f32
+        Let name=right_seed ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=authored_up ty=Vec3
+            Local name=forward ty=Vec3
+        Let name=right_length ty=f32
+          Call key=length3 ty=f32
+            Local name=right_seed ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=right_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateUp ty=CameraError
+        Let name=right ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=right_seed ty=Vec3
+                Local name=right_length ty=f32
+        Let name=up ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=forward ty=Vec3
+            Local name=right ty=Vec3
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[Camera, CameraError]
+            StructLiteral name=Camera ty=Camera
+              Field name=eye
+                Local name=eye ty=Vec3
+              Field name=forward
+                Local name=forward ty=Vec3
+              Field name=right
+                Local name=right ty=Vec3
+              Field name=up
+                Local name=up ty=Vec3
+    AssocFn name=quaternion ret=Result[Camera, CameraError]
+      Param name=eye mode=read ty=Vec3
+      Param name=rotation mode=read ty=Vec4
+      Body
+        Let name=ax ty=f32
+          Field name=x ty=f32
+            Local name=rotation ty=Vec4
+        If
+          Binary op=< ty=bool
+            Local name=ax ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=ax ty=f32
+              Neg ty=f32
+                Local name=ax ty=f32
+        Let name=ay ty=f32
+          Field name=y ty=f32
+            Local name=rotation ty=Vec4
+        If
+          Binary op=< ty=bool
+            Local name=ay ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=ay ty=f32
+              Neg ty=f32
+                Local name=ay ty=f32
+        Let name=az ty=f32
+          Field name=z ty=f32
+            Local name=rotation ty=Vec4
+        If
+          Binary op=< ty=bool
+            Local name=az ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=az ty=f32
+              Neg ty=f32
+                Local name=az ty=f32
+        Let name=aw ty=f32
+          Field name=w ty=f32
+            Local name=rotation ty=Vec4
+        If
+          Binary op=< ty=bool
+            Local name=aw ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=aw ty=f32
+              Neg ty=f32
+                Local name=aw ty=f32
+        Let name=max_finite ty=f32
+          Float text=340282346638528859811704183484516925440.0 ty=f32
+        If
+          Or ty=bool
+            Or ty=bool
+              Or ty=bool
+                Not ty=bool
+                  Binary op=<= ty=bool
+                    Local name=ax ty=f32
+                    Local name=max_finite ty=f32
+                Not ty=bool
+                  Binary op=<= ty=bool
+                    Local name=ay ty=f32
+                    Local name=max_finite ty=f32
+              Not ty=bool
+                Binary op=<= ty=bool
+                  Local name=az ty=f32
+                  Local name=max_finite ty=f32
+            Not ty=bool
+              Binary op=<= ty=bool
+                Local name=aw ty=f32
+                Local name=max_finite ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateQuaternion ty=CameraError
+        Let name=scale ty=f32
+          Local name=ax ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=ay ty=f32
+            Local name=scale ty=f32
+          Then
+            Assign
+              Local name=scale ty=f32
+              Local name=ay ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=az ty=f32
+            Local name=scale ty=f32
+          Then
+            Assign
+              Local name=scale ty=f32
+              Local name=az ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=aw ty=f32
+            Local name=scale ty=f32
+          Then
+            Assign
+              Local name=scale ty=f32
+              Local name=aw ty=f32
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=scale ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateQuaternion ty=CameraError
+        Let name=scaled_x ty=f32
+          Binary op=/ ty=f32
+            Field name=x ty=f32
+              Local name=rotation ty=Vec4
+            Local name=scale ty=f32
+        Let name=scaled_y ty=f32
+          Binary op=/ ty=f32
+            Field name=y ty=f32
+              Local name=rotation ty=Vec4
+            Local name=scale ty=f32
+        Let name=scaled_z ty=f32
+          Binary op=/ ty=f32
+            Field name=z ty=f32
+              Local name=rotation ty=Vec4
+            Local name=scale ty=f32
+        Let name=scaled_w ty=f32
+          Binary op=/ ty=f32
+            Field name=w ty=f32
+              Local name=rotation ty=Vec4
+            Local name=scale ty=f32
+        Let name=norm_squared ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Binary op=+ ty=f32
+                Binary op=* ty=f32
+                  Local name=scaled_x ty=f32
+                  Local name=scaled_x ty=f32
+                Binary op=* ty=f32
+                  Local name=scaled_y ty=f32
+                  Local name=scaled_y ty=f32
+              Binary op=* ty=f32
+                Local name=scaled_z ty=f32
+                Local name=scaled_z ty=f32
+            Binary op=* ty=f32
+              Local name=scaled_w ty=f32
+              Local name=scaled_w ty=f32
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=norm_squared ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              EnumConstruct enum=Result variant=Err ty=Result[Camera, CameraError]
+                EnumConstruct enum=CameraError variant=DegenerateQuaternion ty=CameraError
+        Let name=inverse_norm ty=f32
+          Binary op=/ ty=f32
+            Float text=1.0 ty=f32
+            Call key=sqrt_scalar ty=f32
+              Local name=norm_squared ty=f32
+        Let name=x ty=f32
+          Binary op=* ty=f32
+            Local name=scaled_x ty=f32
+            Local name=inverse_norm ty=f32
+        Let name=y ty=f32
+          Binary op=* ty=f32
+            Local name=scaled_y ty=f32
+            Local name=inverse_norm ty=f32
+        Let name=z ty=f32
+          Binary op=* ty=f32
+            Local name=scaled_z ty=f32
+            Local name=inverse_norm ty=f32
+        Let name=w ty=f32
+          Binary op=* ty=f32
+            Local name=scaled_w ty=f32
+            Local name=inverse_norm ty=f32
+        Let name=right ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=- ty=f32
+                Float text=1.0 ty=f32
+                Binary op=* ty=f32
+                  Float text=2.0 ty=f32
+                  Binary op=+ ty=f32
+                    Binary op=* ty=f32
+                      Local name=y ty=f32
+                      Local name=y ty=f32
+                    Binary op=* ty=f32
+                      Local name=z ty=f32
+                      Local name=z ty=f32
+            Field name=y
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=+ ty=f32
+                  Binary op=* ty=f32
+                    Local name=x ty=f32
+                    Local name=y ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=z ty=f32
+            Field name=z
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=- ty=f32
+                  Binary op=* ty=f32
+                    Local name=x ty=f32
+                    Local name=z ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=y ty=f32
+        Let name=up ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=- ty=f32
+                  Binary op=* ty=f32
+                    Local name=x ty=f32
+                    Local name=y ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=z ty=f32
+            Field name=y
+              Binary op=- ty=f32
+                Float text=1.0 ty=f32
+                Binary op=* ty=f32
+                  Float text=2.0 ty=f32
+                  Binary op=+ ty=f32
+                    Binary op=* ty=f32
+                      Local name=x ty=f32
+                      Local name=x ty=f32
+                    Binary op=* ty=f32
+                      Local name=z ty=f32
+                      Local name=z ty=f32
+            Field name=z
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=+ ty=f32
+                  Binary op=* ty=f32
+                    Local name=y ty=f32
+                    Local name=z ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=x ty=f32
+        Let name=forward ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=+ ty=f32
+                  Binary op=* ty=f32
+                    Local name=x ty=f32
+                    Local name=z ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=y ty=f32
+            Field name=y
+              Binary op=* ty=f32
+                Float text=2.0 ty=f32
+                Binary op=- ty=f32
+                  Binary op=* ty=f32
+                    Local name=y ty=f32
+                    Local name=z ty=f32
+                  Binary op=* ty=f32
+                    Local name=w ty=f32
+                    Local name=x ty=f32
+            Field name=z
+              Binary op=- ty=f32
+                Float text=1.0 ty=f32
+                Binary op=* ty=f32
+                  Float text=2.0 ty=f32
+                  Binary op=+ ty=f32
+                    Binary op=* ty=f32
+                      Local name=x ty=f32
+                      Local name=x ty=f32
+                    Binary op=* ty=f32
+                      Local name=y ty=f32
+                      Local name=y ty=f32
+        Return
+          EnumConstruct enum=Result variant=Ok ty=Result[Camera, CameraError]
+            StructLiteral name=Camera ty=Camera
+              Field name=eye
+                Local name=eye ty=Vec3
+              Field name=forward
+                Local name=forward ty=Vec3
+              Field name=right
+                Local name=right ty=Vec3
+              Field name=up
+                Local name=up ty=Vec3
   Struct name=CameraBounds
     AssocFn name=bounded ret=CameraBounds
       Param name=max_motion mode=read ty=f32
@@ -1998,23 +2557,20 @@ Program
       Let name=repeated_x ty=Vec3
         Call key=finite_repeat_x ty=Vec3
           Local name=rigid ty=Vec3
-          Neg ty=i32
-            Int text=1 ty=i32
-          Int text=3 ty=u32
+          Int text=0 ty=i32
+          Int text=1 ty=u32
           Float text=2.0 ty=f32
       Let name=repeated_y ty=Vec3
         Call key=finite_repeat_y ty=Vec3
           Local name=repeated_x ty=Vec3
-          Neg ty=i32
-            Int text=1 ty=i32
-          Int text=3 ty=u32
+          Int text=0 ty=i32
+          Int text=1 ty=u32
           Float text=2.0 ty=f32
       Let name=repeated ty=Vec3
         Call key=finite_repeat_z ty=Vec3
           Local name=repeated_y ty=Vec3
-          Neg ty=i32
-            Int text=1 ty=i32
-          Int text=3 ty=u32
+          Int text=0 ty=i32
+          Int text=1 ty=u32
           Float text=2.0 ty=f32
       Let name=zero ty=f32
         Float text=0.0 ty=f32
@@ -2270,7 +2826,7 @@ Program
           Local name=scaled ty=Field
           Local name=rigid ty=Vec3
           Float text=0.1 ty=f32
-          Float text=2.0 ty=f32
+          Float text=0.25 ty=f32
           Float text=0.0 ty=f32
       Return
         Call key=fn:mark[ObjectId, MaterialId] ty=Field

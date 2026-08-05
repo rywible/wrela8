@@ -73,11 +73,20 @@ Module path=render
     pub field kind: u32
   Struct DisplayError data
     pub field code: u32
+  Enum CameraError data
+    variant DegenerateForward
+    variant DegenerateUp
+    variant DegenerateQuaternion
+    variant InvalidBasis
   Struct Camera data
-    pub field eye: Vec3
-    pub field forward: Vec3
-    pub field right: Vec3
-    pub field up: Vec3
+    field eye: Vec3
+    field forward: Vec3
+    field right: Vec3
+    field up: Vec3
+    fn canonical(eye: read Vec3) -> Camera
+    fn look_at(eye: read Vec3, target: read Vec3, authored_up: read Vec3) -> Result[Camera, CameraError]
+    fn quaternion(eye: read Vec3, rotation: read Vec4) -> Result[Camera, CameraError]
+    fn explicit(eye: read Vec3, authored_forward: read Vec3, authored_right: read Vec3, authored_up: read Vec3) -> Result[Camera, CameraError]
   Enum LightKind data
     variant Disabled
     variant Point

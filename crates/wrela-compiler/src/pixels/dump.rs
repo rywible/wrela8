@@ -322,19 +322,24 @@ pub fn dump_symbolic_graphs(
 }
 
 pub fn dump_structural_graphs(
-    graphs: &[(usize, SymbolicGraph, VerifiedStructuralProgram)],
+    graphs: &[(
+        usize,
+        SymbolicGraph,
+        VerifiedStructuralProgram,
+        super::verify::VerifiedProjectiveProgram,
+    )],
     configs: &RendererConfigs,
 ) -> String {
     let symbolic = graphs
         .iter()
-        .map(|(index, graph, _)| (*index, graph.clone()))
+        .map(|(index, graph, _, _)| (*index, graph.clone()))
         .collect::<Vec<_>>();
     let mut out = dump_symbolic_graphs(&symbolic, configs);
     out = out.replace("    Obligation kind=", "    DischargedObligation kind=");
     let suffix = "Analysis status=symbolic-only\n";
     debug_assert!(out.ends_with(suffix));
     out.truncate(out.len() - suffix.len());
-    for (index, graph, verified) in graphs {
+    for (index, graph, verified, projective) in graphs {
         let program = verified.program();
         out.push_str(&format!(
             "  StructuralRenderer index={} field_key={} material_key={}\n",
@@ -664,7 +669,7 @@ pub fn dump_structural_graphs(
         }
         for deformation in &program.deformations {
             out.push_str(&format!(
-                "    Deformation field={} displacement={} derivation={:?} amplitude={} gradient={} hessian={} third={} coordinate_x={} frequency=[{},{}] phase=[{},{}]\n",
+                "    Deformation field={} displacement={} derivation={:?} amplitude={} gradient={} hessian={} third={} coordinate_x={} frequency_scalar={} frequency=[{},{}] phase_scalar={} phase=[{},{}]\n",
                 deformation.field,
                 deformation.displacement,
                 deformation.derivation,
@@ -673,8 +678,10 @@ pub fn dump_structural_graphs(
                 format_f64(deformation.hessian),
                 format_f64(deformation.third_derivative),
                 deformation.coordinate_x,
+                deformation.frequency_scalar,
                 format_f64(deformation.frequency.lo),
                 format_f64(deformation.frequency.hi),
+                deformation.phase_scalar,
                 format_f64(deformation.phase.lo),
                 format_f64(deformation.phase.hi),
             ));
@@ -685,8 +692,8 @@ pub fn dump_structural_graphs(
                 event.predicate,
                 event.kind,
                 event.crossing_bound,
-                format_bounded_id_list(&event.owners),
-                format_bounded_id_list(&event.feature_owners),
+                format_id_list(&event.owners),
+                format_id_list(&event.feature_owners),
                 event.origin.primary.module,
                 event.origin.primary.span.line,
                 event.origin.primary.span.col,
@@ -759,9 +766,1045 @@ pub fn dump_structural_graphs(
             program.report.renderer_state_bytes_instrumented,
             program.report.dependency_schema_digest,
         ));
+        append_projective_dump(&mut out, projective.program());
     }
-    out.push_str("Analysis status=verified-structural\n");
+    out.push_str("Analysis status=verified-projective\n");
     out
+}
+
+fn stable_interval(interval: super::reference::interval::F64Interval) -> String {
+    format!("[{},{}]", format_f64(interval.lo), format_f64(interval.hi))
+}
+
+fn stable_interval_array(intervals: &[super::reference::interval::F64Interval]) -> String {
+    intervals
+        .iter()
+        .map(|interval| stable_interval(*interval))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn stable_strict_sign(sign: super::projective::StrictSign) -> &'static str {
+    match sign {
+        super::projective::StrictSign::Negative => "negative",
+        super::projective::StrictSign::Positive => "positive",
+    }
+}
+
+fn stable_obligation(obligation: super::projective::StrictSignObligation) -> String {
+    format!(
+        "coefficient:{}:enclosure={}:sign={}",
+        obligation.coefficient,
+        stable_interval(obligation.enclosure),
+        stable_strict_sign(obligation.sign)
+    )
+}
+
+fn stable_coefficient_op(op: &super::program::CoeffOp) -> String {
+    match op {
+        super::program::CoeffOp::ConstF64(bits) => {
+            format!("const:{}", format_f64(f64::from_bits(*bits)))
+        }
+        super::program::CoeffOp::Scalar(id) => format!("scalar:{id}"),
+        super::program::CoeffOp::Camera(value) => {
+            use super::program::CameraCoeff;
+            match value {
+                CameraCoeff::Eye(component) => format!("camera:eye:{component}"),
+                CameraCoeff::Forward(component) => format!("camera:forward:{component}"),
+                CameraCoeff::Right(component) => format!("camera:right:{component}"),
+                CameraCoeff::Up(component) => format!("camera:up:{component}"),
+                CameraCoeff::EyeRate(component) => format!("camera:eye_rate:{component}"),
+                CameraCoeff::ForwardRate(component) => {
+                    format!("camera:forward_rate:{component}")
+                }
+                CameraCoeff::RightRate(component) => format!("camera:right_rate:{component}"),
+                CameraCoeff::UpRate(component) => format!("camera:up_rate:{component}"),
+                CameraCoeff::TanHalfFovY => "camera:tan_half_fov_y".to_string(),
+                CameraCoeff::Aspect => "camera:aspect".to_string(),
+            }
+        }
+        super::program::CoeffOp::ScalarParamDerivative(scalar, parameter) => {
+            format!("scalar_param_derivative:{scalar}:{parameter}")
+        }
+        super::program::CoeffOp::ParamRate(parameter, order) => {
+            format!("param_rate:{parameter}:{order}")
+        }
+        super::program::CoeffOp::Add(a, b) => format!("add:{a}:{b}"),
+        super::program::CoeffOp::Mul(a, b) => format!("mul:{a}:{b}"),
+        super::program::CoeffOp::Neg(value) => format!("neg:{value}"),
+    }
+}
+
+fn stable_predicate_sense(sense: super::program::PredicateSense) -> &'static str {
+    use super::program::PredicateSense;
+    match sense {
+        PredicateSense::StrictNegative => "strict-negative",
+        PredicateSense::NonPositive => "non-positive",
+        PredicateSense::EqualZero => "equal-zero",
+        PredicateSense::NonNegative => "non-negative",
+        PredicateSense::StrictPositive => "strict-positive",
+    }
+}
+
+fn stable_seed(seed: super::projective::SeedKind) -> String {
+    match seed {
+        super::projective::SeedKind::Affine { denominator } => {
+            format!("affine:{}", stable_obligation(denominator))
+        }
+        super::projective::SeedKind::StableQuadratic {
+            leading_coefficient,
+            leading_enclosure,
+            leading_sign,
+            linear_fallback,
+            generic_isolation_fallback,
+        } => format!(
+            "stable-quadratic:leading={}:enclosure={}:sign={}:linear_fallback={}:generic_fallback={}",
+            leading_coefficient,
+            stable_interval(leading_enclosure),
+            leading_sign.map(stable_strict_sign).unwrap_or("unknown"),
+            linear_fallback,
+            generic_isolation_fallback,
+        ),
+        super::projective::SeedKind::GenericIsolatedRoot => "generic-isolated-root".to_string(),
+    }
+}
+
+fn stable_isolation(isolation: super::projective::RootIsolationProgram) -> String {
+    match isolation {
+        super::projective::RootIsolationProgram::Affine => "affine".to_string(),
+        super::projective::RootIsolationProgram::StableQuadratic {
+            linear_fallback,
+            generic_isolation_fallback,
+        } => format!(
+            "stable-quadratic:linear_fallback={linear_fallback}:generic_fallback={generic_isolation_fallback}"
+        ),
+        super::projective::RootIsolationProgram::CertifiedBernstein {
+            maximum_depth,
+            ambiguity_depth,
+            preserve_all_positive_q_roots,
+        } => format!(
+            "certified-bernstein:depth={maximum_depth}:ambiguity_depth={ambiguity_depth}:preserve_all_positive_q_roots={preserve_all_positive_q_roots}"
+        ),
+    }
+}
+
+fn stable_orientation(orientation: super::primitive::OrientationProgram) -> &'static str {
+    use super::primitive::OrientationProgram;
+    match orientation {
+        OrientationProgram::Outward => "outward",
+        OrientationProgram::Inward => "inward",
+        OrientationProgram::DeformedOutward => "deformed-outward",
+        OrientationProgram::DeformedInward => "deformed-inward",
+    }
+}
+
+fn stable_event_kind(kind: super::event_kinds::EventKind) -> &'static str {
+    use super::event_kinds::EventKind;
+    match kind {
+        EventKind::ProjectedBoundEnter => "projected-bound-enter",
+        EventKind::ProjectedBoundExit => "projected-bound-exit",
+        EventKind::Silhouette => "silhouette",
+        EventKind::FeatureBoundary => "feature-boundary",
+        EventKind::RepeatBoundary => "repeat-boundary",
+        EventKind::SmoothBandEnter => "smooth-band-enter",
+        EventKind::SmoothCenterTie => "smooth-center-tie",
+        EventKind::MaterialBoundary => "material-boundary",
+        EventKind::NearClip => "near-clip",
+        EventKind::FarClip => "far-clip",
+        EventKind::FixedPointResetOnly => "fixed-point-reset-only",
+        EventKind::DepthSwap => "depth-swap",
+    }
+}
+
+fn stable_event_side(side: super::event_kinds::EventSide) -> &'static str {
+    use super::event_kinds::EventSide;
+    match side {
+        EventSide::Inactive => "inactive",
+        EventSide::Active => "active",
+        EventSide::OutsideValidity => "outside-validity",
+        EventSide::InsideValidity => "inside-validity",
+        EventSide::RepeatLeft => "repeat-left",
+        EventSide::RepeatRight => "repeat-right",
+        EventSide::SmoothLeft => "smooth-left",
+        EventSide::SmoothRight => "smooth-right",
+        EventSide::IdentityLeft => "identity-left",
+        EventSide::IdentityRight => "identity-right",
+        EventSide::MaterialLeft => "material-left",
+        EventSide::MaterialRight => "material-right",
+        EventSide::OutsideClip => "outside-clip",
+        EventSide::InsideClip => "inside-clip",
+        EventSide::ResetOnly => "reset-only",
+        EventSide::DepthAFront => "depth-a-front",
+        EventSide::DepthBFront => "depth-b-front",
+        EventSide::RecomputeRootSet => "recompute-root-set",
+        EventSide::Ambiguous => "ambiguous",
+    }
+}
+
+fn stable_event_sides(sides: super::event_kinds::EventSideMeaning) -> String {
+    format!(
+        "negative={}:zero={}:positive={}",
+        stable_event_side(sides.negative),
+        stable_event_side(sides.zero),
+        stable_event_side(sides.positive),
+    )
+}
+
+fn stable_participant(participant: super::events::Participant) -> String {
+    match participant {
+        super::events::Participant::Feature(id) => format!("feature:{id}"),
+        super::events::Participant::Object(id) => format!("object:{id}"),
+        super::events::Participant::Field(id) => format!("field:{id}"),
+        super::events::Participant::MaterialEvent(id) => format!("material-event:{id}"),
+    }
+}
+
+fn stable_axis(axis: super::graph::Axis) -> &'static str {
+    match axis {
+        super::graph::Axis::X => "x",
+        super::graph::Axis::Y => "y",
+        super::graph::Axis::Z => "z",
+    }
+}
+
+fn stable_scalar_derivatives(program: &super::events::ScalarDerivativeProgram) -> String {
+    format!(
+        "sources=[{}]:first=[{}]:second={}:third={}:params=[{}]:frame_delta={}:frame_second={}",
+        program
+            .sources
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        program
+            .first_world_abs
+            .iter()
+            .map(|value| format_f64(*value))
+            .collect::<Vec<_>>()
+            .join(","),
+        format_f64(program.second_world_abs),
+        format_f64(program.third_world_abs),
+        program
+            .parameter_abs
+            .iter()
+            .map(|(parameter, value)| format!("{parameter}:{}", format_f64(*value)))
+            .collect::<Vec<_>>()
+            .join(","),
+        program
+            .frame_delta_abs
+            .map(format_f64)
+            .unwrap_or_else(|| "-".to_string()),
+        program
+            .frame_second_delta_abs
+            .map(format_f64)
+            .unwrap_or_else(|| "-".to_string()),
+    )
+}
+
+fn stable_compare(compare: super::scalar::CompareOp) -> &'static str {
+    use super::scalar::CompareOp;
+    match compare {
+        CompareOp::Lt => "lt",
+        CompareOp::Le => "le",
+        CompareOp::Gt => "gt",
+        CompareOp::Ge => "ge",
+        CompareOp::Eq => "eq",
+        CompareOp::Ne => "ne",
+    }
+}
+
+fn stable_event_representation(representation: &super::events::EventRepresentation) -> String {
+    use super::events::EventRepresentation;
+    match representation {
+        EventRepresentation::LinearLeadingCoefficient { coefficient, root } => {
+            format!("linear-leading-coefficient:predicate={coefficient}:root={root}")
+        }
+        EventRepresentation::QuadraticDiscriminant { discriminant, root } => {
+            format!("quadratic-discriminant:predicate={discriminant}:root={root}")
+        }
+        EventRepresentation::SparsePredicate { predicate } => {
+            format!("sparse-predicate:{predicate}")
+        }
+        EventRepresentation::DeformationTaylorPredicate {
+            predictor,
+            predictor_derivatives,
+            displacement,
+            scalar_derivatives,
+            phase_recurrence,
+            taylor_order,
+            world_delta_abs_bound,
+            third_derivative_abs_bound,
+            remainder,
+        } => format!(
+            "deformation-taylor:predictor={predictor}:derivatives={predictor_derivatives}:displacement={displacement}:scalar={}:coordinate={}:frequency_scalar={}:frequency={}:phase_scalar={}:phase={}:sin=[{}]:cos=[{}]:order={taylor_order}:world_delta={}:third_derivative={}:remainder={}",
+            stable_scalar_derivatives(scalar_derivatives),
+            phase_recurrence.coordinate_x,
+            phase_recurrence.frequency_scalar,
+            stable_interval(phase_recurrence.frequency),
+            phase_recurrence.phase_scalar,
+            stable_interval(phase_recurrence.phase),
+            phase_recurrence
+                .sine_coefficients
+                .iter()
+                .map(|bits| format!("0x{bits:016x}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            phase_recurrence
+                .cosine_coefficients
+                .iter()
+                .map(|bits| format!("0x{bits:016x}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            format_f64(*world_delta_abs_bound),
+            format_f64(*third_derivative_abs_bound),
+            format_f64(*remainder),
+        ),
+        EventRepresentation::TorusLocalOracle {
+            root,
+            derivative_u,
+            derivative_q,
+            derivative_uq,
+            derivative_qq,
+            third_u,
+            value_abs_bound,
+            derivative_u_abs_bound,
+            derivative_q_abs_bound,
+            derivative_uq_abs_bound,
+            derivative_qq_abs_bound,
+            third_u_abs_bound,
+            taylor_order,
+            remainder,
+        } => format!(
+            "torus-local:root={root}:du={derivative_u}:dq={derivative_q}:duq={derivative_uq}:dqq={derivative_qq}:duuu={third_u}:bounds=[{},{},{},{},{},{}]:order={taylor_order}:remainder={}",
+            format_f64(*value_abs_bound),
+            format_f64(*derivative_u_abs_bound),
+            format_f64(*derivative_q_abs_bound),
+            format_f64(*derivative_uq_abs_bound),
+            format_f64(*derivative_qq_abs_bound),
+            format_f64(*third_u_abs_bound),
+            format_f64(*remainder),
+        ),
+        EventRepresentation::SmoothBandTaylorPredicate {
+            left,
+            right,
+            left_negated,
+            right_negated,
+            radius,
+            derivatives,
+            taylor_order,
+            world_delta_abs_bound,
+            remainder,
+        } => format!(
+            "smooth-band:left={left}:right={right}:negated={left_negated},{right_negated}:radius={radius}:derivatives={}:order={taylor_order}:world_delta={}:remainder={}",
+            stable_scalar_derivatives(derivatives),
+            format_f64(*world_delta_abs_bound),
+            format_f64(*remainder),
+        ),
+        EventRepresentation::SmoothTieTaylorPredicate {
+            left,
+            right,
+            left_negated,
+            right_negated,
+            derivatives,
+            taylor_order,
+            world_delta_abs_bound,
+            remainder,
+        } => format!(
+            "smooth-tie:left={left}:right={right}:negated={left_negated},{right_negated}:derivatives={}:order={taylor_order}:world_delta={}:remainder={}",
+            stable_scalar_derivatives(derivatives),
+            format_f64(*world_delta_abs_bound),
+            format_f64(*remainder),
+        ),
+        EventRepresentation::MaterialDifferenceTaylorPredicate {
+            left,
+            right,
+            comparison,
+            derivatives,
+            taylor_order,
+            world_delta_abs_bound,
+            remainder,
+        } => format!(
+            "material-difference:left={left}:right={right}:compare={}:derivatives={}:order={taylor_order}:world_delta={}:remainder={}",
+            stable_compare(*comparison),
+            stable_scalar_derivatives(derivatives),
+            format_f64(*world_delta_abs_bound),
+            format_f64(*remainder),
+        ),
+        EventRepresentation::RepeatAffineBoundary { axis, boundary } => format!(
+            "repeat-affine:axis={}:boundary={}",
+            stable_axis(*axis),
+            stable_interval(*boundary)
+        ),
+        EventRepresentation::ClipQ { q } => format!("clip-q:{}", format_f64(*q)),
+        EventRepresentation::ProjectedBoundary {
+            horizontal,
+            coordinate,
+        } => format!("projected-boundary:horizontal={horizontal}:coordinate={coordinate}"),
+        EventRepresentation::FixedPointReset => "fixed-point-reset".to_string(),
+        EventRepresentation::DirectDepthCrossProduct {
+            numerator,
+            denominator_a,
+            denominator_b,
+        } => format!(
+            "direct-depth:numerator={numerator}:denominator_a={}:denominator_b={}",
+            stable_obligation(*denominator_a),
+            stable_obligation(*denominator_b)
+        ),
+        EventRepresentation::TaylorDepthDifference {
+            a,
+            b,
+            taylor_order,
+            remainder,
+        } => format!(
+            "taylor-depth:a={a}:b={b}:order={taylor_order}:next_order={}:a_third=[{},{},{},{},{},{},{},{},{},{}]:b_third=[{},{},{},{},{},{},{},{},{},{}]:x_domain={}:q_domain={}:fallback_difference={}:fallback_remainder={}:strict_gq={}:discard_taylor_on_fallback={}",
+            remainder.next_derivative_order,
+            remainder.a_third.uuu,
+            remainder.a_third.uuv,
+            remainder.a_third.uuq,
+            remainder.a_third.uvv,
+            remainder.a_third.uvq,
+            remainder.a_third.uqq,
+            remainder.a_third.vvv,
+            remainder.a_third.vvq,
+            remainder.a_third.vqq,
+            remainder.a_third.qqq,
+            remainder.b_third.uuu,
+            remainder.b_third.uuv,
+            remainder.b_third.uuq,
+            remainder.b_third.uvv,
+            remainder.b_third.uvq,
+            remainder.b_third.uqq,
+            remainder.b_third.vvv,
+            remainder.b_third.vvq,
+            remainder.b_third.vqq,
+            remainder.b_third.qqq,
+            stable_interval(remainder.local_x_domain),
+            stable_interval(remainder.q_domain),
+            stable_interval(remainder.fallback_difference),
+            format_f64(remainder.fallback_remainder_abs_bound),
+            remainder.requires_strict_g_q,
+            remainder.discard_taylor_on_fallback,
+        ),
+    }
+}
+
+fn stable_projection_rule(rule: super::projection_bounds::ProjectionRule) -> &'static str {
+    use super::projection_bounds::ProjectionRule;
+    match rule {
+        ProjectionRule::IntervalProjectiveDivision => "interval-projective-division",
+        ProjectionRule::EyeOrNearPlaneFullScreen => "eye-or-near-full-screen",
+        ProjectionRule::UnboundedPlaneFullScreen => "unbounded-plane-full-screen",
+        ProjectionRule::OutsideNearFar => "outside-near-far",
+    }
+}
+
+fn stable_proven_sign(sign: super::exclusions::ProvenSign) -> &'static str {
+    match sign {
+        super::exclusions::ProvenSign::Negative => "negative",
+        super::exclusions::ProvenSign::Positive => "positive",
+    }
+}
+
+fn stable_proof_payload(payload: &super::exclusions::ProofPayload) -> String {
+    match payload {
+        super::exclusions::ProofPayload::PositiveMargin { rule, facts } => {
+            format!("positive-margin:rule={rule}:facts=[{}]", facts.join("|"))
+        }
+        super::exclusions::ProofPayload::Bernstein(payload) => format!(
+            "bernstein:box=[{}]:polynomial={}:coefficient_root={}:degrees=[{}]:coefficient_order=[{}]:conversion_radius={}:tree=[{}]:sign={}:minimum_margin={}",
+            payload
+                .normalized_box
+                .iter()
+                .map(|axis| format!("[{},{}]", format_f64(axis.lo), format_f64(axis.hi)))
+                .collect::<Vec<_>>()
+                .join(","),
+            payload
+                .polynomial
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            payload
+                .coefficient_program_root
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            payload
+                .degrees
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            payload
+                .coefficient_order
+                .iter()
+                .map(|row| row
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("."))
+                .collect::<Vec<_>>()
+                .join("|"),
+            format_f64(payload.outward_conversion_radius),
+            payload
+                .subdivision_tree
+                .iter()
+                .map(|node| format!(
+                    "{}:{}:{}:{}:{}",
+                    node.path_bits,
+                    node.depth,
+                    node.split_variable
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    node.sign.map(stable_proven_sign).unwrap_or("unknown"),
+                    format_f64(node.margin)
+                ))
+                .collect::<Vec<_>>()
+                .join("|"),
+            stable_proven_sign(payload.strict_sign),
+            format_f64(payload.minimum_margin),
+        ),
+    }
+}
+
+fn stable_exclusion_reason(reason: super::exclusions::ExclusionReason) -> &'static str {
+    reason.stable_name()
+}
+
+fn append_projective_dump(out: &mut String, program: &super::verify::ProjectiveProgram) {
+    let camera = program.equations.camera;
+    out.push_str(&format!(
+        "    ProjectiveContract width={} height={} aspect={} tan_half_fov_y={} q=[{},{}] max_motion={}\n",
+        camera.width,
+        camera.height,
+        format_f64(camera.aspect),
+        format_f64(camera.tan_half_fov_y),
+        format_f64(camera.q.lo),
+        format_f64(camera.q.hi),
+        format_f64(camera.max_frame_motion),
+    ));
+    out.push_str(&format!(
+        "    CameraRateBounds eye=[{}] forward=[{}] right=[{}] up=[{}]\n",
+        stable_interval_array(&camera.eye_rate_component),
+        stable_interval_array(&camera.forward_rate_component),
+        stable_interval_array(&camera.right_rate_component),
+        stable_interval_array(&camera.up_rate_component),
+    ));
+    for node in &program.equations.coefficients.nodes {
+        out.push_str(&format!(
+            "    Coefficient id={} op={}\n",
+            node.id,
+            stable_coefficient_op(&node.op),
+        ));
+    }
+    for polynomial in &program.equations.polynomials {
+        out.push_str(&format!(
+            "    Polynomial id={} degrees=u{}v{}q{}x{}t{} terms={} detail=exact\n",
+            polynomial.id,
+            polynomial.degree_u,
+            polynomial.degree_v,
+            polynomial.degree_q,
+            polynomial.degree_x,
+            polynomial.degree_t,
+            polynomial.terms.len(),
+        ));
+        for term in &polynomial.terms {
+            out.push_str(&format!(
+                "      Term u={} v={} q={} x={} t={} params=[{}] coefficient={}\n",
+                term.exponents.u,
+                term.exponents.v,
+                term.exponents.q,
+                term.exponents.x,
+                term.exponents.t,
+                term.exponents
+                    .param_terms
+                    .iter()
+                    .map(|term| format!("{}^{}", term.param, term.exponent))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                term.coefficient,
+            ));
+        }
+    }
+    for predicate in &program.equations.predicates {
+        out.push_str(&format!(
+            "    Predicate id={} polynomial={} sense={} boundary_family={}\n",
+            predicate.id,
+            predicate.polynomial,
+            stable_predicate_sense(predicate.sense),
+            predicate.boundary_family,
+        ));
+    }
+    for rational in &program.equations.rationals {
+        out.push_str(&format!(
+            "    Rational id={} numerator={} denominator={} domain={} proof={}\n",
+            rational.id,
+            rational.numerator,
+            rational.denominator,
+            rational.domain,
+            stable_obligation(rational.denominator_proof),
+        ));
+    }
+    let mut composition_plans = Vec::<&super::polynomial::CompositionPlan>::new();
+    for feature in &program.equations.features {
+        if !composition_plans.contains(&&feature.quadratic_composition) {
+            composition_plans.push(&feature.quadratic_composition);
+        }
+    }
+    for (id, plan) in composition_plans.iter().enumerate() {
+        match plan {
+            super::polynomial::CompositionPlan::Specialized(schedule) => {
+                out.push_str(&format!(
+                    "    CompositionPlan id=cp{} kind=specialized source_degree_u={} source_degree_q={} source_degree_x={} q_hat_degree={} composed_degree={} source_terms={} temporaries={} coefficient_order=[{}]\n",
+                    id,
+                    schedule.source_degree_u,
+                    schedule.source_degree_q,
+                    schedule.source_degree_x,
+                    schedule.q_hat_degree,
+                    schedule.composed_degree,
+                    schedule.source_term_count,
+                    schedule.temporary_count,
+                    schedule
+                        .coefficient_order
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ));
+                for step in &schedule.steps {
+                    out.push_str(&format!(
+                        "      CompositionStep source_term={} u_power={} q_power={} lifted_power_offset={} coefficient_order={}\n",
+                        step.source_term,
+                        step.u_power,
+                        step.q_power,
+                        step.lifted_power_offset,
+                        step.coefficient_order,
+                    ));
+                }
+                for (face, correction) in schedule.correction_faces.iter().enumerate() {
+                    out.push_str(&format!(
+                        "      CorrectionFace id={} sign={} output_order=[{}] steps=composition-steps:{}\n",
+                        face,
+                        correction.correction_sign,
+                        correction
+                            .output_coefficient_order
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        correction.steps.len(),
+                    ));
+                }
+            }
+            super::polynomial::CompositionPlan::IntervalTaylorFallback {
+                source_degree_u,
+                source_degree_q,
+                source_degree_x,
+                composed_degree,
+                source_term_count,
+            } => out.push_str(&format!(
+                "    CompositionPlan id=cp{} kind=interval-taylor-fallback source_degree_u={} source_degree_q={} source_degree_x={} composed_degree={} source_terms={}\n",
+                id, source_degree_u, source_degree_q, source_degree_x, composed_degree, source_term_count,
+            )),
+        }
+    }
+    for feature in &program.equations.features {
+        let composition = composition_plans
+            .iter()
+            .position(|plan| *plan == &feature.quadratic_composition)
+            .expect("projective composition plan was interned");
+        out.push_str(&format!(
+            "    ProjectiveFeature id={} root={} rational={} q_degree={} seed={} isolation={} composition=cp{} roots={} validity=[{}] orientation={} deformed={} params=[{}]\n",
+            feature.feature,
+            feature.root_equation,
+            feature
+                .rational_program
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            feature.q_degree,
+            stable_seed(feature.q_seed_kind),
+            stable_isolation(feature.root_isolation),
+            composition,
+            feature.max_root_count,
+            feature
+                .validity_predicates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            stable_orientation(feature.orientation_program),
+            feature.deformed_predictor,
+            feature
+                .influencing_params
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ));
+    }
+    for deformation in &program.deformations {
+        out.push_str(&format!(
+            "    ProjectiveDeformation feature={} field={} predictor={} residual={} coordinate_x={} frequency_scalar={} frequency=[{},{}] phase_scalar={} phase=[{},{}] bounds=[{},{},{},{}] roots={} taylor_order={} approximation_revision={} folded=[{},{}] remainders=[{},{}] recurrence_sin=[{}] recurrence_cos=[{}] tube={}\n",
+            deformation.feature,
+            deformation.deformation_field,
+            deformation.predictor,
+            deformation.residual,
+            deformation.coordinate_x,
+            deformation.phase_recurrence.frequency_scalar,
+            format_f64(deformation.frequency.lo),
+            format_f64(deformation.frequency.hi),
+            deformation.phase_recurrence.phase_scalar,
+            format_f64(deformation.phase.lo),
+            format_f64(deformation.phase.hi),
+            format_f64(deformation.value_bound),
+            format_f64(deformation.first_derivative_bound),
+            format_f64(deformation.second_derivative_bound),
+            format_f64(deformation.third_derivative_bound),
+            deformation.maximum_root_count,
+            deformation.taylor_order,
+            deformation.approximation.revision,
+            format_f64(deformation.approximation.folded_domain.lo),
+            format_f64(deformation.approximation.folded_domain.hi),
+            format_f64(deformation.approximation.sine_remainder),
+            format_f64(deformation.approximation.cosine_remainder),
+            deformation
+                .phase_recurrence
+                .sine_coefficients
+                .iter()
+                .map(|bits| format!("{bits:016x}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            deformation
+                .phase_recurrence
+                .cosine_coefficients
+                .iter()
+                .map(|bits| format!("{bits:016x}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            deformation.tube_method,
+        ));
+    }
+    for bundle in &program.derivatives.bundles {
+        out.push_str(&format!(
+            "    DerivativeBundle id={} feature={} g={} first=[{},{},{}] second=[{},{},{},{},{},{}] third=[{},{},{},{},{},{},{},{},{},{}] g_t={} g_tt={} params=[{}]\n",
+            bundle.id,
+            bundle.feature,
+            bundle.g,
+            bundle.first.u,
+            bundle.first.v,
+            bundle.first.q,
+            bundle.second.uu,
+            bundle.second.uv,
+            bundle.second.uq,
+            bundle.second.vv,
+            bundle.second.vq,
+            bundle.second.qq,
+            bundle.third.uuu,
+            bundle.third.uuv,
+            bundle.third.uuq,
+            bundle.third.uvv,
+            bundle.third.uvq,
+            bundle.third.uqq,
+            bundle.third.vvv,
+            bundle.third.vvq,
+            bundle.third.vqq,
+            bundle.third.qqq,
+            bundle.g_t,
+            bundle
+                .g_tt
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            bundle
+                .parameter
+                .iter()
+                .map(|derivative| format!(
+                    "{}:{}:rate={}",
+                    derivative.parameter,
+                    derivative.polynomial,
+                    derivative
+                        .declared_rate
+                        .map(|(first, second)| format!("{first:x}:{second:x}"))
+                        .unwrap_or_else(|| "none".to_string())
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
+        ));
+    }
+    for cluster in &program.derivatives.clusters {
+        out.push_str(&format!(
+            "    DerivativeCluster object={} leaf_signature=[{}] bundles=[{}] smooth_root={} scalar_derivative_sources=[{}] value_domain=[{},{}] first_world=[{},{},{}] second_world={} third_world={} params=[{}] frame_delta={} frame_second_delta={} order={} subdivision={} world_delta={} remainder={} predictor_roots={} object_roots={} requires_boundary_events={}\n",
+            cluster.object,
+            cluster
+                .leaf_signature
+                .iter()
+                .map(|path| {
+                    path.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("/")
+                })
+                .collect::<Vec<_>>()
+                .join("|"),
+            cluster
+                .bundles
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            cluster.root_tube.scalar_root,
+            cluster
+                .root_tube
+                .scalar_derivative_sources
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            format_f64(cluster.root_tube.value_domain.lo),
+            format_f64(cluster.root_tube.value_domain.hi),
+            format_f64(cluster.root_tube.first_world_abs[0]),
+            format_f64(cluster.root_tube.first_world_abs[1]),
+            format_f64(cluster.root_tube.first_world_abs[2]),
+            format_f64(cluster.root_tube.second_world_abs),
+            format_f64(cluster.root_tube.third_world_abs),
+            cluster
+                .root_tube
+                .parameter_abs
+                .iter()
+                .map(|(parameter, value)| format!("{parameter}:{}", format_f64(*value)))
+                .collect::<Vec<_>>()
+                .join(","),
+            cluster
+                .root_tube
+                .frame_delta_abs
+                .map(format_f64)
+                .unwrap_or_else(|| "none".to_string()),
+            cluster
+                .root_tube
+                .frame_second_delta_abs
+                .map(format_f64)
+                .unwrap_or_else(|| "none".to_string()),
+            cluster.root_tube.taylor_order,
+            cluster.root_tube.subdivision_depth,
+            format_f64(cluster.root_tube.world_delta_abs_bound),
+            format_f64(cluster.root_tube.remainder),
+            cluster.root_tube.maximum_predictor_roots,
+            cluster.root_tube.maximum_object_roots,
+            cluster.root_tube.requires_boundary_events,
+        ));
+    }
+    for span in &program.spans {
+        out.push_str(&format!(
+            "    ProjectedSpan feature={} normalized=[{},{}]x[{},{}] pixels=[{},{}]x[{},{}] tiles=[{},{}]x[{},{}] q=[{},{}] rule={} outside_margin={} halos=event:{}:filter:{}\n",
+            span.feature,
+            format_f64(span.normalized.x.lo),
+            format_f64(span.normalized.x.hi),
+            format_f64(span.normalized.y.lo),
+            format_f64(span.normalized.y.hi),
+            span.pixels.x.start,
+            span.pixels.x.end,
+            span.pixels.y.start,
+            span.pixels.y.end,
+            span.tiles.x.start,
+            span.tiles.x.end,
+            span.tiles.y.start,
+            span.tiles.y.end,
+            format_f64(span.q.lo),
+            format_f64(span.q.hi),
+            stable_projection_rule(span.rule),
+            span.outside_margin
+                .map(format_f64)
+                .unwrap_or_else(|| "-".to_string()),
+            span.event_halo,
+            span.filter_halo,
+        ));
+    }
+    for event in &program.events.generators {
+        out.push_str(&format!(
+            "    Event id={} kind={} participants=[{}] pixels=[{},{}]x[{},{}] tiles=[{},{}]x[{},{}] params=[{}] roots={} subdivision={} representation={} sides={}\n",
+            event.id,
+            stable_event_kind(event.kind),
+            event
+                .participants
+                .iter()
+                .map(stable_participant)
+                .collect::<Vec<_>>()
+                .join(","),
+            event.pixels.x.start,
+            event.pixels.x.end,
+            event.pixels.y.start,
+            event.pixels.y.end,
+            event.tiles.x.start,
+            event.tiles.x.end,
+            event.tiles.y.start,
+            event.tiles.y.end,
+            event
+                .coefficient_dependencies
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            event.maximum_root_count,
+            event.subdivision_depth,
+            stable_event_representation(&event.representation),
+            stable_event_sides(event.side_meaning),
+        ));
+    }
+    for pair in &program.competitions.pairs {
+        out.push_str(&format!(
+            "    CompetitionPair id={} a={} b={} event={} pixels=[{},{}]x[{},{}] tiles=[{},{}]x[{},{}] q_overlap={}\n",
+            pair.id,
+            pair.a,
+            pair.b,
+            pair.event,
+            pair.pixels.x.start,
+            pair.pixels.x.end,
+            pair.pixels.y.start,
+            pair.pixels.y.end,
+            pair.tiles.x.start,
+            pair.tiles.x.end,
+            pair.tiles.y.start,
+            pair.tiles.y.end,
+            stable_interval(pair.q_overlap),
+        ));
+    }
+    out.push_str(&format!(
+        "    CompetitionSummary considered={} emitted={} pruned_projected={} pruned_q={} pruned_csg_global={} pruned_csg_pair={} pruned_strict_order={} suppressed_same_feature={} suppressed_material_only={}\n",
+        program.competitions.ledger.len(),
+        program.competitions.pairs.len(),
+        program.competitions.pruned_projected,
+        program.competitions.pruned_q,
+        program.competitions.pruned_csg_global,
+        program.competitions.pruned_csg_pair,
+        program.competitions.pruned_strict_order,
+        program.competitions.suppressed_same_feature,
+        program.competitions.suppressed_material_only,
+    ));
+    for proof in &program.exclusions.proofs {
+        out.push_str(&format!(
+            "    ExclusionProof id={} payload={}\n",
+            proof.id,
+            stable_proof_payload(&proof.payload),
+        ));
+    }
+    for exclusion in &program.exclusions.records {
+        let subject = match exclusion.subject {
+            super::exclusions::ExclusionSubject::Candidate(feature) => {
+                format!("candidate:{feature}")
+            }
+            super::exclusions::ExclusionSubject::Event(subject) => format!(
+                "event:{}:{}:{}:{}",
+                stable_event_kind(subject.kind),
+                subject
+                    .feature
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                subject
+                    .owner
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                subject.ordinal,
+            ),
+            super::exclusions::ExclusionSubject::Competition(subject) => {
+                format!("competition:{}:{}", subject.a, subject.b)
+            }
+        };
+        out.push_str(&format!(
+            "    X {} {} {} {} [{},{}] {} [{}]\n",
+            exclusion.id,
+            subject,
+            exclusion.domain,
+            stable_exclusion_reason(exclusion.reason),
+            format_f64(exclusion.margin.lo),
+            format_f64(exclusion.margin.hi),
+            exclusion.proof,
+            exclusion
+                .dependencies
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ));
+    }
+    append_index_dump(out, "tile_features", &program.indexes.tile_features);
+    append_index_dump(out, "tile_events", &program.indexes.tile_events);
+    append_index_dump(out, "tile_competitions", &program.indexes.tile_competitions);
+    append_index_dump(out, "row_block_repeats", &program.indexes.row_block_repeats);
+    append_index_dump(out, "tile_lights", &program.indexes.tile_lights);
+    append_index_dump(out, "tile_probes", &program.indexes.tile_probes);
+    for range in &program.indexes.object_features {
+        out.push_str(&format!(
+            "    ObjectFeatureIndex object={} first={} count={}\n",
+            range.object, range.first, range.count,
+        ));
+    }
+    out.push_str(&format!(
+        "    DirectIndexes feature_derivatives=[{}] material_programs=[{}] bytes={}\n",
+        program
+            .indexes
+            .feature_derivatives
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        program
+            .indexes
+            .material_programs
+            .iter()
+            .map(|entry| format!("{}:{}", entry.identity_set, entry.material))
+            .collect::<Vec<_>>()
+            .join(","),
+        program.indexes.bytes,
+    ));
+    let capacity = &program.capacities;
+    out.push_str(&format!(
+        "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} event_generators={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_programs={} rational_programs={} polynomial_terms_per_program={} coefficient_nodes={} derivative_bundles={} derivative_clusters={} index_bytes={} per_worker_scratch_bytes={} all_worker_scratch_bytes={}\n",
+        capacity.candidate_features_per_tile,
+        capacity.row_start_roots,
+        capacity.active_sheets_per_row,
+        capacity.event_generators,
+        capacity.competition_pairs_per_tile,
+        capacity.row_event_intervals,
+        capacity.root_stack_nodes,
+        capacity.event_stack_nodes,
+        capacity.runs_per_row,
+        capacity.corridors_per_row,
+        capacity.max_index_slice,
+        capacity.polynomial_programs,
+        capacity.rational_programs,
+        capacity.polynomial_terms_per_program,
+        capacity.coefficient_nodes,
+        capacity.derivative_bundles,
+        capacity.derivative_clusters,
+        capacity.index_bytes,
+        capacity.per_worker_scratch_bytes,
+        capacity.all_worker_scratch_bytes,
+    ));
+    for derivation in &capacity.derivations {
+        out.push_str(&format!(
+            "      ProjectiveCapacityDerivation field={} value={} why=[{}]\n",
+            derivation.field,
+            derivation.value,
+            derivation.why.join("; "),
+        ));
+    }
+}
+
+fn append_index_dump(out: &mut String, name: &str, index: &super::index::CompressedIndex) {
+    out.push_str(&format!(
+        "    Index name={} cells={} ids={}\n",
+        name,
+        index.cells.len(),
+        index.ids.len(),
+    ));
+    for (cell, slice) in index.cells.iter().enumerate() {
+        let start = usize::try_from(slice.offset).unwrap_or(index.ids.len());
+        let count = usize::try_from(slice.count).unwrap_or(0);
+        let end = start.saturating_add(count).min(index.ids.len());
+        out.push_str(&format!(
+            "      Cell id={} offset={} count={} values=[{}]\n",
+            cell,
+            slice.offset,
+            slice.count,
+            format_id_list(&index.ids[start..end]),
+        ));
+    }
 }
 
 fn format_path(path: &[usize]) -> String {
@@ -773,21 +1816,12 @@ fn format_path(path: &[usize]) -> String {
     format!("[{body}]")
 }
 
-fn format_bounded_id_list<T: ToString>(values: &[T]) -> String {
-    let text = values
+fn format_id_list<T: ToString>(values: &[T]) -> String {
+    values
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
-        .join(",");
-    if values.len() <= 16 {
-        text
-    } else {
-        format!(
-            "count={},sha256={}",
-            values.len(),
-            wrela_machine::sha256::sha256_hex(text.as_bytes())
-        )
-    }
+        .join(",")
 }
 
 fn format_bounded_debug_list<T: std::fmt::Debug>(values: &[T]) -> String {
@@ -1259,6 +2293,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn projective_dump_schema_does_not_use_derived_debug_formatting() {
+        let source = include_str!("dump.rs");
+        let projective = source
+            .split("fn append_projective_dump")
+            .nth(1)
+            .and_then(|tail| tail.split("fn append_index_dump").next())
+            .expect("projective dump function");
+        assert!(!projective.contains("{:?}"));
+        assert!(!projective.contains(":?}"));
+    }
+
+    #[test]
     fn zero_renderer_dumps_are_complete_and_byte_stable() {
         assert_eq!(
             dump_zero_renderers(PixelsDumpStage::FieldGraph),
@@ -1347,5 +2393,22 @@ mod tests {
             let text = format_f64(f64::from_bits(bits));
             assert_eq!(text.parse::<f64>().unwrap().to_bits(), bits, "{text}");
         }
+    }
+
+    #[test]
+    fn large_index_cells_dump_exact_reconstructable_membership() {
+        let index = super::super::index::CompressedIndex {
+            cells: vec![super::super::index::IndexSlice {
+                offset: 0,
+                count: 20,
+            }],
+            ids: (0..20).collect(),
+        };
+        let mut dump = String::new();
+        append_index_dump(&mut dump, "large", &index);
+        assert!(dump.contains(
+            "Cell id=0 offset=0 count=20 values=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]"
+        ));
+        assert!(!dump.contains("sha256="));
     }
 }

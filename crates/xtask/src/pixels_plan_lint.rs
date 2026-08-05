@@ -669,7 +669,18 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
                 input_path.display()
             ));
         }
-        let expected_path = path.join("expected/check.txt");
+        let check_expected_path = path.join("expected/check.txt");
+        let image_expected_path = path.join("expected/image.txt");
+        let expected_path = if check_expected_path.is_file() {
+            check_expected_path
+        } else if image_expected_path.is_file() {
+            image_expected_path
+        } else {
+            return Err(format!(
+                "pixels plan lint: fixture has no check/image expectation: {}",
+                path.display()
+            ));
+        };
         let fixture_source = fixture_wrela_sources(&path)?;
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;

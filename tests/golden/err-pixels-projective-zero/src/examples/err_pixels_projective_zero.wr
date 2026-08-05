@@ -26,9 +26,6 @@ const FIXTURE_ID: u32 = 29
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P4.1"
-
 const DENOMINATOR_RAW: i32 = 0
 
 struct SceneParams:
@@ -39,10 +36,13 @@ struct SceneParams:
 enum MaterialId:
     Ground
 
+enum ObjectId:
+    Ground
+
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
     degenerate = plane(p, Vec3(x=0.0, y=0.0, z=1.0), offset=0.0)
-    return mark(degenerate, object=29, material=MaterialId.Ground)
+    return mark(degenerate, object=ObjectId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:

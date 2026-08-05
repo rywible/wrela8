@@ -5038,6 +5038,11 @@ values remain operands. It may share lifted coefficient products explicitly,
 but it must not describe verifier work as floating GEMV/FMA or introduce a
 generic computer algebra engine.
 
+For local scanline composition the affine coordinate substitution is
+`U = u0 + X`, in addition to `Q = q_hat(X)`. `degree_u` therefore contributes
+to composed degree, temporary accounting, and every correction-face
+coefficient expansion.
+
 **Tests:**
 
 - Polynomial arithmetic is deterministic and checked for degree/term overflow.
@@ -5236,6 +5241,13 @@ Use symbolic differentiation of bounded polynomial/scalar programs. Apply CSE ac
 
 For smooth object equations, derivative evaluation follows the structurally active primitive/blend cluster. Compile cluster programs keyed by a sorted leaf-signature template; do not emit every possible subset. Capacity derives the maximum allowed template count. Unsupported dynamic cluster explosion is a build error.
 
+Each cluster names the full composed object scalar as its authoritative root,
+the primitive bundle IDs used only as candidate slabs/predictors, and a
+complete-domain Taylor/root-tube remainder derived from the scalar derivative
+contract. Its object-root capacity covers every bounded-subdivision
+root/corridor leaf in every predictor slab. A cluster containing only
+primitive predictors is incomplete.
+
 **Tests:**
 
 - Analytic derivatives agree with finite differences only as a bug-finder; exact symbolic differentiation is the implementation.
@@ -5362,6 +5374,9 @@ Representation choice is fixed by feature class:
 
 Every generator includes projected domain, coefficient dependencies, maximum root count or subdivision depth, and event-side meaning.
 
+The smooth tie is one equation. The smooth band is the union of the two
+branches `a-b-k=0` and `a-b+k=0`, so its capacity accounts for both branches.
+
 **Tests:**
 
 - Each feature kind has a complete event-family constructor.
@@ -5418,6 +5433,11 @@ For each surviving pair emit a local `DepthSwap` generator for `q_a - q_b = 0` r
 
 - direct polynomial/rational cross-product when both sheets have explicit q forms and denominators have fixed sign;
 - local Taylor difference plus remainder otherwise.
+
+The latter record names the next-order implicit derivative programs, local
+scanline and common-q domains, and the complete-difference ambiguity fallback.
+If runtime cannot prove `G_q` away from zero, it discards the Taylor predictor
+and keeps the pair ambiguous rather than using the fallback as a sign proof.
 
 Do not compute a whole-scene resultant eliminating q from arbitrary feature equations. At runtime, both sheets are already isolated; the event predicate compares their certified q functions.
 

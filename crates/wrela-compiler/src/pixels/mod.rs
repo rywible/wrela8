@@ -16,25 +16,36 @@ use crate::sema::types::{self, Type, TypeArg};
 
 pub mod arena;
 pub mod bounds;
+pub mod camera;
 pub mod canonicalize;
 pub mod capacities;
+pub mod competition;
 pub mod config;
 pub mod csg;
 pub mod deform;
 pub mod derivative_bounds;
+pub mod derivatives;
 pub mod diagnostics;
 pub mod dump;
+pub mod event_kinds;
+pub mod events;
+pub mod exclusions;
 pub mod features;
 pub mod field_intrinsics;
 pub mod graph;
 pub mod ids;
+pub mod index;
 pub mod legality;
 pub mod material;
 pub mod material_graph;
 pub mod material_intrinsics;
 pub mod objects;
 pub mod params;
+pub mod polynomial;
 pub mod primitive;
+pub mod program;
+pub mod projection_bounds;
+pub mod projective;
 pub mod quota;
 pub mod reference;
 pub mod repeat;
@@ -54,6 +65,7 @@ pub use dump::{
 pub struct PixelsProgramSet {
     pub symbolic_graphs: Vec<symbolic::SymbolicGraph>,
     pub structural_programs: Vec<verify::VerifiedStructuralProgram>,
+    pub projective_programs: Vec<verify::VerifiedProjectiveProgram>,
 }
 
 fn compile_structural_renderer(
@@ -104,6 +116,117 @@ fn compile_structural_renderer(
             report,
         },
     )
+}
+
+pub(crate) fn derive_projective_program(
+    graph: &symbolic::SymbolicGraph,
+    config: &config::RendererConfig,
+    verified_structural: &verify::VerifiedStructuralProgram,
+) -> Result<verify::ProjectiveProgram, String> {
+    let structural = verified_structural.program();
+    let mut equations = projective::compile(
+        graph,
+        config,
+        &structural.values,
+        &structural.objects,
+        &structural.features,
+    )?;
+    let deformations = deform::compile_projective(
+        &structural.deformations,
+        &structural.features,
+        &equations,
+        &structural.values,
+    )?;
+    for deformation in &deformations {
+        let feature = equations
+            .features
+            .get_mut(deformation.feature.index())
+            .ok_or_else(|| {
+                format!(
+                    "pixels::deform: missing projective feature {}",
+                    deformation.feature
+                )
+            })?;
+        feature.max_root_count = deformation.maximum_root_count;
+    }
+    let derivatives = derivatives::compile(graph, &mut equations, structural)?;
+    let spans = projection_bounds::derive(&structural.features, &equations)?;
+    let mut events = events::compile(
+        graph,
+        structural,
+        &mut equations,
+        &derivatives,
+        &spans,
+        &deformations,
+    )?;
+    let competitions = competition::compile(
+        &mut equations,
+        structural,
+        &derivatives,
+        &spans,
+        &mut events,
+    )?;
+    let coefficient_remap = projective::canonicalize_coefficient_ids(&mut equations)?;
+    for event in &mut events.generators {
+        if let events::EventRepresentation::DirectDepthCrossProduct {
+            denominator_a,
+            denominator_b,
+            ..
+        } = &mut event.representation
+        {
+            for denominator in [denominator_a, denominator_b] {
+                denominator.coefficient = coefficient_remap
+                    .get(denominator.coefficient.index())
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        format!(
+                            "pixels::events: live denominator coefficient {} was not canonicalized",
+                            denominator.coefficient
+                        )
+                    })?;
+            }
+        }
+    }
+    let exclusions = exclusions::compile(&equations, &spans, &events, &competitions)?;
+    let indexes = index::compile(
+        graph,
+        config,
+        structural,
+        &derivatives,
+        &spans,
+        &events,
+        &competitions,
+    )?;
+    let capacities = capacities::derive_projective(
+        &structural.capacities,
+        &equations,
+        &derivatives,
+        &spans,
+        &events,
+        &competitions,
+        &indexes,
+    )?;
+    Ok(verify::ProjectiveProgram {
+        equations,
+        deformations,
+        derivatives,
+        spans,
+        events,
+        competitions,
+        exclusions,
+        indexes,
+        capacities,
+    })
+}
+
+fn compile_projective_renderer(
+    graph: &symbolic::SymbolicGraph,
+    config: &config::RendererConfig,
+    structural: &verify::VerifiedStructuralProgram,
+) -> Result<verify::VerifiedProjectiveProgram, String> {
+    let program = derive_projective_program(graph, config, structural)?;
+    verify::check_projective(graph, config, structural, program)
 }
 
 fn compile_symbolic_renderer(
@@ -185,9 +308,31 @@ pub fn compile_all(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let projective_programs = symbolic_graphs
+        .iter()
+        .zip(&configs.renderers)
+        .zip(&structural_programs)
+        .zip(&image.renderers)
+        .map(|(((graph, config), structural), renderer)| {
+            compile_projective_renderer(graph, config, structural).map_err(|message| {
+                let prefixed = message.starts_with('P')
+                    && message.get(1..4).is_some_and(|digits| {
+                        digits.chars().all(|character| character.is_ascii_digit())
+                    })
+                    && message.get(4..6) == Some(": ");
+                let diagnostic = if prefixed {
+                    diagnostics::PixelsDiagnostic::from_prefixed(message, renderer.span, "P020")
+                } else {
+                    diagnostics::PixelsDiagnostic::internal(message)
+                };
+                diagnostics::PixelsError::Diagnostic(diagnostic)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(PixelsProgramSet {
         symbolic_graphs,
         structural_programs,
+        projective_programs,
     })
 }
 

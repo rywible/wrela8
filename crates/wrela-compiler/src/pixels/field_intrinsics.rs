@@ -61,6 +61,28 @@ pub fn classify(name: &str) -> Option<FieldIntrinsic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufRead;
+    use std::sync::OnceLock;
+
+    fn structural_field_graph_prefix() -> &'static str {
+        static PREFIX: OnceLock<String> = OnceLock::new();
+        PREFIX.get_or_init(|| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/golden/check-pixels-field-ops/expected/field-graph.txt");
+            let file = std::fs::File::open(&path)
+                .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+            let mut prefix = String::new();
+            for line in std::io::BufReader::new(file).lines() {
+                let line = line.unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+                if line.starts_with("  StructuralRenderer ") {
+                    break;
+                }
+                prefix.push_str(&line);
+                prefix.push('\n');
+            }
+            prefix
+        })
+    }
 
     #[test]
     fn every_closed_field_operation_has_exactly_one_classification() {
@@ -80,9 +102,7 @@ mod tests {
             #[test]
             fn $test() {
                 assert_eq!(classify($name), Some(FieldIntrinsic::$intrinsic));
-                let graph = include_str!(
-                    "../../../../tests/golden/check-pixels-field-ops/expected/field-graph.txt"
-                );
+                let graph = structural_field_graph_prefix();
                 assert!(
                     graph.contains($needle),
                     "{} lacks pinned end-to-end lowering coverage",
