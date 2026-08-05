@@ -258,7 +258,7 @@ pub fn load_closure_with_discovery_order(
             if import.path.len() == 1 && (import.path[0] == "core" || import.path[0] == "drivers") {
                 continue;
             }
-            if is_image_runtime_import(&import.path) {
+            if is_image_runtime_import(&import.path) || is_image_pixels_import(&import.path) {
                 continue;
             }
             let (key, file, expected_root) = import_target(&pkgroot, &import.path, import.span)?;
@@ -281,6 +281,10 @@ pub fn load_closure_with_discovery_order(
 
     if closure_mentions_time(&modules) {
         ensure_time_module(&pkgroot, &mut modules)?;
+    }
+
+    if closure_imports_image_pixels(&modules) {
+        ensure_image_pixels_stub(&mut modules)?;
     }
 
     if closure_is_runtime_bearing(&modules) {
@@ -350,8 +354,13 @@ pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
 pub const RUNTIME_MODULE_KEY: &[&str] = &["core", "runtime"];
 
 pub const IMAGE_RUNTIME_MODULE_KEY: &[&str] = &["core", "__image_runtime"];
+pub const IMAGE_PIXELS_MODULE_KEY: &[&str] = &["core", "__image_pixels"];
+pub const IMAGE_PIXELS_MODULE_ADDR: &str = "core.__image_pixels";
+pub const RENDER_PROGRAM_MODULE_KEY: &[&str] = &["core", "render_program"];
 
 pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
+pub const GENERATED_PIXELS_INPUT_PATH: &str = "<generated-pixels>";
+pub const GENERATED_PIXELS_STUB_INPUT_PATH: &str = "<generated-pixels-stub>";
 
 pub fn ensure_image_runtime_stub(
     modules: &mut BTreeMap<Vec<String>, LoadedModule>,
@@ -388,6 +397,57 @@ pub fn is_image_runtime_import(path: &[String]) -> bool {
             .iter()
             .zip(IMAGE_RUNTIME_MODULE_KEY.iter())
             .all(|(a, b)| a == *b)
+}
+
+pub fn is_image_pixels_import(path: &[String]) -> bool {
+    path.len() == IMAGE_PIXELS_MODULE_KEY.len()
+        && path
+            .iter()
+            .zip(IMAGE_PIXELS_MODULE_KEY.iter())
+            .all(|(a, b)| a == *b)
+}
+
+fn closure_imports_image_pixels(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
+    modules.values().any(|loaded| {
+        loaded
+            .module
+            .imports
+            .iter()
+            .any(|import| is_image_pixels_import(&import.path))
+    })
+}
+
+pub fn ensure_image_pixels_stub(
+    modules: &mut BTreeMap<Vec<String>, LoadedModule>,
+) -> Result<(), LoadError> {
+    let key: Vec<String> = IMAGE_PIXELS_MODULE_KEY
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+    if modules.contains_key(&key) {
+        return Ok(());
+    }
+    let text = "module __image_pixels\n\npub const N_RENDERERS: usize = 0\n";
+    let tokens = crate::syntax::lexer::lex(text).map_err(|error| {
+        build_error(
+            format!("pixels config stub lex: {}", error.message),
+            Span::default(),
+        )
+    })?;
+    let module = crate::syntax::parser::parse(tokens).map_err(|error| {
+        build_error(
+            format!("pixels config stub parse: {}", error.message),
+            Span::default(),
+        )
+    })?;
+    modules.insert(
+        key,
+        LoadedModule {
+            file: PathBuf::from(GENERATED_PIXELS_STUB_INPUT_PATH),
+            module,
+        },
+    );
+    Ok(())
 }
 
 pub fn closure_is_runtime_bearing(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
@@ -505,6 +565,25 @@ pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     Ok((key, LoadedModule { file, module }))
 }
 
+pub fn load_render_program_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
+    let key: Vec<String> = RENDER_PROGRAM_MODULE_KEY
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect();
+    let toolchain = toolchain_stdlib_core();
+    let file = toolchain.join("render_program.wr");
+    if !file.is_file() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/core/render_program.wr` is missing".to_string(),
+            Span::default(),
+        ));
+    }
+    ensure_under_package_root(&file, &toolchain, &key, Span::default())?;
+    let module = parse_file(&file)?;
+    check_agrees(&file, &module, &toolchain)?;
+    Ok((key, LoadedModule { file, module }))
+}
+
 pub fn load_runtime_module_with_image_runtime_import()
 -> Result<(Vec<String>, LoadedModule), LoadError> {
     load_runtime_module()
@@ -553,6 +632,48 @@ mod runtime_module_tests {
         let tokens = lexer::lex(src).expect("lex");
         let module = parser::parse(tokens).expect("parse");
         assert!(!module_is_runtime_bearing(&module));
+    }
+
+    #[test]
+    fn zero_renderer_pixels_stub_is_importable_and_reports_zero() {
+        let src = "module app\n\n\
+                   from core.__image_pixels import N_RENDERERS\n\n\
+                   const COUNT: usize = N_RENDERERS\n";
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let key = vec!["app".to_string()];
+        let mut modules = BTreeMap::from([(
+            key.clone(),
+            LoadedModule {
+                file: PathBuf::from("<app>"),
+                module,
+            },
+        )]);
+        assert!(closure_imports_image_pixels(&modules));
+        if ensure_image_pixels_stub(&mut modules).is_err() {
+            panic!("install pixels stub");
+        }
+        let pixels_key = IMAGE_PIXELS_MODULE_KEY
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect::<Vec<_>>();
+        assert!(modules.contains_key(&pixels_key));
+
+        let ast = modules
+            .iter()
+            .map(|(key, loaded)| (key.clone(), loaded.module.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let paths = modules
+            .iter()
+            .map(|(key, loaded)| (key.clone(), loaded.file.display().to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let programs =
+            crate::sema::check_program_typed(&ast, &paths).expect("type-check zero-renderer stub");
+        assert!(programs[&key].consts.contains_key("COUNT"));
+        assert!(
+            crate::syntax::printer::pretty(&modules[&pixels_key].module)
+                .contains("pub const N_RENDERERS: usize = 0")
+        );
     }
 }
 

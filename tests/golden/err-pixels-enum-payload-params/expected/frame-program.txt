@@ -1,0 +1,1 @@
+error[pixels P009]: renderer field/material parameter types disagree: `SceneParams` is not finite data at 47:41

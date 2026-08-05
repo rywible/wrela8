@@ -374,6 +374,7 @@ fn print_pixels_error(message: &str) {
 
 fn run_pixels_stage(
     programs: &BTreeMap<String, TypedProgram>,
+    modules: &BTreeMap<String, Module>,
     stage: wrela_compiler::pixels::PixelsDumpStage,
     renderer_index: Option<usize>,
 ) {
@@ -447,35 +448,68 @@ fn run_pixels_stage(
         );
         return;
     }
-    if !wrela_compiler::pixels::is_walking_skeleton(module, &graph) {
-        print!(
-            "{}",
-            wrela_compiler::pixels::dump_uncompiled_configs(
-                stage,
-                &checked.renderer_configs,
-                Some(selected_index),
-            )
-        );
-        return;
-    }
-    match wrela_compiler::pixels::compile_plane_skeleton(
-        program,
+    let mut layout_ctx = match layout::merge_layout_ctx(modules) {
+        Ok(layout_ctx) => layout_ctx,
+        Err(error) => {
+            print_sema_error(&error);
+            return;
+        }
+    };
+    layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    let image_layout = match layout::try_layout_program(
         programs,
+        &layout_ctx,
         &graph,
-        &checked.renderer_configs,
+        modules,
+        Some(&checked.renderer_configs),
+        Some(&program_set),
+        false,
     ) {
-        Ok(skeleton) => match stage {
-            wrela_compiler::pixels::PixelsDumpStage::FieldGraph => unreachable!(
-                "field-graph returns the sealed symbolic graph before legacy skeleton lowering"
-            ),
-            wrela_compiler::pixels::PixelsDumpStage::FrameProgram => {
-                print!("{}", wrela_compiler::pixels::dump_frame_program(&skeleton))
+        Ok(Some(layout)) => layout,
+        Ok(None) => {
+            print_pixels_error("ordinary image code generation is unavailable");
+            return;
+        }
+        Err(message) => {
+            print_pixels_error(&message);
+            return;
+        }
+    };
+    let Some(placement) = image_layout
+        .renderers
+        .iter()
+        .find(|placement| placement.index == selected_index)
+    else {
+        print_pixels_error("compiled renderer has no image placement");
+        return;
+    };
+    let renderer = &program_set.compiled_renderers[selected_index];
+    match stage {
+        wrela_compiler::pixels::PixelsDumpStage::FieldGraph => unreachable!(),
+        wrela_compiler::pixels::PixelsDumpStage::FrameProgram => {
+            let generated_source = match wrela_compiler::pixels::glue::configuration_source(
+                &image_layout.renderers,
+                &program_set.compiled_renderers,
+                false,
+            ) {
+                Ok(source) => source,
+                Err(message) => {
+                    print_pixels_error(&message);
+                    return;
+                }
+            };
+            match wrela_compiler::pixels::dump_frame_program(renderer, placement, &generated_source)
+            {
+                Ok(text) => print!("{text}"),
+                Err(message) => print_pixels_error(&message),
             }
-            wrela_compiler::pixels::PixelsDumpStage::RenderLayout => {
-                print!("{}", wrela_compiler::pixels::dump_render_layout(&skeleton))
-            }
-        },
-        Err(message) => print_pixels_error(&message),
+        }
+        wrela_compiler::pixels::PixelsDumpStage::RenderLayout => {
+            print!(
+                "{}",
+                wrela_compiler::pixels::dump_render_layout(renderer, placement)
+            )
+        }
     }
 }
 
@@ -540,6 +574,10 @@ fn build_report(
                             if rel == rtconfig::GENERATED_INPUT_PATH
                                 || addr == rtconfig::MODULE_ADDR
                                 || path.to_string_lossy() == rtconfig::GENERATED_INPUT_PATH
+                                || addr.as_str() == loader::IMAGE_PIXELS_MODULE_ADDR
+                                || path.to_string_lossy()
+                                    == loader::GENERATED_PIXELS_STUB_INPUT_PATH
+                                || path.to_string_lossy() == loader::GENERATED_PIXELS_INPUT_PATH
                             {
                                 continue;
                             }
@@ -554,15 +592,35 @@ fn build_report(
                         let mut layout_ctx =
                             layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-                        let placement = placement::place(&graph, modules, &layout_ctx, graph.cores)
-                            .map_err(|e| format!("error[build]: {e}\n"))?;
+                        let layout_result = layout::try_layout_with_codegen(
+                            programs,
+                            &layout_ctx,
+                            &graph,
+                            modules,
+                            Some(&checked_image.renderer_configs),
+                            Some(&pixels_programs),
+                            false,
+                        )
+                        .map_err(|e| format!("error[build]: layout: {e}\n"))?;
+                        let fallback_placement;
+                        let (report_graph, placement) =
+                            if let Some((_, _, generated_graph, generated_placement)) =
+                                layout_result.as_ref()
+                            {
+                                (generated_graph, generated_placement)
+                            } else {
+                                fallback_placement =
+                                    placement::place(&graph, modules, &layout_ctx, graph.cores)
+                                        .map_err(|e| format!("error[build]: {e}\n"))?;
+                                (&graph, &fallback_placement)
+                            };
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
                         for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
                             enum_variants
                                 .entry(k.clone())
                                 .or_insert_with(|| e.variants.clone());
                         }
-                        match report::render(&inputs, &enum_variants, &graph, &placement) {
+                        match report::render(&inputs, &enum_variants, report_graph, placement) {
                             Ok(mut text) => {
                                 if !pixels_programs.structural_programs.is_empty() {
                                     wrela_compiler::pixels::report::append_program_set(
@@ -597,14 +655,8 @@ fn build_report(
                                 }
                                 report::render_exact_bytes_section(&mut text, &layout_types)
                                     .map_err(|e| render_sema_error(&e))?;
-                                let img = match layout::try_layout_with_codegen(
-                                    programs,
-                                    &layout_ctx,
-                                    &graph,
-                                    modules,
-                                    Some(&checked_image.renderer_configs),
-                                ) {
-                                    Ok(Some((image_layout, codegen))) => {
+                                let img = match layout_result {
+                                    Some((image_layout, codegen, _, placement)) => {
                                         if let Some(ref tables) = image_layout.runtime {
                                             let rt_text = rtconfig::generate_and_typecheck(tables)
                                                 .map_err(|e| {
@@ -620,6 +672,12 @@ fn build_report(
                                             );
                                         }
                                         layout::render_layout_section(&mut text, &image_layout);
+                                        wrela_compiler::pixels::report::append_layout(
+                                            &mut text,
+                                            &pixels_programs,
+                                            &image_layout,
+                                            false,
+                                        )?;
                                         let cost_source =
                                             file_paths.get(module.as_str()).map(|p| p.as_path());
                                         if let Some(linked) = image_layout.linked.as_ref() {
@@ -646,7 +704,7 @@ fn build_report(
                                         eval::layout_assert::run(program, &graph, &image_layout)?;
                                         Some(image_layout.blob)
                                     }
-                                    Ok(None) => {
+                                    None => {
                                         if !graph.layout_asserts.is_empty() {
                                             let names: Vec<&str> = graph
                                                 .layout_asserts
@@ -661,9 +719,6 @@ fn build_report(
                                             ));
                                         }
                                         None
-                                    }
-                                    Err(e) => {
-                                        return Err(format!("error[build]: layout: {e}\n"));
                                     }
                                 };
                                 Ok(BuildReport {
@@ -743,7 +798,7 @@ fn build_rtconfig(
                 .map_err(|e| render_sema_error(&eval::to_sema_error(e)))?;
             let checked_image = eval::image_checks::check_sealed(&graph, program, programs)
                 .map_err(|e| render_sema_error(&e))?;
-            wrela_compiler::pixels::compile_all(
+            let pixels_programs = wrela_compiler::pixels::compile_all(
                 programs,
                 module,
                 &graph,
@@ -759,6 +814,8 @@ fn build_rtconfig(
                 &graph,
                 modules,
                 Some(&checked_image.renderer_configs),
+                Some(&pixels_programs),
+                false,
             ) {
                 Ok(Some(image_layout)) => {
                     let Some(tables) = image_layout.runtime.as_ref() else {
@@ -1578,8 +1635,9 @@ fn dump(args: &[String]) -> ExitCode {
                 let dump_start = Instant::now();
                 match parsed {
                     Ok(module) => match load_build_closure(&path, module) {
-                        Ok((programs, _, _)) => run_pixels_stage(
+                        Ok((programs, _, modules)) => run_pixels_stage(
                             &programs,
+                            &modules,
                             pixels_dump_stage(&stage)
                                 .expect("Pixels match arm has a canonical dump stage"),
                             renderer_index,
@@ -1862,17 +1920,21 @@ fn test_cmd(args: &[String]) -> ExitCode {
         },
         None => eval::image::ImageGraph::default(),
     };
+    let mut pixels_programs = None;
     let checked_image = if program.image_fn.is_some() {
         match eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
             Ok(checked_image) => {
-                if let Err(error) = wrela_compiler::pixels::compile_all(
+                match wrela_compiler::pixels::compile_all(
                     &checked.programs,
                     &program.module_path,
                     &graph,
                     &checked_image.renderer_configs,
                 ) {
-                    print_sema_error(&eval::image_checks::pixels_error(error));
-                    return ExitCode::FAILURE;
+                    Ok(programs) => pixels_programs = Some(programs),
+                    Err(error) => {
+                        print_sema_error(&eval::image_checks::pixels_error(error));
+                        return ExitCode::FAILURE;
+                    }
                 }
                 Some(checked_image)
             }
@@ -1889,16 +1951,6 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
         .cloned()
         .collect();
-    let test_args = match layout::resolve_runtime_test_args(&program, &runtime_tests, &graph) {
-        Ok(a) => a,
-        Err(msg) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!("error[build]: {msg}"));
-            return ExitCode::FAILURE;
-        }
-    };
     let compiled = match layout::lower_and_codegen_image(
         &modules,
         &checked.programs,
@@ -1907,6 +1959,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
         checked_image
             .as_ref()
             .map(|checked| &checked.renderer_configs),
+        pixels_programs.as_ref(),
+        true,
         &runtime_tests,
         &async_tests,
         false,
@@ -1922,8 +1976,19 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let test_args =
+        match layout::resolve_runtime_test_args(&program, &runtime_tests, &compiled.graph) {
+            Ok(a) => a,
+            Err(msg) => {
+                for l in &comptime_lines {
+                    println!("{l}");
+                }
+                print_line_diagnostic(&format!("error[build]: {msg}"));
+                return ExitCode::FAILURE;
+            }
+        };
     let boot = layout::BootCtx {
-        graph: &graph,
+        graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
         layout_ctx: &compiled.layout_ctx,
@@ -1950,6 +2015,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(programs) = pixels_programs.as_ref()
+        && let Err(error) =
+            layout::attach_pixels(&mut image_layout, &programs.compiled_renderers, true)
+    {
+        print_line_diagnostic(&format!("error[build]: {}", error.message));
+        return ExitCode::FAILURE;
+    }
     {
         if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &compiled.programs) {
             for l in &comptime_lines {
@@ -2002,6 +2074,12 @@ fn test_cmd(args: &[String]) -> ExitCode {
     parsed.exec_sections = image_layout
         .sections
         .iter()
+        .filter(|section| {
+            matches!(
+                section.name,
+                "entry" | "code" | "abort" | "checkpoint" | "rtcode"
+            )
+        })
         .map(|s| wrela_machine::report::ReportSection {
             name: s.name.to_string(),
             base: s.base,

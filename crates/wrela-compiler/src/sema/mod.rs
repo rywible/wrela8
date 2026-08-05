@@ -439,6 +439,41 @@ fn check_program_typed_tables(
     }
 
     inject_time_prelude_bindings(&mut bindings, &specialized);
+    let core_render = vec!["core".to_string(), "render".to_string()];
+    let renderer_modules: BTreeSet<Vec<String>> = specialized
+        .iter()
+        .filter(|(_, module)| crate::syntax::printer::pretty(module).contains(".renderer["))
+        .map(|(key, _)| key.clone())
+        .collect();
+    for (key, module_bindings) in &mut bindings {
+        if key == &core_render || !renderer_modules.contains(key) {
+            continue;
+        }
+        for name in [
+            "Renderer",
+            "RendererWorker",
+            "RendererFrameBounds",
+            "RenderPath",
+            "RenderFrame",
+            "RenderedFrame",
+            "RenderError",
+            "Camera",
+            "Light",
+            "LightFrame",
+            "__wrela_pixels_p5_finite",
+        ] {
+            if symtabs[key].contains_key(name) || module_bindings.contains_key(name) {
+                continue;
+            }
+            module_bindings.insert(
+                name.to_string(),
+                imports::ImportBinding {
+                    target_module: core_render.clone(),
+                    target_name: name.to_string(),
+                },
+            );
+        }
+    }
 
     let closure_shapes = imports::closure_type_shapes(
         &specialized

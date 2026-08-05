@@ -684,13 +684,7 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                 }
                 return Ok(total);
             }
-            if !targs.is_empty() {
-                return Err(format!(
-                    "sizing an instantiated generic struct/enum `{key}` is not in this layout \
-                     context (no matching TypedProgram instantiation)"
-                ));
-            }
-            if let Some(variants) = ctx.enums.get(name) {
+            if let Some(variants) = ctx.enums.get(&key) {
                 let mut widest = 0usize;
                 for payload in variants {
                     let mut total = 0;
@@ -700,6 +694,12 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     widest = widest.max(total);
                 }
                 return Ok(SLOT + widest);
+            }
+            if !targs.is_empty() {
+                return Err(format!(
+                    "sizing an instantiated generic struct/enum `{key}` is not in this layout \
+                     context (no matching TypedProgram instantiation)"
+                ));
             }
             Err(format!(
                 "unknown struct/enum `{name}` in this layout context"
@@ -791,6 +791,12 @@ pub fn field_offset(
                 .structs
                 .get(&key)
                 .ok_or_else(|| format!("unknown struct `{key}`"))?;
+            if index >= fields.len() {
+                return Err(format!(
+                    "`{key}` field index {index} out of range for {} field(s)",
+                    fields.len()
+                ));
+            }
             let mut off = 0usize;
             for f in &fields[..index] {
                 off += size_of(f, ctx)?;

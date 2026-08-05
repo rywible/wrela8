@@ -1,0 +1,1 @@
+error[build]: no `@image` fn found in the build closure

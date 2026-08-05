@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 
-use crate::sema::bodies::{self, FnInfo, InstKind, ModuleCtx, QueuedInstantiation, StructInfo};
+use crate::sema::bodies::{
+    self, FnInfo, InstKind, MAX_GENERIC_DEPTH, ModuleCtx, QueuedInstantiation, StructInfo,
+};
 use crate::sema::typed::{TypedEnum, TypedInstantiation};
 use crate::sema::types::{
     self, Classification, DeclEnum, DeclField, DeclFn, DeclGenericKind, DeclGenericParam,
@@ -94,6 +97,33 @@ fn subst_type_arg(arg: &TypeArg, subst: &Subst) -> TypeArg {
         TypeArg::Bound(e) => TypeArg::Bound(subst_expr(e, subst)),
         TypeArg::Pool(p) => TypeArg::Pool(p.clone()),
     }
+}
+
+pub(crate) fn instantiate_enum_payload_types(
+    enumeration: &TypedEnum,
+    args: &[TypeArg],
+) -> Option<Vec<Vec<Type>>> {
+    if enumeration.generic_type_params.len() != args.len() {
+        return None;
+    }
+    let mut subst = Subst::default();
+    for (parameter, argument) in enumeration.generic_type_params.iter().zip(args) {
+        match (parameter, argument) {
+            (Some(parameter), TypeArg::Type(argument)) => {
+                subst.types.insert(parameter.clone(), argument.clone());
+            }
+            // TypedEnum deliberately retains no const-generic parameter name.
+            // Refuse to synthesize a layout that cannot be substituted exactly.
+            (None, _) | (Some(_), _) => return None,
+        }
+    }
+    Some(
+        enumeration
+            .variant_payload_types
+            .iter()
+            .map(|payload| payload.iter().map(|ty| subst_type(ty, &subst)).collect())
+            .collect(),
+    )
 }
 
 fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
@@ -298,6 +328,301 @@ fn subst_member_ast(m: &Member, subst: &Subst) -> Member {
         }),
         Member::Pool(_) | Member::ComptimeIf(_) => m.clone(),
     }
+}
+
+fn renderer_vector_components<'a>(ty: &Type, mctx: &ModuleCtx) -> Option<&'a [&'a str]> {
+    let Type::Named(name, args) = ty else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let declaration = mctx.type_decl_name.get(name)?;
+    let module = mctx.type_decl_module.get(name)?;
+    if !matches!(module.as_str(), "field" | "core.field") {
+        return None;
+    }
+    Some(match declaration.as_str() {
+        "Vec2" => &["x", "y"],
+        "Vec3" => &["x", "y", "z"],
+        "Vec4" => &["x", "y", "z", "w"],
+        "Rgb" => &["r", "g", "b"],
+        _ => return None,
+    })
+}
+
+fn renderer_numeric_literal(value: f64, ty: &Type) -> String {
+    let mut literal = match ty {
+        Type::F32 => (value as f32).to_string(),
+        Type::F64 => value.to_string(),
+        _ => value.to_string(),
+    };
+    if matches!(ty, Type::F32 | Type::F64)
+        && !literal.contains('.')
+        && !literal.contains('e')
+        && !literal.contains('E')
+    {
+        literal.push_str(".0");
+    }
+    literal
+}
+
+fn write_renderer_leaf_check(
+    output: &mut String,
+    indent: usize,
+    path: &str,
+    ty: &Type,
+    range: crate::sema::attrs::NumericRange,
+    component: &mut u32,
+) {
+    let spaces = " ".repeat(indent);
+    let path_component = *component;
+    *component = component.saturating_add(1);
+    if matches!(ty, Type::F32 | Type::F64) {
+        let max_finite = if *ty == Type::F32 {
+            "3.4028234663852886e38"
+        } else {
+            "1.7976931348623157e308"
+        };
+        for condition in [
+            format!("{path} != {path}"),
+            format!("{path} > {max_finite}"),
+            format!("{path} < -{max_finite}"),
+        ] {
+            writeln!(output, "{spaces}if {condition}:").expect("String writes cannot fail");
+            writeln!(
+                output,
+                "{spaces}    return Err(RenderError.NonFiniteInput(RenderPath(component={path_component})))"
+            )
+            .expect("String writes cannot fail");
+        }
+    }
+    let (min, max) = if let Some((min, max)) = range.exact_integer {
+        (min.to_string(), max.to_string())
+    } else {
+        (
+            renderer_numeric_literal(range.min, ty),
+            renderer_numeric_literal(range.max, ty),
+        )
+    };
+    for condition in [format!("{path} < {min}"), format!("{path} > {max}")] {
+        writeln!(output, "{spaces}if {condition}:").expect("String writes cannot fail");
+        writeln!(
+            output,
+            "{spaces}    return Err(RenderError.ParameterOutOfRange(RenderPath(component={path_component})))"
+        )
+        .expect("String writes cannot fail");
+    }
+}
+
+fn write_renderer_type_checks(
+    output: &mut String,
+    indent: usize,
+    path: &str,
+    ty: &Type,
+    explicit_range: Option<crate::sema::attrs::NumericRange>,
+    component: &mut u32,
+    loop_id: &mut u32,
+    depth: usize,
+    active: &mut BTreeSet<String>,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    if depth > MAX_GENERIC_DEPTH {
+        return Err(SemaError::at(
+            "pixels P5",
+            "renderer frame-validation type nesting exceeds the generic depth ceiling".to_string(),
+            Span::default(),
+        ));
+    }
+    if let Some(range) = explicit_range {
+        if matches!(
+            ty,
+            Type::F32
+                | Type::F64
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::Usize
+                | Type::I8
+                | Type::I16
+                | Type::I32
+                | Type::I64
+                | Type::Isize
+        ) {
+            write_renderer_leaf_check(output, indent, path, ty, range, component);
+            return Ok(());
+        }
+        if let Some(components) = renderer_vector_components(ty, mctx) {
+            for field in components {
+                write_renderer_leaf_check(
+                    output,
+                    indent,
+                    &format!("{path}.{field}"),
+                    &Type::F32,
+                    range,
+                    component,
+                );
+            }
+            return Ok(());
+        }
+    }
+    match ty {
+        Type::Array(element, length) => {
+            let Some(length) = bodies::literal_array_len(length) else {
+                return Err(SemaError::at(
+                    "pixels P5",
+                    "renderer frame-validation array length is not an exact literal".to_string(),
+                    length.span(),
+                ));
+            };
+            let mut nested = String::new();
+            let this_loop = *loop_id;
+            *loop_id = loop_id.saturating_add(1);
+            let index = format!("__wrela_p5_index_{this_loop}");
+            write_renderer_type_checks(
+                &mut nested,
+                indent + 4,
+                &format!("{path}[{index}]"),
+                element,
+                None,
+                component,
+                loop_id,
+                depth + 1,
+                active,
+                mctx,
+            )?;
+            if !nested.is_empty() {
+                let spaces = " ".repeat(indent);
+                let end = format!("__wrela_p5_end_{this_loop}");
+                writeln!(output, "{spaces}{end}: usize = {length}")
+                    .expect("String writes cannot fail");
+                writeln!(output, "{spaces}@budget(bound={})", length.max(1))
+                    .expect("String writes cannot fail");
+                writeln!(output, "{spaces}for {index} in 0 .. {end}:")
+                    .expect("String writes cannot fail");
+                output.push_str(&nested);
+            }
+        }
+        Type::Named(name, args) => {
+            if renderer_vector_components(ty, mctx).is_some() || mctx.enums.contains_key(name) {
+                return Ok(());
+            }
+            let key = types::render_type(ty);
+            if !active.insert(key.clone()) {
+                return Ok(());
+            }
+            let info = if args.is_empty() {
+                mctx.structs.get(name).cloned()
+            } else {
+                Some(instantiate_struct(mctx, name, args, Span::default())?)
+            };
+            if let Some(info) = info {
+                for (ast_member, decl_member) in info.members() {
+                    let (Member::Field(field), DeclMember::Field(decl_field)) =
+                        (ast_member, decl_member)
+                    else {
+                        continue;
+                    };
+                    let range = crate::sema::attrs::parse_field_contracts(
+                        field,
+                        &decl_field.ty,
+                        &mctx.const_values,
+                        renderer_vector_components(&decl_field.ty, mctx).is_some(),
+                    )?
+                    .range;
+                    write_renderer_type_checks(
+                        output,
+                        indent,
+                        &format!("{path}.{}", field.name),
+                        &decl_field.ty,
+                        range,
+                        component,
+                        loop_id,
+                        depth + 1,
+                        active,
+                        mctx,
+                    )?;
+                }
+            }
+            active.remove(&key);
+        }
+        Type::Tuple(items) => {
+            for (index, item) in items.iter().enumerate() {
+                write_renderer_type_checks(
+                    output,
+                    indent,
+                    &format!("{path}.{index}"),
+                    item,
+                    None,
+                    component,
+                    loop_id,
+                    depth + 1,
+                    active,
+                    mctx,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn renderer_parameter_validation(
+    parameter_type: &Type,
+    mctx: &ModuleCtx,
+) -> Result<Vec<Stmt>, SemaError> {
+    let mut body = String::new();
+    let mut component = 0x1000_u32;
+    let mut loop_id = 0_u32;
+    write_renderer_type_checks(
+        &mut body,
+        4,
+        "frame.params",
+        parameter_type,
+        None,
+        &mut component,
+        &mut loop_id,
+        0,
+        &mut BTreeSet::new(),
+        mctx,
+    )?;
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    let source = format!("module __wrela_renderer_validation\n\nfn checks():\n{body}    pass\n");
+    let tokens = crate::syntax::lexer::lex(&source).map_err(|error| {
+        SemaError::at(
+            "pixels P5",
+            format!(
+                "compiler-generated renderer validation did not lex: {}",
+                error.message
+            ),
+            Span::default(),
+        )
+    })?;
+    let module = crate::syntax::parser::parse(tokens).map_err(|error| {
+        SemaError::at(
+            "pixels P5",
+            format!(
+                "compiler-generated renderer validation did not parse: {}",
+                error.message
+            ),
+            Span::default(),
+        )
+    })?;
+    let Some(ast::Item::Fn(function)) = module.items.into_iter().next() else {
+        return Err(SemaError::at(
+            "pixels P5",
+            "compiler-generated renderer validation has no function body".to_string(),
+            Span::default(),
+        ));
+    };
+    let mut statements = function.body.unwrap_or_default();
+    if matches!(statements.last(), Some(Stmt::Pass(_))) {
+        statements.pop();
+    }
+    Ok(statements)
 }
 
 fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedProgram, SemaError> {
@@ -717,10 +1042,29 @@ pub(crate) fn instantiate_struct(
         &const_subst,
         mctx,
     )?;
-    let expanded: Vec<Member> = expanded
+    let mut expanded: Vec<Member> = expanded
         .iter()
         .map(|m| subst_member_ast(m, &subst))
         .collect();
+    let canonical_renderer = name == "Renderer"
+        && mctx
+            .type_decl_module
+            .get(name)
+            .zip(mctx.type_decl_name.get(name))
+            .is_some_and(|(module, declaration)| {
+                declaration == "Renderer" && matches!(module.as_str(), "render" | "core.render")
+            });
+    if canonical_renderer && let [TypeArg::Type(parameter_type)] = args {
+        let validation = renderer_parameter_validation(parameter_type, mctx)?;
+        if !validation.is_empty()
+            && let Some(Member::Fn(validate)) = expanded
+                .iter_mut()
+                .find(|member| matches!(member, Member::Fn(function) if function.name == "__validate_and_unavailable"))
+            && let Some(body) = validate.body.as_mut()
+        {
+            body.splice(0..0, validation);
+        }
+    }
     let decl = if orig.deferred_comptime_members.is_empty()
         && !orig
             .ast_members

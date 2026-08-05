@@ -195,7 +195,7 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_lane1_quiesce_timeout_line",
 ];
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ImageForceRootOpts {
     pub with_wiring: bool,
     pub with_test_runner: bool,
@@ -204,6 +204,8 @@ pub struct ImageForceRootOpts {
     pub n_irq_calls: usize,
     pub n_wake_calls: usize,
     pub n_cores: usize,
+    pub with_pixels: bool,
+    pub pixels_rooted_functions: BTreeSet<String>,
 }
 
 pub fn seed_image_force_roots(
@@ -211,6 +213,9 @@ pub fn seed_image_force_roots(
     programs: &BTreeMap<String, TypedProgram>,
     opts: ImageForceRootOpts,
 ) {
+    if opts.with_pixels {
+        only.extend(opts.pixels_rooted_functions.iter().cloned());
+    }
     let need_scheduler = opts.with_wiring || opts.with_test_runner;
     if need_scheduler {
         for key in RUNTIME_WIRING_FORCE_ROOT_KEYS {
@@ -273,6 +278,35 @@ pub fn seed_image_force_roots(
             }
         }
     }
+}
+
+pub(crate) fn validate_image_force_roots(
+    programs: &BTreeMap<String, TypedProgram>,
+    roots: &BTreeSet<String>,
+) -> Result<(), String> {
+    let opts = LowerOpts {
+        emit_comptime_tests: false,
+        only: None,
+    };
+    let available = programs
+        .values()
+        .flat_map(|program| all_candidate_keys(program, &opts))
+        .collect::<BTreeSet<_>>();
+    if let Some(missing) = roots.iter().find(|root| !available.contains(*root)) {
+        return Err(format!(
+            "pixels::glue: generated force root `{missing}` does not resolve in the typed closure"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn missing_image_force_root_fails_closed() {
+    let programs = BTreeMap::<String, TypedProgram>::new();
+    let roots = BTreeSet::from(["__missing_pixels_root".to_string()]);
+    let error = validate_image_force_roots(&programs, &roots).unwrap_err();
+    assert!(error.contains("__missing_pixels_root"));
 }
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
@@ -341,6 +375,14 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
         .chain(program.imported.instantiations.iter())
     {
         if let TypedInstantiation::Struct(s) = inst {
+            // Renderer workers are sealed compiler-generated implementation
+            // actors. The image force-root pass selects exactly the workers
+            // placed for this image; treating every type-layout
+            // instantiation as a guest entry point would retain idle workers
+            // for all machine cores.
+            if ikey == "RendererWorker" {
+                continue;
+            }
             seed_one_struct(ikey, s, out);
         }
     }

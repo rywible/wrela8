@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use crate::sema::bodies::{
-    FnCtx, ModuleCtx, check_call_args, check_expr, check_stmts, is_resource_type,
+    FnCtx, InstKind, ModuleCtx, check_call_args, check_expr, check_stmts, is_resource_type,
     missing_method_error, scoped, type_error, types_eq,
 };
+use crate::sema::generics;
 use crate::sema::typed::{
     CalleeKey, TypedCallArg, TypedExpr, TypedExprKind, TypedForIter, TypedPattern,
     TypedPatternKind, TypedStmt, TypedStmtKind,
@@ -280,17 +281,20 @@ pub(crate) fn check_await_actor_call(
             call_span,
         ));
     }
-    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
+    let Some(TypeArg::Type(Type::Named(actor_name, actor_targs))) = targs.first() else {
         return Err(actor_error(
             "`await` requires a method call through an `Actor[T]` handle".to_string(),
             call_span,
         ));
     };
-    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
-        return Err(actor_error(
-            format!("unknown actor type `{actor_name}`"),
-            fspan,
-        ));
+    let instantiated;
+    let s = if actor_targs.is_empty() {
+        mctx.structs
+            .get(actor_name.as_str())
+            .ok_or_else(|| actor_error(format!("unknown actor type `{actor_name}`"), fspan))?
+    } else {
+        instantiated = generics::instantiate_struct(mctx, actor_name, actor_targs, call_span)?;
+        &instantiated
     };
     let Some((mf, d)) = s.method(method_name) else {
         return Err(missing_method_error(
@@ -320,11 +324,19 @@ pub(crate) fn check_await_actor_call(
         .filter(|(p, _)| p.mode == AccessMode::Take)
         .filter_map(|(_, slot)| slot.value.as_ref().map(|t| t.ty.clone()))
         .collect();
+    let callee = if actor_targs.is_empty() {
+        CalleeKey::Method(actor_name.clone(), method_name.to_string())
+    } else {
+        CalleeKey::MethodInstance(
+            generics::canonical_key(InstKind::Struct, actor_name, actor_targs),
+            method_name.to_string(),
+        )
+    };
     let call = TypedExpr {
         span: call_span,
         ty: d.ret.clone(),
         kind: TypedExprKind::Call {
-            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
+            callee,
             receiver: Some(Box::new(base_t)),
             args: typed_args,
         },
@@ -438,17 +450,20 @@ pub(crate) fn check_send_call(
             call_span,
         ));
     }
-    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
+    let Some(TypeArg::Type(Type::Named(actor_name, actor_targs))) = targs.first() else {
         return Err(actor_error(
             "`send` requires a method call through an `Actor[T]` handle".to_string(),
             call_span,
         ));
     };
-    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
-        return Err(actor_error(
-            format!("unknown actor type `{actor_name}`"),
-            fspan,
-        ));
+    let instantiated;
+    let s = if actor_targs.is_empty() {
+        mctx.structs
+            .get(actor_name.as_str())
+            .ok_or_else(|| actor_error(format!("unknown actor type `{actor_name}`"), fspan))?
+    } else {
+        instantiated = generics::instantiate_struct(mctx, actor_name, actor_targs, call_span)?;
+        &instantiated
     };
     let Some((mf, d)) = s.method(method_name) else {
         return Err(missing_method_error(
@@ -487,11 +502,19 @@ pub(crate) fn check_send_call(
         .filter(|(p, _)| p.mode == AccessMode::Take)
         .filter_map(|(_, slot)| slot.value.as_ref().map(|t| t.ty.clone()))
         .collect();
+    let callee = if actor_targs.is_empty() {
+        CalleeKey::Method(actor_name.clone(), method_name.to_string())
+    } else {
+        CalleeKey::MethodInstance(
+            generics::canonical_key(InstKind::Struct, actor_name, actor_targs),
+            method_name.to_string(),
+        )
+    };
     let call = TypedExpr {
         span: call_span,
         ty: Type::Unit,
         kind: TypedExprKind::Call {
-            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
+            callee,
             receiver: Some(Box::new(base_t)),
             args: typed_args,
         },

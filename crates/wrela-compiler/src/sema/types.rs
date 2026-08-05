@@ -283,7 +283,14 @@ fn validate_actor_type(
             let sealed_renderer = canonical_renderers.contains(actor_name)
                 && actor_targs.len() == 1
                 && matches!(actor_targs[0], TypeArg::Type(_));
-            if !actor_targs.is_empty() && !sealed_renderer {
+            let sealed_renderer_worker = actor_name == "RendererWorker"
+                && actor_targs.len() == 1
+                && matches!(actor_targs[0], TypeArg::Const(_))
+                && canonical_renderers.contains(actor_name)
+                && structs
+                    .get(actor_name)
+                    .is_some_and(|worker| worker.is_actor);
+            if !actor_targs.is_empty() && !sealed_renderer && !sealed_renderer_worker {
                 return Err(SemaError::at(
                     "actor",
                     format!(
@@ -490,7 +497,7 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
             structs.insert(s.name.clone(), s);
         }
     }
-    let canonical_renderers: BTreeSet<String> = module
+    let mut canonical_renderers: BTreeSet<String> = module
         .imports
         .iter()
         .filter(|import| import.path == ["core", "render"])
@@ -498,6 +505,9 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
         .filter(|name| name.name == "Renderer")
         .map(|name| name.alias.as_ref().unwrap_or(&name.name).clone())
         .collect();
+    if module.path == ["render"] || module.path == ["core", "render"] {
+        canonical_renderers.insert("RendererWorker".to_string());
+    }
     let components = components_by_name(items);
     let ast_items: Vec<&Item> = module
         .items

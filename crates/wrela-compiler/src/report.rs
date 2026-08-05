@@ -47,6 +47,8 @@ fn decl_facts(program: &TypedProgramEnums, args: &[image::DeclArg]) -> Vec<DeclF
             out.push(DeclFact::Edge { to: r.clone() });
             continue;
         }
+        let mut nested_refs = Vec::new();
+        crate::eval::image_checks::decl_refs_in_value(&a.value, &mut nested_refs);
         let rendered = image::render_value(program, &a.ty, &a.value);
         if a.label == "mailbox" {
             out.push(DeclFact::Mailbox { rendered });
@@ -56,6 +58,7 @@ fn decl_facts(program: &TypedProgramEnums, args: &[image::DeclArg]) -> Vec<DeclF
                 rendered,
             });
         }
+        out.extend(nested_refs.into_iter().map(|to| DeclFact::Edge { to }));
     }
     out
 }
@@ -243,6 +246,8 @@ pub fn render_doc(doc: &ImageReportDoc<'_>) -> String {
         );
     }
 
+    let mut seen_edges = std::collections::BTreeSet::new();
+    edges.retain(|edge| seen_edges.insert(edge.clone()));
     for (from, to) in &edges {
         image::push_line(
             &mut out,

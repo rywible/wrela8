@@ -1,0 +1,46 @@
+module render_program
+
+# Stable guest-side scalar views shared by generated core.__image_pixels.
+# The generated module supplies exact array extents and @placed roots for the
+# renderer set sealed into one image.
+
+@layout(runtime, endian=little)
+pub struct FrameProgramHeaderV1:
+    @offset(0) magic: [u8; 8]
+    @offset(8) version: u16
+    @offset(10) header_bytes: u16
+    @offset(12) flags: u32
+    @offset(16) total_bytes: u32
+    @offset(20) renderer_index: u16
+    @offset(22) reserved0: u16
+    @offset(24) numeric_revision: u32
+    @offset(28) formal_revision: u32
+    @offset(32) table_count: u16
+    @offset(34) reserved1: [u8; 14]
+    @offset(48) digest: [u8; 32]
+
+@layout(runtime, endian=little)
+pub struct FrameProgramTableV1:
+    kind: u16
+    record_bytes: u16
+    count: u32
+    offset: u32
+    byte_len: u32
+
+@layout(runtime, endian=little)
+pub struct FrameProgramRecordV1:
+    stable_id: u32
+    tag: u16
+    flags: u16
+    operand_offset: u32
+    operand_count: u16
+    reserved: u16
+
+@layout(runtime, endian=little)
+pub struct FrameProgramImmediateV1:
+    owner_kind: u16
+    reserved0: u16
+    owner_id: u32
+    ordinal: u32
+    reserved1: u32
+    value: u64

@@ -112,6 +112,25 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
         image_sha256: String::new(),
         input_digests: Vec::new(),
         exec_sections: Vec::new(),
+        frameprog_sections: layout
+            .sections
+            .iter()
+            .filter(|section| section.name == "frameprog")
+            .map(|section| wrela_machine::report::ReportSection {
+                name: section.name.to_string(),
+                base: section.base,
+                size: section.size,
+            })
+            .collect(),
+        renderer_placements: layout
+            .renderers
+            .iter()
+            .map(|renderer| wrela_machine::report::ReportRendererPlacement {
+                index: renderer.index,
+                frameprog_base: renderer.frameprog_base,
+                frameprog_size: renderer.frameprog_size,
+            })
+            .collect(),
         blk,
         irq_injects,
         core_entries,
@@ -269,6 +288,54 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             out,
             1,
             &format!("Section name={} base={:#x} size={}", s.name, s.base, s.size),
+        );
+    }
+    for renderer in &layout.renderers {
+        push_line(
+            out,
+            1,
+            &format!(
+                "RendererPlacement index={} frameprog_base={:#x} frameprog_bytes={} \
+                 state_base={:#x} state_bytes={} coordinator={} coordinator_core={}",
+                renderer.index,
+                renderer.frameprog_base,
+                renderer.frameprog_size,
+                renderer.state_base,
+                renderer.state_size,
+                renderer.coordinator_actor,
+                renderer.coordinator_core,
+            ),
+        );
+        for worker in &renderer.per_core {
+            push_line(
+                out,
+                1,
+                &format!(
+                    "RendererWorker renderer={} index={} actor={} core={} tiles=[{},{}) \
+                     workspace_base={:#x} workspace_bytes={}",
+                    renderer.index,
+                    worker.worker_index,
+                    worker.actor,
+                    worker.core,
+                    worker.tiles_start,
+                    worker.tiles_end,
+                    worker.workspace_base,
+                    worker.workspace_bytes,
+                ),
+            );
+        }
+        push_line(
+            out,
+            1,
+            &format!(
+                "RendererMemory renderer={} framebuffer_base={:#x} framebuffer_bytes={} \
+                 probe_base={:#x} probe_bytes={}",
+                renderer.index,
+                renderer.framebuffer_base,
+                renderer.framebuffer_bytes,
+                renderer.probe_base,
+                renderer.probe_bytes,
+            ),
         );
     }
     push_line(out, 1, &format!("Entry base={:#x}", layout.entry));

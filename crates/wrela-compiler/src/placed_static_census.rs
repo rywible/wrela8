@@ -15,20 +15,25 @@ pub struct Census {
     pub count: usize,
     pub fixed: Vec<String>,
     pub spans: usize,
+    pub renderer_roots: usize,
 }
 
 impl Census {
     pub fn render_line(&self) -> String {
-        format!(
+        let mut line = format!(
             "PlacedStatics count={} fixed={} spans={}",
             self.count,
             self.fixed.join(","),
             self.spans
-        )
+        );
+        if self.renderer_roots != 0 {
+            line.push_str(&format!(" renderer_roots={}", self.renderer_roots));
+        }
+        line
     }
 
     pub fn within_ratchet(&self) -> bool {
-        self.count <= fixed_set_len() + self.spans
+        self.count <= fixed_set_len() + self.spans + self.renderer_roots
     }
 }
 
@@ -36,6 +41,7 @@ impl Census {
 pub enum Class {
     Fixed,
     InitSpan(usize),
+    RendererRoot(usize),
     Unexpected,
 }
 
@@ -61,12 +67,33 @@ pub fn classify(name: &str) -> Class {
             }
         }
     }
+    if let Some((index, suffix)) = name.strip_prefix('R').and_then(|rest| rest.split_once('_'))
+        && let Ok(index) = index.parse::<usize>()
+        && (suffix == "FRAME_PROGRAM"
+            || matches!(
+                suffix,
+                "SCALAR_TABLE"
+                    | "FIELD_TABLE"
+                    | "OBJECT_TABLE"
+                    | "FEATURE_TABLE"
+                    | "MATERIAL_TABLE"
+                    | "PARAMETER_TABLE"
+                    | "EVENT_TABLE"
+                    | "CSG_TABLE"
+                    | "FIXED_DOMAIN_TABLE"
+                    | "IMMEDIATE_TABLE"
+                    | "CAMERA_LIGHT_POST_TABLE"
+            ))
+    {
+        return Class::RendererRoot(index);
+    }
     Class::Unexpected
 }
 
 pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
     let mut fixed = Vec::new();
     let mut count = 0usize;
+    let mut renderer_roots = 0usize;
     for s in placed {
         match classify(&s.name) {
             Class::Fixed => {
@@ -77,6 +104,10 @@ pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
                 if i < spans_live {
                     count += 1;
                 }
+            }
+            Class::RendererRoot(_) => {
+                count += 1;
+                renderer_roots += 1;
             }
             Class::Unexpected => {
                 count += 1;
@@ -89,6 +120,7 @@ pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
         count,
         fixed,
         spans: spans_live,
+        renderer_roots,
     }
 }
 
@@ -134,6 +166,7 @@ mod tests {
             ty: "T".to_string(),
             addr: 0,
             size: 8,
+            is_generated_pixels_alias: false,
         }
     }
 
@@ -153,6 +186,15 @@ mod tests {
         assert_eq!(classify("INIT_SPAN0"), Class::InitSpan(0));
         assert_eq!(classify("INIT_SPAN7"), Class::InitSpan(7));
         assert_eq!(classify("INIT_SPAN8"), Class::Unexpected);
+        assert_eq!(classify("R0_FRAME_PROGRAM"), Class::RendererRoot(0));
+        assert_eq!(classify("R17_FRAME_PROGRAM"), Class::RendererRoot(17));
+        assert_eq!(classify("R0_EVENT_TABLE"), Class::RendererRoot(0));
+        assert_eq!(
+            classify("R17_CAMERA_LIGHT_POST_TABLE"),
+            Class::RendererRoot(17)
+        );
+        assert_eq!(classify("R0_BOGUS_TABLE"), Class::Unexpected);
+        assert_eq!(classify("RX_FRAME_PROGRAM"), Class::Unexpected);
         assert_eq!(classify("RING0_DATA"), Class::Unexpected);
         assert_eq!(classify("WAKE_PEND0"), Class::Unexpected);
         assert_eq!(classify("INIT_SLOT0"), Class::Unexpected);
@@ -175,6 +217,7 @@ mod tests {
         let c = summarize(&placed, spans);
         assert_eq!(c.fixed.len(), fixed_set_len());
         assert_eq!(c.spans, spans);
+        assert_eq!(c.renderer_roots, 0);
         assert_eq!(c.count, fixed_set_len() + spans);
         assert!(c.within_ratchet());
         assert_eq!(
@@ -304,12 +347,16 @@ mod tests {
             };
             let mut count = None;
             let mut spans = None;
+            let mut renderer_roots = 0usize;
             for part in line.split_whitespace() {
                 if let Some(v) = part.strip_prefix("count=") {
                     count = v.parse::<usize>().ok();
                 }
                 if let Some(v) = part.strip_prefix("spans=") {
                     spans = v.parse::<usize>().ok();
+                }
+                if let Some(v) = part.strip_prefix("renderer_roots=") {
+                    renderer_roots = v.parse::<usize>().unwrap_or(usize::MAX);
                 }
             }
             let (Some(n), Some(k)) = (count, spans) else {
@@ -320,9 +367,9 @@ mod tests {
                 continue;
             };
             let limit = fixed_set_len();
-            if n > limit + k {
+            if n > limit + k + renderer_roots {
                 failures.push(format!(
-                    "{}: census ratchet failed: N={n} > fixed_set_len ({limit}) + spans ({k})",
+                    "{}: census ratchet failed: N={n} > fixed_set_len ({limit}) + spans ({k}) + renderer_roots ({renderer_roots})",
                     case.file_name().unwrap().to_string_lossy()
                 ));
             }
@@ -333,7 +380,7 @@ mod tests {
                 };
                 let name = rest.split_whitespace().next().unwrap_or("");
                 match classify(name) {
-                    Class::Fixed | Class::InitSpan(_) => {}
+                    Class::Fixed | Class::InitSpan(_) | Class::RendererRoot(_) => {}
                     Class::Unexpected => {
                         failures.push(format!(
                             "{}: PlacedStatic `{name}` is outside the fixed set / \

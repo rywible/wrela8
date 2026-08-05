@@ -1,0 +1,21 @@
+module examples.err_actor_generic_renderer_worker_spoof
+
+
+@actor
+pub struct RendererWorker[const CORE: usize]:
+    value: u64
+
+    pub async fn run_job(mut self, job: u64) -> u64:
+        return job
+
+@actor
+pub struct Caller:
+    worker: Actor[RendererWorker[0]]
+
+    pub async fn run(mut self) -> u64:
+        result = await self.worker.run_job(job=1)
+        match result:
+            case .Ok(value):
+                return value
+            case .Err(_):
+                return 0

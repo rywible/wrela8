@@ -1,0 +1,346 @@
+module examples.boot_pixels_renderer_unavailable
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    Light,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderError,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    phase: f32
+
+enum MaterialId:
+    Ground
+
+enum ObjectId:
+    Ground
+
+fn classify_error(take error: RenderError) -> u64:
+    match error:
+        case .ParameterOutOfRange(_):
+            return 5
+        case .NonFiniteInput(_):
+            return 6
+        case .FrameContractMismatch(path):
+            if path.is_renderer_unavailable():
+                return 1
+            if path.component == 4:
+                return 7
+            if path.component == 5:
+                return 8
+            return 2
+        case _:
+            return 3
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    base = plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=params.phase)
+    return mark(base, object=ObjectId.Ground, material=MaterialId.Ground)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+    )
+
+@actor
+struct RenderProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    fn __frame(read self, phase: f32, exposure: f32) -> RenderFrame[SceneParams]:
+        return RenderFrame[SceneParams](
+            params=SceneParams(phase=phase),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=exposure,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=7,
+        )
+
+    fn __camera_frame(read self, eye_x: f32) -> RenderFrame[SceneParams]:
+        return RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0),
+            camera=Camera.canonical(eye=Vec3(x=eye_x, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=8,
+        )
+
+    fn __light_frame(read self) -> RenderFrame[SceneParams]:
+        point = Light.point(
+            position=Vec3(x=0.0, y=2.0, z=0.0),
+            radiance=Rgb(r=1.0, g=1.0, b=1.0),
+        )
+        return RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.fixed(lights=[
+                point,
+                Light.zero(),
+                Light.zero(),
+                Light.zero(),
+                Light.zero(),
+                Light.zero(),
+                Light.zero(),
+                Light.zero(),
+            ]),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=9,
+        )
+
+    pub async fn run(mut self, phase: f32, exposure: f32) -> u64:
+        frame = self.__frame(phase, exposure)
+        result = await self.renderer.render(frame=take frame)
+        match result:
+            case .Ok(_):
+                return 0
+            case .Err(call_error):
+                match call_error:
+                    case .Op(render_error):
+                        return classify_error(take render_error)
+                    case _:
+                        return 4
+
+    pub async fn run_camera(mut self, eye_x: f32) -> u64:
+        frame = self.__camera_frame(eye_x)
+        result = await self.renderer.render(frame=take frame)
+        match result:
+            case .Ok(_):
+                return 0
+            case .Err(call_error):
+                match call_error:
+                    case .Op(render_error):
+                        return classify_error(take render_error)
+                    case _:
+                        return 4
+
+    pub async fn run_light(mut self) -> u64:
+        frame = self.__light_frame()
+        result = await self.renderer.render(frame=take frame)
+        match result:
+            case .Ok(_):
+                return 0
+            case .Err(call_error):
+                match call_error:
+                    case .Op(render_error):
+                        return classify_error(take render_error)
+                    case _:
+                        return 4
+
+@actor
+struct ValidationProbe:
+    probe: Actor[RenderProbe]
+    zero: f32
+    out_of_range: f32
+    below_range: f32
+    nonfinite: f32
+    negative_nonfinite: f32
+    nan: f32
+
+    init(
+        mut self,
+        probe: Actor[RenderProbe],
+        zero: f32,
+        out_of_range: f32,
+        below_range: f32,
+        nonfinite: f32,
+        negative_nonfinite: f32,
+        nan: f32,
+    ):
+        self.probe = probe
+        self.zero = zero
+        self.out_of_range = out_of_range
+        self.below_range = below_range
+        self.nonfinite = nonfinite
+        self.negative_nonfinite = negative_nonfinite
+        self.nan = nan
+
+    pub async fn run(mut self) -> u64:
+        out_of_range = await self.probe.run(
+            phase=self.out_of_range,
+            exposure=self.zero,
+        )
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match out_of_range:
+            case .Ok(code):
+                if code != 5:
+                    return code
+            case .Err(_):
+                return 4
+        below_range = await self.probe.run(
+            phase=self.below_range,
+            exposure=self.zero,
+        )
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match below_range:
+            case .Ok(code):
+                if code != 5:
+                    return code
+            case .Err(_):
+                return 4
+        nonfinite_result = await self.probe.run(
+            phase=self.zero,
+            exposure=self.nonfinite,
+        )
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match nonfinite_result:
+            case .Ok(code):
+                if code != 6:
+                    return code
+            case .Err(_):
+                return 4
+        negative_nonfinite_result = await self.probe.run(
+            phase=self.zero,
+            exposure=self.negative_nonfinite,
+        )
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match negative_nonfinite_result:
+            case .Ok(code):
+                if code != 6:
+                    return code
+            case .Err(_):
+                return 4
+        nan_result = await self.probe.run(
+            phase=self.zero,
+            exposure=self.nan,
+        )
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match nan_result:
+            case .Ok(code):
+                if code != 6:
+                    return code
+            case .Err(_):
+                return 4
+        camera_contract = await self.probe.run_camera(eye_x=self.out_of_range)
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match camera_contract:
+            case .Ok(code):
+                if code != 7:
+                    return code
+            case .Err(_):
+                return 4
+        light_contract = await self.probe.run_light()
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match light_contract:
+            case .Ok(code):
+                if code != 8:
+                    return code
+            case .Err(_):
+                return 4
+        valid = await self.probe.run(phase=self.zero, exposure=self.zero)
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match valid:
+            case .Ok(code):
+                if code != 1:
+                    return code
+            case .Err(_):
+                return 4
+        retry = await self.probe.run(phase=self.zero, exposure=self.zero)
+        @discard(reason="the validation probe maps child admission failure to code 4")
+        match retry:
+            case .Ok(code):
+                return code
+            case .Err(_):
+                return 4
+
+@test(runtime)
+async fn renderer_is_deterministically_unavailable(probe: Actor[ValidationProbe]):
+    result = await probe.run()
+    @discard(reason="the assertion below makes a rejected probe call fail the test")
+    match result:
+        case .Ok(code):
+            assert code == 1, "RendererUnavailable is retryable without state or presentation"
+        case .Err(_):
+            assert false, "renderer probe call must be admitted"
+
+@image
+pub fn build() -> Image:
+    img = Image(
+        name="boot-pixels-renderer-unavailable",
+        target=Target.wrela_machine_v1,
+        cores=4,
+    )
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(
+        Display,
+        device=display_device,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        core=0,
+    )
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    one: f32 = 1.0
+    zero: f32 = 0.0
+    out_of_range: f32 = 3.0
+    below_range: f32 = -3.0
+    nonfinite: f32 = one / zero
+    negative_nonfinite: f32 = -nonfinite
+    nan: f32 = nonfinite - nonfinite
+    renderer_probe = img.actor(
+        RenderProbe,
+        mailbox=1,
+        core=0,
+        renderer=renderer,
+    )
+    probe = img.actor(
+        ValidationProbe,
+        mailbox=1,
+        core=0,
+        probe=renderer_probe,
+        zero=zero,
+        out_of_range=out_of_range,
+        below_range=below_range,
+        nonfinite=nonfinite,
+        negative_nonfinite=negative_nonfinite,
+        nan=nan,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

@@ -95,6 +95,43 @@ pub struct ImageLayout {
     pub core_entries: Vec<(usize, u64)>,
     pub cores: usize,
     pub placed_statics: Vec<PlacedStatic>,
+    pub renderers: Vec<RendererPlacement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererCorePlacement {
+    pub worker_index: usize,
+    pub core: usize,
+    pub actor: String,
+    pub tiles_start: u32,
+    pub tiles_end: u32,
+    pub workspace_base: u64,
+    pub workspace_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererPlacement {
+    pub index: usize,
+    pub frameprog_base: u64,
+    pub frameprog_size: u64,
+    pub state_base: u64,
+    pub state_size: u64,
+    pub coordinator_actor: String,
+    pub coordinator_core: usize,
+    pub per_core: Vec<RendererCorePlacement>,
+    pub framebuffer_base: u64,
+    pub framebuffer_bytes: u64,
+    pub probe_base: u64,
+    pub probe_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PixelsPlacementPlan {
+    pub frameprog_base: u64,
+    pub frameprog_end: u64,
+    pub pixelsdata_base: u64,
+    pub pixelsdata_end: u64,
+    pub renderers: Vec<RendererPlacement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +140,7 @@ pub struct PlacedStatic {
     pub ty: String,
     pub addr: u64,
     pub size: u64,
+    pub is_generated_pixels_alias: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,6 +353,41 @@ fn attributed_core(caller_key: &str, w: &RuntimeWiring) -> Option<usize> {
     None
 }
 
+fn target_actor_core(
+    caller_key: &str,
+    target_actor: &str,
+    w: &RuntimeWiring,
+) -> Result<usize, LayoutError> {
+    if let Some(core) = w.placement.core_of_actor_type(target_actor) {
+        return Ok(core);
+    }
+    if target_actor == "RendererWorker" {
+        let worker = caller_key
+            .rsplit_once(".__bootstrap_worker_path_")
+            .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
+            .ok_or_else(|| {
+                LayoutError::new(format!(
+                    "split-core RendererWorker call `{caller_key}` has no sealed worker index"
+                ))
+            })?;
+        if w.placement
+            .entries
+            .iter()
+            .any(|entry| entry.type_name == "RendererWorker" && entry.core == worker)
+        {
+            return Ok(worker);
+        }
+        return Err(LayoutError::new(format!(
+            "RendererWorker bootstrap path {worker} has no worker placed on that core"
+        )));
+    }
+    Err(LayoutError::new(format!(
+        "this image declares `{target_actor}` instances on more than one core, but the \
+         generated admission routine is per actor struct — give each instance its own struct, \
+         or place them on one core (plans/M8.md item C1)"
+    )))
+}
+
 fn resolve_cross_core_edge(
     caller_key: &str,
     target: &str,
@@ -333,19 +406,14 @@ fn resolve_cross_core_edge(
         return Ok(None);
     };
     let caller = caller_core(caller_key, w);
-    let Some(target_core) = w.placement.core_of_actor_type(&target_actor) else {
-        return Err(LayoutError::new(format!(
-            "this image declares `{target_actor}` instances on more than one core, but the \
-             generated admission routine (`{target}`) is per actor struct, not per instance — \
-             give each instance its own struct, or place them on one core (plans/M8.md item C1)"
-        )));
-    };
+    let target_core = target_actor_core(caller_key, &target_actor, w)?;
     if caller == target_core {
         return Ok(None);
     }
     let edge = w.tables.rings.iter().enumerate().find_map(|(i, r)| {
         if r.kind == RingKind::Request
             && r.src == caller
+            && r.dst == target_core
             && r.actor.as_deref() == Some(target_actor)
         {
             Some(i)
@@ -395,7 +463,7 @@ fn resolve_xreply_edge(target: &str, w: &RuntimeWiring) -> Option<String> {
 fn cross_core_edges(
     flow: &FlowWirProgram,
     w: &RuntimeWiring,
-) -> Result<BTreeSet<(usize, String)>, LayoutError> {
+) -> Result<BTreeSet<(usize, usize, String)>, LayoutError> {
     let mut out = BTreeSet::new();
     if w.placement.cores <= 1 {
         return Ok(out);
@@ -417,14 +485,19 @@ fn cross_core_edges(
             }
         }
         for mk in method_keys {
-            let actor = mk.split('.').next().unwrap_or(mk.as_str()).to_string();
+            let actor = mk.split('.').next().unwrap_or(mk.as_str());
+            let actor = actor.strip_prefix("struct:").unwrap_or(actor).to_string();
             let target = crate::codegen::rt_enqueue_symbol(&actor);
             if let Some(sym) = resolve_cross_core_edge(key, &target, Some(w))? {
                 debug_assert!(
                     sym.starts_with("__wrela_xsend_"),
                     "cross-core redirect must be an xsend trampoline, got {sym}"
                 );
-                out.insert((caller_core(key, w), actor));
+                out.insert((
+                    caller_core(key, w),
+                    target_actor_core(key, &actor, w)?,
+                    actor,
+                ));
             }
         }
     }
@@ -441,12 +514,7 @@ fn cross_core_rings(
     }
     let mut requests: Vec<RingLayout> = Vec::new();
     let mut pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
-    for (src, actor) in &edges {
-        let Some(dst) = w.placement.core_of_actor_type(actor) else {
-            return Err(LayoutError::new(format!(
-                "internal error: cross-core edge to `{actor}` has no single placed core"
-            )));
-        };
+    for (src, dst, actor) in &edges {
         let Some((mailbox_capacity, slot_size)) = mailbox_root_shape(&w.tables, actor) else {
             return Err(LayoutError::new(format!(
                 "internal error: cross-core edge to `{actor}`, which has no runtime mailbox"
@@ -462,13 +530,13 @@ fn cross_core_rings(
         }
         requests.push(RingLayout {
             src: *src,
-            dst,
+            dst: *dst,
             kind: RingKind::Request,
             actor: Some(actor.to_string()),
             capacity: mailbox_capacity,
             slot_size,
         });
-        pairs.insert((*src, dst));
+        pairs.insert((*src, *dst));
     }
     let mut replies: Vec<RingLayout> = Vec::new();
     for (src, dst) in &pairs {
@@ -2597,7 +2665,495 @@ fn layout_program_inner(
         core_entries,
         cores,
         placed_statics: Vec::new(),
+        renderers: Vec::new(),
     })
+}
+
+fn align_up_checked(value: u64, alignment: u64, what: &str) -> Result<u64, LayoutError> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return Err(LayoutError::new(format!(
+            "pixels::{what}: invalid alignment {alignment}"
+        )));
+    }
+    value
+        .checked_add(alignment - 1)
+        .map(|value| value & !(alignment - 1))
+        .ok_or_else(|| LayoutError::new(format!("P025: pixels {what} alignment overflow")))
+}
+
+fn accumulate_pixels_bytes(
+    total: u64,
+    additional: u64,
+    maximum: u64,
+    what: &str,
+) -> Result<u64, LayoutError> {
+    let total = total
+        .checked_add(additional)
+        .ok_or_else(|| LayoutError::new(format!("P025: total {what} bytes overflow")))?;
+    if total > maximum {
+        return Err(LayoutError::new(format!(
+            "P025: renderer-generated {what} needs {total} bytes, exceeding {maximum}"
+        )));
+    }
+    Ok(total)
+}
+
+fn check_frameprog_blob_boundary(
+    blob_len: usize,
+    frameprog_start: usize,
+) -> Result<(), LayoutError> {
+    if blob_len > frameprog_start {
+        return Err(LayoutError::new(format!(
+            "pixels::layout: existing image blob offset {blob_len:#x} overlaps frameprog offset \
+             {frameprog_start:#x}"
+        )));
+    }
+    Ok(())
+}
+
+fn check_pixels_state_span(base: u64, end: u64) -> Result<(), LayoutError> {
+    let bytes = end
+        .checked_sub(base)
+        .ok_or_else(|| LayoutError::new("P025: pixelsdata end precedes its base"))?;
+    if bytes > machine_layout::PIXELS_STATE_BYTES_MAX {
+        return Err(LayoutError::new(format!(
+            "P025: renderer-generated image memory reserves {bytes} bytes including alignment, \
+             exceeding {}",
+            machine_layout::PIXELS_STATE_BYTES_MAX
+        )));
+    }
+    Ok(())
+}
+
+fn check_pixels_program_span(base: u64, end: u64) -> Result<(), LayoutError> {
+    let bytes = end
+        .checked_sub(base)
+        .ok_or_else(|| LayoutError::new("P025: frameprog end precedes its base"))?;
+    if bytes > machine_layout::PIXELS_PROGRAM_BYTES_MAX {
+        return Err(LayoutError::new(format!(
+            "P025: immutable programs reserve {bytes} bytes including alignment, exceeding {}",
+            machine_layout::PIXELS_PROGRAM_BYTES_MAX
+        )));
+    }
+    Ok(())
+}
+
+fn check_worker_workspace_partition(
+    per_worker: u64,
+    worker_count: usize,
+    reservation_bytes: u64,
+) -> Result<u64, LayoutError> {
+    let worker_count = u64::try_from(worker_count)
+        .map_err(|_| LayoutError::new("P025: renderer worker count exceeds u64"))?;
+    let partition_bytes = per_worker
+        .checked_mul(worker_count)
+        .ok_or_else(|| LayoutError::new("P025: worker workspace partition overflows"))?;
+    if partition_bytes != reservation_bytes {
+        return Err(LayoutError::new(format!(
+            "P025: worker workspaces cover {partition_bytes} bytes, but the final \
+             worker-scratch reservation is {reservation_bytes} bytes"
+        )));
+    }
+    Ok(partition_bytes)
+}
+
+pub fn plan_pixels_placements(
+    renderers: &[crate::pixels::CompiledRenderer],
+    instrumented: bool,
+    cores: usize,
+    rtdata_end: u64,
+) -> Result<PixelsPlacementPlan, LayoutError> {
+    if rtdata_end < machine_layout::PIXELS_DATA_BASE_MIN {
+        return Err(LayoutError::new(format!(
+            "P025: rtdata end {rtdata_end:#x} is below PIXELS_DATA_BASE_MIN {:#x}",
+            machine_layout::PIXELS_DATA_BASE_MIN
+        )));
+    }
+    let alignment = machine_layout::PIXELS_REGION_ALIGNMENT;
+    let frameprog_base = align_up_checked(rtdata_end, alignment, "frameprog")?;
+    if renderers.is_empty() {
+        return Ok(PixelsPlacementPlan {
+            frameprog_base,
+            frameprog_end: frameprog_base,
+            pixelsdata_base: frameprog_base,
+            pixelsdata_end: frameprog_base,
+            renderers: Vec::new(),
+        });
+    }
+    let mut cursor = frameprog_base;
+    let mut program_ranges = Vec::with_capacity(renderers.len());
+    let mut total_program_bytes = 0_u64;
+    for renderer in renderers {
+        cursor = align_up_checked(cursor, 64, "renderer program")?;
+        let bytes = u64::try_from(renderer.encoded.len())
+            .map_err(|_| LayoutError::new("P025: frame-program length exceeds u64"))?;
+        total_program_bytes = accumulate_pixels_bytes(
+            total_program_bytes,
+            bytes,
+            machine_layout::PIXELS_PROGRAM_BYTES_MAX,
+            "immutable programs",
+        )?;
+        let end = cursor
+            .checked_add(bytes)
+            .ok_or_else(|| LayoutError::new("P025: frame-program address overflow"))?;
+        program_ranges.push((cursor, end));
+        cursor = end;
+    }
+    let frameprog_end = cursor;
+    check_pixels_program_span(frameprog_base, frameprog_end)?;
+    let pixelsdata_base = align_up_checked(frameprog_end, alignment, "pixelsdata")?;
+    cursor = pixelsdata_base;
+    let mut state_ranges = Vec::with_capacity(renderers.len());
+    let mut total_state_bytes = 0_u64;
+    let mut framebuffer_total = 0_u64;
+    for renderer in renderers {
+        cursor = align_up_checked(cursor, alignment, "renderer state")?;
+        let bytes = if instrumented {
+            renderer.mutable_layout.instrumented_total_bytes
+        } else {
+            renderer.mutable_layout.total_bytes
+        };
+        total_state_bytes = accumulate_pixels_bytes(
+            total_state_bytes,
+            bytes,
+            machine_layout::PIXELS_STATE_BYTES_MAX,
+            "image memory",
+        )?;
+        framebuffer_total = accumulate_pixels_bytes(
+            framebuffer_total,
+            renderer.mutable_layout.framebuffers.bytes,
+            machine_layout::PIXELS_FRAMEBUFFER_BYTES_MAX,
+            "framebuffer reservation",
+        )?;
+        let end = cursor
+            .checked_add(bytes)
+            .ok_or_else(|| LayoutError::new("P025: renderer state address overflow"))?;
+        state_ranges.push((cursor, end));
+        cursor = end;
+    }
+    let pixelsdata_end = cursor;
+    check_pixels_state_span(pixelsdata_base, pixelsdata_end)?;
+    let first_stack = machine_layout::core_stack_base_n(0, cores.max(1));
+    if pixelsdata_end > first_stack || pixelsdata_end > machine_layout::dram_end() {
+        return Err(LayoutError::new(format!(
+            "P025: renderer-generated image memory ends at {pixelsdata_end:#x}, overlapping \
+             stack/address-space reservation beginning at {first_stack:#x}"
+        )));
+    }
+
+    let mut placements = Vec::with_capacity(renderers.len());
+    for (renderer, ((program_base, program_end), (state_base, state_end))) in renderers
+        .iter()
+        .zip(program_ranges.into_iter().zip(state_ranges))
+    {
+        let per_worker = renderer
+            .projective
+            .program()
+            .capacities
+            .final_per_worker_scratch_bytes;
+        check_worker_workspace_partition(
+            per_worker,
+            renderer.generated.workers.len(),
+            renderer.mutable_layout.worker_scratch.bytes,
+        )?;
+        let scratch_base = state_base
+            .checked_add(renderer.mutable_layout.worker_scratch.offset)
+            .ok_or_else(|| LayoutError::new("P025: worker-scratch base address overflow"))?;
+        let mut per_core = Vec::with_capacity(renderer.generated.workers.len());
+        for (worker_index, worker) in renderer.generated.workers.iter().enumerate() {
+            if worker.core >= cores.max(1) {
+                return Err(LayoutError::new(format!(
+                    "P025: renderer {} worker {worker_index} requests core {}, but image has {} cores",
+                    renderer.generated.renderer_index,
+                    worker.core,
+                    cores.max(1)
+                )));
+            }
+            let worker_offset = per_worker
+                .checked_mul(
+                    u64::try_from(worker_index)
+                        .map_err(|_| LayoutError::new("P025: worker index exceeds u64"))?,
+                )
+                .ok_or_else(|| LayoutError::new("P025: worker workspace offset overflow"))?;
+            let workspace_base = scratch_base
+                .checked_add(worker_offset)
+                .ok_or_else(|| LayoutError::new("P025: worker workspace address overflow"))?;
+            per_core.push(RendererCorePlacement {
+                worker_index,
+                core: worker.core,
+                actor: worker.actor.clone(),
+                tiles_start: worker.tiles_start,
+                tiles_end: worker.tiles_end,
+                workspace_base,
+                workspace_bytes: per_worker,
+            });
+        }
+        let partition_end = per_core.last().map_or(Ok(scratch_base), |worker| {
+            worker
+                .workspace_base
+                .checked_add(worker.workspace_bytes)
+                .ok_or_else(|| LayoutError::new("P025: worker workspace end overflow"))
+        })?;
+        let reservation_end = scratch_base
+            .checked_add(renderer.mutable_layout.worker_scratch.bytes)
+            .ok_or_else(|| LayoutError::new("P025: worker-scratch reservation end overflow"))?;
+        if partition_end != reservation_end {
+            return Err(LayoutError::new(format!(
+                "P025: renderer {} worker workspace partition ends at {partition_end:#x}, \
+                 expected final reservation end {reservation_end:#x}",
+                renderer.generated.renderer_index
+            )));
+        }
+        placements.push(RendererPlacement {
+            index: renderer.generated.renderer_index,
+            frameprog_base: program_base,
+            frameprog_size: program_end - program_base,
+            state_base,
+            state_size: state_end - state_base,
+            coordinator_actor: renderer.generated.coordinator.clone(),
+            coordinator_core: 0,
+            per_core,
+            framebuffer_base: state_base
+                .checked_add(renderer.mutable_layout.framebuffers.offset)
+                .ok_or_else(|| LayoutError::new("P025: framebuffer address overflow"))?,
+            framebuffer_bytes: renderer.mutable_layout.framebuffers.bytes,
+            probe_base: state_base
+                .checked_add(renderer.mutable_layout.probes.offset)
+                .ok_or_else(|| LayoutError::new("P025: probe address overflow"))?,
+            probe_bytes: renderer.mutable_layout.probes.bytes,
+        });
+    }
+    Ok(PixelsPlacementPlan {
+        frameprog_base,
+        frameprog_end,
+        pixelsdata_base,
+        pixelsdata_end,
+        renderers: placements,
+    })
+}
+
+pub fn attach_pixels(
+    layout: &mut ImageLayout,
+    renderers: &[crate::pixels::CompiledRenderer],
+    instrumented: bool,
+) -> Result<(), LayoutError> {
+    if renderers.is_empty() {
+        return Ok(());
+    }
+    if !layout.renderers.is_empty()
+        || layout
+            .sections
+            .iter()
+            .any(|section| matches!(section.name, "frameprog" | "pixelsdata"))
+    {
+        return Err(LayoutError::new(
+            "pixels::layout: renderer sections were attached more than once",
+        ));
+    }
+    let rtdata_end = layout
+        .sections
+        .iter()
+        .filter(|section| {
+            section.base >= machine_layout::RTDATA_BASE
+                && section.base < machine_layout::RTDATA_BASE + machine_layout::RTDATA_SIZE_MAX
+        })
+        .try_fold(machine_layout::RTDATA_BASE, |end, section| {
+            section
+                .base
+                .checked_add(section.size)
+                .map(|section_end| end.max(section_end))
+                .ok_or_else(|| LayoutError::new("P025: rtdata section end overflow"))
+        })?;
+    let rtdata_max_end = machine_layout::RTDATA_BASE
+        .checked_add(machine_layout::RTDATA_SIZE_MAX)
+        .ok_or_else(|| LayoutError::new("P025: rtdata maximum end overflow"))?;
+    if rtdata_end > rtdata_max_end {
+        return Err(LayoutError::new(format!(
+            "P025: rtdata ends at {rtdata_end:#x}, beyond its maximum end {rtdata_max_end:#x}"
+        )));
+    }
+    let plan = plan_pixels_placements(renderers, instrumented, layout.cores, rtdata_end)?;
+    verify_pixels_placed_static_reservations(&layout.placed_statics, renderers, &plan)?;
+
+    let frameprog_blob_start = usize::try_from(
+        plan.frameprog_base
+            .checked_sub(machine_layout::IMAGE_BASE)
+            .ok_or_else(|| LayoutError::new("pixels::layout: frameprog below image base"))?,
+    )
+    .map_err(|_| LayoutError::new("P025: frameprog blob offset exceeds usize"))?;
+    let required_blob_len = usize::try_from(
+        plan.frameprog_end
+            .checked_sub(machine_layout::IMAGE_BASE)
+            .ok_or_else(|| LayoutError::new("pixels::layout: frameprog below image base"))?,
+    )
+    .map_err(|_| LayoutError::new("P025: frameprog blob length exceeds usize"))?;
+    if let Err(_) = check_frameprog_blob_boundary(layout.blob.len(), frameprog_blob_start) {
+        return Err(LayoutError::new(format!(
+            "pixels::layout: existing image blob ends at {:#x}, overlapping frameprog at \
+             {:#x}",
+            machine_layout::IMAGE_BASE + layout.blob.len() as u64,
+            plan.frameprog_base
+        )));
+    }
+    layout.blob.resize(required_blob_len, 0);
+    for (renderer, placement) in renderers.iter().zip(&plan.renderers) {
+        let end = placement
+            .frameprog_base
+            .checked_add(placement.frameprog_size)
+            .ok_or_else(|| LayoutError::new("P025: program placement end overflow"))?;
+        let start = usize::try_from(placement.frameprog_base - machine_layout::IMAGE_BASE)
+            .map_err(|_| LayoutError::new("P025: program blob offset exceeds usize"))?;
+        let finish = usize::try_from(end - machine_layout::IMAGE_BASE)
+            .map_err(|_| LayoutError::new("P025: program blob end exceeds usize"))?;
+        if finish - start != renderer.encoded.len() {
+            return Err(LayoutError::new(
+                "pixels::layout: program range differs from encoded bytes",
+            ));
+        }
+        layout.blob[start..finish].copy_from_slice(&renderer.encoded);
+        let decoded =
+            crate::pixels::decode::decode(&layout.blob[start..finish]).map_err(|error| {
+                LayoutError::new(format!(
+                    "pixels::layout: embedded frame program failed verification: {error}"
+                ))
+            })?;
+        if decoded.program() != renderer.program.program() {
+            return Err(LayoutError::new(
+                "pixels::layout: embedded frame program differs from compiler model",
+            ));
+        }
+    }
+
+    layout.sections.push(Section {
+        name: "frameprog",
+        base: plan.frameprog_base,
+        size: plan.frameprog_end - plan.frameprog_base,
+    });
+    layout.sections.push(Section {
+        name: "pixelsdata",
+        base: plan.pixelsdata_base,
+        size: plan.pixelsdata_end - plan.pixelsdata_base,
+    });
+    layout.renderers = plan.renderers;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct PixelsReservation {
+    name: &'static str,
+    base: u64,
+    end: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AllowedPixelsAlias {
+    name: String,
+    addr: u64,
+    size: u64,
+}
+
+fn verify_placed_static_reservations(
+    placed: &[PlacedStatic],
+    reservations: &[PixelsReservation],
+    allowed_aliases: &[AllowedPixelsAlias],
+) -> Result<(), LayoutError> {
+    for placed_static in placed {
+        let placed_end = placed_static
+            .addr
+            .checked_add(placed_static.size)
+            .ok_or_else(|| {
+                LayoutError::new(format!(
+                    "P025: placed static `{}` address range overflows",
+                    placed_static.name
+                ))
+            })?;
+        for reservation in reservations {
+            if placed_static.addr >= reservation.end || reservation.base >= placed_end {
+                continue;
+            }
+            let is_exact_generated_alias = placed_static.is_generated_pixels_alias
+                && reservation.name == "frameprog"
+                && allowed_aliases.iter().any(|alias| {
+                    alias.name == placed_static.name
+                        && alias.addr == placed_static.addr
+                        && alias.size == placed_static.size
+                });
+            if is_exact_generated_alias {
+                continue;
+            }
+            return Err(LayoutError::new(format!(
+                "P025: placed static `{}` (`{}`, {:#x}..{placed_end:#x}) overlaps the reserved \
+                 Pixels `{}` range {:#x}..{:#x}",
+                placed_static.name,
+                placed_static.ty,
+                placed_static.addr,
+                reservation.name,
+                reservation.base,
+                reservation.end,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_pixels_placed_static_reservations(
+    placed: &[PlacedStatic],
+    renderers: &[crate::pixels::CompiledRenderer],
+    plan: &PixelsPlacementPlan,
+) -> Result<(), LayoutError> {
+    let reservations = [
+        PixelsReservation {
+            name: "frameprog",
+            base: plan.frameprog_base,
+            end: plan.frameprog_end,
+        },
+        PixelsReservation {
+            name: "pixelsdata",
+            base: plan.pixelsdata_base,
+            end: plan.pixelsdata_end,
+        },
+    ];
+    let root_size = u64::from(wrela_machine::pixels::FRAME_PROGRAM_HEADER_BYTES_V1)
+        .checked_add(
+            u64::from(wrela_machine::pixels::FRAME_PROGRAM_TABLE_BYTES_V1)
+                .checked_mul(u64::from(
+                    wrela_machine::pixels::FrameProgramTableKindV1::REQUIRED_COUNT,
+                ))
+                .ok_or_else(|| LayoutError::new("P025: generated directory view size overflow"))?,
+        )
+        .ok_or_else(|| LayoutError::new("P025: generated frame-program root size overflow"))?;
+    let mut aliases = Vec::new();
+    for (renderer, placement) in renderers.iter().zip(&plan.renderers) {
+        aliases.push(AllowedPixelsAlias {
+            name: format!("R{}_FRAME_PROGRAM", placement.index),
+            addr: placement.frameprog_base,
+            size: root_size,
+        });
+        let tables =
+            crate::pixels::binary_verify::verify_envelope(&renderer.encoded).map_err(|error| {
+                LayoutError::new(format!(
+                    "pixels::layout: encoded frame-program envelope is invalid: {error}"
+                ))
+            })?;
+        for table in tables.into_iter().filter(|table| table.count != 0) {
+            let upper = table
+                .kind
+                .stable_name()
+                .replace('-', "_")
+                .to_ascii_uppercase();
+            aliases.push(AllowedPixelsAlias {
+                name: format!("R{}_{upper}_TABLE", placement.index),
+                addr: placement
+                    .frameprog_base
+                    .checked_add(u64::from(table.offset))
+                    .ok_or_else(|| {
+                        LayoutError::new("P025: generated table alias address overflow")
+                    })?,
+                size: u64::from(table.byte_len),
+            });
+        }
+    }
+    verify_placed_static_reservations(placed, &reservations, &aliases)
 }
 
 fn closure_imported_types(
@@ -2635,17 +3191,23 @@ pub fn merge_layout_ctx(modules: &BTreeMap<String, Module>) -> Result<LayoutCtx,
         merged.enums.extend(ctx.enums);
         merged.struct_field_names.extend(ctx.struct_field_names);
     }
-    install_aliased_import_layouts(&mut merged, modules)?;
+    install_aliased_import_layouts(&mut merged, modules, &imported)?;
     Ok(merged)
 }
 
 fn install_aliased_import_layouts(
     ctx: &mut LayoutCtx,
     modules: &BTreeMap<String, Module>,
+    imported: &BTreeMap<String, crate::sema::types::ImportedTypes>,
 ) -> Result<(), SemaError> {
     let mut specialized: BTreeMap<String, Module> = BTreeMap::new();
     for (addr, m) in modules {
         specialized.insert(addr.clone(), crate::sema::specialize::specialize(m)?);
+    }
+    let mut layouts_by_addr = BTreeMap::new();
+    for (addr, module) in modules {
+        let key = addr.split('.').map(str::to_string).collect::<Vec<_>>();
+        layouts_by_addr.insert(key, crate::mwir::build_layout_ctx(module, &imported[addr])?);
     }
     let by_addr: Vec<(Vec<String>, &Module)> = specialized
         .iter()
@@ -2668,16 +3230,26 @@ fn install_aliased_import_layouts(
                 continue;
             }
             let subs = &subs_by_exporter[target_mod];
-            if let Some(mut fields) = ctx.structs.get(target_name).cloned() {
+            let exporter = layouts_by_addr.get(target_mod).ok_or_else(|| {
+                SemaError::at(
+                    "layout",
+                    format!(
+                        "imported type `{local}` resolves to absent module `{}`",
+                        target_mod.join(".")
+                    ),
+                    crate::syntax::ast::Span::default(),
+                )
+            })?;
+            if let Some(mut fields) = exporter.structs.get(target_name).cloned() {
                 for f in &mut fields {
                     crate::sema::types::rekey_type_names(f, subs);
                 }
                 ctx.structs.insert(local.clone(), fields);
-                if let Some(names) = ctx.struct_field_names.get(target_name).cloned() {
+                if let Some(names) = exporter.struct_field_names.get(target_name).cloned() {
                     ctx.struct_field_names.insert(local.clone(), names);
                 }
             }
-            if let Some(mut payloads) = ctx.enums.get(target_name).cloned() {
+            if let Some(mut payloads) = exporter.enums.get(target_name).cloned() {
                 for payload in &mut payloads {
                     for t in payload {
                         crate::sema::types::rekey_type_names(t, subs);
@@ -2699,18 +3271,84 @@ pub fn enrich_layout_ctx_with_instantiations(
         let own = typed.instantiations.iter();
         let imported = typed.imported.instantiations.iter();
         for (key, inst) in own.chain(imported) {
-            let TypedInstantiation::Struct(s) = inst else {
-                continue;
-            };
             let display = key.strip_prefix("struct:").unwrap_or(key.as_str());
-            let fields: Vec<crate::sema::types::Type> = s
-                .fields
-                .iter()
-                .filter_map(|n| s.field_types.get(n).cloned())
-                .collect();
-            ctx.struct_field_names
-                .insert(display.to_string(), s.fields.clone());
-            ctx.structs.insert(display.to_string(), fields);
+            match inst {
+                TypedInstantiation::Struct(s) => {
+                    let fields: Vec<crate::sema::types::Type> = s
+                        .fields
+                        .iter()
+                        .filter_map(|n| s.field_types.get(n).cloned())
+                        .collect();
+                    ctx.struct_field_names
+                        .insert(display.to_string(), s.fields.clone());
+                    ctx.structs.insert(display.to_string(), fields);
+                }
+                TypedInstantiation::Enum(enumeration) => {
+                    ctx.enums.insert(
+                        display.to_string(),
+                        enumeration.variant_payload_types.clone(),
+                    );
+                }
+                TypedInstantiation::Fn(_) => {}
+            }
+        }
+    }
+
+    let mut enum_definitions = BTreeMap::new();
+    for typed in programs.values() {
+        for (name, enumeration) in typed.enums.iter().chain(typed.imported.enums.iter()) {
+            enum_definitions
+                .entry(name.clone())
+                .or_insert_with(|| enumeration.clone());
+        }
+    }
+    let mut pending: Vec<crate::sema::types::Type> = ctx
+        .structs
+        .values()
+        .flatten()
+        .chain(ctx.enums.values().flatten().flatten())
+        .cloned()
+        .collect();
+    while let Some(ty) = pending.pop() {
+        use crate::sema::types::{Type, TypeArg};
+        match ty {
+            Type::Array(inner, _)
+            | Type::Option(inner)
+            | Type::Own(_, inner)
+            | Type::Static(inner) => pending.push(*inner),
+            Type::Tuple(items) => pending.extend(items),
+            Type::Result(ok, error) => {
+                pending.push(*ok);
+                pending.push(*error);
+            }
+            Type::Fn(parameters, result) => {
+                pending.extend(parameters.into_iter().map(|(_, ty)| ty));
+                pending.push(*result);
+            }
+            Type::Named(name, args) => {
+                pending.extend(args.iter().filter_map(|argument| match argument {
+                    TypeArg::Type(ty) => Some(ty.clone()),
+                    _ => None,
+                }));
+                if args.is_empty() {
+                    continue;
+                }
+                let key = crate::sema::types::render_type(&Type::Named(name.clone(), args.clone()));
+                if ctx.enums.contains_key(&key) {
+                    continue;
+                }
+                let Some(definition) = enum_definitions.get(&name) else {
+                    continue;
+                };
+                let Some(payloads) =
+                    crate::sema::generics::instantiate_enum_payload_types(definition, &args)
+                else {
+                    continue;
+                };
+                pending.extend(payloads.iter().flatten().cloned());
+                ctx.enums.insert(key, payloads);
+            }
+            _ => {}
         }
     }
 }
@@ -2740,6 +3378,7 @@ pub fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgra
 
 pub struct ImageCodegen {
     pub program: CodegenProgram,
+    pub graph: ImageGraph,
     pub modules: BTreeMap<String, Module>,
     pub programs: BTreeMap<String, TypedProgram>,
     pub flow: FlowWirProgram,
@@ -2747,6 +3386,7 @@ pub struct ImageCodegen {
     pub group_child_index: BTreeMap<String, usize>,
     pub layout_ctx: LayoutCtx,
     pub rtconfig_text: String,
+    pub pixels_config_text: String,
 }
 
 pub fn lower_and_codegen_image(
@@ -2755,10 +3395,32 @@ pub fn lower_and_codegen_image(
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
     renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
+    pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
+    instrumented_pixels: bool,
     runtime_tests: &[String],
     async_tests: &BTreeSet<String>,
     emit_comptime_tests: bool,
 ) -> Result<ImageCodegen, String> {
+    if graph.renderers.is_empty()
+        != pixels_programs.is_none_or(|set| set.compiled_renderers.is_empty())
+    {
+        return Err(
+            "pixels::compile: lowering requires exactly the compiled sealed renderer set"
+                .to_string(),
+        );
+    }
+    let generated_renderers = pixels_programs
+        .map(|programs| {
+            programs
+                .compiled_renderers
+                .iter()
+                .map(|renderer| renderer.generated.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut generated_graph =
+        crate::pixels::glue::synthesize_image_graph(graph, &generated_renderers)?;
+    let graph = &generated_graph;
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
     let pixels_skeleton = if graph.renderers.is_empty() {
         None
@@ -2780,6 +3442,34 @@ pub fn lower_and_codegen_image(
     };
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    for renderer in &graph.renderers {
+        let display = crate::sema::types::render_type(&renderer.actor_type);
+        layout_ctx
+            .struct_field_names
+            .entry(display.clone())
+            .or_insert_with(|| {
+                vec![
+                    "workers".to_string(),
+                    "worker_count".to_string(),
+                    "display".to_string(),
+                    "renderer_index".to_string(),
+                    "frameprog_base".to_string(),
+                    "state_base".to_string(),
+                    "state_bytes".to_string(),
+                ]
+            });
+        layout_ctx.structs.entry(display).or_insert_with(|| {
+            vec![
+                crate::sema::types::Type::Named("RendererWorkers".to_string(), Vec::new()),
+                crate::sema::types::Type::U32,
+                crate::sema::types::Type::Usize,
+                crate::sema::types::Type::U32,
+                crate::sema::types::Type::Usize,
+                crate::sema::types::Type::Usize,
+                crate::sema::types::Type::Usize,
+            ]
+        });
+    }
 
     let reach_opts = crate::lower::LowerOpts {
         emit_comptime_tests,
@@ -2804,7 +3494,75 @@ pub fn lower_and_codegen_image(
         group_child_index: &group_child_index_derive,
         flow: &flow_derive,
     };
+    let preliminary_wiring = RuntimeWiring::derive(&boot).map_err(|e| e.message)?;
+    let pixels_plan = if let Some(programs) = pixels_programs
+        && !programs.compiled_renderers.is_empty()
+    {
+        let cores = preliminary_wiring
+            .as_ref()
+            .map_or(1, |wiring| wiring.tables.cores);
+        let rtdata_end =
+            preliminary_wiring
+                .as_ref()
+                .map_or(Ok(machine_layout::RTDATA_BASE), |wiring| {
+                    machine_layout::RTDATA_BASE
+                        .checked_add(wiring.tables.total_bytes)
+                        .ok_or_else(|| "P025: rtdata end overflow".to_string())
+                })?;
+        Some(
+            plan_pixels_placements(
+                &programs.compiled_renderers,
+                instrumented_pixels,
+                cores,
+                rtdata_end,
+            )
+            .map_err(|error| error.message)?,
+        )
+    } else {
+        None
+    };
+    drop(preliminary_wiring);
+    if let Some(plan) = &pixels_plan {
+        crate::pixels::glue::bind_image_graph_placements(
+            &mut generated_graph,
+            &generated_renderers,
+            &plan.renderers,
+        )?;
+    }
+    let graph = &generated_graph;
+    let boot = BootCtx {
+        graph,
+        modules,
+        programs,
+        layout_ctx: &layout_ctx,
+        async_frames: &async_frames_derive,
+        group_child_index: &group_child_index_derive,
+        flow: &flow_derive,
+    };
     let wiring = RuntimeWiring::derive(&boot).map_err(|e| e.message)?;
+    if let Some(plan) = &pixels_plan {
+        let cores = wiring.as_ref().map_or(1, |wiring| wiring.tables.cores);
+        let rtdata_end = wiring
+            .as_ref()
+            .map_or(Ok(machine_layout::RTDATA_BASE), |wiring| {
+                machine_layout::RTDATA_BASE
+                    .checked_add(wiring.tables.total_bytes)
+                    .ok_or_else(|| "P025: rtdata end overflow".to_string())
+            })?;
+        let programs = pixels_programs.expect("plan requires programs");
+        let rebound = plan_pixels_placements(
+            &programs.compiled_renderers,
+            instrumented_pixels,
+            cores,
+            rtdata_end,
+        )
+        .map_err(|error| error.message)?;
+        if &rebound != plan {
+            return Err(
+                "pixels::glue: binding renderer addresses changed its placement plan".to_string(),
+            );
+        }
+    }
     let tests = test_runner_facts(
         runtime_tests,
         async_tests,
@@ -2812,9 +3570,27 @@ pub fn lower_and_codegen_image(
     );
     let need_live = wiring.is_some() || !tests.is_empty() || pixels_skeleton.is_some();
 
-    let (live_modules, live_programs, rtconfig_text, force_opts) = if need_live {
+    let pixels_config_text = if let Some(programs) = pixels_programs
+        && !programs.compiled_renderers.is_empty()
+    {
+        let plan = pixels_plan
+            .as_ref()
+            .ok_or_else(|| "pixels::glue: compiled renderers have no placement plan".to_string())?;
+        crate::pixels::glue::configuration_source(
+            &plan.renderers,
+            &programs.compiled_renderers,
+            instrumented_pixels,
+        )?
+    } else {
+        String::new()
+    };
+    let (live_modules, live_programs, rtconfig_text, mut force_opts) = if need_live {
         let (text, force_opts) = generate_live_rtconfig(wiring.as_ref(), &tests)?;
-        let (mods, progs) = recheck_with_live_rtconfig(modules, &text)?;
+        let (mods, progs) = recheck_with_live_rtconfig(
+            modules,
+            &text,
+            (!pixels_config_text.is_empty()).then_some(pixels_config_text.as_str()),
+        )?;
         (mods, progs, text, force_opts)
     } else {
         (
@@ -2824,6 +3600,20 @@ pub fn lower_and_codegen_image(
             crate::lower::ImageForceRootOpts::default(),
         )
     };
+    if let Some(programs) = pixels_programs
+        && !programs.compiled_renderers.is_empty()
+    {
+        force_opts.with_pixels = true;
+        for renderer in &programs.compiled_renderers {
+            force_opts
+                .pixels_rooted_functions
+                .extend(renderer.generated.rooted_functions.iter().cloned());
+        }
+        crate::lower::validate_image_force_roots(
+            &live_programs,
+            &force_opts.pixels_rooted_functions,
+        )?;
+    }
 
     let mut only = crate::lower::guest_reachable_keys_closure(&live_programs, &reach_opts);
     crate::lower::seed_image_force_roots(&mut only, &live_programs, force_opts);
@@ -2850,7 +3640,7 @@ pub fn lower_and_codegen_image(
     if let Some(skeleton) = &pixels_skeleton {
         crate::codegen::install_pixels_plane_renderer(
             &mut program,
-            &skeleton.frame_program,
+            &skeleton.seed_metadata,
             &skeleton.semantic_seed,
         )?;
         crate::cost::audit::audit_program(&program)?;
@@ -2861,6 +3651,7 @@ pub fn lower_and_codegen_image(
         crate::codegen::compute_group_child_indices(&flow).map_err(|e| e.message)?;
     Ok(ImageCodegen {
         program,
+        graph: generated_graph,
         modules: live_modules,
         programs: live_programs,
         flow,
@@ -2868,6 +3659,7 @@ pub fn lower_and_codegen_image(
         group_child_index,
         layout_ctx,
         rtconfig_text,
+        pixels_config_text,
     })
 }
 
@@ -2889,6 +3681,8 @@ fn generate_live_rtconfig(
                 n_irq_calls: w.tables.irq_vector_bits.len(),
                 n_wake_calls: w.tables.wake_pending_addrs.len(),
                 n_cores: w.tables.cores,
+                with_pixels: false,
+                pixels_rooted_functions: BTreeSet::new(),
             };
             Ok((text, opts))
         }
@@ -2915,6 +3709,8 @@ fn generate_live_rtconfig(
                 n_irq_calls: 0,
                 n_wake_calls: 0,
                 n_cores: 1,
+                with_pixels: false,
+                pixels_rooted_functions: BTreeSet::new(),
             };
             Ok((text, opts))
         }
@@ -2924,6 +3720,7 @@ fn generate_live_rtconfig(
 fn recheck_with_live_rtconfig(
     modules: &BTreeMap<String, Module>,
     rtconfig_text: &str,
+    pixels_config_text: Option<&str>,
 ) -> Result<(BTreeMap<String, Module>, BTreeMap<String, TypedProgram>), String> {
     let gen_module = crate::rtconfig::parse_generated(rtconfig_text)?;
     let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
@@ -2946,6 +3743,21 @@ fn recheck_with_live_rtconfig(
     paths.insert(runtime_key, runtime_loaded.file.display().to_string());
     modules_vec.insert(gen_key.clone(), gen_module);
     paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
+    if let Some(source) = pixels_config_text {
+        let (view_key, view_module) = crate::loader::load_render_program_module()
+            .map_err(|_| "stdlib/core/render_program.wr missing".to_string())?;
+        paths.insert(view_key.clone(), view_module.file.display().to_string());
+        modules_vec.insert(view_key, view_module.module);
+        let key: Vec<String> = crate::loader::IMAGE_PIXELS_MODULE_KEY
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        modules_vec.insert(
+            key.clone(),
+            crate::pixels::glue::parse_configuration_source(source)?,
+        );
+        paths.insert(key, crate::loader::GENERATED_PIXELS_INPUT_PATH.to_string());
+    }
     let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
         .iter()
         .map(|s| (*s).to_string())
@@ -3029,10 +3841,20 @@ pub fn try_layout_with_codegen(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
     renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
-) -> Result<Option<(ImageLayout, CodegenProgram)>, String> {
+    pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
+    instrumented_pixels: bool,
+) -> Result<
+    Option<(
+        ImageLayout,
+        CodegenProgram,
+        ImageGraph,
+        crate::placement::PlacementTable,
+    )>,
+    String,
+> {
     let empty_tests: &[String] = &[];
     let empty_async = BTreeSet::new();
-    {
+    if graph.renderers.is_empty() {
         let inits = actor_inits(modules).map_err(|e| e.message)?;
         let layouts = closure_layout_types(modules, programs).map_err(|e| e.message)?;
         let backings =
@@ -3045,18 +3867,28 @@ pub fn try_layout_with_codegen(
         layout_ctx,
         graph,
         renderer_configs,
+        pixels_programs,
+        instrumented_pixels,
         empty_tests,
         &empty_async,
         false,
     ) {
         Ok(c) => c,
         Err(e) if e.starts_with(crate::codegen::FAIL_CLOSED_PREFIX) => return Err(e),
+        Err(e) if !graph.renderers.is_empty() => return Err(e),
         Err(_) => return Ok(None),
     };
+    let placement = crate::placement::place(
+        &compiled.graph,
+        &compiled.modules,
+        &compiled.layout_ctx,
+        compiled.graph.cores,
+    )?;
+    let report_graph = compiled.graph.clone();
     layout_program(
         &compiled.program,
         Some(BootCtx {
-            graph,
+            graph: &compiled.graph,
             modules: &compiled.modules,
             programs: &compiled.programs,
             layout_ctx: &compiled.layout_ctx,
@@ -3066,9 +3898,16 @@ pub fn try_layout_with_codegen(
         }),
     )
     .and_then(|mut layout| {
-        attach_blk_report(&mut layout, graph, &compiled.programs)?;
+        attach_blk_report(&mut layout, &compiled.graph, &compiled.programs)?;
         layout.placed_statics = collect_placed_statics(&compiled.programs)?;
-        Ok(Some((layout, compiled.program)))
+        attach_pixels(
+            &mut layout,
+            pixels_programs
+                .map(|programs| programs.compiled_renderers.as_slice())
+                .unwrap_or(&[]),
+            instrumented_pixels,
+        )?;
+        Ok(Some((layout, compiled.program, report_graph, placement)))
     })
     .or_else(|e| Err(e.message))
 }
@@ -3079,22 +3918,36 @@ pub fn try_layout_program(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
     renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
+    pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
+    instrumented_pixels: bool,
 ) -> Result<Option<ImageLayout>, String> {
-    Ok(
-        try_layout_with_codegen(programs, layout_ctx, graph, modules, renderer_configs)?
-            .map(|(layout, _)| layout),
-    )
+    Ok(try_layout_with_codegen(
+        programs,
+        layout_ctx,
+        graph,
+        modules,
+        renderer_configs,
+        pixels_programs,
+        instrumented_pixels,
+    )?
+    .map(|(layout, _, _, _)| layout))
 }
 
 fn collect_placed_statics(
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<Vec<PlacedStatic>, LayoutError> {
     let mut out = Vec::new();
-    let mut seen = BTreeSet::new();
-    for prog in programs.values() {
+    let mut declaring_modules = BTreeMap::new();
+    for (module, prog) in programs {
         for (name, s) in &prog.statics {
-            if !seen.insert(name.clone()) {
+            if !prog.declared_statics.contains(name) {
                 continue;
+            }
+            if let Some(first_module) = declaring_modules.insert(name.clone(), module.clone()) {
+                return Err(LayoutError::new(format!(
+                    "placed static `{name}` is declared by both `{first_module}` and `{module}`; \
+                     placed-static names must be image-wide unique"
+                )));
             }
             let crate::sema::types::Type::Named(ty_name, _) = &s.ty else {
                 return Err(LayoutError::new(format!(
@@ -3116,6 +3969,7 @@ fn collect_placed_statics(
                 ty: ty_name.clone(),
                 addr: s.addr,
                 size,
+                is_generated_pixels_alias: module == "core.__image_pixels",
             });
         }
     }
@@ -3167,6 +4021,91 @@ mod tests {
     };
     use super::*;
     use crate::codegen::CodegenFn;
+
+    #[test]
+    fn pixels_capacity_boundaries_and_alignment_fail_closed() {
+        let maximum = machine_layout::PIXELS_PROGRAM_BYTES_MAX;
+        assert_eq!(
+            accumulate_pixels_bytes(0, maximum, maximum, "test").unwrap(),
+            maximum
+        );
+        assert!(
+            accumulate_pixels_bytes(0, maximum + 1, maximum, "test")
+                .unwrap_err()
+                .message
+                .contains("exceeding")
+        );
+        assert!(
+            accumulate_pixels_bytes(u64::MAX, 1, u64::MAX, "test")
+                .unwrap_err()
+                .message
+                .contains("overflow")
+        );
+        assert_eq!(
+            align_up_checked(0x4058_0001, 64 << 10, "test").unwrap(),
+            0x4059_0000
+        );
+        assert!(
+            align_up_checked(u64::MAX, 64 << 10, "test")
+                .unwrap_err()
+                .message
+                .contains("overflow")
+        );
+        assert!(check_frameprog_blob_boundary(99, 100).is_ok());
+        assert!(check_frameprog_blob_boundary(100, 100).is_ok());
+        assert!(check_frameprog_blob_boundary(101, 100).is_err());
+        let program_base = 0x5000_0000;
+        let program_max_end = program_base + machine_layout::PIXELS_PROGRAM_BYTES_MAX;
+        assert!(check_pixels_program_span(program_base, program_max_end).is_ok());
+        assert!(check_pixels_program_span(program_base, program_max_end + 1).is_err());
+        let first_program_end = program_base + 1;
+        let second_program_start = align_up_checked(first_program_end, 64, "test program").unwrap();
+        let second_program_bytes = machine_layout::PIXELS_PROGRAM_BYTES_MAX - 1;
+        assert!(
+            check_pixels_program_span(program_base, second_program_start + second_program_bytes)
+                .is_err(),
+            "inter-renderer alignment padding must count against the program ceiling"
+        );
+        let state_base = 0x5000_0000;
+        let state_max_end = state_base + machine_layout::PIXELS_STATE_BYTES_MAX;
+        assert!(check_pixels_state_span(state_base, state_max_end).is_ok());
+        assert!(check_pixels_state_span(state_base, state_max_end + 1).is_err());
+        assert_eq!(
+            check_worker_workspace_partition(1_200, 4, 4_800).unwrap(),
+            4_800
+        );
+        assert!(
+            check_worker_workspace_partition(1_128, 4, 4_800)
+                .unwrap_err()
+                .message
+                .contains("final worker-scratch reservation"),
+            "a stale structural stride must not partition final P4 scratch"
+        );
+        let first_end = state_base + 1;
+        let second_start = align_up_checked(
+            first_end,
+            machine_layout::PIXELS_REGION_ALIGNMENT,
+            "test state",
+        )
+        .unwrap();
+        let second_bytes = machine_layout::PIXELS_STATE_BYTES_MAX - 1;
+        assert!(
+            check_pixels_state_span(state_base, second_start + second_bytes).is_err(),
+            "inter-renderer alignment padding must count against the state ceiling"
+        );
+        let exact_rtdata_end = machine_layout::RTDATA_BASE + 712;
+        let empty =
+            plan_pixels_placements(&[], false, 1, exact_rtdata_end).expect("empty placement");
+        assert_eq!(
+            empty.frameprog_base,
+            align_up_checked(
+                exact_rtdata_end,
+                machine_layout::PIXELS_REGION_ALIGNMENT,
+                "test"
+            )
+            .unwrap()
+        );
+    }
 
     fn fn_words(words: &[u32]) -> CodegenFn {
         CodegenFn {
@@ -3906,10 +4845,17 @@ async fn asks_driver(d: Actor[BlkDriver]):
     }
 
     #[test]
-    fn an_aggregate_or_float_init_argument_has_no_word_at_all() {
+    fn scalar_float_init_arguments_preserve_bits_and_aggregates_have_no_word() {
         use crate::eval::value::Value;
         let z = HandleSpace::default();
-        assert_eq!(boot_init_arg_word(&Value::F64(1.0), z), None);
+        assert_eq!(
+            boot_init_arg_word(&Value::F32(-0.0), z),
+            Some(u64::from((-0.0_f32).to_bits()))
+        );
+        assert_eq!(
+            boot_init_arg_word(&Value::F64(1.0), z),
+            Some(1.0_f64.to_bits())
+        );
         assert_eq!(boot_init_arg_word(&Value::Str(b"hi".to_vec()), z), None);
         assert_eq!(
             boot_init_arg_word(&Value::Tuple(vec![Value::U8(1)]), z),
@@ -4639,6 +5585,100 @@ fn two():
             ty: format!("{name}Ty"),
             addr,
             size,
+            is_generated_pixels_alias: false,
+        }
+    }
+
+    #[test]
+    fn pixels_reservations_reject_overlapping_statics_and_only_allow_exact_generated_aliases() {
+        let reservations = [
+            PixelsReservation {
+                name: "frameprog",
+                base: 0x1000,
+                end: 0x2000,
+            },
+            PixelsReservation {
+                name: "pixelsdata",
+                base: 0x2000,
+                end: 0x3000,
+            },
+        ];
+        let aliases = [AllowedPixelsAlias {
+            name: "R0_FRAME_PROGRAM".to_string(),
+            addr: 0x1000,
+            size: 0x160,
+        }];
+        for (name, addr) in [("BAD_FRAMEPROG", 0x1800), ("BAD_PIXELSDATA", 0x2800)] {
+            let placed = [window_static(name, addr, 8)];
+            let error = verify_placed_static_reservations(&placed, &reservations, &aliases)
+                .expect_err("arbitrary placed static overlaps Pixels reservation");
+            assert!(error.message.contains(name), "{}", error.message);
+            assert!(error.message.contains("overlaps"), "{}", error.message);
+        }
+
+        let mut exact_alias = window_static("R0_FRAME_PROGRAM", 0x1000, 0x160);
+        exact_alias.is_generated_pixels_alias = true;
+        verify_placed_static_reservations(&[exact_alias.clone()], &reservations, &aliases)
+            .expect("exact compiler-generated frame-program alias");
+
+        exact_alias.size += 1;
+        let error = verify_placed_static_reservations(&[exact_alias], &reservations, &aliases)
+            .expect_err("generated alias extent must be exact");
+        assert!(error.message.contains("frameprog"), "{}", error.message);
+
+        let mut state_alias = window_static("R0_FRAME_PROGRAM", 0x2000, 0x160);
+        state_alias.is_generated_pixels_alias = true;
+        let error = verify_placed_static_reservations(&[state_alias], &reservations, &aliases)
+            .expect_err("no generated aliases are writable-state exceptions");
+        assert!(error.message.contains("pixelsdata"), "{}", error.message);
+    }
+
+    fn placed_program(name: &str, addr: u64) -> TypedProgram {
+        use crate::sema::types::{LayoutEndian, LayoutKind, LayoutType, Type};
+
+        let ty = format!("{name}Ty");
+        let mut program = TypedProgram::default();
+        program.statics.insert(
+            name.to_string(),
+            crate::sema::typed::TypedStatic {
+                ty: Type::Named(ty.clone(), Vec::new()),
+                addr,
+            },
+        );
+        program.declared_statics.insert(name.to_string());
+        program.layouts.push(LayoutType {
+            name: ty,
+            kind: LayoutKind::Runtime,
+            endian: LayoutEndian::Little,
+            size: Some(8),
+            padding: 0,
+            entries: Vec::new(),
+        });
+        program
+    }
+
+    #[test]
+    fn placed_static_collection_rejects_generated_alias_spoofs_in_each_pixels_region() {
+        for spoof_addr in [0x1800, 0x2800] {
+            let mut programs = BTreeMap::new();
+            programs.insert(
+                "core.__image_pixels".to_string(),
+                placed_program("R0_FRAME_PROGRAM", 0x1000),
+            );
+            programs.insert(
+                "game.scene".to_string(),
+                placed_program("R0_FRAME_PROGRAM", spoof_addr),
+            );
+            let error = collect_placed_statics(&programs)
+                .expect_err("a user module must not disappear behind a generated alias");
+            assert!(
+                error.message.contains("R0_FRAME_PROGRAM")
+                    && error.message.contains("core.__image_pixels")
+                    && error.message.contains("game.scene")
+                    && error.message.contains("image-wide unique"),
+                "{}",
+                error.message
+            );
         }
     }
 
@@ -4731,6 +5771,7 @@ fn two():
                 },
             ],
             blk: None,
+            renderers: Vec::new(),
         };
         let mut out = String::new();
         render_layout_section(&mut out, &layout);

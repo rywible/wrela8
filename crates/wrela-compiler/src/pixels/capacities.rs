@@ -210,6 +210,10 @@ pub struct ProjectiveCapacities {
     pub index_bytes: u64,
     pub per_worker_scratch_bytes: u64,
     pub all_worker_scratch_bytes: u64,
+    pub final_per_worker_scratch_bytes: u64,
+    pub final_all_worker_scratch_bytes: u64,
+    pub total_renderer_state_bytes: u64,
+    pub total_renderer_state_bytes_instrumented: u64,
     pub derivations: Vec<CapacityDerivation>,
 }
 
@@ -223,6 +227,62 @@ fn verify_immutable_index_bytes(index_bytes: u64) -> Result<(), String> {
             "P5 frame-program placement uses this sealed P4 immutable-index budget".to_string(),
         ],
     )
+}
+
+fn final_renderer_state_bytes(
+    structural: &StructuralCapacities,
+    all_worker_scratch_bytes: u64,
+) -> Result<(u64, u64), String> {
+    let pre_framebuffer = [
+        structural.state_header_bytes,
+        structural.coefficient_snapshot_bytes,
+        structural.frame_dependency_snapshot_bytes,
+        structural.frame_complex_double_buffer_bytes,
+        all_worker_scratch_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, bytes| {
+        add(sum, bytes, "p4_final_renderer_state_bytes")
+    })?;
+    let page = wrela_machine::layout::PIXELS_STATE_PAGE_ALIGNMENT;
+    let framebuffer_offset = pre_framebuffer
+        .checked_add(page - 1)
+        .map(|value| value & !(page - 1))
+        .ok_or_else(|| "P015: P4 framebuffer state alignment overflow".to_string())?;
+    let after_framebuffers = add(
+        framebuffer_offset,
+        structural.output_double_buffer_bytes,
+        "p4_final_renderer_state_bytes",
+    )?;
+    let probe_offset = if structural.probe_bytes == 0 {
+        after_framebuffers
+    } else {
+        after_framebuffers
+            .checked_add(page - 1)
+            .map(|value| value & !(page - 1))
+            .ok_or_else(|| "P015: P4 probe state alignment overflow".to_string())?
+    };
+    let total = [
+        add(
+            probe_offset,
+            structural.probe_bytes,
+            "p4_final_renderer_state_bytes",
+        )?,
+        structural.kinetic_certificate_bytes,
+        structural.tile_descriptor_bytes,
+        structural.tile_ownership_bytes,
+        structural.failure_record_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, bytes| {
+        add(sum, bytes, "p4_final_renderer_state_bytes")
+    })?;
+    let instrumented = add(
+        total,
+        structural.telemetry_bytes_instrumented,
+        "p4_final_instrumented_renderer_state_bytes",
+    )?;
+    Ok((total, instrumented))
 }
 
 pub fn derive_projective(
@@ -454,15 +514,36 @@ pub fn derive_projective(
         u64::from(structural.worker_count),
         "p4_all_worker_scratch_bytes",
     )?;
+    let retained_per_worker_scratch_bytes = [
+        structural.fixed_q_bytes,
+        structural.shading_bytes,
+        structural.transparency_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, bytes| {
+        add(sum, bytes, "p4_retained_per_worker_scratch_bytes")
+    })?;
+    let final_per_worker_scratch_bytes = add(
+        per_worker_scratch_bytes,
+        retained_per_worker_scratch_bytes,
+        "p4_final_per_worker_scratch_bytes",
+    )?;
+    let final_all_worker_scratch_bytes = mul(
+        final_per_worker_scratch_bytes,
+        u64::from(structural.worker_count),
+        "p4_final_all_worker_scratch_bytes",
+    )?;
+    let (total_renderer_state_bytes, total_renderer_state_bytes_instrumented) =
+        final_renderer_state_bytes(structural, final_all_worker_scratch_bytes)?;
     verify_immutable_index_bytes(indexes.bytes)?;
     ceiling(
         "renderer_state_bytes",
-        all_worker_scratch_bytes,
+        total_renderer_state_bytes_instrumented,
         ceilings.renderer_state_bytes,
         &[
-            format!("P4 per-worker scratch={per_worker_scratch_bytes}"),
+            format!("P4 final per-worker scratch={final_per_worker_scratch_bytes}"),
             format!("workers={}", structural.worker_count),
-            "P5 adds fixed state classes before final placement".to_string(),
+            format!("final instrumented state={total_renderer_state_bytes_instrumented}"),
         ],
     )?;
     Ok(ProjectiveCapacities {
@@ -486,6 +567,10 @@ pub fn derive_projective(
         index_bytes: indexes.bytes,
         per_worker_scratch_bytes,
         all_worker_scratch_bytes,
+        final_per_worker_scratch_bytes,
+        final_all_worker_scratch_bytes,
+        total_renderer_state_bytes,
+        total_renderer_state_bytes_instrumented,
         derivations: vec![
             CapacityDerivation {
                 field: "p4_candidate_features_per_tile",
@@ -497,6 +582,17 @@ pub fn derive_projective(
                     structural.max_projected_features_per_row,
                     structural.max_projected_features_per_tile,
                 )],
+            },
+            CapacityDerivation {
+                field: "p4_final_renderer_state_bytes",
+                value: total_renderer_state_bytes,
+                why: vec![
+                    format!("P4-refined six-class scratch={per_worker_scratch_bytes} per worker"),
+                    format!(
+                        "retained fixed-q/shading/transparency scratch={retained_per_worker_scratch_bytes} per worker"
+                    ),
+                    format!("workers={}", structural.worker_count),
+                ],
             },
             CapacityDerivation {
                 field: "p4_row_start_roots",
@@ -921,14 +1017,39 @@ pub fn derive(
     )?;
     let tile_ownership_bytes = mul(pixel_count, TILE_OWNERSHIP_BYTES_V1, "tile_ownership_bytes")?;
     let failure_record_bytes = FAILURE_RECORD_BYTES_V1;
-    let total_renderer_state_bytes = [
+    let pre_framebuffer_bytes = [
         state_header_bytes,
         coefficient_snapshot_bytes,
         frame_dependency_snapshot_bytes,
         frame_complex_double_buffer_bytes,
         all_worker_scratch_bytes,
+    ]
+    .into_iter()
+    .try_fold(0_u64, |sum, value| add(sum, value, "renderer_state_bytes"))?;
+    let page = wrela_machine::layout::PIXELS_STATE_PAGE_ALIGNMENT;
+    let framebuffer_offset = pre_framebuffer_bytes
+        .checked_add(page - 1)
+        .map(|value| value & !(page - 1))
+        .ok_or_else(|| "P015: framebuffer state alignment overflow".to_string())?;
+    let after_framebuffers = add(
+        framebuffer_offset,
         output_double_buffer_bytes,
-        probe_bytes,
+        "renderer_state_bytes",
+    )?;
+    let probe_offset = if probe_bytes == 0 {
+        after_framebuffers
+    } else {
+        after_framebuffers
+            .checked_add(page - 1)
+            .map(|value| value & !(page - 1))
+            .ok_or_else(|| "P015: probe state alignment overflow".to_string())?
+    };
+    let after_probes = add(probe_offset, probe_bytes, "renderer_state_bytes")?;
+    let state_alignment_padding_bytes = (framebuffer_offset - pre_framebuffer_bytes)
+        .checked_add(probe_offset - after_framebuffers)
+        .ok_or_else(|| "P015: renderer state padding overflow".to_string())?;
+    let total_renderer_state_bytes = [
+        after_probes,
         kinetic_certificate_bytes,
         tile_descriptor_bytes,
         tile_ownership_bytes,
@@ -958,6 +1079,7 @@ pub fn derive(
             ),
             format!("{output_double_buffer_bytes} output double-buffer bytes"),
             format!("{probe_bytes} probe bytes"),
+            format!("{state_alignment_padding_bytes} page-alignment padding bytes"),
             format!("{kinetic_certificate_bytes} kinetic certificate bytes"),
             format!("{tile_descriptor_bytes} tile descriptor bytes"),
             format!("{tile_ownership_bytes} tile ownership bytes"),
@@ -1010,6 +1132,7 @@ pub fn derive(
                 ),
                 format!("output={output_double_buffer_bytes}"),
                 format!("probes={probe_bytes}"),
+                format!("page_alignment_padding={state_alignment_padding_bytes}"),
                 format!("kinetic={kinetic_certificate_bytes}"),
                 format!("tile_descriptors={tile_descriptor_bytes}"),
                 format!("tile_ownership={tile_ownership_bytes}"),

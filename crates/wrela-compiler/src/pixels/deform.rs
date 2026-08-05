@@ -353,7 +353,11 @@ fn validate_sinusoidal_contract_links(
     displacement: ScalarId,
     contract: &super::graph::DerivedDeformContract,
 ) -> Result<[f64; 4], String> {
-    let ScalarOp::Mul(amplitude, wave) = graph.scalar.get(displacement)?.op else {
+    let mut source_displacement = displacement;
+    while let ScalarOp::Neg(inner) = graph.scalar.get(source_displacement)?.op {
+        source_displacement = inner;
+    }
+    let ScalarOp::Mul(amplitude, wave) = graph.scalar.get(source_displacement)?.op else {
         return Err(format!(
             "pixels::deform: sinusoidal displacement {displacement} is not amplitude times wave"
         ));

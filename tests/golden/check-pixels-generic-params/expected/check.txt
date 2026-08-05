@@ -63,8 +63,11 @@ Module path=field
   Fn scalar_length_semantics_cover_large_exact_radius() -> unit
   Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
 Module path=render
+  Fn __wrela_pixels_p5_finite(value: read f32) -> bool
   Struct RenderPath data
     pub field component: u32
+    fn renderer_unavailable() -> RenderPath
+    fn is_renderer_unavailable(read self) -> bool
   Struct TileId data
     pub field value: u32
   Struct RenderCapacity data
@@ -87,6 +90,7 @@ Module path=render
     fn look_at(eye: read Vec3, target: read Vec3, authored_up: read Vec3) -> Result[Camera, CameraError]
     fn quaternion(eye: read Vec3, rotation: read Vec4) -> Result[Camera, CameraError]
     fn explicit(eye: read Vec3, authored_forward: read Vec3, authored_right: read Vec3, authored_up: read Vec3) -> Result[Camera, CameraError]
+    fn __wrela_p5_finite(read self) -> bool
   Enum LightKind data
     variant Disabled
     variant Point
@@ -94,6 +98,7 @@ Module path=render
     variant Rectangle
     variant Disk
   Struct Light data
+    field kind: usize
     field position: Vec3
     field direction: Vec3
     field axis_u: Vec3
@@ -104,6 +109,8 @@ Module path=render
     fn directional(direction: read Vec3, radiance: read Rgb) -> Light
     fn rectangle(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
     fn disk(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
+    fn __wrela_p5_matches_kind(read self, expected: read usize) -> bool
+    fn __wrela_p5_finite(read self) -> bool
   Struct LightFrame data
     field lights: [Light; 8]
     fn empty() -> LightFrame
@@ -179,9 +186,149 @@ Module path=render
     pub field displayed_digest: [u8; 32]
     pub field rebuilt_tiles: u32
     pub field reused_tiles: u32
+  Struct RendererWorker resource
+    field renderer_index: u32
+    field frameprog_base: usize
+    field workspace_base: usize
+    field workspace_bytes: usize
+    field tiles_start: u32
+    field tiles_end: u32
+    init(mut self, renderer_index: read u32, frameprog_base: read usize, workspace_base: read usize, workspace_bytes: read usize, tiles_start: read u32, tiles_end: read u32) -> unit
+    async fn run_job(mut self, job: read u64) -> u64
+  Struct RendererWorkers data
+    field worker_0: Actor[RendererWorker]
+    field worker_1: Actor[RendererWorker]
+    field worker_2: Actor[RendererWorker]
+    field worker_3: Actor[RendererWorker]
+    field worker_4: Actor[RendererWorker]
+    field worker_5: Actor[RendererWorker]
+    field worker_6: Actor[RendererWorker]
+    field worker_7: Actor[RendererWorker]
+    field worker_8: Actor[RendererWorker]
+    field worker_9: Actor[RendererWorker]
+    field worker_10: Actor[RendererWorker]
+    field worker_11: Actor[RendererWorker]
+    field worker_12: Actor[RendererWorker]
+    field worker_13: Actor[RendererWorker]
+    field worker_14: Actor[RendererWorker]
+    field worker_15: Actor[RendererWorker]
+    field worker_16: Actor[RendererWorker]
+    field worker_17: Actor[RendererWorker]
+    field worker_18: Actor[RendererWorker]
+    field worker_19: Actor[RendererWorker]
+    field worker_20: Actor[RendererWorker]
+    field worker_21: Actor[RendererWorker]
+    field worker_22: Actor[RendererWorker]
+    field worker_23: Actor[RendererWorker]
+    field worker_24: Actor[RendererWorker]
+    field worker_25: Actor[RendererWorker]
+    field worker_26: Actor[RendererWorker]
+    field worker_27: Actor[RendererWorker]
+    field worker_28: Actor[RendererWorker]
+    field worker_29: Actor[RendererWorker]
+    field worker_30: Actor[RendererWorker]
+    field worker_31: Actor[RendererWorker]
+  Struct RendererFrameBounds data
+    field exposure_min: f32
+    field exposure_max: f32
+    field environment_min_r: f32
+    field environment_min_g: f32
+    field environment_min_b: f32
+    field environment_max_r: f32
+    field environment_max_g: f32
+    field environment_max_b: f32
+    field camera_eye_x_min: f32
+    field camera_eye_x_max: f32
+    field camera_eye_y_min: f32
+    field camera_eye_y_max: f32
+    field camera_eye_z_min: f32
+    field camera_eye_z_max: f32
+    field camera_forward_x_min: f32
+    field camera_forward_x_max: f32
+    field camera_forward_y_min: f32
+    field camera_forward_y_max: f32
+    field camera_forward_z_min: f32
+    field camera_forward_z_max: f32
+    field camera_right_x_min: f32
+    field camera_right_x_max: f32
+    field camera_right_y_min: f32
+    field camera_right_y_max: f32
+    field camera_right_z_min: f32
+    field camera_right_z_max: f32
+    field camera_up_x_min: f32
+    field camera_up_x_max: f32
+    field camera_up_y_min: f32
+    field camera_up_y_max: f32
+    field camera_up_z_min: f32
+    field camera_up_z_max: f32
+    field light_capacity: usize
+    field light_kind_0: usize
+    field light_kind_1: usize
+    field light_kind_2: usize
+    field light_kind_3: usize
+    field light_kind_4: usize
+    field light_kind_5: usize
+    field light_kind_6: usize
+    field light_kind_7: usize
+    fn __wrela_p5_accepts_camera(read self, camera: read Camera) -> bool
   Struct Renderer[P] resource
-    field generated_state: u64
+    field workers: RendererWorkers
+    field worker_count: u32
+    field display: usize
+    field renderer_index: u32
+    field frameprog_base: usize
+    field state_base: usize
+    field state_bytes: usize
+    field bounds: RendererFrameBounds
+    init(mut self, workers: read RendererWorkers, worker_count: read u32, display: read usize, renderer_index: read u32, frameprog_base: read usize, state_base: read usize, state_bytes: read usize, bounds: read RendererFrameBounds) -> unit
+    fn __validate_fixed_frame(read self, frame: read RenderFrame[P]) -> Result[unit, RenderError]
+    fn __validate_and_unavailable(read self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
+    fn __unavailable(read self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
+    async fn __bootstrap_worker_path_0(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_1(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_2(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_3(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_4(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_5(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_6(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_7(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_8(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_9(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_10(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_11(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_12(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_13(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_14(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_15(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_16(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_17(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_18(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_19(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_20(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_21(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_22(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_23(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_24(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_25(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_26(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_27(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_28(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_29(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_30(mut self) -> Result[u64, CallError[never]]
+    async fn __bootstrap_worker_path_31(mut self) -> Result[u64, CallError[never]]
     async fn render(mut self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
+  Fn __wrela_pixels_bootstrap_dispatch(table: read u32, tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_scalar(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_field(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_object(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_feature(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_material(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_parameter(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_event(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_csg(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_fixed_domain(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_camera_light_post(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_present_placeholder() -> Result[unit, RenderError]
 Module path=display
   Struct DisplayDevice data
     field id: u32
@@ -211,13 +358,11 @@ Module path=display
     field pixels: [u8; 8192]
   Static DISPLAY_MEMORY: DisplayMemory placed=0x40100000
   Static DISPLAY_DOORBELL: DisplayDoorbell placed=0x8006000
+  Fn __wrela_pixels_display_present(sequence: read u64) -> unit
 Module path=examples.check_pixels_generic_params
-  Enum Choice[T] data
-    variant Value(T)
-    variant Empty
   Struct Params[T] data
     field radius: T
-    field choice: Choice[u32]
+    field choice: u32
   Enum MaterialId data
     variant Surface
   Enum ObjectId data

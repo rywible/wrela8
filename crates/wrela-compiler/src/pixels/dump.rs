@@ -1754,7 +1754,7 @@ fn append_projective_dump(out: &mut String, program: &super::verify::ProjectiveP
     ));
     let capacity = &program.capacities;
     out.push_str(&format!(
-        "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} event_generators={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_programs={} rational_programs={} polynomial_terms_per_program={} coefficient_nodes={} derivative_bundles={} derivative_clusters={} index_bytes={} per_worker_scratch_bytes={} all_worker_scratch_bytes={}\n",
+        "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} event_generators={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_programs={} rational_programs={} polynomial_terms_per_program={} coefficient_nodes={} derivative_bundles={} derivative_clusters={} index_bytes={} refined_per_worker_scratch_bytes={} refined_all_worker_scratch_bytes={} final_per_worker_scratch_bytes={} final_all_worker_scratch_bytes={} final_state_bytes={} final_instrumented_state_bytes={}\n",
         capacity.candidate_features_per_tile,
         capacity.row_start_roots,
         capacity.active_sheets_per_row,
@@ -1775,6 +1775,10 @@ fn append_projective_dump(out: &mut String, program: &super::verify::ProjectiveP
         capacity.index_bytes,
         capacity.per_worker_scratch_bytes,
         capacity.all_worker_scratch_bytes,
+        capacity.final_per_worker_scratch_bytes,
+        capacity.final_all_worker_scratch_bytes,
+        capacity.total_renderer_state_bytes,
+        capacity.total_renderer_state_bytes_instrumented,
     ));
     for derivation in &capacity.derivations {
         out.push_str(&format!(
@@ -2253,27 +2257,27 @@ fn dump_origin(kind: &str, id: &str, origin: &super::arena::NodeOrigin, out: &mu
     out.push('\n');
 }
 
-pub fn dump_frame_program(skeleton: &PlaneSkeleton) -> String {
+pub fn dump_skeleton_frame_program(skeleton: &PlaneSkeleton) -> String {
     format!(
-        "FrameProgram v1 renderer={} digest={}\n  Header magic=WRELAPX\\0 version=1 bytes=80 flags=[] total_bytes=80\n  Directory count=0 offset=80\n  WalkingSkeleton version=P-1 semantic_seed={} storage=generated-actor\n",
-        skeleton.renderer_index, skeleton.frame_program_digest, skeleton.semantic_digest
+        "PlaneSeedMetadata P-1 renderer={} digest={}\n  Header magic=WRELAP1\\0 bytes=80\n  WalkingSkeleton semantic_seed={} storage=generated-actor\n",
+        skeleton.renderer_index, skeleton.seed_metadata_digest, skeleton.semantic_digest
     )
 }
 
-pub fn dump_render_layout(skeleton: &PlaneSkeleton) -> String {
+pub fn dump_skeleton_render_layout(skeleton: &PlaneSkeleton) -> String {
     let renderer = crate::codegen::emit_pixels_plane_renderer(
-        &skeleton.frame_program,
+        &skeleton.seed_metadata,
         &skeleton.semantic_seed,
     );
     let code_bytes = renderer.code.len() * 4;
     let memory_bytes = wrela_machine::pixels::FRAME_BYTES
         + wrela_machine::pixels::CONTROL_BYTES
         + wrela_machine::pixels::QUEUE_CAPACITY as usize * wrela_machine::pixels::TILE_BYTES
-        + skeleton.frame_program.len();
+        + skeleton.seed_metadata.len();
     format!(
-        "RenderLayout v1\n  Renderer index={}\n    FrameProgram base={:#010x} size=80\n    GeneratedActor type=Renderer entry={} worker_count=0\n    Display ref={}\n    Mode width={} height={} refresh_hz={} shade_hz={}\n    Tile owner=renderer#0 range=[0,1)\n    Buffer base={:#010x} bytes={} format=BGRA8\n    Baseline code_bytes={} memory_bytes={} frame_cost_instructions={}\n",
+        "RenderLayout v1\n  Renderer index={}\n    PlaneSeedMetadata base={:#010x} size=80\n    GeneratedActor type=Renderer entry={} worker_count=0\n    Display ref={}\n    Mode width={} height={} refresh_hz={} shade_hz={}\n    Tile owner=renderer#0 range=[0,1)\n    Buffer base={:#010x} bytes={} format=BGRA8\n    Baseline code_bytes={} memory_bytes={} frame_cost_instructions={}\n",
         skeleton.renderer_index,
-        wrela_machine::pixels::FRAME_PROGRAM_BASE,
+        wrela_machine::pixels::PLANE_SEED_METADATA_BASE,
         crate::codegen::PIXELS_RENDERER_SYMBOL,
         skeleton.display,
         skeleton.width,
@@ -2286,6 +2290,213 @@ pub fn dump_render_layout(skeleton: &PlaneSkeleton) -> String {
         memory_bytes,
         renderer.code.len()
     )
+}
+
+fn stable_exclusion_subject(subject: super::exclusions::ExclusionSubject) -> String {
+    match subject {
+        super::exclusions::ExclusionSubject::Candidate(feature) => {
+            format!("candidate:{feature}")
+        }
+        super::exclusions::ExclusionSubject::Event(event) => format!(
+            "event:{}:feature={}:owner={}:ordinal={}",
+            stable_event_kind(event.kind),
+            event
+                .feature
+                .map_or_else(|| "-".to_string(), |value| value.to_string()),
+            event
+                .owner
+                .map_or_else(|| "-".to_string(), |value| value.to_string()),
+            event.ordinal,
+        ),
+        super::exclusions::ExclusionSubject::Competition(pair) => {
+            format!("competition:{}:{}", pair.a, pair.b)
+        }
+    }
+}
+
+pub fn dump_frame_program(
+    renderer: &super::CompiledRenderer,
+    placement: &crate::layout::RendererPlacement,
+    generated_source: &str,
+) -> Result<String, String> {
+    let decoded = super::decode::decode(&renderer.encoded)
+        .map_err(|error| format!("pixels::dump: encoded program failed decode: {error}"))?;
+    if decoded.program() != renderer.program.program() {
+        return Err("pixels::dump: decoded program differs from compiler model".to_string());
+    }
+    let wire = super::binary_verify::verify_envelope(&renderer.encoded)
+        .map_err(|error| format!("pixels::dump: invalid byte envelope: {error}"))?;
+    let digest = renderer.encoded[super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+        ..super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+            + super::version::FRAME_PROGRAM_DIGEST_BYTES_V1]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let program = decoded.program();
+    let mut out = format!(
+        "FrameProgram v1 renderer={} digest={digest}\n\
+         \x20 Header bytes={} flags=0x{:x} total_bytes={} profile_revision={} numeric_revision={} formal_revision={} formal_name={}\n\
+         \x20 Directory count={} offset={}\n",
+        program.renderer_index,
+        super::version::FRAME_PROGRAM_HEADER_BYTES_V1,
+        program.flags,
+        renderer.encoded.len(),
+        super::version::FRAME_PROGRAM_PROFILE_REVISION_V1,
+        program.numeric_revision,
+        program.formal_revision,
+        super::version::FRAME_PROGRAM_FORMAL_REVISION_STR_V1,
+        wire.len(),
+        super::version::FRAME_PROGRAM_HEADER_BYTES_V1,
+    );
+    for table in &wire {
+        out.push_str(&format!(
+            "  Table kind={} code={} record_bytes={} count={} offset={} byte_len={}\n",
+            table.kind.stable_name(),
+            table.kind.code(),
+            table.record_bytes,
+            table.count,
+            table.offset,
+            table.byte_len,
+        ));
+    }
+    let structural = renderer.structural.program();
+    let projective = renderer.projective.program();
+    out.push_str(&format!(
+        "  Capacity objects={} features={} candidate_features_per_tile={} row_start_roots={} \
+         active_sheets_per_row={} event_intervals_per_row={} root_stack_nodes={} \
+         event_stack_nodes={} runs_per_row={} corridors_per_row={} transparent_layers={} \
+         state_bytes={}\n",
+        structural.capacities.object_count,
+        structural.capacities.feature_count,
+        projective.capacities.candidate_features_per_tile,
+        projective.capacities.row_start_roots,
+        projective.capacities.active_sheets_per_row,
+        projective.capacities.row_event_intervals,
+        projective.capacities.root_stack_nodes,
+        projective.capacities.event_stack_nodes,
+        projective.capacities.runs_per_row,
+        projective.capacities.corridors_per_row,
+        structural.capacities.max_transparent_layers,
+        renderer.mutable_layout.total_bytes,
+    ));
+    for event in &projective.events.generators {
+        out.push_str(&format!(
+            "  Event id={} kind={} repr={} roots={} subdivision_depth={} pixels=[{},{};{},{}] \
+             tiles=[{},{};{},{}]\n",
+            event.id,
+            stable_event_kind(event.kind),
+            stable_event_representation(&event.representation),
+            event.maximum_root_count,
+            event.subdivision_depth,
+            event.pixels.x.start,
+            event.pixels.x.end,
+            event.pixels.y.start,
+            event.pixels.y.end,
+            event.tiles.x.start,
+            event.tiles.x.end,
+            event.tiles.y.start,
+            event.tiles.y.end,
+        ));
+    }
+    for exclusion in &projective.exclusions.records {
+        out.push_str(&format!(
+            "  Exclusion id={} subject={} reason={} domain={} proof={} margin={}\n",
+            exclusion.id,
+            stable_exclusion_subject(exclusion.subject),
+            exclusion.reason.stable_name(),
+            exclusion.domain,
+            exclusion.proof,
+            stable_interval(exclusion.margin),
+        ));
+    }
+    for proof in &projective.exclusions.proofs {
+        out.push_str(&format!(
+            "  ExclusionProof id={} payload={}\n",
+            proof.id,
+            stable_proof_payload(&proof.payload),
+        ));
+    }
+    out.push_str(&format!(
+        "  GeneratedConfig module=core.__image_pixels frameprog_base={:#x} \
+         frameprog_bytes={} state_base={:#x} state_bytes={}\n",
+        placement.frameprog_base,
+        placement.frameprog_size,
+        placement.state_base,
+        placement.state_size,
+    ));
+    super::glue::parse_configuration_source(generated_source)?;
+    out.push_str("  GeneratedModule begin\n");
+    for line in generated_source.lines() {
+        if !line.is_empty() {
+            out.push_str("    ");
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.push_str("  GeneratedModule end\n");
+    out.push_str(&format!(
+        "  GeneratedActors coordinator={} workers={} palette=bootstrap families=[{}]\n",
+        renderer.generated.coordinator,
+        renderer.generated.workers.len(),
+        renderer.generated.bootstrap_families.join(","),
+    ));
+    out.push_str(
+        "  Fallback renderer_unavailable=FrameContractMismatch presentation=false \
+         bounded_local_rebuild=false dense_frame=false\n",
+    );
+    Ok(out)
+}
+
+pub fn dump_render_layout(
+    renderer: &super::CompiledRenderer,
+    placement: &crate::layout::RendererPlacement,
+) -> String {
+    let framebuffer_half = placement.framebuffer_bytes / 2;
+    let framebuffer_back = placement
+        .framebuffer_base
+        .checked_add(framebuffer_half)
+        .expect("verified renderer placement framebuffer address");
+    let mut out = format!(
+        "RenderLayout v1\n  Renderer index={}\n\
+         \x20   FrameProgram base={:#x} size={}\n\
+         \x20   State base={:#x} size={}\n\
+         \x20   Coordinator core={} actor={}\n",
+        placement.index,
+        placement.frameprog_base,
+        placement.frameprog_size,
+        placement.state_base,
+        placement.state_size,
+        placement.coordinator_core,
+        placement.coordinator_actor,
+    );
+    for worker in &placement.per_core {
+        out.push_str(&format!(
+            "    Worker index={} core={} actor={} tiles=[{},{}) workspace_base={:#x} \
+             workspace_bytes={}\n",
+            worker.worker_index,
+            worker.core,
+            worker.actor,
+            worker.tiles_start,
+            worker.tiles_end,
+            worker.workspace_base,
+            worker.workspace_bytes,
+        ));
+    }
+    out.push_str(&format!(
+        "    Buffer front={:#x} back={:#x} bytes_each={}\n\
+         \x20   Probe base={:#x} bytes={}\n\
+         \x20   Telemetry offset={} production_bytes=0 instrumented_bytes={}\n\
+         \x20   Failure presentation=false error={}\n",
+        placement.framebuffer_base,
+        framebuffer_back,
+        framebuffer_half,
+        placement.probe_base,
+        placement.probe_bytes,
+        renderer.mutable_layout.telemetry.offset,
+        renderer.mutable_layout.telemetry.bytes,
+        super::RENDERER_UNAVAILABLE_FALLBACK,
+    ));
+    out
 }
 
 #[cfg(test)]

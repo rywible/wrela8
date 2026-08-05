@@ -17,6 +17,7 @@ use super::{
     reject_unlowerable_cross_core_shapes,
 };
 
+#[derive(Clone)]
 pub(crate) struct ActorInit {
     pub(crate) key: String,
     pub(crate) params: Vec<crate::sema::types::DeclParam>,
@@ -52,6 +53,46 @@ pub(crate) fn actor_inits(
             }
         }
     }
+    let mut specialized = BTreeMap::new();
+    for (addr, module) in modules {
+        specialized.insert(
+            addr.clone(),
+            crate::sema::specialize::specialize(module)
+                .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?,
+        );
+    }
+    let by_addr: Vec<(Vec<String>, &Module)> = specialized
+        .iter()
+        .map(|(addr, module)| (addr.split('.').map(str::to_string).collect(), module))
+        .collect();
+    let shapes = crate::sema::imports::closure_type_shapes(&by_addr);
+    for module in specialized.values() {
+        let targets = crate::sema::imports::imported_type_targets(module, &shapes);
+        let mut substitutions: BTreeMap<Vec<String>, BTreeMap<String, String>> = BTreeMap::new();
+        for (local, (target_module, target_name)) in &targets {
+            if local != target_name {
+                substitutions
+                    .entry(target_module.clone())
+                    .or_default()
+                    .insert(target_name.clone(), local.clone());
+            }
+        }
+        for (local, (target_module, target_name)) in &targets {
+            if local == target_name || out.contains_key(local) {
+                continue;
+            }
+            let Some(mut init) = out.get(target_name).cloned() else {
+                continue;
+            };
+            if let Some(substitutions) = substitutions.get(target_module) {
+                for parameter in &mut init.params {
+                    crate::sema::types::rekey_type_names(&mut parameter.ty, substitutions);
+                }
+                crate::sema::types::rekey_type_names(&mut init.ret, substitutions);
+            }
+            out.insert(local.clone(), init);
+        }
+    }
     Ok(out)
 }
 
@@ -78,6 +119,7 @@ pub(crate) enum BootInitArg {
         count: u64,
         slot_bytes: u64,
     },
+    WordArray(Vec<u64>),
 }
 
 impl BootInitArg {
@@ -130,6 +172,11 @@ impl BootInitArg {
                  `emit_boot_init_arg`"
                     .to_string(),
             )),
+            BootInitArg::WordArray(_) => Err(LayoutError::new(
+                "internal error: `WordArray` has no single resolve word — emit via \
+                 `emit_boot_init_arg`"
+                    .to_string(),
+            )),
         }
     }
 }
@@ -178,10 +225,10 @@ pub(crate) fn boot_init_arg_word(
         Value::Bool(b) => u64::from(*b),
         Value::Char(c) => *c as u32 as u64,
         Value::Unit => 0,
+        Value::F32(value) => u64::from(value.to_bits()),
+        Value::F64(value) => value.to_bits(),
         Value::ImageDecl(decl) => return image_decl_handle_word(space, decl),
-        Value::F32(_)
-        | Value::F64(_)
-        | Value::Str(_)
+        Value::Str(_)
         | Value::Bytes(_)
         | Value::Tuple(_)
         | Value::Array(_)
@@ -326,7 +373,16 @@ fn one_boot_init_call(
 
     let name = render_type(decl_type);
     let space = HandleSpace::from_graph(graph);
-    let Some(init) = inits.get(&name) else {
+    let generic_renderer_init =
+        [("Renderer[", "Renderer")]
+            .into_iter()
+            .find_map(|(prefix, generic)| {
+                name.strip_prefix(prefix)
+                    .filter(|rest| rest.ends_with(']'))
+                    .and_then(|_| inits.get(generic))
+            });
+    let exact_init = inits.get(&name);
+    let Some(init) = exact_init.or(generic_renderer_init) else {
         check_field_wired_args(kind, &name, decl_args, space)?;
         return Ok(None);
     };
@@ -535,6 +591,50 @@ fn one_boot_init_call(
                 render_type(&p.ty),
             )));
         }
+        if matches!(&p.ty, Type::Named(name, args) if name == "RendererWorkers" && args.is_empty())
+            && let Value::Struct(values) = &a.value
+        {
+            let words = values
+                .iter()
+                .map(|value| boot_init_arg_word(value, space))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: generated RendererWorkers contains a non-handle value",
+                    )
+                })?;
+            if words.len() != wrela_machine::CORE_SLOTS {
+                return Err(LayoutError::new(format!(
+                    "internal error: generated RendererWorkers has {} handles, expected {}",
+                    words.len(),
+                    wrela_machine::CORE_SLOTS
+                )));
+            }
+            args.push(BootInitArg::WordArray(words));
+            continue;
+        }
+        if matches!(&p.ty, Type::Named(name, args) if name == "RendererFrameBounds" && args.is_empty())
+            && let Value::Struct(values) = &a.value
+        {
+            let words = values
+                .iter()
+                .map(|value| boot_init_arg_word(value, space))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: generated RendererFrameBounds contains a non-scalar value",
+                    )
+                })?;
+            if words.len() != crate::pixels::glue::RENDERER_FRAME_BOUNDS_WORDS {
+                return Err(LayoutError::new(format!(
+                    "internal error: generated RendererFrameBounds has {} values, expected {}",
+                    words.len(),
+                    crate::pixels::glue::RENDERER_FRAME_BOUNDS_WORDS,
+                )));
+            }
+            args.push(BootInitArg::WordArray(words));
+            continue;
+        }
         let Some(word) = boot_init_arg_word(&a.value, space) else {
             return Err(LayoutError::new(format!(
                 "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
@@ -550,7 +650,11 @@ fn one_boot_init_call(
         args.push(BootInitArg::Word(word));
     }
     Ok(Some(BootInitCall {
-        key: init.key.clone(),
+        key: if exact_init.is_some() {
+            init.key.clone()
+        } else {
+            format!("struct:{name}.init")
+        },
         args,
         fallible: matches!(
             &init.ret,
@@ -652,8 +756,13 @@ impl RuntimeWiring {
                 let keys = methods
                     .iter()
                     .map(|m| {
+                        let owner = if name.starts_with("Renderer[") {
+                            format!("struct:{name}")
+                        } else {
+                            name.clone()
+                        };
                         (
-                            format!("{name}.{}", m.name),
+                            format!("{owner}.{}", m.name),
                             m.is_async,
                             m.reply_is_aggregate,
                         )

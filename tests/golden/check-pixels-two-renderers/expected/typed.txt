@@ -1,3 +1,7 @@
+Module path=__image_pixels
+Program
+  Const name=N_RENDERERS ty=usize
+    Int text=0 ty=usize
 Module path=field
 Program
   Fn name=abs_scalar ret=f32
@@ -1255,6 +1259,322 @@ Program
   Struct name=Vec4
 Module path=render
 Program
+  Fn name=__wrela_pixels_bootstrap_camera_light_post ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=11 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_csg ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=8 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_dispatch ret=Result[u32, RenderError]
+    Param name=table mode=read ty=u32
+    Param name=tag mode=read ty=u32
+    Body
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=1 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=32 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=2 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=8 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=2 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=20 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=30 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          Binary op=== ty=bool
+            Local name=table ty=u32
+            Int text=3 ty=u32
+          Binary op=== ty=bool
+            Local name=tag ty=u32
+            Int text=1 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=4 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=3 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=5 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=3 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          Binary op=== ty=bool
+            Local name=table ty=u32
+            Int text=6 ty=u32
+          Binary op=== ty=bool
+            Local name=tag ty=u32
+            Int text=1 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=7 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=14 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=8 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=6 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=9 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=1 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=4 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=9 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=10 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=17 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=9 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=20 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=28 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=table ty=u32
+              Int text=9 ty=u32
+            Binary op=>= ty=bool
+              Local name=tag ty=u32
+              Int text=30 ty=u32
+          Binary op=<= ty=bool
+            Local name=tag ty=u32
+            Int text=35 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      If
+        And ty=bool
+          Binary op=== ty=bool
+            Local name=table ty=u32
+            Int text=11 ty=u32
+          Binary op=== ty=bool
+            Local name=tag ty=u32
+            Int text=1 ty=u32
+        Then
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
+              Local name=tag ty=u32
+      Return
+        EnumConstruct enum=Result variant=Err ty=Result[u32, RenderError]
+          EnumConstruct enum=RenderError variant=InternalInvariant ty=RenderError
+            StructLiteral name=RenderInvariant ty=RenderInvariant
+              Field name=kind
+                Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_event ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=7 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_feature ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=4 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_field ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=2 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_fixed_domain ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=9 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_material ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=5 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_object ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=3 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_parameter ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=6 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_bootstrap_scalar ret=Result[u32, RenderError]
+    Param name=tag mode=read ty=u32
+    Body
+      Return
+        Call key=__wrela_pixels_bootstrap_dispatch ty=Result[u32, RenderError]
+          Int text=1 ty=u32
+          Local name=tag ty=u32
+  Fn name=__wrela_pixels_p5_finite ret=bool
+    Param name=value mode=read ty=f32
+    Body
+      Let name=max_finite ty=f32
+        Float text=340282346638528859811704183484516925440.0 ty=f32
+      Return
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Local name=value ty=f32
+              Local name=value ty=f32
+            Binary op=<= ty=bool
+              Local name=value ty=f32
+              Local name=max_finite ty=f32
+          Binary op=>= ty=bool
+            Local name=value ty=f32
+            Neg ty=f32
+              Local name=max_finite ty=f32
+  Fn name=__wrela_pixels_present_placeholder ret=Result[unit, RenderError]
+    Body
+      Return
+        EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+          EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
+            Call key=RenderPath.renderer_unavailable ty=RenderPath
   Struct name=AoConfig
     AssocFn name=deterministic_v1 ret=AoConfig
       Body
@@ -1270,6 +1590,69 @@ Program
             Field name=enabled
               Local name=enabled ty=bool
   Struct name=Camera
+    Method name=__wrela_p5_finite ret=bool
+      Receiver mode=read ty=Camera
+      Body
+        Return
+          And ty=bool
+            And ty=bool
+              And ty=bool
+                And ty=bool
+                  And ty=bool
+                    And ty=bool
+                      And ty=bool
+                        And ty=bool
+                          And ty=bool
+                            And ty=bool
+                              And ty=bool
+                                Call key=__wrela_pixels_p5_finite ty=bool
+                                  Field name=x ty=f32
+                                    Field name=eye ty=Vec3
+                                      Local name=self ty=Camera
+                                Call key=__wrela_pixels_p5_finite ty=bool
+                                  Field name=y ty=f32
+                                    Field name=eye ty=Vec3
+                                      Local name=self ty=Camera
+                              Call key=__wrela_pixels_p5_finite ty=bool
+                                Field name=z ty=f32
+                                  Field name=eye ty=Vec3
+                                    Local name=self ty=Camera
+                            Call key=__wrela_pixels_p5_finite ty=bool
+                              Field name=x ty=f32
+                                Field name=forward ty=Vec3
+                                  Local name=self ty=Camera
+                          Call key=__wrela_pixels_p5_finite ty=bool
+                            Field name=y ty=f32
+                              Field name=forward ty=Vec3
+                                Local name=self ty=Camera
+                        Call key=__wrela_pixels_p5_finite ty=bool
+                          Field name=z ty=f32
+                            Field name=forward ty=Vec3
+                              Local name=self ty=Camera
+                      Call key=__wrela_pixels_p5_finite ty=bool
+                        Field name=x ty=f32
+                          Field name=right ty=Vec3
+                            Local name=self ty=Camera
+                    Call key=__wrela_pixels_p5_finite ty=bool
+                      Field name=y ty=f32
+                        Field name=right ty=Vec3
+                          Local name=self ty=Camera
+                  Call key=__wrela_pixels_p5_finite ty=bool
+                    Field name=z ty=f32
+                      Field name=right ty=Vec3
+                        Local name=self ty=Camera
+                Call key=__wrela_pixels_p5_finite ty=bool
+                  Field name=x ty=f32
+                    Field name=up ty=Vec3
+                      Local name=self ty=Camera
+              Call key=__wrela_pixels_p5_finite ty=bool
+                Field name=y ty=f32
+                  Field name=up ty=Vec3
+                    Local name=self ty=Camera
+            Call key=__wrela_pixels_p5_finite ty=bool
+              Field name=z ty=f32
+                Field name=up ty=Vec3
+                  Local name=self ty=Camera
     AssocFn name=canonical ret=Camera
       Param name=eye mode=read ty=Vec3
       Body
@@ -1845,6 +2228,93 @@ Program
               Float text=0.25 ty=f32
   Struct name=DisplayError
   Struct name=Light
+    Method name=__wrela_p5_finite ret=bool
+      Receiver mode=read ty=Light
+      Body
+        Return
+          And ty=bool
+            And ty=bool
+              And ty=bool
+                And ty=bool
+                  And ty=bool
+                    And ty=bool
+                      And ty=bool
+                        And ty=bool
+                          And ty=bool
+                            And ty=bool
+                              And ty=bool
+                                And ty=bool
+                                  And ty=bool
+                                    And ty=bool
+                                      Call key=__wrela_pixels_p5_finite ty=bool
+                                        Field name=x ty=f32
+                                          Field name=position ty=Vec3
+                                            Local name=self ty=Light
+                                      Call key=__wrela_pixels_p5_finite ty=bool
+                                        Field name=y ty=f32
+                                          Field name=position ty=Vec3
+                                            Local name=self ty=Light
+                                    Call key=__wrela_pixels_p5_finite ty=bool
+                                      Field name=z ty=f32
+                                        Field name=position ty=Vec3
+                                          Local name=self ty=Light
+                                  Call key=__wrela_pixels_p5_finite ty=bool
+                                    Field name=x ty=f32
+                                      Field name=direction ty=Vec3
+                                        Local name=self ty=Light
+                                Call key=__wrela_pixels_p5_finite ty=bool
+                                  Field name=y ty=f32
+                                    Field name=direction ty=Vec3
+                                      Local name=self ty=Light
+                              Call key=__wrela_pixels_p5_finite ty=bool
+                                Field name=z ty=f32
+                                  Field name=direction ty=Vec3
+                                    Local name=self ty=Light
+                            Call key=__wrela_pixels_p5_finite ty=bool
+                              Field name=x ty=f32
+                                Field name=axis_u ty=Vec3
+                                  Local name=self ty=Light
+                          Call key=__wrela_pixels_p5_finite ty=bool
+                            Field name=y ty=f32
+                              Field name=axis_u ty=Vec3
+                                Local name=self ty=Light
+                        Call key=__wrela_pixels_p5_finite ty=bool
+                          Field name=z ty=f32
+                            Field name=axis_u ty=Vec3
+                              Local name=self ty=Light
+                      Call key=__wrela_pixels_p5_finite ty=bool
+                        Field name=x ty=f32
+                          Field name=axis_v ty=Vec3
+                            Local name=self ty=Light
+                    Call key=__wrela_pixels_p5_finite ty=bool
+                      Field name=y ty=f32
+                        Field name=axis_v ty=Vec3
+                          Local name=self ty=Light
+                  Call key=__wrela_pixels_p5_finite ty=bool
+                    Field name=z ty=f32
+                      Field name=axis_v ty=Vec3
+                        Local name=self ty=Light
+                Call key=__wrela_pixels_p5_finite ty=bool
+                  Field name=r ty=f32
+                    Field name=radiance ty=Rgb
+                      Local name=self ty=Light
+              Call key=__wrela_pixels_p5_finite ty=bool
+                Field name=g ty=f32
+                  Field name=radiance ty=Rgb
+                    Local name=self ty=Light
+            Call key=__wrela_pixels_p5_finite ty=bool
+              Field name=b ty=f32
+                Field name=radiance ty=Rgb
+                  Local name=self ty=Light
+    Method name=__wrela_p5_matches_kind ret=bool
+      Receiver mode=read ty=Light
+      Param name=expected mode=read ty=usize
+      Body
+        Return
+          Binary op=== ty=bool
+            Field name=kind ty=usize
+              Local name=self ty=Light
+            Local name=expected ty=usize
     AssocFn name=directional ret=Light
       Param name=direction mode=read ty=Vec3
       Param name=radiance mode=read ty=Rgb
@@ -1859,6 +2329,8 @@ Program
               Float text=0.0 ty=f32
         Return
           StructLiteral name=Light ty=Light
+            Field name=kind
+              Int text=2 ty=usize
             Field name=position
               Local name=zero ty=Vec3
             Field name=direction
@@ -1885,6 +2357,8 @@ Program
               Float text=0.0 ty=f32
         Return
           StructLiteral name=Light ty=Light
+            Field name=kind
+              Int text=4 ty=usize
             Field name=position
               Local name=center ty=Vec3
             Field name=direction
@@ -1909,6 +2383,8 @@ Program
               Float text=0.0 ty=f32
         Return
           StructLiteral name=Light ty=Light
+            Field name=kind
+              Int text=1 ty=usize
             Field name=position
               Local name=position ty=Vec3
             Field name=direction
@@ -1935,6 +2411,8 @@ Program
               Float text=0.0 ty=f32
         Return
           StructLiteral name=Light ty=Light
+            Field name=kind
+              Int text=3 ty=usize
             Field name=position
               Local name=center ty=Vec3
             Field name=direction
@@ -1965,6 +2443,8 @@ Program
               Float text=0.0 ty=f32
         Return
           StructLiteral name=Light ty=Light
+            Field name=kind
+              Int text=0 ty=usize
             Field name=position
               Local name=zero ty=Vec3
             Field name=direction
@@ -2234,6 +2714,234 @@ Program
   Struct name=RenderCapacity
   Struct name=RenderInvariant
   Struct name=RenderPath
+    Method name=is_renderer_unavailable ret=bool
+      Receiver mode=read ty=RenderPath
+      Body
+        Return
+          Binary op=== ty=bool
+            Field name=component ty=u32
+              Local name=self ty=RenderPath
+            Int text=1 ty=u32
+    AssocFn name=renderer_unavailable ret=RenderPath
+      Body
+        Return
+          StructLiteral name=RenderPath ty=RenderPath
+            Field name=component
+              Int text=1 ty=u32
+  Struct name=RendererFrameBounds
+    Method name=__wrela_p5_accepts_camera ret=bool
+      Receiver mode=read ty=RendererFrameBounds
+      Param name=camera mode=read ty=Camera
+      Body
+        Return
+          And ty=bool
+            And ty=bool
+              And ty=bool
+                And ty=bool
+                  And ty=bool
+                    And ty=bool
+                      And ty=bool
+                        And ty=bool
+                          And ty=bool
+                            And ty=bool
+                              And ty=bool
+                                And ty=bool
+                                  And ty=bool
+                                    And ty=bool
+                                      And ty=bool
+                                        And ty=bool
+                                          And ty=bool
+                                            And ty=bool
+                                              And ty=bool
+                                                And ty=bool
+                                                  And ty=bool
+                                                    And ty=bool
+                                                      And ty=bool
+                                                        Binary op=>= ty=bool
+                                                          Field name=x ty=f32
+                                                            Field name=eye ty=Vec3
+                                                              Local name=camera ty=Camera
+                                                          Field name=camera_eye_x_min ty=f32
+                                                            Local name=self ty=RendererFrameBounds
+                                                        Binary op=<= ty=bool
+                                                          Field name=x ty=f32
+                                                            Field name=eye ty=Vec3
+                                                              Local name=camera ty=Camera
+                                                          Field name=camera_eye_x_max ty=f32
+                                                            Local name=self ty=RendererFrameBounds
+                                                      Binary op=>= ty=bool
+                                                        Field name=y ty=f32
+                                                          Field name=eye ty=Vec3
+                                                            Local name=camera ty=Camera
+                                                        Field name=camera_eye_y_min ty=f32
+                                                          Local name=self ty=RendererFrameBounds
+                                                    Binary op=<= ty=bool
+                                                      Field name=y ty=f32
+                                                        Field name=eye ty=Vec3
+                                                          Local name=camera ty=Camera
+                                                      Field name=camera_eye_y_max ty=f32
+                                                        Local name=self ty=RendererFrameBounds
+                                                  Binary op=>= ty=bool
+                                                    Field name=z ty=f32
+                                                      Field name=eye ty=Vec3
+                                                        Local name=camera ty=Camera
+                                                    Field name=camera_eye_z_min ty=f32
+                                                      Local name=self ty=RendererFrameBounds
+                                                Binary op=<= ty=bool
+                                                  Field name=z ty=f32
+                                                    Field name=eye ty=Vec3
+                                                      Local name=camera ty=Camera
+                                                  Field name=camera_eye_z_max ty=f32
+                                                    Local name=self ty=RendererFrameBounds
+                                              Binary op=>= ty=bool
+                                                Field name=x ty=f32
+                                                  Field name=forward ty=Vec3
+                                                    Local name=camera ty=Camera
+                                                Field name=camera_forward_x_min ty=f32
+                                                  Local name=self ty=RendererFrameBounds
+                                            Binary op=<= ty=bool
+                                              Field name=x ty=f32
+                                                Field name=forward ty=Vec3
+                                                  Local name=camera ty=Camera
+                                              Field name=camera_forward_x_max ty=f32
+                                                Local name=self ty=RendererFrameBounds
+                                          Binary op=>= ty=bool
+                                            Field name=y ty=f32
+                                              Field name=forward ty=Vec3
+                                                Local name=camera ty=Camera
+                                            Field name=camera_forward_y_min ty=f32
+                                              Local name=self ty=RendererFrameBounds
+                                        Binary op=<= ty=bool
+                                          Field name=y ty=f32
+                                            Field name=forward ty=Vec3
+                                              Local name=camera ty=Camera
+                                          Field name=camera_forward_y_max ty=f32
+                                            Local name=self ty=RendererFrameBounds
+                                      Binary op=>= ty=bool
+                                        Field name=z ty=f32
+                                          Field name=forward ty=Vec3
+                                            Local name=camera ty=Camera
+                                        Field name=camera_forward_z_min ty=f32
+                                          Local name=self ty=RendererFrameBounds
+                                    Binary op=<= ty=bool
+                                      Field name=z ty=f32
+                                        Field name=forward ty=Vec3
+                                          Local name=camera ty=Camera
+                                      Field name=camera_forward_z_max ty=f32
+                                        Local name=self ty=RendererFrameBounds
+                                  Binary op=>= ty=bool
+                                    Field name=x ty=f32
+                                      Field name=right ty=Vec3
+                                        Local name=camera ty=Camera
+                                    Field name=camera_right_x_min ty=f32
+                                      Local name=self ty=RendererFrameBounds
+                                Binary op=<= ty=bool
+                                  Field name=x ty=f32
+                                    Field name=right ty=Vec3
+                                      Local name=camera ty=Camera
+                                  Field name=camera_right_x_max ty=f32
+                                    Local name=self ty=RendererFrameBounds
+                              Binary op=>= ty=bool
+                                Field name=y ty=f32
+                                  Field name=right ty=Vec3
+                                    Local name=camera ty=Camera
+                                Field name=camera_right_y_min ty=f32
+                                  Local name=self ty=RendererFrameBounds
+                            Binary op=<= ty=bool
+                              Field name=y ty=f32
+                                Field name=right ty=Vec3
+                                  Local name=camera ty=Camera
+                              Field name=camera_right_y_max ty=f32
+                                Local name=self ty=RendererFrameBounds
+                          Binary op=>= ty=bool
+                            Field name=z ty=f32
+                              Field name=right ty=Vec3
+                                Local name=camera ty=Camera
+                            Field name=camera_right_z_min ty=f32
+                              Local name=self ty=RendererFrameBounds
+                        Binary op=<= ty=bool
+                          Field name=z ty=f32
+                            Field name=right ty=Vec3
+                              Local name=camera ty=Camera
+                          Field name=camera_right_z_max ty=f32
+                            Local name=self ty=RendererFrameBounds
+                      Binary op=>= ty=bool
+                        Field name=x ty=f32
+                          Field name=up ty=Vec3
+                            Local name=camera ty=Camera
+                        Field name=camera_up_x_min ty=f32
+                          Local name=self ty=RendererFrameBounds
+                    Binary op=<= ty=bool
+                      Field name=x ty=f32
+                        Field name=up ty=Vec3
+                          Local name=camera ty=Camera
+                      Field name=camera_up_x_max ty=f32
+                        Local name=self ty=RendererFrameBounds
+                  Binary op=>= ty=bool
+                    Field name=y ty=f32
+                      Field name=up ty=Vec3
+                        Local name=camera ty=Camera
+                    Field name=camera_up_y_min ty=f32
+                      Local name=self ty=RendererFrameBounds
+                Binary op=<= ty=bool
+                  Field name=y ty=f32
+                    Field name=up ty=Vec3
+                      Local name=camera ty=Camera
+                  Field name=camera_up_y_max ty=f32
+                    Local name=self ty=RendererFrameBounds
+              Binary op=>= ty=bool
+                Field name=z ty=f32
+                  Field name=up ty=Vec3
+                    Local name=camera ty=Camera
+                Field name=camera_up_z_min ty=f32
+                  Local name=self ty=RendererFrameBounds
+            Binary op=<= ty=bool
+              Field name=z ty=f32
+                Field name=up ty=Vec3
+                  Local name=camera ty=Camera
+              Field name=camera_up_z_max ty=f32
+                Local name=self ty=RendererFrameBounds
+  Struct name=RendererWorker
+    Method name=run_job ret=u64
+      Receiver mode=mut ty=RendererWorker
+      Param name=job mode=read ty=u64
+      Body
+        Return
+          Local name=job ty=u64
+    Init ret=unit
+      Receiver mode=mut ty=RendererWorker
+      Param name=renderer_index mode=read ty=u32
+      Param name=frameprog_base mode=read ty=usize
+      Param name=workspace_base mode=read ty=usize
+      Param name=workspace_bytes mode=read ty=usize
+      Param name=tiles_start mode=read ty=u32
+      Param name=tiles_end mode=read ty=u32
+      Body
+        Assign
+          Field name=renderer_index ty=u32
+            Local name=self ty=RendererWorker
+          Local name=renderer_index ty=u32
+        Assign
+          Field name=frameprog_base ty=usize
+            Local name=self ty=RendererWorker
+          Local name=frameprog_base ty=usize
+        Assign
+          Field name=workspace_base ty=usize
+            Local name=self ty=RendererWorker
+          Local name=workspace_base ty=usize
+        Assign
+          Field name=workspace_bytes ty=usize
+            Local name=self ty=RendererWorker
+          Local name=workspace_bytes ty=usize
+        Assign
+          Field name=tiles_start ty=u32
+            Local name=self ty=RendererWorker
+          Local name=tiles_start ty=u32
+        Assign
+          Field name=tiles_end ty=u32
+            Local name=self ty=RendererWorker
+          Local name=tiles_end ty=u32
+  Struct name=RendererWorkers
   Struct name=RgbRange
     AssocFn name=black_to_hdr_white ret=RgbRange
       Body
@@ -2259,6 +2967,15 @@ Program
   Struct name=TileId
 Module path=display
 Program
+  Fn name=__wrela_pixels_display_present ret=unit
+    Param name=sequence mode=read ty=u64
+    Body
+      Assign
+        Field name=present ty=u64
+          Static name=DISPLAY_DOORBELL ty=DisplayDoorbell
+        Local name=sequence ty=u64
+      Return
+        Unit ty=unit
   Struct name=Display
     Init ret=Result[unit, BootError]
       Receiver mode=mut ty=Display
@@ -2299,6 +3016,8 @@ Program
             Str text="check-pixels-two-renderers" ty=Static[Str]
           Arg label=target
             EnumConstruct enum=Target variant=wrela_machine_v1 ty=Target
+          Arg label=cores
+            Int text=2 ty=i64
       Let name=device_a ty=ImageDecl
         Intrinsic key=Image.device type_arg=DisplayDevice ty=ImageDecl
           Arg label=transport
@@ -2313,6 +3032,8 @@ Program
             Int text=32 ty=i64
           Arg label=refresh_hz
             Int text=60 ty=i64
+          Arg label=core
+            Int text=0 ty=i64
       Let name=device_b ty=ImageDecl
         Intrinsic key=Image.device type_arg=DisplayDevice ty=ImageDecl
           Arg label=transport
@@ -2327,6 +3048,8 @@ Program
             Int text=32 ty=i64
           Arg label=refresh_hz
             Int text=60 ty=i64
+          Arg label=core
+            Int text=0 ty=i64
       Let name=renderer_a ty=ImageDecl[Renderer[Params]]
         Intrinsic key=Image.renderer type_arg=Params ty=ImageDecl[Renderer[Params]]
           Arg label=field
@@ -2495,6 +3218,740 @@ Program
           EnumConstruct enum=Failure variant=Halt ty=Failure
       Return
         Intrinsic key=Image.seal ty=Image
+  Fn name=generated_renderer_count ret=usize
+    Body
+      Return
+        Const name=N_RENDERERS ty=usize
+  Instantiation key=struct:RenderFrame[Params]
+    Struct
+  Instantiation key=struct:RenderedFrame[Params]
+    Struct
+  Instantiation key=struct:Renderer[Params]
+    Struct
+      Method name=__bootstrap_worker_path_0 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_0 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_1 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_1 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_10 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_10 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_11 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_11 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_12 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_12 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_13 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_13 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_14 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_14 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_15 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_15 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_16 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_16 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_17 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_17 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_18 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_18 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_19 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_19 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_2 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_2 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_20 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_20 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_21 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_21 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_22 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_22 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_23 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_23 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_24 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_24 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_25 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_25 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_26 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_26 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_27 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_27 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_28 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_28 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_29 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_29 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_3 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_3 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_30 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_30 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_31 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_31 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_4 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_4 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_5 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_5 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_6 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_6 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_7 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_7 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_8 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_8 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__bootstrap_worker_path_9 ret=Result[u64, CallError[never]]
+        Receiver mode=mut ty=Renderer[Params]
+        Body
+          Return
+            Await ty=Result[u64, CallError[never]]
+              Call key=RendererWorker.run_job ty=u64
+                Receiver
+                  Field name=worker_9 ty=Actor[RendererWorker]
+                    Field name=workers ty=RendererWorkers
+                      Local name=self ty=Renderer[Params]
+                Int text=0 ty=u64
+      Method name=__unavailable ret=Result[RenderedFrame[Params], RenderError]
+        Receiver mode=read ty=Renderer[Params]
+        Param name=frame mode=take ty=RenderFrame[Params]
+        Body
+          Return
+            EnumConstruct enum=Result variant=Err ty=Result[RenderedFrame[Params], RenderError]
+              EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
+                Call key=RenderPath.renderer_unavailable ty=RenderPath
+      Method name=__validate_and_unavailable ret=Result[RenderedFrame[Params], RenderError]
+        Receiver mode=read ty=Renderer[Params]
+        Param name=frame mode=take ty=RenderFrame[Params]
+        Body
+          Let name=fixed ty=Result[unit, RenderError]
+            Call key=struct:Renderer[Params].__validate_fixed_frame ty=Result[unit, RenderError]
+              Receiver
+                Local name=self ty=Renderer[Params]
+              Local name=frame ty=RenderFrame[Params]
+          Match
+            Local name=fixed ty=Result[unit, RenderError]
+            Case
+              VariantPattern enum=Result variant=Err ty=Result[unit, RenderError]
+                Binding name=error ty=RenderError
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[RenderedFrame[Params], RenderError]
+                  Arg mode=take
+                    Local name=error ty=RenderError
+            Case
+              VariantPattern enum=Result variant=Ok ty=Result[unit, RenderError]
+                Wildcard ty=unit
+              Pass
+          Return
+            Call key=struct:Renderer[Params].__unavailable ty=Result[RenderedFrame[Params], RenderError]
+              Receiver
+                Local name=self ty=Renderer[Params]
+              Arg mode=take
+                Local name=frame ty=RenderFrame[Params]
+      Method name=__validate_fixed_frame ret=Result[unit, RenderError]
+        Receiver mode=read ty=Renderer[Params]
+        Param name=frame mode=read ty=RenderFrame[Params]
+        Body
+          If
+            Not ty=bool
+              Call key=__wrela_pixels_p5_finite ty=bool
+                Field name=exposure ty=f32
+                  Local name=frame ty=RenderFrame[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=NonFiniteInput ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=2 ty=u32
+          If
+            Or ty=bool
+              Binary op=< ty=bool
+                Field name=exposure ty=f32
+                  Local name=frame ty=RenderFrame[Params]
+                Field name=exposure_min ty=f32
+                  Field name=bounds ty=RendererFrameBounds
+                    Local name=self ty=Renderer[Params]
+              Binary op=> ty=bool
+                Field name=exposure ty=f32
+                  Local name=frame ty=RenderFrame[Params]
+                Field name=exposure_max ty=f32
+                  Field name=bounds ty=RendererFrameBounds
+                    Local name=self ty=Renderer[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=ParameterOutOfRange ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=2 ty=u32
+          If
+            Or ty=bool
+              Or ty=bool
+                Not ty=bool
+                  Call key=__wrela_pixels_p5_finite ty=bool
+                    Field name=r ty=f32
+                      Field name=environment ty=Rgb
+                        Local name=frame ty=RenderFrame[Params]
+                Not ty=bool
+                  Call key=__wrela_pixels_p5_finite ty=bool
+                    Field name=g ty=f32
+                      Field name=environment ty=Rgb
+                        Local name=frame ty=RenderFrame[Params]
+              Not ty=bool
+                Call key=__wrela_pixels_p5_finite ty=bool
+                  Field name=b ty=f32
+                    Field name=environment ty=Rgb
+                      Local name=frame ty=RenderFrame[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=NonFiniteInput ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=3 ty=u32
+          If
+            Or ty=bool
+              Or ty=bool
+                Or ty=bool
+                  Or ty=bool
+                    Or ty=bool
+                      Binary op=< ty=bool
+                        Field name=r ty=f32
+                          Field name=environment ty=Rgb
+                            Local name=frame ty=RenderFrame[Params]
+                        Field name=environment_min_r ty=f32
+                          Field name=bounds ty=RendererFrameBounds
+                            Local name=self ty=Renderer[Params]
+                      Binary op=> ty=bool
+                        Field name=r ty=f32
+                          Field name=environment ty=Rgb
+                            Local name=frame ty=RenderFrame[Params]
+                        Field name=environment_max_r ty=f32
+                          Field name=bounds ty=RendererFrameBounds
+                            Local name=self ty=Renderer[Params]
+                    Binary op=< ty=bool
+                      Field name=g ty=f32
+                        Field name=environment ty=Rgb
+                          Local name=frame ty=RenderFrame[Params]
+                      Field name=environment_min_g ty=f32
+                        Field name=bounds ty=RendererFrameBounds
+                          Local name=self ty=Renderer[Params]
+                  Binary op=> ty=bool
+                    Field name=g ty=f32
+                      Field name=environment ty=Rgb
+                        Local name=frame ty=RenderFrame[Params]
+                    Field name=environment_max_g ty=f32
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+                Binary op=< ty=bool
+                  Field name=b ty=f32
+                    Field name=environment ty=Rgb
+                      Local name=frame ty=RenderFrame[Params]
+                  Field name=environment_min_b ty=f32
+                    Field name=bounds ty=RendererFrameBounds
+                      Local name=self ty=Renderer[Params]
+              Binary op=> ty=bool
+                Field name=b ty=f32
+                  Field name=environment ty=Rgb
+                    Local name=frame ty=RenderFrame[Params]
+                Field name=environment_max_b ty=f32
+                  Field name=bounds ty=RendererFrameBounds
+                    Local name=self ty=Renderer[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=ParameterOutOfRange ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=3 ty=u32
+          If
+            Not ty=bool
+              Call key=Camera.__wrela_p5_finite ty=bool
+                Receiver
+                  Field name=camera ty=Camera
+                    Local name=frame ty=RenderFrame[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=NonFiniteInput ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=4 ty=u32
+          If
+            Not ty=bool
+              Call key=RendererFrameBounds.__wrela_p5_accepts_camera ty=bool
+                Receiver
+                  Field name=bounds ty=RendererFrameBounds
+                    Local name=self ty=Renderer[Params]
+                Field name=camera ty=Camera
+                  Local name=frame ty=RenderFrame[Params]
+            Then
+              Return
+                EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                  EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
+                    StructLiteral name=RenderPath ty=RenderPath
+                      Field name=component
+                        Int text=4 ty=u32
+          Let name=index ty=usize
+            Int text=0 ty=usize
+          While budget=8
+            Binary op=< ty=bool
+              Local name=index ty=usize
+              Int text=8 ty=usize
+            Body
+              Let name=light ty=Light
+                Index ty=Light
+                  Field name=lights ty=[Light; 8]
+                    Field name=lights ty=LightFrame
+                      Local name=frame ty=RenderFrame[Params]
+                  Local name=index ty=usize
+              If
+                Not ty=bool
+                  Call key=Light.__wrela_p5_finite ty=bool
+                    Receiver
+                      Local name=light ty=Light
+                Then
+                  Return
+                    EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                      EnumConstruct enum=RenderError variant=NonFiniteInput ty=RenderError
+                        StructLiteral name=RenderPath ty=RenderPath
+                          Field name=component
+                            Int text=5 ty=u32
+              Let name=expected_kind ty=usize
+                Int text=0 ty=usize
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=0 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_0 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=1 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_1 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=2 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_2 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=3 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_3 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=4 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_4 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=5 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_5 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=6 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_6 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=== ty=bool
+                  Local name=index ty=usize
+                  Int text=7 ty=usize
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Field name=light_kind_7 ty=usize
+                      Field name=bounds ty=RendererFrameBounds
+                        Local name=self ty=Renderer[Params]
+              If
+                Binary op=>= ty=bool
+                  Local name=index ty=usize
+                  Field name=light_capacity ty=usize
+                    Field name=bounds ty=RendererFrameBounds
+                      Local name=self ty=Renderer[Params]
+                Then
+                  Assign
+                    Local name=expected_kind ty=usize
+                    Int text=0 ty=usize
+              If
+                Not ty=bool
+                  Call key=Light.__wrela_p5_matches_kind ty=bool
+                    Receiver
+                      Local name=light ty=Light
+                    Local name=expected_kind ty=usize
+                Then
+                  Return
+                    EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
+                      EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
+                        StructLiteral name=RenderPath ty=RenderPath
+                          Field name=component
+                            Int text=5 ty=u32
+              Assign
+                Local name=index ty=usize
+                Binary op=+ ty=usize
+                  Local name=index ty=usize
+                  Int text=1 ty=usize
+          Return
+            EnumConstruct enum=Result variant=Ok ty=Result[unit, RenderError]
+              Unit ty=unit
+      Method name=render ret=Result[RenderedFrame[Params], RenderError]
+        Receiver mode=mut ty=Renderer[Params]
+        Param name=frame mode=take ty=RenderFrame[Params]
+        Body
+          Return
+            Call key=struct:Renderer[Params].__validate_and_unavailable ty=Result[RenderedFrame[Params], RenderError]
+              Receiver
+                Local name=self ty=Renderer[Params]
+              Arg mode=take
+                Local name=frame ty=RenderFrame[Params]
+      Init ret=unit
+        Receiver mode=mut ty=Renderer[Params]
+        Param name=workers mode=read ty=RendererWorkers
+        Param name=worker_count mode=read ty=u32
+        Param name=display mode=read ty=usize
+        Param name=renderer_index mode=read ty=u32
+        Param name=frameprog_base mode=read ty=usize
+        Param name=state_base mode=read ty=usize
+        Param name=state_bytes mode=read ty=usize
+        Param name=bounds mode=read ty=RendererFrameBounds
+        Body
+          Assign
+            Field name=workers ty=RendererWorkers
+              Local name=self ty=Renderer[Params]
+            Local name=workers ty=RendererWorkers
+          Assign
+            Field name=worker_count ty=u32
+              Local name=self ty=Renderer[Params]
+            Local name=worker_count ty=u32
+          Assign
+            Field name=display ty=usize
+              Local name=self ty=Renderer[Params]
+            Local name=display ty=usize
+          Assign
+            Field name=renderer_index ty=u32
+              Local name=self ty=Renderer[Params]
+            Local name=renderer_index ty=u32
+          Assign
+            Field name=frameprog_base ty=usize
+              Local name=self ty=Renderer[Params]
+            Local name=frameprog_base ty=usize
+          Assign
+            Field name=state_base ty=usize
+              Local name=self ty=Renderer[Params]
+            Local name=state_base ty=usize
+          Assign
+            Field name=state_bytes ty=usize
+              Local name=self ty=Renderer[Params]
+            Local name=state_bytes ty=usize
+          Assign
+            Field name=bounds ty=RendererFrameBounds
+              Local name=self ty=Renderer[Params]
+            Local name=bounds ty=RendererFrameBounds
 Module path=examples.two_renderer_scene
 Program
   PixelsFn key=examples.two_renderer_scene::shade kind=material input_index=0 params_index=1 params=Params material=MaterialId

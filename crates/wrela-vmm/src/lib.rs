@@ -153,6 +153,392 @@ pub(crate) fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Resu
             )));
         }
     }
+    if parsed.frameprog_sections.is_empty() {
+        let alignment = wrela_machine::pixels::FRAME_PROGRAM_HOT_ALIGNMENT_V1 as usize;
+        if img
+            .chunks_exact(alignment)
+            .any(|chunk| chunk.starts_with(&wrela_machine::pixels::FRAME_PROGRAM_MAGIC_V1))
+        {
+            return Err(VmmError::BadImage(
+                "image contains an aligned FrameProgram but the report has no canonical \
+                 frameprog section metadata"
+                    .to_string(),
+            ));
+        }
+    }
+    if let Some(section) = parsed.frameprog_sections.first() {
+        if section.base % wrela_machine::layout::PIXELS_REGION_ALIGNMENT != 0 {
+            return Err(VmmError::BadImage(format!(
+                "frameprog section base {:#x} is not {}-byte aligned",
+                section.base,
+                wrela_machine::layout::PIXELS_REGION_ALIGNMENT
+            )));
+        }
+        let start = section
+            .base
+            .checked_sub(wrela_machine::layout::IMAGE_BASE)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| {
+                VmmError::BadImage("frameprog section begins below the image base".to_string())
+            })?;
+        let size = usize::try_from(section.size)
+            .map_err(|_| VmmError::BadImage("frameprog section exceeds usize".to_string()))?;
+        let end = start
+            .checked_add(size)
+            .ok_or_else(|| VmmError::BadImage("frameprog section end overflows".to_string()))?;
+        let bytes = img.get(start..end).ok_or_else(|| {
+            VmmError::BadImage("frameprog section is outside the immutable image blob".to_string())
+        })?;
+        let programs = validate_frameprog_section(bytes).map_err(VmmError::BadImage)?;
+        if programs.len() != parsed.renderer_placements.len() {
+            return Err(VmmError::BadImage(format!(
+                "frameprog section contains {} program(s), but the report declares {} renderer \
+                 placement(s)",
+                programs.len(),
+                parsed.renderer_placements.len()
+            )));
+        }
+        for (placement, (offset, size)) in parsed.renderer_placements.iter().zip(programs) {
+            let base =
+                section
+                    .base
+                    .checked_add(u64::try_from(offset).map_err(|_| {
+                        VmmError::BadImage("frameprog offset exceeds u64".to_string())
+                    })?)
+                    .ok_or_else(|| {
+                        VmmError::BadImage("frameprog program base overflows".to_string())
+                    })?;
+            if placement.frameprog_base != base
+                || placement.frameprog_size
+                    != u64::try_from(size).map_err(|_| {
+                        VmmError::BadImage("frameprog program size exceeds u64".to_string())
+                    })?
+            {
+                return Err(VmmError::BadImage(format!(
+                    "renderer {} placement does not match its verified frame program range",
+                    placement.index
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_frameprog_section(bytes: &[u8]) -> Result<Vec<(usize, usize)>, String> {
+    let mut cursor = 0_usize;
+    let mut programs = 0_usize;
+    let mut ranges = Vec::new();
+    while cursor < bytes.len() {
+        if cursor % wrela_machine::pixels::FRAME_PROGRAM_HOT_ALIGNMENT_V1 as usize != 0 {
+            return Err(format!(
+                "frameprog program {programs} begins at misaligned section offset {cursor}"
+            ));
+        }
+        if bytes.len() - cursor < wrela_machine::pixels::FRAME_PROGRAM_HEADER_BYTES_V1 as usize {
+            return Err("frameprog section ends in a truncated program header".to_string());
+        }
+        let total = u32::from_le_bytes(
+            bytes[cursor + 16..cursor + 20]
+                .try_into()
+                .expect("header length checked"),
+        ) as usize;
+        let end = cursor
+            .checked_add(total)
+            .ok_or_else(|| "frameprog program end overflows".to_string())?;
+        let program = bytes
+            .get(cursor..end)
+            .ok_or_else(|| "frameprog program extends past its section".to_string())?;
+        validate_frame_program_v1(program)?;
+        let renderer_index = u16::from_le_bytes(
+            program[20..22]
+                .try_into()
+                .expect("FrameProgram header was validated"),
+        );
+        if usize::from(renderer_index) != programs {
+            return Err(format!(
+                "frameprog program {programs} declares noncanonical renderer index {renderer_index}"
+            ));
+        }
+        ranges.push((cursor, total));
+        programs += 1;
+        cursor = end;
+        if cursor < bytes.len() {
+            let alignment = wrela_machine::pixels::FRAME_PROGRAM_HOT_ALIGNMENT_V1 as usize;
+            let next = cursor
+                .checked_add((alignment - cursor % alignment) % alignment)
+                .ok_or_else(|| "frameprog inter-program alignment overflows".to_string())?;
+            if next > bytes.len() || bytes[cursor..next].iter().any(|byte| *byte != 0) {
+                return Err("frameprog inter-program padding is nonzero or truncated".to_string());
+            }
+            cursor = next;
+        }
+    }
+    if programs == 0 {
+        return Err("frameprog section contains no programs".to_string());
+    }
+    Ok(ranges)
+}
+
+fn validate_frame_program_v1(bytes: &[u8]) -> Result<(), String> {
+    use wrela_machine::pixels as format;
+
+    let header = format::FRAME_PROGRAM_HEADER_BYTES_V1 as usize;
+    if bytes.len() > format::FRAME_PROGRAM_MAX_BYTES_V1 as usize {
+        return Err("FrameProgram exceeds the machine byte ceiling".to_string());
+    }
+    if bytes.len() < header {
+        return Err("FrameProgram header is truncated".to_string());
+    }
+    if bytes[0..8] != format::FRAME_PROGRAM_MAGIC_V1 {
+        return Err("FrameProgram magic mismatch".to_string());
+    }
+    let u16_at =
+        |at: usize| u16::from_le_bytes(bytes[at..at + 2].try_into().expect("header checked"));
+    let u32_at =
+        |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("header checked"));
+    if u16_at(8) != format::FRAME_PROGRAM_VERSION_V1
+        || u16_at(10) != format::FRAME_PROGRAM_HEADER_BYTES_V1
+    {
+        return Err("FrameProgram version/header size mismatch".to_string());
+    }
+    if u16_at(22) != 0 || bytes[34..48].iter().any(|byte| *byte != 0) {
+        return Err("FrameProgram reserved header bytes are nonzero".to_string());
+    }
+    if u32_at(12) & !1 != 0 {
+        return Err("FrameProgram flags contain unsupported bits".to_string());
+    }
+    if u32_at(24) != format::FRAME_PROGRAM_NUMERIC_REVISION_V1
+        || u32_at(28) != format::FRAME_PROGRAM_FORMAL_REVISION_V1
+    {
+        return Err("FrameProgram numeric/formal revision is unsupported".to_string());
+    }
+    if u32_at(16) as usize != bytes.len() {
+        return Err("FrameProgram total_bytes disagrees with its section".to_string());
+    }
+    if u16_at(32) != format::FrameProgramTableKindV1::REQUIRED_COUNT {
+        return Err("FrameProgram directory count mismatch".to_string());
+    }
+    let directory_end = header
+        .checked_add(
+            format::FrameProgramTableKindV1::ALL
+                .len()
+                .checked_mul(format::FRAME_PROGRAM_TABLE_BYTES_V1 as usize)
+                .ok_or_else(|| "FrameProgram directory size overflows".to_string())?,
+        )
+        .ok_or_else(|| "FrameProgram directory end overflows".to_string())?;
+    if directory_end > bytes.len() {
+        return Err("FrameProgram directory is truncated".to_string());
+    }
+    let mut ranges = Vec::<std::ops::Range<usize>>::new();
+    let mut entries = Vec::<(format::FrameProgramTableKindV1, u32, usize, usize)>::new();
+    let mut canonical_end = directory_end;
+    for (index, kind) in format::FrameProgramTableKindV1::ALL.into_iter().enumerate() {
+        let at = header + index * format::FRAME_PROGRAM_TABLE_BYTES_V1 as usize;
+        if u16_at(at) != kind.code() || u16_at(at + 2) != kind.record_bytes() {
+            return Err(format!(
+                "FrameProgram directory entry {index} is noncanonical"
+            ));
+        }
+        let count = u32_at(at + 4);
+        let offset = u32_at(at + 8);
+        let byte_len = u32_at(at + 12);
+        if count == 0 {
+            if offset != 0 || byte_len != 0 {
+                return Err(format!(
+                    "FrameProgram empty {} table is noncanonical",
+                    kind.stable_name()
+                ));
+            }
+            entries.push((kind, 0, 0, usize::from(kind.record_bytes())));
+            continue;
+        }
+        if matches!(
+            kind,
+            format::FrameProgramTableKindV1::Texture
+                | format::FrameProgramTableKindV1::ShadingSummary
+                | format::FrameProgramTableKindV1::Transparency
+                | format::FrameProgramTableKindV1::Probe
+                | format::FrameProgramTableKindV1::Kinetic
+                | format::FrameProgramTableKindV1::DebugName
+        ) {
+            return Err(format!(
+                "FrameProgram P5 {} table is unexpectedly populated",
+                kind.stable_name()
+            ));
+        }
+        let expected = count
+            .checked_mul(u32::from(kind.record_bytes()))
+            .ok_or_else(|| "FrameProgram table length overflows".to_string())?;
+        if byte_len != expected || u64::from(offset) % format::FRAME_PROGRAM_HOT_ALIGNMENT_V1 != 0 {
+            return Err(format!(
+                "FrameProgram {} table length/alignment is invalid",
+                kind.stable_name()
+            ));
+        }
+        let start = offset as usize;
+        let end = start
+            .checked_add(byte_len as usize)
+            .ok_or_else(|| "FrameProgram table end overflows".to_string())?;
+        if start < directory_end || end > bytes.len() {
+            return Err(format!(
+                "FrameProgram {} table is out of bounds",
+                kind.stable_name()
+            ));
+        }
+        if ranges
+            .iter()
+            .any(|range| start < range.end && range.start < end)
+        {
+            return Err("FrameProgram tables overlap".to_string());
+        }
+        let alignment = usize::try_from(format::FRAME_PROGRAM_HOT_ALIGNMENT_V1)
+            .map_err(|_| "FrameProgram alignment exceeds usize".to_string())?;
+        let canonical_start = canonical_end
+            .checked_add(alignment - 1)
+            .map(|value| value & !(alignment - 1))
+            .ok_or_else(|| "FrameProgram canonical table offset overflows".to_string())?;
+        if start != canonical_start {
+            return Err(format!(
+                "FrameProgram {} table is out of canonical physical order",
+                kind.stable_name()
+            ));
+        }
+        ranges.push(start..end);
+        entries.push((kind, count, start, usize::from(kind.record_bytes())));
+        canonical_end = end;
+    }
+    ranges.sort_by_key(|range| range.start);
+    let mut padding_cursor = directory_end;
+    for range in &ranges {
+        if bytes[padding_cursor..range.start]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err("FrameProgram alignment padding is nonzero".to_string());
+        }
+        padding_cursor = range.end;
+    }
+    if padding_cursor != bytes.len() {
+        return Err("FrameProgram has trailing bytes".to_string());
+    }
+    let mut digest_input = bytes.to_vec();
+    let found = digest_input[format::FRAME_PROGRAM_DIGEST_OFFSET_V1
+        ..format::FRAME_PROGRAM_DIGEST_OFFSET_V1 + format::FRAME_PROGRAM_DIGEST_BYTES_V1]
+        .to_vec();
+    digest_input[format::FRAME_PROGRAM_DIGEST_OFFSET_V1
+        ..format::FRAME_PROGRAM_DIGEST_OFFSET_V1 + format::FRAME_PROGRAM_DIGEST_BYTES_V1]
+        .fill(0);
+    if found != wrela_machine::sha256::sha256(&digest_input) {
+        return Err("FrameProgram digest mismatch".to_string());
+    }
+
+    let (_, immediate_count, immediate_start, immediate_record_bytes) = entries
+        .iter()
+        .copied()
+        .find(|(kind, _, _, _)| *kind == format::FrameProgramTableKindV1::Immediate)
+        .expect("canonical namespace includes immediates");
+    for index in 0..immediate_count as usize {
+        let at = immediate_start + index * immediate_record_bytes;
+        if u16_at(at + 2) != 0 || u32_at(at + 12) != 0 {
+            return Err(format!(
+                "FrameProgram immediate record {index} has nonzero reserved fields"
+            ));
+        }
+    }
+    let mut used_immediates = vec![false; immediate_count as usize];
+    let mut semantic_tables = Vec::with_capacity(entries.len());
+    for (kind, count, start, record_bytes) in entries {
+        if kind == format::FrameProgramTableKindV1::Immediate {
+            semantic_tables.push(format::FrameTableModelV1 {
+                kind,
+                records: Vec::new(),
+            });
+            continue;
+        }
+        let mut semantic_records = Vec::with_capacity(count as usize);
+        for index in 0..count as usize {
+            let at = start + index * record_bytes;
+            if u32_at(at) != index as u32 {
+                return Err(format!(
+                    "FrameProgram {} record {index} has a noncanonical stable ID",
+                    kind.stable_name()
+                ));
+            }
+            let tag = u16_at(at + 4);
+            let flags = u16_at(at + 6);
+            if u16_at(at + 14) != 0 {
+                return Err(format!(
+                    "FrameProgram {} record {index} has nonzero reserved bits",
+                    kind.stable_name()
+                ));
+            }
+            let operand_start = u32_at(at + 8);
+            let operand_count = u16_at(at + 12);
+            let operand_end = operand_start
+                .checked_add(u32::from(operand_count))
+                .ok_or_else(|| "FrameProgram operand range overflows".to_string())?;
+            if operand_end > immediate_count {
+                return Err(format!(
+                    "FrameProgram {} record {index} has out-of-bounds operands",
+                    kind.stable_name()
+                ));
+            }
+            for ordinal in 0..u32::from(operand_count) {
+                let immediate_index = (operand_start + ordinal) as usize;
+                if std::mem::replace(&mut used_immediates[immediate_index], true) {
+                    return Err(format!(
+                        "FrameProgram immediate {immediate_index} is referenced more than once"
+                    ));
+                }
+                let immediate_at =
+                    immediate_start + (operand_start + ordinal) as usize * immediate_record_bytes;
+                if u16_at(immediate_at) != kind.code()
+                    || u32_at(immediate_at + 4) != index as u32
+                    || u32_at(immediate_at + 8) != ordinal
+                {
+                    return Err(format!(
+                        "FrameProgram {} record {index} has noncanonical immediate ownership",
+                        kind.stable_name()
+                    ));
+                }
+            }
+            let operands = (0..u32::from(operand_count))
+                .map(|ordinal| {
+                    let immediate_at = immediate_start
+                        + (operand_start + ordinal) as usize * immediate_record_bytes;
+                    u64::from_le_bytes(
+                        bytes[immediate_at + 16..immediate_at + 24]
+                            .try_into()
+                            .expect("immediate bounds checked"),
+                    )
+                })
+                .collect();
+            semantic_records.push(format::FrameRecordV1 {
+                stable_id: index as u32,
+                tag,
+                flags,
+                operands,
+            });
+        }
+        semantic_tables.push(format::FrameTableModelV1 {
+            kind,
+            records: semantic_records,
+        });
+    }
+    if let Some(index) = used_immediates.iter().position(|used| !used) {
+        return Err(format!(
+            "FrameProgram immediate {index} is not referenced by a record"
+        ));
+    }
+    let model = format::FrameProgramModelV1 {
+        renderer_index: u16_at(20),
+        flags: u32_at(12),
+        numeric_revision: u32_at(24),
+        formal_revision: u32_at(28),
+        tables: semantic_tables,
+    };
+    format::verify_frame_program_model_v1(&model)
+        .map_err(|error| format!("FrameProgram semantic verification failed: {error}"))?;
     Ok(())
 }
 
@@ -307,6 +693,209 @@ mod tests {
             matches!(err, VmmError::BadImage(ref msg) if msg.contains("image sha256 mismatch")),
             "got {err:?}"
         );
+    }
+
+    fn frameprog_report(
+        section_name: &str,
+        section_base: u64,
+        placement_base: u64,
+    ) -> (String, Vec<u8>) {
+        let program = wrela_compiler::pixels::fuzz_seed_frame_program().unwrap();
+        let offset = usize::try_from(section_base - wrela_machine::layout::IMAGE_BASE).unwrap();
+        let mut image = vec![0_u8; offset];
+        image.extend_from_slice(&program);
+        let report = format!(
+            "{}Section name=entry base={:#x} size=1\n\
+             Section name={section_name} base={section_base:#x} size={}\n\
+             RendererPlacement index=0 frameprog_base={placement_base:#x} frameprog_bytes={}\n\
+             Entry base={:#x}\n",
+            report_identity("renderer.wr", &image),
+            wrela_machine::layout::IMAGE_BASE,
+            program.len(),
+            program.len(),
+            wrela_machine::layout::IMAGE_BASE,
+        );
+        (report, image)
+    }
+
+    #[test]
+    fn report_frameprog_metadata_is_mandatory_and_absolutely_aligned() {
+        let base =
+            wrela_machine::layout::IMAGE_BASE + wrela_machine::layout::PIXELS_REGION_ALIGNMENT;
+        let (report, image) = frameprog_report("frameprog", base, base);
+        let parsed = parse_report(&report).expect("canonical renderer report");
+        validate_report_digests(&parsed, &image).expect("canonical frame program");
+
+        let renamed = report
+            .replace("name=frameprog", "name=renderer-data")
+            .replace(
+                &report
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("RendererPlacement "))
+                    .unwrap()
+                    .to_string(),
+                "",
+            );
+        let parsed = parse_report(&renamed).expect("otherwise valid renamed report");
+        let error = validate_report_digests(&parsed, &image).expect_err("hidden frame program");
+        assert!(
+            matches!(error, VmmError::BadImage(ref message) if message.contains("no canonical frameprog")),
+            "got {error:?}"
+        );
+
+        let misaligned = base + wrela_machine::pixels::FRAME_PROGRAM_HOT_ALIGNMENT_V1;
+        let (report, image) = frameprog_report("frameprog", misaligned, misaligned);
+        let parsed = parse_report(&report).expect("structurally valid report");
+        let error = validate_report_digests(&parsed, &image).expect_err("misaligned base");
+        assert!(
+            matches!(error, VmmError::BadImage(ref message) if message.contains("not 65536-byte aligned")),
+            "got {error:?}"
+        );
+    }
+
+    fn rehash_frame_program(bytes: &mut [u8]) {
+        use wrela_machine::pixels as format;
+        bytes[format::FRAME_PROGRAM_DIGEST_OFFSET_V1
+            ..format::FRAME_PROGRAM_DIGEST_OFFSET_V1 + format::FRAME_PROGRAM_DIGEST_BYTES_V1]
+            .fill(0);
+        let digest = wrela_machine::sha256::sha256(bytes);
+        bytes[format::FRAME_PROGRAM_DIGEST_OFFSET_V1
+            ..format::FRAME_PROGRAM_DIGEST_OFFSET_V1 + format::FRAME_PROGRAM_DIGEST_BYTES_V1]
+            .copy_from_slice(&digest);
+    }
+
+    #[test]
+    fn independent_frame_program_verifier_accepts_canonical_bytes_and_rejects_records() {
+        use wrela_machine::pixels as format;
+        let bytes = wrela_compiler::pixels::fuzz_seed_frame_program().unwrap();
+        assert!(validate_frame_program_v1(&bytes).is_ok());
+
+        let scalar_entry = format::FRAME_PROGRAM_HEADER_BYTES_V1 as usize
+            + usize::from(format::FrameProgramTableKindV1::Scalar.code() - 1)
+                * format::FRAME_PROGRAM_TABLE_BYTES_V1 as usize;
+        let scalar_offset = u32::from_le_bytes(
+            bytes[scalar_entry + 8..scalar_entry + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        for offset in [scalar_offset + 4, scalar_offset + 6, scalar_offset + 14] {
+            let mut corrupt = bytes.clone();
+            corrupt[offset..offset + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+            rehash_frame_program(&mut corrupt);
+            assert!(
+                validate_frame_program_v1(&corrupt).is_err(),
+                "accepted record mutation at {offset}"
+            );
+        }
+        let immediate_entry = format::FRAME_PROGRAM_HEADER_BYTES_V1 as usize
+            + usize::from(format::FrameProgramTableKindV1::Immediate.code() - 1)
+                * format::FRAME_PROGRAM_TABLE_BYTES_V1 as usize;
+        let immediate_offset = u32::from_le_bytes(
+            bytes[immediate_entry + 8..immediate_entry + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let operand_offset = u32::from_le_bytes(
+            bytes[scalar_offset + 8..scalar_offset + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        for poisoned in [u64::from(f32::NAN.to_bits()), u64::MAX] {
+            let mut corrupt = bytes.clone();
+            let value = immediate_offset
+                + (operand_offset + 1) * format::FRAME_PROGRAM_IMMEDIATE_BYTES_V1 as usize
+                + 16;
+            corrupt[value..value + 8].copy_from_slice(&poisoned.to_le_bytes());
+            rehash_frame_program(&mut corrupt);
+            assert!(
+                validate_frame_program_v1(&corrupt).is_err(),
+                "accepted poisoned f32 word {poisoned:#x}"
+            );
+        }
+        let mut corrupt_digest = bytes;
+        corrupt_digest[format::FRAME_PROGRAM_DIGEST_OFFSET_V1] ^= 1;
+        assert!(validate_frame_program_v1(&corrupt_digest).is_err());
+
+        let mut trailing = wrela_compiler::pixels::fuzz_seed_frame_program().unwrap();
+        trailing.extend([0; 64]);
+        let total = u32::try_from(trailing.len()).unwrap();
+        trailing[16..20].copy_from_slice(&total.to_le_bytes());
+        rehash_frame_program(&mut trailing);
+        assert!(validate_frame_program_v1(&trailing).is_err());
+
+        let mut semantic = wrela_compiler::pixels::fuzz_seed_frame_program().unwrap();
+        let entry = |kind: format::FrameProgramTableKindV1| {
+            format::FRAME_PROGRAM_HEADER_BYTES_V1 as usize
+                + usize::from(kind.code() - 1) * format::FRAME_PROGRAM_TABLE_BYTES_V1 as usize
+        };
+        let table_offset = |bytes: &[u8], kind| {
+            let at = entry(kind);
+            u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize
+        };
+        let object_offset = table_offset(&semantic, format::FrameProgramTableKindV1::Object);
+        let immediate_offset = table_offset(&semantic, format::FrameProgramTableKindV1::Immediate);
+        let operand_offset = u32::from_le_bytes(
+            semantic[object_offset + 8..object_offset + 12]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let mut cross_record = semantic.clone();
+        let source_root = immediate_offset
+            + (operand_offset + 1) * format::FRAME_PROGRAM_IMMEDIATE_BYTES_V1 as usize
+            + 16;
+        cross_record[source_root..source_root + 8]
+            .copy_from_slice(&u64::from(u32::MAX).to_le_bytes());
+        rehash_frame_program(&mut cross_record);
+        assert!(
+            validate_frame_program_v1(&cross_record).is_err(),
+            "accepted a rehashed out-of-range object-to-field reference"
+        );
+
+        let primitive_count = immediate_offset
+            + (operand_offset + 4) * format::FRAME_PROGRAM_IMMEDIATE_BYTES_V1 as usize
+            + 16;
+        semantic[primitive_count..primitive_count + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        rehash_frame_program(&mut semantic);
+        assert!(
+            validate_frame_program_v1(&semantic).is_err(),
+            "accepted a rehashed semantically malformed object record"
+        );
+    }
+
+    #[test]
+    fn independent_frame_program_section_verifier_checks_indexes_and_padding() {
+        use wrela_machine::pixels as format;
+        let first = wrela_compiler::pixels::fuzz_seed_frame_program().unwrap();
+        let mut second = first.clone();
+        second[20..22].copy_from_slice(&1_u16.to_le_bytes());
+        rehash_frame_program(&mut second);
+        let mut section = first;
+        section.resize(
+            section
+                .len()
+                .next_multiple_of(format::FRAME_PROGRAM_HOT_ALIGNMENT_V1 as usize),
+            0,
+        );
+        let second_start = section.len();
+        section.extend_from_slice(&second);
+        assert!(validate_frameprog_section(&section).is_ok());
+
+        let mut wrong_index = section.clone();
+        wrong_index[second_start + 20..second_start + 22].copy_from_slice(&2_u16.to_le_bytes());
+        rehash_frame_program(&mut wrong_index[second_start..]);
+        assert!(validate_frameprog_section(&wrong_index).is_err());
+
+        if second_start
+            > wrong_index[..second_start]
+                .iter()
+                .rposition(|byte| *byte != 0)
+                .unwrap()
+                + 1
+        {
+            let mut nonzero_padding = section;
+            nonzero_padding[second_start - 1] = 1;
+            assert!(validate_frameprog_section(&nonzero_padding).is_err());
+        }
     }
 
     #[test]
@@ -739,6 +1328,8 @@ mod tests {
             &layout_ctx,
             &graph,
             None,
+            None,
+            false,
             &runtime_tests,
             &async_tests,
             false,
@@ -803,6 +1394,8 @@ mod tests {
             &layout_ctx,
             &graph,
             None,
+            None,
+            false,
             &[],
             &empty_async,
             false,

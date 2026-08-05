@@ -362,7 +362,7 @@ fn feature_names_from_arg(
     Ok(names)
 }
 
-fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
+pub(crate) fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
     match v {
         Value::ImageDecl(r) => out.push(r.clone()),
         Value::Array(items) | Value::Tuple(items) | Value::Struct(items) => {
@@ -373,6 +373,13 @@ fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
         Value::Enum(_, payload) => {
             for p in payload {
                 decl_refs_in_value(p, out);
+            }
+        }
+        Value::Closure { env, .. } => {
+            for scope in env {
+                for value in scope.values() {
+                    decl_refs_in_value(value, out);
+                }
             }
         }
         _ => {}

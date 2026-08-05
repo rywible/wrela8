@@ -50,6 +50,7 @@ pub struct RuntimeTables {
     pub rings_padding: u64,
     pub cores: usize,
     pub total_bytes: u64,
+    pub rtconfig_placeholder_bytes: u64,
     pub select_by_core: Vec<Vec<String>>,
     pub drain_by_core: Vec<bool>,
     pub child_sites: Vec<(String, usize, usize)>,
@@ -215,7 +216,11 @@ pub(crate) fn merge_actor_pub_methods(
                             s.name, f.name
                         ))
                     })?;
-                    param_sizes.push(size as u64);
+                    param_sizes.push(if crate::codegen::is_aggregate(&p.ty) {
+                        8
+                    } else {
+                        size as u64
+                    });
                     param_types.push(p.ty.clone());
                 }
                 methods.push(ActorMethodShape {
@@ -231,6 +236,74 @@ pub(crate) fn merge_actor_pub_methods(
             }
             out.insert(s.name, methods);
         }
+    }
+    // Renderer[P] is the one sealed generic actor admitted by Pixels. Generic
+    // actor declarations are otherwise excluded above, so derive its concrete
+    // message shape only from the instantiated layout entries produced by the
+    // ordinary generic checker.
+    for actor in layout_ctx
+        .structs
+        .keys()
+        .filter(|name| name.starts_with("Renderer["))
+    {
+        let Some(args) = actor
+            .strip_prefix("Renderer[")
+            .and_then(|name| name.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let frame_name = format!("RenderFrame[{args}]");
+        let rendered_name = format!("RenderedFrame[{args}]");
+        if !layout_ctx.structs.contains_key(&frame_name)
+            || !layout_ctx.structs.contains_key(&rendered_name)
+        {
+            return Err(LayoutError::new(format!(
+                "actor runtime layout: sealed `{actor}` is missing its concrete frame layouts"
+            )));
+        }
+        let frame_ty = crate::sema::types::Type::Named(frame_name, Vec::new());
+        let rendered_ty = crate::sema::types::Type::Named(rendered_name, Vec::new());
+        let _frame_size = mwir::size_of(&frame_ty, layout_ctx).map_err(|e| {
+            LayoutError::new(format!("actor `{actor}`'s own `render` message shape: {e}"))
+        })?;
+        out.insert(
+            actor.clone(),
+            vec![ActorMethodShape {
+                name: "render".to_string(),
+                is_async: true,
+                reply_is_aggregate: true,
+                param_sizes: vec![8],
+                param_types: vec![frame_ty],
+                ret: crate::sema::types::Type::Result(
+                    Box::new(rendered_ty),
+                    Box::new(crate::sema::types::Type::Named(
+                        "RenderError".to_string(),
+                        Vec::new(),
+                    )),
+                ),
+                is_task: false,
+                is_handoff: false,
+            }],
+        );
+    }
+    for actor in layout_ctx
+        .structs
+        .keys()
+        .filter(|name| name.as_str() == "RendererWorker")
+    {
+        out.insert(
+            actor.clone(),
+            vec![ActorMethodShape {
+                name: "run_job".to_string(),
+                is_async: true,
+                reply_is_aggregate: false,
+                param_sizes: vec![8],
+                param_types: vec![crate::sema::types::Type::U64],
+                ret: crate::sema::types::Type::U64,
+                is_task: false,
+                is_handoff: false,
+            }],
+        );
     }
     Ok(out)
 }
@@ -336,6 +409,7 @@ pub fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
 pub(crate) fn turn_owner<'k>(key: &'k str, actor_names: &[String]) -> Option<&'k str> {
     key.split_once('.')
         .map(|(prefix, _)| prefix)
+        .map(|prefix| prefix.strip_prefix("struct:").unwrap_or(prefix))
         .filter(|prefix| actor_names.iter().any(|a| a == prefix))
 }
 
@@ -591,6 +665,19 @@ pub fn compute_runtime_tables(
     let group_max_children = group_max_children.max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
     let group_slot = crate::codegen::group_slot_size(group_max_children);
     total_bytes += ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * group_slot;
+    let rtconfig_placeholder_bytes = if graph
+        .actors
+        .iter()
+        .map(|actor| crate::sema::types::render_type(&actor.actor_type))
+        .any(|actor| actor.starts_with("Renderer[") || actor == "RendererWorker")
+    {
+        crate::rtconfig::renderer_placeholder_reservation_bytes(n_turns, turn_stride, group_slot)
+    } else {
+        0
+    };
+    total_bytes = total_bytes
+        .checked_add(rtconfig_placeholder_bytes)
+        .ok_or_else(|| "runtime configuration placeholder bytes overflow".to_string())?;
 
     Ok(Some(RuntimeTables {
         actors,
@@ -604,6 +691,7 @@ pub fn compute_runtime_tables(
         rings: Vec::new(),
         cores: 1,
         total_bytes,
+        rtconfig_placeholder_bytes,
         ..Default::default()
     }))
 }

@@ -1,7 +1,7 @@
 ImageGraph v0
   Name value=check-pixels-two-renderers
   Target value=Target.wrela_machine_v1
-  Cores count=1
+  Cores count=2
   Device index=0 type=DisplayDevice
     Arg label=transport value=24576
   Device index=1 type=DisplayDevice
@@ -11,11 +11,13 @@ ImageGraph v0
     Arg label=width value=64
     Arg label=height value=32
     Arg label=refresh_hz value=60
+    Arg label=core value=0
   Driver index=1 type=Display
     Arg label=device value=device#1
     Arg label=width value=64
     Arg label=height value=32
     Arg label=refresh_hz value=60
+    Arg label=core value=0
   Renderer index=0 params=Params actor=Renderer[Params]
     Arg label=field value=world
     Arg label=material value=shade

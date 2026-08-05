@@ -1,0 +1,4 @@
+test renderer_is_deterministically_unavailable: ok
+1 passed, 0 failed
+lane1 turns=19 run_one=37 messages=19
+lane1 hits=0:14,1:2,2:2,3:10,4:9

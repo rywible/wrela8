@@ -15,14 +15,10 @@ from core.render import (
 )
 from drivers.display import Display, DisplayDevice
 
-enum Choice[T]:
-    Value(T)
-    Empty
-
 struct Params[T]:
     @range(min=0.25, max=2.0)
     radius: T
-    choice: Choice[u32]
+    choice: u32
 
 enum MaterialId:
     Surface

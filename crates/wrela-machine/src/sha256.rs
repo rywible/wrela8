@@ -13,7 +13,7 @@ const SHA256_H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-pub fn sha256_hex(data: &[u8]) -> String {
+pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = SHA256_H0;
 
     let bit_len = (data.len() as u64).wrapping_mul(8);
@@ -78,7 +78,18 @@ pub fn sha256_hex(data: &[u8]) -> String {
         h[7] = h[7].wrapping_add(hh);
     }
 
-    h.iter().map(|word| format!("{word:08x}")).collect()
+    let mut digest = [0_u8; 32];
+    for (index, word) in h.into_iter().enumerate() {
+        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    digest
+}
+
+pub fn sha256_hex(data: &[u8]) -> String {
+    sha256(data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub fn is_sha256_hex(s: &str) -> bool {
@@ -102,6 +113,14 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256(b"abc"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad,
+            ]
         );
     }
 }

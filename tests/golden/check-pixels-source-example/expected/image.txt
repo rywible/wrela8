@@ -6,8 +6,12 @@ ImageGraph v0
     Arg label=transport value=Transport.Blob
   Driver index=0 type=Display
     Arg label=device value=device#0
+    Arg label=width value=1920
+    Arg label=height value=1080
+    Arg label=refresh_hz value=60
     Arg label=vector value=5
     Arg label=mailbox value=2
+    Arg label=core value=0
   Actor index=0 type=Game
     Arg label=mailbox value=8
     Arg label=renderer value=renderer#0

@@ -682,6 +682,7 @@ pub(crate) fn check(
                         addr: d.addr,
                     },
                 );
+                program.declared_statics.insert(d.name.clone());
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
                 check_marker_attr_shape(f, true)?;
@@ -4032,6 +4033,22 @@ pub(crate) fn check_field_privacy(
     if use_mod == decl_mod {
         return Ok(());
     }
+    if matches!(use_mod.as_str(), "render" | "core.render")
+        && mctx
+            .struct_decl_module
+            .get("Renderer")
+            .is_some_and(|module| matches!(module.as_str(), "render" | "core.render"))
+        && mctx
+            .type_decl_name
+            .get("Renderer")
+            .is_some_and(|name| name == "Renderer")
+    {
+        // Canonical Renderer[P] is trusted compiler/runtime glue. Its concrete
+        // instantiation receives generated P5 range checks for P's declared
+        // fields. Keep user privacy intact everywhere else while allowing that
+        // one canonical generic body to inspect the owned frame it validates.
+        return Ok(());
+    }
     Err(SemaError::at(
         "sema",
         format!(
@@ -5628,16 +5645,33 @@ fn check_image_renderer_intrinsic(
     span: Span,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    if mctx
-        .type_decl_module
-        .get("Renderer")
-        .is_some_and(|module| !matches!(module.as_str(), "render" | "core.render"))
-    {
-        return Err(SemaError::at(
-            "pixels P009",
-            "`img.renderer[P]` cannot use a noncanonical type bound as `Renderer`".to_string(),
-            span,
-        ));
+    for actor_type in [
+        "Renderer",
+        "RendererWorker",
+        "RenderPath",
+        "RenderFrame",
+        "RenderedFrame",
+        "RenderError",
+    ] {
+        if mctx
+            .type_decl_module
+            .get(actor_type)
+            .is_some_and(|module| !matches!(module.as_str(), "render" | "core.render"))
+        {
+            return Err(SemaError::at(
+                "pixels P009",
+                format!("`img.renderer[P]` cannot use a noncanonical type bound as `{actor_type}`"),
+                span,
+            ));
+        }
+    }
+    // `Image.renderer[P]` creates a real `Renderer[P]` actor even though the
+    // source expression returns an image declaration rather than a struct
+    // value. Queue the concrete actor here so its initializer and methods pass
+    // through the ordinary generic checker/lowering pipeline.
+    let type_args = [TypeArg::Type(params.clone())];
+    for name in ["RenderFrame", "RenderedFrame", "Renderer"] {
+        let _ = generics::instantiate_struct(mctx, name, &type_args, span)?;
     }
     let labels: BTreeSet<&str> = args.iter().map(|(label, _)| label.as_str()).collect();
     for required in crate::pixels::RENDERER_LABELS {

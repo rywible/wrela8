@@ -190,6 +190,9 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
                 count: *count,
                 slot_bytes: *slot_bytes,
             },
+            BootInitArg::WordArray(words) => {
+                crate::codegen::BootInitArgSpec::WordArray(words.clone())
+            }
         }
     };
     let to_call = |c: &BootInitCall| -> crate::codegen::BootInitCallSpec {
@@ -1337,6 +1340,7 @@ pub fn layout_test_image(
         core_entries,
         cores,
         placed_statics: Vec::new(),
+        renderers: Vec::new(),
     })
 }
 

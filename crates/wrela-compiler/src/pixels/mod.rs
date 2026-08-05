@@ -15,6 +15,7 @@ use crate::sema::typed::{
 use crate::sema::types::{self, Type, TypeArg};
 
 pub mod arena;
+pub mod binary_verify;
 pub mod bounds;
 pub mod camera;
 pub mod canonicalize;
@@ -22,16 +23,19 @@ pub mod capacities;
 pub mod competition;
 pub mod config;
 pub mod csg;
+pub mod decode;
 pub mod deform;
 pub mod derivative_bounds;
 pub mod derivatives;
 pub mod diagnostics;
 pub mod dump;
+pub mod encode;
 pub mod event_kinds;
 pub mod events;
 pub mod exclusions;
 pub mod features;
 pub mod field_intrinsics;
+pub mod glue;
 pub mod graph;
 pub mod ids;
 pub mod index;
@@ -51,9 +55,11 @@ pub mod reference;
 pub mod repeat;
 pub mod report;
 pub mod scalar;
+pub mod state;
 pub mod support;
 pub mod symbolic;
 pub mod verify;
+pub mod version;
 pub mod world_bounds;
 
 pub use dump::{
@@ -61,11 +67,29 @@ pub use dump::{
     dump_symbolic_graphs, dump_uncompiled_configs, dump_zero_renderers,
 };
 
+pub(crate) const RENDERER_UNAVAILABLE_FALLBACK: &str = "FrameContractMismatch(RendererUnavailable)";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PixelsProgramSet {
     pub symbolic_graphs: Vec<symbolic::SymbolicGraph>,
     pub structural_programs: Vec<verify::VerifiedStructuralProgram>,
     pub projective_programs: Vec<verify::VerifiedProjectiveProgram>,
+    pub compiled_renderers: Vec<CompiledRenderer>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledRenderer {
+    pub config: config::RendererConfig,
+    pub structural: verify::VerifiedStructuralProgram,
+    pub projective: verify::VerifiedProjectiveProgram,
+    pub program: program::VerifiedFrameProgram,
+    pub encoded: Vec<u8>,
+    pub mutable_layout: state::RendererStateLayout,
+    pub generated: glue::GeneratedRenderer,
+}
+
+pub fn fuzz_seed_frame_program() -> Result<Vec<u8>, String> {
+    encode::encode(&program::minimal_verified_frame_program()).map_err(|error| error.to_string())
 }
 
 fn compile_structural_renderer(
@@ -329,10 +353,58 @@ pub fn compile_all(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let compiled_renderers = symbolic_graphs
+        .iter()
+        .zip(&structural_programs)
+        .zip(&projective_programs)
+        .zip(&configs.renderers)
+        .enumerate()
+        .map(
+            |(renderer_index, (((graph, structural), projective), config))| {
+                let compile = || -> Result<CompiledRenderer, String> {
+                    let rich = program::finish_frame_program(
+                        renderer_index,
+                        graph,
+                        structural,
+                        projective,
+                        config,
+                    )?;
+                    let verified = verify::check_program(rich)?;
+                    let encoded = encode::encode(&verified)
+                        .map_err(|error| error.diagnostic().message.clone())?;
+                    let decoded = decode::decode(&encoded).map_err(|error| {
+                        format!("pixels::decode: compiler output failed round-trip: {error}")
+                    })?;
+                    if decoded.program() != verified.program() {
+                        return Err(
+                            "pixels::compile: frame-program encode/decode mismatch".to_string()
+                        );
+                    }
+                    let mutable_layout = state::layout(structural, projective)?;
+                    let generated = glue::generate(renderer_index, config, &verified)?;
+                    Ok(CompiledRenderer {
+                        config: config.clone(),
+                        structural: structural.clone(),
+                        projective: projective.clone(),
+                        program: verified,
+                        encoded,
+                        mutable_layout,
+                        generated,
+                    })
+                };
+                compile().map_err(|message| {
+                    diagnostics::PixelsError::Diagnostic(diagnostics::PixelsDiagnostic::internal(
+                        message,
+                    ))
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(PixelsProgramSet {
         symbolic_graphs,
         structural_programs,
         projective_programs,
+        compiled_renderers,
     })
 }
 
@@ -346,8 +418,8 @@ pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
         })
 }
 
-pub const FRAME_PROGRAM_HEADER_BYTES: usize = 80;
-pub const FRAME_PROGRAM_MAGIC: &[u8; 8] = b"WRELAPX\0";
+pub const PLANE_SEED_METADATA_BYTES: usize = 80;
+pub const PLANE_SEED_METADATA_MAGIC: &[u8; 8] = b"WRELAP1\0";
 pub const RENDERER_LABELS: &[&str] = &[
     "field",
     "material",
@@ -384,8 +456,8 @@ pub struct PlaneSkeleton {
     pub height: u32,
     pub refresh_hz: u32,
     pub shade_hz: u32,
-    pub frame_program: [u8; FRAME_PROGRAM_HEADER_BYTES],
-    pub frame_program_digest: String,
+    pub seed_metadata: [u8; PLANE_SEED_METADATA_BYTES],
+    pub seed_metadata_digest: String,
     pub semantic_digest: String,
     pub semantic_seed: [u8; 32],
 }
@@ -1278,37 +1350,35 @@ fn digest_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-fn encode_header(renderer_index: usize) -> Result<([u8; 80], String), String> {
+fn encode_plane_seed_metadata(renderer_index: usize) -> Result<([u8; 80], String), String> {
     let renderer_index = u16::try_from(renderer_index)
         .map_err(|_| "pixels: renderer index exceeds u16".to_string())?;
-    let mut bytes = [0u8; FRAME_PROGRAM_HEADER_BYTES];
-    bytes[0..8].copy_from_slice(FRAME_PROGRAM_MAGIC);
+    let mut bytes = [0u8; PLANE_SEED_METADATA_BYTES];
+    bytes[0..8].copy_from_slice(PLANE_SEED_METADATA_MAGIC);
     bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
-    bytes[10..12].copy_from_slice(&(FRAME_PROGRAM_HEADER_BYTES as u16).to_le_bytes());
-    // P-1 reserves no production wire-format flags.
-    bytes[16..20].copy_from_slice(&(FRAME_PROGRAM_HEADER_BYTES as u32).to_le_bytes());
+    bytes[10..12].copy_from_slice(&(PLANE_SEED_METADATA_BYTES as u16).to_le_bytes());
+    bytes[16..20].copy_from_slice(&(PLANE_SEED_METADATA_BYTES as u32).to_le_bytes());
     bytes[20..22].copy_from_slice(&renderer_index.to_le_bytes());
     bytes[24..28].copy_from_slice(&1u32.to_le_bytes()); // numeric revision
     bytes[28..32].copy_from_slice(&1u32.to_le_bytes()); // formal revision
-    // The P-1 walking skeleton has no v1 tables. Keep table_count and every
-    // reserved byte zero; P5 owns the table-kind namespace and will replace
-    // this header-only program with the production representation.
+    // This P-1-only seed metadata is deliberately not a FrameProgram v1
+    // envelope. The production encoder exclusively owns WRELAPX.
     let digest = wrela_machine::sha256::sha256_hex(&bytes);
     bytes[48..80].copy_from_slice(&digest_bytes(&digest));
     Ok((bytes, digest))
 }
 
 fn walking_skeleton_seed(
-    frame_program: &[u8; FRAME_PROGRAM_HEADER_BYTES],
+    seed_metadata: &[u8; PLANE_SEED_METADATA_BYTES],
     semantic_digest: &str,
 ) -> [u8; 32] {
     // Preserve the reviewed P-1 displayed-frame digest without emitting the
     // malformed P-1 envelope. Before P0, the walking skeleton mixed its
     // semantic prefix into v1 table-count/reserved bytes and then used that
-    // envelope's digest as its pixel seed. P0 keeps that seed derivation only
-    // as generated-actor compatibility metadata; `frame_program` itself stays
-    // a valid zero-table v1 header.
-    let mut seed_input = *frame_program;
+    // envelope's digest as its pixel seed. Preserve that historical seed
+    // without presenting the stored compatibility metadata as FrameProgram.
+    let mut seed_input = *seed_metadata;
+    seed_input[0..8].copy_from_slice(b"WRELAPX\0");
     seed_input[12..16].copy_from_slice(&1u32.to_le_bytes());
     seed_input[32..48].copy_from_slice(&digest_bytes(semantic_digest)[..16]);
     seed_input[48..80].fill(0);
@@ -1418,8 +1488,8 @@ pub fn compile_plane_skeleton(
     semantic_program.fns = analysis.functions;
     let semantic_text = crate::sema::typed::dump(&semantic_program);
     let semantic_digest = wrela_machine::sha256::sha256_hex(semantic_text.as_bytes());
-    let (frame_program, frame_program_digest) = encode_header(0)?;
-    let semantic_seed = walking_skeleton_seed(&frame_program, &semantic_digest);
+    let (seed_metadata, seed_metadata_digest) = encode_plane_seed_metadata(0)?;
+    let semantic_seed = walking_skeleton_seed(&seed_metadata, &semantic_digest);
     Ok(PlaneSkeleton {
         renderer_index: 0,
         field,
@@ -1430,8 +1500,8 @@ pub fn compile_plane_skeleton(
         height,
         refresh_hz,
         shade_hz,
-        frame_program,
-        frame_program_digest,
+        seed_metadata,
+        seed_metadata_digest,
         semantic_digest,
         semantic_seed,
     })
@@ -1497,10 +1567,11 @@ mod tests {
     }
 
     #[test]
-    fn frame_program_header_is_explicitly_eighty_bytes() {
-        let (bytes, digest) = encode_header(0).unwrap();
+    fn plane_seed_metadata_is_distinct_and_explicitly_eighty_bytes() {
+        let (bytes, digest) = encode_plane_seed_metadata(0).unwrap();
         assert_eq!(bytes.len(), 80);
-        assert_eq!(&bytes[0..8], FRAME_PROGRAM_MAGIC);
+        assert_eq!(&bytes[0..8], PLANE_SEED_METADATA_MAGIC);
+        assert_ne!(&bytes[0..8], b"WRELAPX\0");
         assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 1);
         assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 80);
         assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 0);
@@ -1514,11 +1585,11 @@ mod tests {
     }
 
     #[test]
-    fn semantic_source_digest_changes_generated_pixels_not_header_only_program() {
+    fn semantic_source_digest_changes_generated_pixels_not_seed_metadata() {
         let semantic_a = wrela_machine::sha256::sha256_hex(b"plane material blue");
         let semantic_b = wrela_machine::sha256::sha256_hex(b"plane material red");
-        let (header_a, digest_a) = encode_header(0).unwrap();
-        let (header_b, digest_b) = encode_header(0).unwrap();
+        let (header_a, digest_a) = encode_plane_seed_metadata(0).unwrap();
+        let (header_b, digest_b) = encode_plane_seed_metadata(0).unwrap();
         let seed_a = walking_skeleton_seed(&header_a, &semantic_a);
         let seed_b = walking_skeleton_seed(&header_b, &semantic_b);
         assert_eq!(digest_a, digest_b);
@@ -1534,7 +1605,7 @@ mod tests {
     #[test]
     fn walking_skeleton_keeps_the_reviewed_p1_pixel_seed() {
         let semantic = "4339211ebc497254b70372e4bcf9501407d9ff588427661aa93d101d047c4583";
-        let (header, _) = encode_header(0).unwrap();
+        let (header, _) = encode_plane_seed_metadata(0).unwrap();
         assert_eq!(
             walking_skeleton_seed(&header, semantic).as_slice(),
             digest_bytes("e778817fd997a1eb45c0a463f792569fd0534004153b18dfec13691a923048b4")

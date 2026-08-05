@@ -1,5 +1,7 @@
 //! Stable P3 report facts shared by dumps and later image reports.
 
+use std::fmt::Write as _;
+
 use super::capacities::StructuralCapacities;
 use super::params::ParameterLayout;
 
@@ -58,7 +60,16 @@ pub fn append_program_set(
             program_set.projective_programs.len(),
         ));
     }
-    output.push_str("PixelsCompilerReport v2\n");
+    if !program_set.compiled_renderers.is_empty()
+        && program_set.compiled_renderers.len() != program_set.structural_programs.len()
+    {
+        return Err(format!(
+            "pixels::report: compiled renderer count {} differs from structural count {}",
+            program_set.compiled_renderers.len(),
+            program_set.structural_programs.len()
+        ));
+    }
+    output.push_str("PixelsCompilerReport v3\n");
     output.push_str(&format!(
         "  Renderers count={}\n",
         program_set.structural_programs.len()
@@ -149,7 +160,7 @@ pub fn append_program_set(
             capacities.index_bytes,
         ));
         output.push_str(&format!(
-            "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_terms_per_program={} per_worker_scratch_bytes={} all_worker_scratch_bytes={}\n",
+            "    ProjectiveCapacities candidate_features_per_tile={} row_start_roots={} active_sheets_per_row={} competition_pairs_per_tile={} row_event_intervals={} root_stack_nodes={} event_stack_nodes={} runs_per_row={} corridors_per_row={} max_index_slice={} polynomial_terms_per_program={} refined_per_worker_scratch_bytes={} refined_all_worker_scratch_bytes={} final_per_worker_scratch_bytes={} final_all_worker_scratch_bytes={} final_state_bytes={} final_instrumented_state_bytes={}\n",
             capacities.candidate_features_per_tile,
             capacities.row_start_roots,
             capacities.active_sheets_per_row,
@@ -163,6 +174,10 @@ pub fn append_program_set(
             capacities.polynomial_terms_per_program,
             capacities.per_worker_scratch_bytes,
             capacities.all_worker_scratch_bytes,
+            capacities.final_per_worker_scratch_bytes,
+            capacities.final_all_worker_scratch_bytes,
+            capacities.total_renderer_state_bytes,
+            capacities.total_renderer_state_bytes_instrumented,
         ));
         output.push_str(&format!(
             "    CompetitionPruning projected={} q={} csg_global={} csg_pair={} strict_order={} same_feature={} material_only={}\n",
@@ -216,6 +231,261 @@ pub fn append_program_set(
                 derivation.field,
                 derivation.value,
                 derivation.why.join("; "),
+            ));
+        }
+        if let Some(compiled) = program_set.compiled_renderers.get(index) {
+            let program = compiled.program.program();
+            let wire = super::binary_verify::verify_envelope(&compiled.encoded)
+                .map_err(|error| format!("pixels::report: invalid encoded program: {error}"))?;
+            let digest = compiled.encoded[super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+                ..super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+                    + super::version::FRAME_PROGRAM_DIGEST_BYTES_V1]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            output.push_str(&format!(
+                "    FrameProgram version={} profile_revision={} numeric_revision={} \
+                 formal_revision={} formal_name={} wire_bytes={} digest={} rich_records={} \
+                 rich_operands={}\n",
+                super::version::FRAME_PROGRAM_VERSION_V1,
+                super::version::FRAME_PROGRAM_PROFILE_REVISION_V1,
+                program.numeric_revision,
+                program.formal_revision,
+                super::version::FRAME_PROGRAM_FORMAL_REVISION_STR_V1,
+                compiled.encoded.len(),
+                digest,
+                program
+                    .tables
+                    .iter()
+                    .map(|table| table.records.len())
+                    .sum::<usize>(),
+                program
+                    .tables
+                    .iter()
+                    .flat_map(|table| &table.records)
+                    .map(|record| record.operands.len())
+                    .sum::<usize>(),
+            ));
+            for table in wire {
+                output.push_str(&format!(
+                    "    WireTable kind={} count={} record_bytes={} offset={:#x} bytes={}\n",
+                    table.kind.stable_name(),
+                    table.count,
+                    table.record_bytes,
+                    table.offset,
+                    table.byte_len,
+                ));
+            }
+            output.push_str(&format!(
+                "    MutableState production_bytes={} instrumented_bytes={} header={} \
+                 coefficients={} frame_inputs={} frame_complex={} worker_scratch={} \
+                 framebuffers={} probes={} tile_metadata={} failure={} telemetry_production={} \
+                 telemetry_instrumented={}\n",
+                compiled.mutable_layout.total_bytes,
+                compiled.mutable_layout.instrumented_total_bytes,
+                compiled.mutable_layout.header.bytes,
+                compiled.mutable_layout.coefficient_snapshots.bytes,
+                compiled.mutable_layout.frame_snapshots.bytes,
+                compiled.mutable_layout.frame_complexes.bytes,
+                compiled.mutable_layout.worker_scratch.bytes,
+                compiled.mutable_layout.framebuffers.bytes,
+                compiled.mutable_layout.probes.bytes,
+                compiled
+                    .mutable_layout
+                    .tile_descriptors
+                    .bytes
+                    .checked_add(compiled.mutable_layout.tile_ownership.bytes)
+                    .ok_or_else(|| "pixels::report: tile metadata byte overflow".to_string())?,
+                compiled.mutable_layout.failure.bytes,
+                compiled
+                    .structural
+                    .program()
+                    .capacities
+                    .telemetry_bytes_production,
+                compiled.mutable_layout.telemetry.bytes,
+            ));
+            output.push_str(&format!(
+                "    Generated coordinator={} workers={} mailbox_capacity={} fallback={} presentation=none palette=bootstrap families=[{}]\n",
+                compiled.generated.coordinator,
+                compiled.generated.workers.len(),
+                compiled.generated.workers.len() + 2,
+                super::RENDERER_UNAVAILABLE_FALLBACK,
+                compiled.generated.bootstrap_families.join(","),
+            ));
+            for worker in &compiled.generated.workers {
+                output.push_str(&format!(
+                    "    GeneratedWorker actor={} core={} tiles=[{},{}) mailbox_capacity=1\n",
+                    worker.actor, worker.core, worker.tiles_start, worker.tiles_end,
+                ));
+            }
+            output.push_str(&format!(
+                "    ForceRoots keys=[{}]\n",
+                compiled.generated.rooted_functions.join(","),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn append_layout(
+    output: &mut String,
+    program_set: &super::PixelsProgramSet,
+    layout: &crate::layout::ImageLayout,
+    instrumented: bool,
+) -> Result<(), String> {
+    if layout.renderers.len() != program_set.compiled_renderers.len() {
+        return Err(format!(
+            "pixels::report: layout renderer count {} differs from compiled count {}",
+            layout.renderers.len(),
+            program_set.compiled_renderers.len()
+        ));
+    }
+    if layout.renderers.is_empty() {
+        return Ok(());
+    }
+    output.push_str("PixelsImageContract v1\n");
+    let config_source = super::glue::configuration_source(
+        &layout.renderers,
+        &program_set.compiled_renderers,
+        instrumented,
+    )?;
+    super::glue::parse_configuration_source(&config_source)?;
+    output.push_str(&format!(
+        "  GeneratedModule address=core.__image_pixels bytes={} digest={}\n",
+        config_source.len(),
+        wrela_machine::sha256::sha256_hex(config_source.as_bytes()),
+    ));
+    for (placement, compiled) in layout.renderers.iter().zip(&program_set.compiled_renderers) {
+        let start = usize::try_from(
+            placement
+                .frameprog_base
+                .checked_sub(wrela_machine::layout::IMAGE_BASE)
+                .ok_or_else(|| "pixels::report: frame program below image base".to_string())?,
+        )
+        .map_err(|_| "pixels::report: frame-program offset exceeds usize".to_string())?;
+        let size = usize::try_from(placement.frameprog_size)
+            .map_err(|_| "pixels::report: frame-program size exceeds usize".to_string())?;
+        let end = start
+            .checked_add(size)
+            .ok_or_else(|| "pixels::report: frame-program blob end overflow".to_string())?;
+        let bytes = layout
+            .blob
+            .get(start..end)
+            .ok_or_else(|| "pixels::report: frame-program placement outside blob".to_string())?;
+        let decoded = super::decode::decode(bytes)
+            .map_err(|error| format!("pixels::report: placed frame program invalid: {error}"))?;
+        if decoded.program() != compiled.program.program() {
+            return Err("pixels::report: placed frame program differs from rich model".to_string());
+        }
+        let config = &compiled.config;
+        let graph = program_set
+            .symbolic_graphs
+            .get(placement.index)
+            .ok_or_else(|| "pixels::report: renderer has no symbolic graph".to_string())?;
+        let structural = compiled.structural.program();
+        let projective = compiled.projective.program();
+        let frame_program_digest = bytes[super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+            ..super::version::FRAME_PROGRAM_DIGEST_OFFSET_V1
+                + super::version::FRAME_PROGRAM_DIGEST_BYTES_V1]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let tone_transfer_digest = wrela_machine::sha256::sha256_hex(
+            format!("pixels-tone-transfer-v1\0{}", config.tone_curve).as_bytes(),
+        );
+        let mut renderer_layout_identity = format!(
+            "pixels-renderer-layout-v1\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+            placement.index,
+            placement.frameprog_base,
+            placement.frameprog_size,
+            placement.state_base,
+            placement.state_size,
+            placement.framebuffer_base,
+            placement.framebuffer_bytes,
+            placement.probe_base,
+            placement.probe_bytes,
+            placement.coordinator_core,
+        );
+        for worker in &placement.per_core {
+            write!(
+                renderer_layout_identity,
+                "\0{}\0{}\0{}\0{}\0{}\0{}",
+                worker.worker_index,
+                worker.core,
+                worker.tiles_start,
+                worker.tiles_end,
+                worker.workspace_base,
+                worker.workspace_bytes,
+            )
+            .expect("String writes cannot fail");
+        }
+        let renderer_layout_digest =
+            wrela_machine::sha256::sha256_hex(renderer_layout_identity.as_bytes());
+        output.push_str(&format!(
+            "  Renderer index={} profile={} frameprog_base={:#x} frameprog_bytes={} frameprog_blob_digest={} \
+             state_base={:#x} state_reservation_bytes={} framebuffer_base={:#x} \
+             framebuffer_bytes={} probe_base={:#x} probe_bytes={} coordinator={}@core{} \
+             fallback={} presentation=none\n",
+            placement.index,
+            config.profile,
+            placement.frameprog_base,
+            placement.frameprog_size,
+            wrela_machine::sha256::sha256_hex(bytes),
+            placement.state_base,
+            placement.state_size,
+            placement.framebuffer_base,
+            placement.framebuffer_bytes,
+            placement.probe_base,
+            placement.probe_bytes,
+            placement.coordinator_actor,
+            placement.coordinator_core,
+            super::RENDERER_UNAVAILABLE_FALLBACK,
+        ));
+        output.push_str(&format!(
+            "    Field key={} material_key={} display_ref=driver#{}\n\
+             \x20   Mode width={} height={} refresh_hz={} shade_hz={} tone_curve={}\n\
+             \x20   Capacity objects={} features={} events={} sheets_per_row={} \
+             runs_per_row={} transparent_layers={}\n\
+             \x20   Formal contract={} numeric_revision={} formal_revision={}\n\
+             \x20   Fallback bounded_local_rebuild=false dense_frame=false presentation=false\n\
+             \x20   BuildIdentity frame_program_digest={} tone_transfer_digest={} \
+             profile_revision={} numeric_revision={} formal_theorem_set={} \
+             renderer_layout_digest={}\n",
+            graph.field_key,
+            graph.material_key,
+            config.display_index,
+            config.width,
+            config.height,
+            config.refresh_hz,
+            config.shade_hz,
+            config.tone_curve,
+            structural.capacities.object_count,
+            structural.capacities.feature_count,
+            projective.events.generators.len(),
+            projective.capacities.active_sheets_per_row,
+            projective.capacities.runs_per_row,
+            structural.capacities.max_transparent_layers,
+            super::version::FRAME_PROGRAM_FORMAL_REVISION_STR_V1,
+            super::version::FRAME_PROGRAM_NUMERIC_REVISION_V1,
+            super::version::FRAME_PROGRAM_FORMAL_REVISION_V1,
+            frame_program_digest,
+            tone_transfer_digest,
+            super::version::FRAME_PROGRAM_PROFILE_REVISION_V1,
+            super::version::FRAME_PROGRAM_NUMERIC_REVISION_V1,
+            super::version::FRAME_PROGRAM_FORMAL_REVISION_STR_V1,
+            renderer_layout_digest,
+        ));
+        for worker in &placement.per_core {
+            output.push_str(&format!(
+                "    Worker index={} actor={} core={} tiles=[{},{}) workspace_base={:#x} \
+                 workspace_bytes={}\n",
+                worker.worker_index,
+                worker.actor,
+                worker.core,
+                worker.tiles_start,
+                worker.tiles_end,
+                worker.workspace_base,
+                worker.workspace_bytes,
             ));
         }
     }

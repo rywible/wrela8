@@ -14,6 +14,13 @@ use super::params::ParameterContract;
 
 const LIGHT_KIND_NAMES: &[&str] = &["Disabled", "Point", "Directional", "Rectangle", "Disk"];
 
+pub(crate) fn light_kind_tag(kind: &str) -> Option<u64> {
+    LIGHT_KIND_NAMES
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .and_then(|tag| u64::try_from(tag).ok())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ConfigFailure {
     code: &'static str,
@@ -650,56 +657,6 @@ fn is_canonical_display_type(
         .is_some_and(|definition| !require_driver || definition.is_driver)
 }
 
-fn substitute_type_generics(ty: &Type, substitutions: &BTreeMap<String, Type>) -> Type {
-    match ty {
-        Type::Generic(name) => substitutions
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| ty.clone()),
-        Type::Array(element, length) => Type::Array(
-            Box::new(substitute_type_generics(element, substitutions)),
-            length.clone(),
-        ),
-        Type::Tuple(items) => Type::Tuple(
-            items
-                .iter()
-                .map(|item| substitute_type_generics(item, substitutions))
-                .collect(),
-        ),
-        Type::Option(inner) => {
-            Type::Option(Box::new(substitute_type_generics(inner, substitutions)))
-        }
-        Type::Result(ok, error) => Type::Result(
-            Box::new(substitute_type_generics(ok, substitutions)),
-            Box::new(substitute_type_generics(error, substitutions)),
-        ),
-        Type::Own(pool, inner) => Type::Own(
-            pool.clone(),
-            Box::new(substitute_type_generics(inner, substitutions)),
-        ),
-        Type::Static(inner) => {
-            Type::Static(Box::new(substitute_type_generics(inner, substitutions)))
-        }
-        Type::Fn(params, ret) => Type::Fn(
-            params
-                .iter()
-                .map(|(mode, ty)| (*mode, substitute_type_generics(ty, substitutions)))
-                .collect(),
-            Box::new(substitute_type_generics(ret, substitutions)),
-        ),
-        Type::Named(name, args) => Type::Named(
-            name.clone(),
-            args.iter()
-                .map(|arg| match arg {
-                    TypeArg::Type(ty) => TypeArg::Type(substitute_type_generics(ty, substitutions)),
-                    _ => arg.clone(),
-                })
-                .collect(),
-        ),
-        _ => ty.clone(),
-    }
-}
-
 fn finite_data(
     ty: &Type,
     context: &TypedProgram,
@@ -773,27 +730,15 @@ fn finite_data(
                 let Some(enumeration) = enumeration else {
                     return false;
                 };
-                let substitutions = enumeration
-                    .generic_type_params
-                    .iter()
-                    .zip(args)
-                    .filter_map(|(name, arg)| match (name, arg) {
-                        (Some(name), TypeArg::Type(ty)) => Some((name.clone(), ty.clone())),
-                        _ => None,
-                    })
-                    .collect::<BTreeMap<_, _>>();
                 let identity = format!("enum:{declaring_module}::{declaring_name}");
                 if !active.insert(identity.clone()) {
                     return false;
                 }
-                let finite = enumeration
-                    .variant_payload_types
-                    .iter()
-                    .flatten()
-                    .all(|payload| {
-                        let payload = substitute_type_generics(payload, &substitutions);
-                        finite_data(&payload, declaration_program, programs, active)
-                    });
+                // Generated frame validation has no payload-pattern lowering
+                // yet. Fieldless enums are finite; payload-bearing enums are
+                // rejected at admission so their contents cannot bypass the
+                // per-frame numeric/range checks.
+                let finite = enumeration.variant_payload_types.iter().all(Vec::is_empty);
                 active.remove(&identity);
                 return finite;
             };
@@ -1394,10 +1339,10 @@ mod tests {
     }
 
     #[test]
-    fn renderer_parameter_type_rejects_resources_statics_and_nonfinite_enum_payloads() {
+    fn renderer_parameter_type_rejects_resources_statics_and_all_enum_payloads() {
         let mut program = TypedProgram::default();
         program.module_path = "examples.params".to_string();
-        for name in ["ResourceParam", "BadChoice"] {
+        for name in ["ResourceParam", "BadChoice", "FiniteChoice"] {
             program
                 .type_decl_modules
                 .insert(name.to_string(), program.module_path.clone());
@@ -1422,6 +1367,16 @@ mod tests {
                 assoc_fns: BTreeMap::new(),
             },
         );
+        program.enums.insert(
+            "FiniteChoice".to_string(),
+            TypedEnum {
+                variants: vec!["Value".to_string()],
+                variant_payload_types: vec![vec![Type::U32]],
+                generic_type_params: Vec::new(),
+                methods: BTreeMap::new(),
+                assoc_fns: BTreeMap::new(),
+            },
+        );
         let programs = BTreeMap::from([("examples.params".to_string(), program.clone())]);
         assert!(!finite_data(
             &Type::Named("ResourceParam".to_string(), vec![]),
@@ -1437,6 +1392,12 @@ mod tests {
         ));
         assert!(!finite_data(
             &Type::Named("BadChoice".to_string(), vec![]),
+            &program,
+            &programs,
+            &mut BTreeSet::new()
+        ));
+        assert!(!finite_data(
+            &Type::Named("FiniteChoice".to_string(), vec![]),
             &program,
             &programs,
             &mut BTreeSet::new()

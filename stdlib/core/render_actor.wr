@@ -1,0 +1,9 @@
+module render_actor
+
+# P5 actor orchestration is instantiated from core.render.Renderer and
+# core.render.RendererWorker so the source-level Renderer[P] ABI remains
+# stable. This module owns the bounded bootstrap actor contract constants.
+
+pub const COORDINATOR_RENDER_REQUESTS: usize = 1
+pub const WORKER_JOB_CAPACITY: usize = 1
+pub const DISPLAY_COMPLETIONS: usize = 1

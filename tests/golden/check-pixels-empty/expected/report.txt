@@ -1,0 +1,29 @@
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/check_pixels_empty.wr sha256=2500813bba9ab76cae07bf0a5c43fdece237527a77ce6501870654b69aa79dac
+  Name value=pixels-empty
+  Target value=Target.wrela_machine_v1
+  OnFailure index=0 policy=Failure.Halt
+  Section name=pages base=0x40000000 size=28672
+  Cores count=1
+  CoreStack core=0 base=0x7ff00000 size=0x100000
+  Section name=entry base=0x40500000 size=80
+  Section name=code base=0x40500050 size=0
+  Section name=abort base=0x40500050 size=120
+  Section name=checkpoint base=0x405000c8 size=4
+  Entry base=0x40500000
+  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=27 rank_cycles=27 schedule_cycles=27 footprint_cycles=0 executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 rodata_bytes=0 image_bytes=204 sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4
+    Workload name=flat proxy_cycles=27
+    Owner name=app proxy_cycles=27
+    Owner name=runtime proxy_cycles=0
+    Owner name=driver proxy_cycles=0
+    Core n=0 proxy_cycles=0 max_entry_method_proxy_cycles=0
+    Budget n=0 fetched_text_bytes=256 executable_code_bytes=204 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=1 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Shared proxy_cycles=27
+    Scope name=linked-image executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 image_bytes=204 rodata_bytes=0 sync_frame_max_bytes=0 async_frame_total_bytes=0

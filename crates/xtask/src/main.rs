@@ -28,6 +28,7 @@ mod golden;
 mod lane2_freq;
 mod pixels_formal;
 mod pixels_plan_lint;
+mod pixels_repro;
 mod stdlib_test;
 
 use agnostic_sweep::*;
@@ -39,6 +40,7 @@ use golden::*;
 use lane2_freq::*;
 use pixels_formal::*;
 use pixels_plan_lint::*;
+use pixels_repro::*;
 use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
@@ -65,7 +67,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-repro\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -98,6 +100,7 @@ fn main() -> ExitCode {
             no_args("pixels-formal-scan", &args).and_then(|()| pixels_formal_scan())
         }
         Some("pixels-formal") => no_args("pixels-formal", &args).and_then(|()| pixels_formal()),
+        Some("pixels-repro") => no_args("pixels-repro", &args).and_then(|()| pixels_repro()),
         Some("verify-milestone") => Err(
             "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
              `cargo xtask verify-deep` is an optional maintainer diagnostic"
@@ -329,7 +332,7 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
             .count())
     }
 
-    const ALL: usize = 129;
+    const ALL: usize = 132;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",
@@ -444,6 +447,12 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
+        "Pixels decoder fuzz smoke",
+        "cargo xtask fuzz pixels --iters 256 --seed 1",
+        || fuzz_pixels(FUZZ_PIXELS_SMOKE_ITERS, FUZZ_PIXELS_DEEP_SEED),
+    )?;
+    verify_stage(
+        LANE,
         "portable VMM units",
         "cargo test -p wrela-vmm --lib",
         test_wrela_vmm_portable,
@@ -480,6 +489,12 @@ fn verify() -> Result<(), String> {
         corpus(&[])
     })?;
     verify_stage(LANE, "roundtrip", "cargo xtask roundtrip", roundtrip)?;
+    verify_stage(
+        LANE,
+        "Pixels fresh-directory reproduction",
+        "cargo xtask pixels-repro",
+        pixels_repro_smoke,
+    )?;
     verify_stage(LANE, "stdlib", "cargo xtask stdlib-test", stdlib_test)?;
     println!("verify: ok");
     Ok(())
@@ -567,7 +582,7 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
     produce_report_and_image_with_discovery_order(target, false, false)
 }
 
-fn produce_report_and_image_with_discovery_order(
+pub(crate) fn produce_report_and_image_with_discovery_order(
     target: &Path,
     reverse_imports: bool,
     include_field_graph: bool,
@@ -730,6 +745,11 @@ fn produce_report_and_image_with_discovery_order(
                             if path.to_string_lossy()
                                 == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
                                 || addr.as_str() == wrela_compiler::rtconfig::MODULE_ADDR
+                                || addr.as_str() == wrela_compiler::loader::IMAGE_PIXELS_MODULE_ADDR
+                                || path.to_string_lossy()
+                                    == wrela_compiler::loader::GENERATED_PIXELS_STUB_INPUT_PATH
+                                || path.to_string_lossy()
+                                    == wrela_compiler::loader::GENERATED_PIXELS_INPUT_PATH
                             {
                                 continue;
                             }
@@ -792,6 +812,8 @@ fn produce_report_and_image_with_discovery_order(
                                     &graph,
                                     &modules_by_addr,
                                     Some(&checked_image.renderer_configs),
+                                    Some(&pixels_programs),
+                                    false,
                                 ) {
                                     Ok(Some(image_layout)) => {
                                         if let Some(ref tables) = image_layout.runtime {
@@ -812,6 +834,12 @@ fn produce_report_and_image_with_discovery_order(
                                             );
                                         }
                                         layout::render_layout_section(&mut text, &image_layout);
+                                        wrela_compiler::pixels::report::append_layout(
+                                            &mut text,
+                                            &pixels_programs,
+                                            &image_layout,
+                                            false,
+                                        )?;
                                         if let Err(diag) =
                                             eval::layout_assert::run(program, &graph, &image_layout)
                                         {
@@ -2167,22 +2195,23 @@ pub(crate) fn build_runtime_test_image(
         }
         None => wrela_compiler::eval::image::ImageGraph::default(),
     };
+    let mut pixels_programs = None;
     let checked_image = if program.image_fn.is_some() {
         let checked = wrela_compiler::eval::image_checks::check_sealed(&graph, program, programs)
             .map_err(|error| error.message)?;
-        wrela_compiler::pixels::compile_all(
-            programs,
-            &program.module_path,
-            &graph,
-            &checked.renderer_configs,
-        )
-        .map_err(|error| error.diagnostic().message.clone())?;
+        pixels_programs = Some(
+            wrela_compiler::pixels::compile_all(
+                programs,
+                &program.module_path,
+                &graph,
+                &checked.renderer_configs,
+            )
+            .map_err(|error| error.diagnostic().message.clone())?,
+        );
         Some(checked)
     } else {
         None
     };
-    let test_args =
-        layout::resolve_runtime_test_args(program, test_names, &graph).map_err(|e| e)?;
     let async_tests: std::collections::BTreeSet<String> = test_names
         .iter()
         .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
@@ -2196,12 +2225,15 @@ pub(crate) fn build_runtime_test_image(
         checked_image
             .as_ref()
             .map(|checked| &checked.renderer_configs),
+        pixels_programs.as_ref(),
+        true,
         test_names,
         &async_tests,
         true,
     )?;
+    let test_args = layout::resolve_runtime_test_args(program, test_names, &compiled.graph)?;
     let boot = layout::BootCtx {
-        graph: &graph,
+        graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
         layout_ctx: &compiled.layout_ctx,
@@ -2209,7 +2241,7 @@ pub(crate) fn build_runtime_test_image(
         group_child_index: &compiled.group_child_index,
         flow: &compiled.flow,
     };
-    let image_layout = layout::layout_test_image(
+    let mut image_layout = layout::layout_test_image(
         &compiled.program,
         test_names,
         &async_tests,
@@ -2217,6 +2249,10 @@ pub(crate) fn build_runtime_test_image(
         &test_args,
     )
     .map_err(|e| e.message)?;
+    if let Some(programs) = pixels_programs.as_ref() {
+        layout::attach_pixels(&mut image_layout, &programs.compiled_renderers, true)
+            .map_err(|error| error.message)?;
+    }
     let source_digest = report::sha256_hex(source.as_bytes());
     let image_digest = report::sha256_hex(&image_layout.blob);
     let mut report_text = format!(

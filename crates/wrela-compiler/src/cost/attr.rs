@@ -133,6 +133,9 @@ pub(crate) fn classify_target(key: &str, placement: &PlacementTable) -> Result<A
 }
 
 fn core_or_shared(type_name: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
+    if type_name == "RendererWorker" {
+        return Ok(AttrTarget::Shared);
+    }
     match core_of_type(placement, type_name)? {
         Some(n) => Ok(AttrTarget::Core(n)),
         None => Ok(AttrTarget::Shared),
@@ -345,6 +348,33 @@ mod tests {
         let err = attribute_cores(&report, &placement).expect_err("split");
         assert!(err.contains("multiple cores"), "got: {err}");
         assert!(err.contains("Foo"), "got: {err}");
+    }
+
+    #[test]
+    fn sealed_renderer_worker_code_is_shared_across_worker_cores() {
+        let placement = placement(
+            2,
+            vec![
+                entry(ImageDeclRef::Actor(0), "RendererWorker", 0),
+                entry(ImageDeclRef::Actor(1), "RendererWorker", 1),
+            ],
+        );
+        let report = report(vec![
+            fn_cost("RendererWorker.run_job", 10),
+            fn_cost("rt_enqueue RendererWorker", 5),
+        ]);
+        let out = attribute_cores(&report, &placement).expect("attr");
+        assert_eq!(out.shared_proxy_cycles, 15);
+        assert_eq!(out.placeables[0].turn_proxy, 10);
+        assert_eq!(out.placeables[1].turn_proxy, 10);
+        assert_eq!(
+            out.cores[0].max_turn_method.as_deref(),
+            Some("RendererWorker.run_job")
+        );
+        assert_eq!(
+            out.cores[1].max_turn_method.as_deref(),
+            Some("RendererWorker.run_job")
+        );
     }
 
     #[test]

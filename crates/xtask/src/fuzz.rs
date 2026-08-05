@@ -23,6 +23,9 @@ pub(crate) const FUZZ_LEXER_DEEP_ITERS: u64 = 200_000;
 pub(crate) const FUZZ_LEXER_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_LEXER_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_LEXER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+pub(crate) const FUZZ_PIXELS_DEEP_ITERS: u64 = 10_000;
+pub(crate) const FUZZ_PIXELS_DEEP_SEED: u64 = 1;
+pub(crate) const FUZZ_PIXELS_SMOKE_ITERS: u64 = 256;
 
 pub(crate) struct Rng(u64);
 
@@ -47,6 +50,7 @@ impl Rng {
 pub(crate) fn fuzz(args: &[String]) -> Result<(), String> {
     const TARGETS: &[&str] = &[
         "smoke", "all", "lexer", "parser", "sema", "eval", "lower", "async", "imports", "report",
+        "pixels",
     ];
     let _mode = crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Dev);
     let (target, mut i) = match args.first() {
@@ -151,6 +155,10 @@ pub(crate) fn fuzz(args: &[String]) -> Result<(), String> {
         "report" => fuzz_report(
             iters.unwrap_or(FUZZ_REPORT_DEEP_ITERS),
             seed.unwrap_or(FUZZ_REPORT_DEEP_SEED),
+        ),
+        "pixels" => fuzz_pixels(
+            iters.unwrap_or(FUZZ_PIXELS_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_PIXELS_DEEP_SEED),
         ),
         _ => unreachable!("target validated above"),
     }
@@ -2367,6 +2375,8 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
             &layout_ctx,
             &graph,
             None,
+            None,
+            false,
             &runtime_tests,
             &async_tests,
             false,
@@ -3190,6 +3200,191 @@ pub(crate) fn fuzz_report_smoke() -> Result<(), String> {
     })
 }
 
+pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
+    let source_scratch = root().join("target/fuzz-pixels-source");
+    if source_scratch.exists() {
+        std::fs::remove_dir_all(&source_scratch)
+            .map_err(|error| format!("fuzz pixels: clear source scratch: {error}"))?;
+    }
+    std::fs::create_dir_all(&source_scratch)
+        .map_err(|error| format!("fuzz pixels: create source scratch: {error}"))?;
+    let source_seeds = [
+        "check-pixels-plane",
+        "check-pixels-smooth-csg",
+        "check-pixels-material-edge",
+        "check-pixels-generic-params",
+    ];
+    let source_iters = iters.clamp(1, 32);
+    let mut rng = Rng::new(seed);
+    let mut source_accepted = 0_u64;
+    let mut source_rejected = 0_u64;
+    let source_result = (|| {
+        for iteration in 0..source_iters {
+            let seed_name = source_seeds[usize::try_from(iteration).unwrap() % source_seeds.len()];
+            let case_dir = source_scratch.join(format!("case-{iteration}"));
+            crate::pixels_repro::copy_tree(
+                &root().join("tests/golden").join(seed_name),
+                &case_dir,
+            )?;
+            let source_target = crate::golden_case_target(&case_dir)?
+                .ok_or_else(|| format!("fuzz pixels: copied {seed_name} source has no root"))?;
+            let source = std::fs::read_to_string(&source_target)
+                .map_err(|error| format!("fuzz pixels: read source seed: {error}"))?;
+            let mutated = mutate_pixels_source(&source, iteration, &mut rng)?;
+            std::fs::write(&source_target, mutated)
+                .map_err(|error| format!("fuzz pixels: write source mutation: {error}"))?;
+            let source_outcome = std::panic::catch_unwind(|| {
+                crate::produce_report_and_image_with_discovery_order(&source_target, false, false)
+            });
+            match source_outcome {
+                Err(_) => {
+                    return Err(format!(
+                        "fuzz pixels: compiler panicked on source iteration {iteration}, \
+                         seed {seed}, fixture {seed_name}"
+                    ));
+                }
+                Ok(Ok((_, Some(_)))) => source_accepted += 1,
+                Ok(Ok((_, None))) | Ok(Err(_)) => source_rejected += 1,
+            }
+        }
+        if source_accepted == 0 {
+            return Err(
+                "fuzz pixels: randomized source lane accepted no input; valid mutation anchor \
+                 or compiler path drifted"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&source_scratch)
+        .map_err(|error| format!("fuzz pixels: clean source scratch: {error}"))?;
+    source_result?;
+
+    let valid = wrela_compiler::pixels::fuzz_seed_frame_program()?;
+    wrela_compiler::pixels::decode::decode(&valid)
+        .map_err(|error| format!("fuzz pixels: seed program is invalid: {error}"))?;
+    let mut accepted = 0_u64;
+    let mut rejected = 0_u64;
+    for iteration in 0..iters {
+        let mut bytes = match rng.gen_range(5) {
+            0 => valid.clone(),
+            1 | 2 => {
+                let mut bytes = valid.clone();
+                let changes = 1 + rng.gen_range(8);
+                for _ in 0..changes {
+                    let index = rng.gen_range(bytes.len());
+                    bytes[index] ^= 1_u8 << rng.gen_range(8);
+                }
+                bytes
+            }
+            3 => {
+                let end = rng.gen_range(valid.len() + 1);
+                valid[..end].to_vec()
+            }
+            _ => {
+                let len = rng.gen_range(4096);
+                (0..len).map(|_| rng.next_u64() as u8).collect::<Vec<_>>()
+            }
+        };
+        // Exercise semantic decoding, not just the outer digest check. These
+        // mutations retain a valid wire digest while perturbing a random byte
+        // in the directory/payload envelope.
+        if iteration % 8 == 1 {
+            bytes = valid.clone();
+            let first_mutable = usize::from(wrela_machine::pixels::FRAME_PROGRAM_HEADER_BYTES_V1);
+            let index = first_mutable + rng.gen_range(bytes.len() - first_mutable);
+            bytes[index] ^= 1_u8 << rng.gen_range(8);
+            let digest = wrela_machine::pixels::FRAME_PROGRAM_DIGEST_OFFSET_V1;
+            let digest_end = digest + wrela_machine::pixels::FRAME_PROGRAM_DIGEST_BYTES_V1;
+            bytes[digest..digest_end].fill(0);
+            let verified_digest = wrela_machine::sha256::sha256(&bytes);
+            bytes[digest..digest_end].copy_from_slice(&verified_digest);
+        }
+        if iteration % 64 == 0 {
+            bytes = valid.clone();
+        }
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wrela_compiler::pixels::decode::decode(&bytes)
+        }));
+        match outcome {
+            Err(_) => {
+                return Err(format!(
+                    "fuzz pixels: decoder panicked at iteration {iteration}, seed {seed}, \
+                     input_bytes={}",
+                    bytes.len()
+                ));
+            }
+            Ok(Ok(_)) => accepted += 1,
+            Ok(Err(_)) => rejected += 1,
+        }
+    }
+    println!(
+        "fuzz pixels: {source_iters} source and {iters} binary iteration(s), seed {seed}: no panic \
+         (source {source_accepted} accepted/{source_rejected} rejected, \
+         binary {accepted} accepted/{rejected} rejected)"
+    );
+    if accepted == 0 || rejected == 0 {
+        return Err(format!(
+            "fuzz pixels: ineffective corpus (accepted={accepted}, rejected={rejected})"
+        ));
+    }
+    Ok(())
+}
+
+fn mutate_pixels_source(source: &str, iteration: u64, rng: &mut Rng) -> Result<Vec<u8>, String> {
+    if iteration == 0 {
+        let mutated = source.replacen("offset=0.0", "offset=0.125", 1);
+        if mutated == source {
+            return Err("fuzz pixels: valid source mutation anchor disappeared".to_string());
+        }
+        return Ok(mutated.into_bytes());
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    match iteration % 5 {
+        0 => {
+            let digits = bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| byte.is_ascii_digit().then_some(index))
+                .collect::<Vec<_>>();
+            if digits.is_empty() {
+                return Err("fuzz pixels: source seed contains no numeric token".to_string());
+            }
+            let index = digits[rng.gen_range(digits.len())];
+            bytes[index] = b'0' + u8::try_from(rng.gen_range(10)).unwrap();
+        }
+        1 => bytes.truncate(rng.gen_range(bytes.len())),
+        2 => {
+            let index = rng.gen_range(bytes.len() + 1);
+            let insertion =
+                [b"@".as_slice(), b"[]", b"comptime ", b"0x", b"\n    pass\n"][rng.gen_range(5)];
+            bytes.splice(index..index, insertion.iter().copied());
+        }
+        3 => {
+            let candidates = bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| {
+                    (!matches!(*byte, b'\n' | b'\r' | b'\t' | b' ')).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                return Err("fuzz pixels: source seed contains no mutable token".to_string());
+            }
+            let index = candidates[rng.gen_range(candidates.len())];
+            bytes[index] = [b'_', b':', b')', b'0'][rng.gen_range(4)];
+        }
+        _ => {
+            if bytes.len() > 1 {
+                let left = rng.gen_range(bytes.len());
+                let right = rng.gen_range(bytes.len());
+                bytes.swap(left, right);
+            }
+        }
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn fuzz_smoke_all() -> Result<(), String> {
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
@@ -3198,7 +3393,8 @@ pub(crate) fn fuzz_smoke_all() -> Result<(), String> {
     fuzz_lower_smoke()?;
     fuzz_async_smoke()?;
     fuzz_imports_smoke()?;
-    fuzz_report_smoke()
+    fuzz_report_smoke()?;
+    fuzz_pixels(FUZZ_PIXELS_SMOKE_ITERS, FUZZ_PIXELS_DEEP_SEED)
 }
 
 pub(crate) fn fuzz_deep_all() -> Result<(), String> {
@@ -3210,5 +3406,6 @@ pub(crate) fn fuzz_deep_all() -> Result<(), String> {
     fuzz_lower(FUZZ_LOWER_DEEP_ITERS, FUZZ_LOWER_DEEP_SEED)?;
     fuzz_async(FUZZ_ASYNC_DEEP_ITERS, FUZZ_ASYNC_DEEP_SEED)?;
     fuzz_imports(FUZZ_IMPORTS_DEEP_ITERS, FUZZ_IMPORTS_DEEP_SEED)?;
-    fuzz_report(FUZZ_REPORT_DEEP_ITERS, FUZZ_REPORT_DEEP_SEED)
+    fuzz_report(FUZZ_REPORT_DEEP_ITERS, FUZZ_REPORT_DEEP_SEED)?;
+    fuzz_pixels(FUZZ_PIXELS_DEEP_ITERS, FUZZ_PIXELS_DEEP_SEED)
 }

@@ -93,6 +93,24 @@ pub const WAKE_CALL_POOL_COUNT: usize = 8;
 pub const TEST_CALL_POOL_COUNT: usize = 16;
 pub const NO_EDGE: usize = 255;
 
+pub(crate) fn renderer_placeholder_reservation_bytes(
+    n_turns: u64,
+    turn_stride: u64,
+    group_slot_size: u64,
+) -> u64 {
+    let empty_turn_bytes = if n_turns == 0 {
+        turn_stride.max(128)
+    } else {
+        0
+    };
+    empty_turn_bytes
+        + (INIT_SPAN_POOL_COUNT as u64) * 8
+        + group_slot_size
+        + (MB_POOL_COUNT as u64) * 64
+        + 8
+        + 32
+}
+
 pub fn stub_text() -> String {
     let mut tables = RuntimeTables {
         n_turns: 0,
@@ -168,65 +186,75 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, Stri
     }
     let mut mailboxes = Vec::new();
     for (i, name) in tables.enqueue_actors.iter().enumerate() {
-        let (capacity, slot_size, frame_size, state, ring, head, turn_index) =
-            if let Some((ai, a)) = tables
+        let handle = tables
+            .enqueue_handles
+            .get(i)
+            .copied()
+            .ok_or_else(|| format!("rtconfig: enqueue root {i} has no handle"))?;
+        let (capacity, slot_size, frame_size, state, ring, head, turn_index) = if let Ok(ai) =
+            usize::try_from(handle)
+            && let Some(a) = tables.actors.get(ai)
+        {
+            if a.name != *name {
+                return Err(format!(
+                    "rtconfig: enqueue handle {handle} names actor `{}`, expected `{name}`",
+                    a.name
+                ));
+            }
+            let addrs = placement
                 .actors
-                .iter()
-                .enumerate()
-                .find(|(_, a)| a.name == *name)
-            {
-                let addrs = placement
-                    .actors
-                    .get(ai)
-                    .copied()
-                    .ok_or_else(|| format!("rtconfig: actor `{name}` has no placement"))?;
-                (
-                    a.mailbox_capacity,
-                    a.slot_size,
-                    a.frame_size,
-                    addrs.state,
-                    addrs.ring,
-                    addrs.head,
-                    ai,
-                )
-            } else {
-                let (di, d) = tables
+                .get(ai)
+                .copied()
+                .ok_or_else(|| format!("rtconfig: actor `{name}` has no placement"))?;
+            (
+                a.mailbox_capacity,
+                a.slot_size,
+                a.frame_size,
+                addrs.state,
+                addrs.ring,
+                addrs.head,
+                ai,
+            )
+        } else {
+            let di = usize::try_from(handle)
+                .ok()
+                .and_then(|handle| handle.checked_sub(tables.actors.len()))
+                .ok_or_else(|| {
+                    format!("rtconfig: enqueue handle {handle} is outside actor/driver roots")
+                })?;
+            let d = tables
+                .drivers
+                .get(di)
+                .filter(|d| d.name == *name && d.mailbox.is_some())
+                .ok_or_else(|| {
+                    format!("rtconfig: enqueue handle {handle} is not messageable driver `{name}`")
+                })?;
+            let mb = d
+                .mailbox
+                .as_ref()
+                .ok_or_else(|| format!("rtconfig: driver `{name}` has no mailbox"))?;
+            let addrs = placement
+                .driver_mailboxes
+                .get(&di)
+                .copied()
+                .ok_or_else(|| format!("rtconfig: driver mailbox `{name}` has no placement"))?;
+            let turn_index = tables.actors.len()
+                + tables
                     .drivers
                     .iter()
-                    .enumerate()
-                    .find(|(_, d)| d.name == *name && d.mailbox.is_some())
-                    .ok_or_else(|| {
-                        format!(
-                            "rtconfig: enqueue root `{name}` is neither an actor nor a \
-                             messageable driver"
-                        )
-                    })?;
-                let mb = d
-                    .mailbox
-                    .as_ref()
-                    .ok_or_else(|| format!("rtconfig: driver `{name}` has no mailbox"))?;
-                let addrs = placement
-                    .driver_mailboxes
-                    .get(&di)
-                    .copied()
-                    .ok_or_else(|| format!("rtconfig: driver mailbox `{name}` has no placement"))?;
-                let turn_index = tables.actors.len()
-                    + tables
-                        .drivers
-                        .iter()
-                        .take(di)
-                        .filter(|dd| dd.mailbox.is_some())
-                        .count();
-                (
-                    mb.capacity,
-                    mb.slot_size,
-                    mb.frame_size,
-                    addrs.state,
-                    addrs.ring,
-                    addrs.head,
-                    turn_index,
-                )
-            };
+                    .take(di)
+                    .filter(|dd| dd.mailbox.is_some())
+                    .count();
+            (
+                mb.capacity,
+                mb.slot_size,
+                mb.frame_size,
+                addrs.state,
+                addrs.ring,
+                addrs.head,
+                turn_index,
+            )
+        };
         let methods = tables
             .root_methods
             .get(i)
@@ -323,8 +351,13 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     let n_wake = extras.wake_pending_addrs.len();
     let rings_high_reserve: u64 = if n_rings == 0 { 24 + 8 } else { 0 };
     let wake_high_reserve: u64 = if n_wake == 0 { 8 } else { 0 };
-    let group_addr = if group_cap == 0 {
+    let placeholder_end = if tables.rtconfig_placeholder_bytes == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+    } else {
+        RTDATA_BASE + tables.total_bytes
+    };
+    let group_addr = if group_cap == 0 {
+        placeholder_end
             - rings_high_reserve
             - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
@@ -518,7 +551,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("    turns: [TurnArea; N_TURNS_LEN]\n");
     out.push('\n');
     let rt_addr = if tables.n_turns == 0 {
-        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+        placeholder_end
             - rings_high_reserve
             - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
@@ -577,7 +610,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "N_RINGS_LEN", n_rings_len);
     push_const(&mut out, "RING_STRIDE_WORDS", ring_stride_words);
     let (rings_ctl_addr, rings_data_addr) = if n_rings == 0 {
-        let ph = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX - rings_high_reserve;
+        let ph = placeholder_end - rings_high_reserve;
         (ph, ph + 24)
     } else {
         let first = &extras.rings[0];
@@ -606,10 +639,8 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("    tail: u64\n");
     out.push_str("    count: u64\n");
     out.push('\n');
-    let mb_placeholder = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-        - rings_high_reserve
-        - wake_high_reserve
-        - (MB_POOL_COUNT as u64) * 64;
+    let mb_placeholder =
+        placeholder_end - rings_high_reserve - wake_high_reserve - (MB_POOL_COUNT as u64) * 64;
     for i in 0..MB_POOL_COUNT {
         let (words, data_addr, ctl_addr) = if let Some(m) = extras.mailboxes.get(i) {
             let words = ((m.capacity * m.slot_size) / 8).max(1) as usize;
@@ -674,7 +705,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         }
     }
 
-    let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+    let init_placeholder_base = placeholder_end
         - rings_high_reserve
         - wake_high_reserve
         - (MB_POOL_COUNT as u64) * 64
@@ -695,9 +726,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     }
 
     let wake_addr = if n_wake == 0 {
-        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
-            - rings_high_reserve
-            - wake_high_reserve
+        placeholder_end - rings_high_reserve - wake_high_reserve
     } else {
         extras.wake_pending_addrs[0]
     };
@@ -1479,6 +1508,28 @@ mod tests {
             "rtconfig CORE_SLOTS must match wrela_machine::CORE_SLOTS; got:\n{text}"
         );
         assert_eq!(wrela_machine::CORE_SLOTS, 32);
+    }
+
+    #[test]
+    fn renderer_placeholder_reservation_is_the_exact_generated_tail() {
+        let group_slot = crate::codegen::group_slot_size(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
+        let fixed_tail =
+            (INIT_SPAN_POOL_COUNT as u64) * 8 + group_slot + (MB_POOL_COUNT as u64) * 64 + 8 + 32;
+        assert_eq!(
+            renderer_placeholder_reservation_bytes(1, 256, group_slot),
+            fixed_tail,
+            "a live turn table needs no empty-turn placeholder"
+        );
+        assert_eq!(
+            renderer_placeholder_reservation_bytes(0, 0, group_slot),
+            128 + fixed_tail,
+            "an empty turn table reserves the generated minimum stride"
+        );
+        assert_eq!(
+            renderer_placeholder_reservation_bytes(0, 512, group_slot),
+            512 + fixed_tail,
+            "an existing empty-turn stride is preserved exactly"
+        );
     }
 
     #[test]

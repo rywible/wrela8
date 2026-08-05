@@ -474,12 +474,12 @@ pub const PIXELS_RENDERER_SYMBOL: &str = "__wrela_pixels_render";
 
 /// Emit the P-1 scalar renderer as ordinary guest AArch64.
 ///
-/// The renderer installs its frame program, shades the fixed 64x32 BGRA8
-/// target from the P-1 semantic seed compiled into the generated actor, publishes the
-/// one-tile display queue, and finally rings the display doorbell.  Keeping
-/// this as an explicit, auditable emitter makes the walking skeleton travel
-/// through the same image/link/VMM path as every later renderer.
-pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80], semantic_seed: &[u8; 32]) -> CodegenFn {
+/// The renderer installs its P-1 compatibility seed metadata, shades the fixed
+/// 64x32 BGRA8 target from the semantic seed compiled into the generated
+/// actor, publishes the one-tile display queue, and finally rings the display
+/// doorbell. Keeping this as an explicit, auditable emitter makes the walking
+/// skeleton travel through the real image/link/VMM path.
+pub fn emit_pixels_plane_renderer(seed_metadata: &[u8; 80], semantic_seed: &[u8; 32]) -> CodegenFn {
     use wrela_machine::pixels;
 
     fn renderer_load_u64(code: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -556,19 +556,19 @@ pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80], semantic_seed: &[u8;
     renderer_load_u64(
         &mut code,
         9,
-        pixels::FRAME_PROGRAM_BASE,
-        "pixels frame program",
+        pixels::PLANE_SEED_METADATA_BASE,
+        "pixels plane seed metadata",
     );
-    for (i, bytes) in frame_program.chunks_exact(4).enumerate() {
-        let value = u32::from_le_bytes(bytes.try_into().expect("four-byte frame chunk"));
-        renderer_load_u64(&mut code, 10, u64::from(value), "frame program word");
+    for (i, bytes) in seed_metadata.chunks_exact(4).enumerate() {
+        let value = u32::from_le_bytes(bytes.try_into().expect("four-byte metadata chunk"));
+        renderer_load_u64(&mut code, 10, u64::from(value), "plane seed metadata word");
         renderer_store_w(
             &mut code,
             10,
             9,
             (i * 4) as u16,
-            pixels::FRAME_PROGRAM_BASE,
-            "frame program",
+            pixels::PLANE_SEED_METADATA_BASE,
+            "plane seed metadata",
         );
     }
 
@@ -686,7 +686,7 @@ pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80], semantic_seed: &[u8;
 /// symbol nor pay for a dormant runtime branch.
 pub fn install_pixels_plane_renderer(
     program: &mut CodegenProgram,
-    frame_program: &[u8; 80],
+    seed_metadata: &[u8; 80],
     semantic_seed: &[u8; 32],
 ) -> Result<(), String> {
     let boot = program.fns.get_mut("__wrela_rt_boot_init").ok_or_else(|| {
@@ -754,7 +754,7 @@ pub fn install_pixels_plane_renderer(
         .fns
         .insert(
             PIXELS_RENDERER_SYMBOL.to_string(),
-            emit_pixels_plane_renderer(frame_program, semantic_seed),
+            emit_pixels_plane_renderer(seed_metadata, semantic_seed),
         )
         .is_some()
     {
@@ -923,6 +923,8 @@ pub const FRAME_SP_ALIGN_BYTES: u64 = 16;
 
 pub const FRAME_SLOT_BYTES: u64 = 8;
 
+const FRAME_X_IMMEDIATE_MAX_BYTES: usize = 4095 * FRAME_SLOT_BYTES as usize;
+
 // Below eight L1D lines the LR spill removal is monotone in the rank model;
 // larger symbolic frames can change residency enough that deleting an
 // equal-sized spill is not a win.
@@ -1006,11 +1008,11 @@ fn build_frame(
     }
     let frameless = offset == 0;
     let size = round_up_16(offset);
-    if size + slot_bias > 4095 {
+    if size + slot_bias > FRAME_X_IMMEDIATE_MAX_BYTES {
         return Err(CodegenError::unimplemented(&format!(
-            "frames larger than {} bytes (the ADD/SUB-immediate imm12 range, less this fn's \
-             own {slot_bias}-byte slot bias)",
-            4095 - slot_bias
+            "{size}-byte frames; the current limit is {} bytes (the scaled 64-bit load/store \
+             imm12 range, less this fn's own {slot_bias}-byte slot bias)",
+            FRAME_X_IMMEDIATE_MAX_BYTES - slot_bias,
         )));
     }
     Ok(Frame {
@@ -1584,15 +1586,31 @@ impl<'a> FnCtx<'a> {
             self.note_resident_misuse("addr_of_slot", off);
             return;
         }
-        let off = (off + self.slot_bias) as u16;
+        let off = off + self.slot_bias;
         let base = self.slot_base;
-        self.push(
-            encode::enc_add_imm(reg, base, off, true),
-            format!("add {}, {}, #{off}", reg_name(reg), reg_name(base)),
-            CostRule::Alu,
-            Some(reg),
-            &[base],
-        );
+        let mut remaining = off;
+        let mut source = base;
+        while remaining != 0 {
+            let immediate = remaining.min(4095);
+            self.push(
+                encode::enc_add_imm(reg, source, immediate as u16, true),
+                format!("add {}, {}, #{immediate}", reg_name(reg), reg_name(source)),
+                CostRule::Alu,
+                Some(reg),
+                &[source],
+            );
+            source = reg;
+            remaining -= immediate;
+        }
+        if off == 0 {
+            self.push(
+                encode::enc_add_imm(reg, base, 0, true),
+                format!("add {}, {}, #0", reg_name(reg), reg_name(base)),
+                CostRule::Alu,
+                Some(reg),
+                &[base],
+            );
+        }
     }
 
     fn load_imm_naive(&mut self, reg: u8, value: i64) {
@@ -2091,6 +2109,406 @@ fn compare_cond(op: BinOp) -> Result<Cond, CodegenError> {
     })
 }
 
+fn emit_float_compare(
+    ctx: &mut FnCtx,
+    op: BinOp,
+    ty: &Type,
+    lhs: Temp,
+    rhs: Temp,
+    dst: Temp,
+) -> Result<(), CodegenError> {
+    let (width, full_mask, abs_mask, infinity, sign_bit) = match strip_wrappers(ty) {
+        Type::F32 => (
+            32_u8,
+            u64::from(u32::MAX),
+            u64::from(0x7fff_ffff_u32),
+            u64::from(f32::INFINITY.to_bits()),
+            u64::from(0x8000_0000_u32),
+        ),
+        Type::F64 => (
+            64_u8,
+            u64::MAX,
+            0x7fff_ffff_ffff_ffff,
+            f64::INFINITY.to_bits(),
+            0x8000_0000_0000_0000,
+        ),
+        _ => {
+            return Err(CodegenError::internal(
+                "floating comparison received a non-floating type",
+            ));
+        }
+    };
+    let a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+    let b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+
+    // IEEE comparisons are implemented with integer instructions so P5 does
+    // not introduce an unaccounted floating-point instruction family.  First
+    // form a single ordered predicate: abs(bits) <= infinity for both inputs.
+    ctx.load_imm(X_C, abs_mask as i64);
+    ctx.push(
+        encode::enc_and_reg(X_D, a, X_C, true),
+        format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
+        CostRule::Alu,
+        Some(X_D),
+        &[a, X_C],
+    );
+    ctx.load_imm(X_E, infinity as i64);
+    ctx.cmp_reg(X_D, X_E);
+    ctx.push_flags(
+        encode::enc_cset(X_F, Cond::Ls, true),
+        format!("cset {}, ls", reg_name(X_F)),
+        CostRule::Alu,
+        Some(X_F),
+        &[],
+        FlagEffect::Read,
+    );
+    ctx.push(
+        encode::enc_and_reg(X_D, b, X_C, true),
+        format!("and {}, {}, {}", reg_name(X_D), reg_name(b), reg_name(X_C)),
+        CostRule::Alu,
+        Some(X_D),
+        &[b, X_C],
+    );
+    ctx.cmp_reg(X_D, X_E);
+    ctx.push_flags(
+        encode::enc_cset(X_D, Cond::Ls, true),
+        format!("cset {}, ls", reg_name(X_D)),
+        CostRule::Alu,
+        Some(X_D),
+        &[],
+        FlagEffect::Read,
+    );
+    ctx.push(
+        encode::enc_and_reg(X_F, X_F, X_D, true),
+        format!(
+            "and {}, {}, {}",
+            reg_name(X_F),
+            reg_name(X_F),
+            reg_name(X_D)
+        ),
+        CostRule::Alu,
+        Some(X_F),
+        &[X_F, X_D],
+    );
+
+    if matches!(op, BinOp::Eq | BinOp::Ne) {
+        // IEEE treats the two zero encodings as equal.  NaNs compare unequal
+        // to every value, including themselves.
+        ctx.cmp_reg(a, b);
+        ctx.push_flags(
+            encode::enc_cset(X_E, Cond::Eq, true),
+            format!("cset {}, eq", reg_name(X_E)),
+            CostRule::Alu,
+            Some(X_E),
+            &[],
+            FlagEffect::Read,
+        );
+        ctx.load_imm(X_C, abs_mask as i64);
+        ctx.push(
+            encode::enc_and_reg(X_D, a, X_C, true),
+            format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_D),
+            &[a, X_C],
+        );
+        ctx.push(
+            encode::enc_and_reg(X_C, b, X_C, true),
+            format!("and {}, {}, {}", reg_name(X_C), reg_name(b), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_C),
+            &[b, X_C],
+        );
+        ctx.push(
+            encode::enc_orr_reg(X_D, X_D, X_C, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_D),
+                reg_name(X_D),
+                reg_name(X_C)
+            ),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_D, X_C],
+        );
+        ctx.cmp_reg(X_D, X_ZR);
+        ctx.push_flags(
+            encode::enc_cset(X_D, Cond::Eq, true),
+            format!("cset {}, eq", reg_name(X_D)),
+            CostRule::Alu,
+            Some(X_D),
+            &[],
+            FlagEffect::Read,
+        );
+        ctx.push(
+            encode::enc_orr_reg(X_E, X_E, X_D, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_E),
+                reg_name(X_E),
+                reg_name(X_D)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_E, X_D],
+        );
+        ctx.push(
+            encode::enc_and_reg(X_E, X_E, X_F, true),
+            format!(
+                "and {}, {}, {}",
+                reg_name(X_E),
+                reg_name(X_E),
+                reg_name(X_F)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_E, X_F],
+        );
+        if op == BinOp::Ne {
+            ctx.load_imm(X_D, 1);
+            ctx.push(
+                encode::enc_eor_reg(X_E, X_E, X_D, true),
+                format!(
+                    "eor {}, {}, {}",
+                    reg_name(X_E),
+                    reg_name(X_E),
+                    reg_name(X_D)
+                ),
+                CostRule::Alu,
+                Some(X_E),
+                &[X_E, X_D],
+            );
+        }
+    } else {
+        // Preserve the IEEE signed-zero equivalence in bit 1 while bit 0
+        // continues to carry the ordered/non-NaN predicate.
+        ctx.load_imm(X_C, abs_mask as i64);
+        ctx.push(
+            encode::enc_and_reg(X_D, a, X_C, true),
+            format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_D),
+            &[a, X_C],
+        );
+        ctx.push(
+            encode::enc_and_reg(X_E, b, X_C, true),
+            format!("and {}, {}, {}", reg_name(X_E), reg_name(b), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_E),
+            &[b, X_C],
+        );
+        ctx.push(
+            encode::enc_orr_reg(X_D, X_D, X_E, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_D),
+                reg_name(X_D),
+                reg_name(X_E)
+            ),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_D, X_E],
+        );
+        ctx.cmp_reg(X_D, X_ZR);
+        ctx.push_flags(
+            encode::enc_cset(X_D, Cond::Eq, true),
+            format!("cset {}, eq", reg_name(X_D)),
+            CostRule::Alu,
+            Some(X_D),
+            &[],
+            FlagEffect::Read,
+        );
+        ctx.push(
+            encode::enc_add_reg(X_D, X_D, X_D, true),
+            format!("lsl {}, {}, #1", reg_name(X_D), reg_name(X_D)),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_D],
+        );
+        ctx.push(
+            encode::enc_orr_reg(X_F, X_F, X_D, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_F),
+                reg_name(X_F),
+                reg_name(X_D)
+            ),
+            CostRule::Alu,
+            Some(X_F),
+            &[X_F, X_D],
+        );
+
+        // Map the IEEE sign-magnitude encoding to a monotonically increasing
+        // unsigned key: negative values are complemented within their width,
+        // while nonnegative values have the sign bit toggled.
+        ctx.push(
+            encode::enc_lsr_imm(X_C, a, width - 1, true),
+            format!("lsr {}, {}, #{}", reg_name(X_C), reg_name(a), width - 1),
+            CostRule::Alu,
+            Some(X_C),
+            &[a],
+        );
+        ctx.push(
+            encode::enc_sub_reg(X_D, X_ZR, X_C, true),
+            format!("neg {}, {}", reg_name(X_D), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_ZR, X_C],
+        );
+        ctx.load_imm(X_E, full_mask as i64);
+        ctx.push(
+            encode::enc_and_reg(X_D, X_D, X_E, true),
+            format!(
+                "and {}, {}, {}",
+                reg_name(X_D),
+                reg_name(X_D),
+                reg_name(X_E)
+            ),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_D, X_E],
+        );
+        ctx.load_imm(X_E, sign_bit as i64);
+        ctx.push(
+            encode::enc_orr_reg(X_D, X_D, X_E, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_D),
+                reg_name(X_D),
+                reg_name(X_E)
+            ),
+            CostRule::Alu,
+            Some(X_D),
+            &[X_D, X_E],
+        );
+        ctx.push(
+            encode::enc_eor_reg(X_C, a, X_D, true),
+            format!("eor {}, {}, {}", reg_name(X_C), reg_name(a), reg_name(X_D)),
+            CostRule::Alu,
+            Some(X_C),
+            &[a, X_D],
+        );
+
+        ctx.push(
+            encode::enc_lsr_imm(X_D, b, width - 1, true),
+            format!("lsr {}, {}, #{}", reg_name(X_D), reg_name(b), width - 1),
+            CostRule::Alu,
+            Some(X_D),
+            &[b],
+        );
+        ctx.push(
+            encode::enc_sub_reg(X_E, X_ZR, X_D, true),
+            format!("neg {}, {}", reg_name(X_E), reg_name(X_D)),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_ZR, X_D],
+        );
+        ctx.load_imm(X_A, full_mask as i64);
+        ctx.push(
+            encode::enc_and_reg(X_E, X_E, X_A, true),
+            format!(
+                "and {}, {}, {}",
+                reg_name(X_E),
+                reg_name(X_E),
+                reg_name(X_A)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_E, X_A],
+        );
+        ctx.load_imm(X_A, sign_bit as i64);
+        ctx.push(
+            encode::enc_orr_reg(X_E, X_E, X_A, true),
+            format!(
+                "orr {}, {}, {}",
+                reg_name(X_E),
+                reg_name(X_E),
+                reg_name(X_A)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_E, X_A],
+        );
+        ctx.push(
+            encode::enc_eor_reg(X_D, b, X_E, true),
+            format!("eor {}, {}, {}", reg_name(X_D), reg_name(b), reg_name(X_E)),
+            CostRule::Alu,
+            Some(X_D),
+            &[b, X_E],
+        );
+        ctx.cmp_reg(X_C, X_D);
+        let cond = match op {
+            BinOp::Lt => Cond::Cc,
+            BinOp::Le => Cond::Ls,
+            BinOp::Gt => Cond::Hi,
+            BinOp::Ge => Cond::Cs,
+            _ => unreachable!("equality comparisons handled above"),
+        };
+        ctx.push_flags(
+            encode::enc_cset(X_E, cond, true),
+            format!("cset {}, {}", reg_name(X_E), cond_mnemonic(cond)),
+            CostRule::Alu,
+            Some(X_E),
+            &[],
+            FlagEffect::Read,
+        );
+        ctx.load_imm(X_D, 3);
+        ctx.cmp_reg(X_F, X_D);
+        ctx.load_imm(X_D, i64::from(matches!(op, BinOp::Le | BinOp::Ge)));
+        ctx.push_flags(
+            encode::enc_csel(X_E, X_D, X_E, Cond::Eq, true),
+            format!(
+                "csel {}, {}, {}, eq",
+                reg_name(X_E),
+                reg_name(X_D),
+                reg_name(X_E)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_D, X_E],
+            FlagEffect::Read,
+        );
+        ctx.load_imm(X_D, 1);
+        ctx.push(
+            encode::enc_and_reg(X_F, X_F, X_D, true),
+            format!(
+                "and {}, {}, {}",
+                reg_name(X_F),
+                reg_name(X_F),
+                reg_name(X_D)
+            ),
+            CostRule::Alu,
+            Some(X_F),
+            &[X_F, X_D],
+        );
+        ctx.push(
+            encode::enc_and_reg(X_E, X_E, X_F, true),
+            format!(
+                "and {}, {}, {}",
+                reg_name(X_E),
+                reg_name(X_E),
+                reg_name(X_F)
+            ),
+            CostRule::Alu,
+            Some(X_E),
+            &[X_E, X_F],
+        );
+    }
+
+    let dst_off = ctx.frame.off(dst);
+    let d = ctx.def_reg(X_E, dst_off);
+    if d != X_E {
+        ctx.push(
+            encode::enc_mov_reg(d, X_E, true),
+            format!("mov {}, {}", reg_name(d), reg_name(X_E)),
+            CostRule::Alu,
+            Some(d),
+            &[X_E],
+        );
+    }
+    ctx.store_slot(d, dst_off);
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SkipKind {
     Cond(Cond),
@@ -2225,10 +2643,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.load_imm(d, if *value { 1 } else { 0 });
             ctx.store_slot(d, off);
         }
-        Inst::ConstFloat { .. } => {
-            return Err(CodegenError::unimplemented(
-                "floating-point constants (no FP/SIMD encoder subset exists)",
-            ));
+        Inst::ConstFloat { dst, ty, bits } => {
+            if !is_float(ty) {
+                return Err(CodegenError::internal("`ConstFloat` with a non-float type"));
+            }
+            // Materializing an IEEE bit pattern in a general-purpose register
+            // does not require the FP/SIMD instruction subset. Arithmetic on
+            // these values remains fail-closed until that subset is installed.
+            let off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, off);
+            ctx.load_imm(d, *bits as i64);
+            ctx.store_slot(d, off);
         }
         Inst::ConstChar { dst, value } => {
             let off = ctx.frame.off(*dst);
@@ -2624,7 +3049,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             rhs,
         } => {
             if is_float(ty) {
-                return Err(CodegenError::unimplemented("floating-point comparison"));
+                return emit_float_compare(ctx, *op, ty, *lhs, *rhs, *dst);
             }
             let a = ctx.use_slot(X_A, ctx.frame.off(*lhs));
             let b = ctx.use_slot(X_B, ctx.frame.off(*rhs));
@@ -2649,7 +3074,28 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             abort,
         } => {
             if is_float(ty) {
-                return Err(CodegenError::unimplemented("floating-point negation"));
+                let sign_bit = match strip_wrappers(ty) {
+                    Type::F32 => i64::from(0x8000_0000_u32),
+                    Type::F64 => i64::MIN,
+                    _ => {
+                        return Err(CodegenError::internal(
+                            "floating negation received a non-floating type",
+                        ));
+                    }
+                };
+                let a = ctx.use_slot(X_A, ctx.frame.off(*src));
+                ctx.load_imm(X_D, sign_bit);
+                let dst_off = ctx.frame.off(*dst);
+                let d = ctx.def_reg(X_C, dst_off);
+                ctx.push(
+                    encode::enc_eor_reg(d, a, X_D, true),
+                    format!("eor {}, {}, {}", reg_name(d), reg_name(a), reg_name(X_D)),
+                    CostRule::Alu,
+                    Some(d),
+                    &[a, X_D],
+                );
+                ctx.store_slot(d, dst_off);
+                return Ok(());
             }
             let (_, signed) = int_shape(ty)
                 .ok_or_else(|| CodegenError::internal(format!("`Neg` on non-integer {ty:?}")))?;
@@ -4188,13 +4634,7 @@ fn emit_convert(
 
 fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if !frame.frameless {
-        ctx.push(
-            encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
-            format!("sub sp, sp, #{}", frame.size),
-            CostRule::Alu,
-            Some(X_SP),
-            &[X_SP],
-        );
+        emit_sp_adjust(ctx, frame.size, false);
     }
     if frame.lr_saved {
         ctx.store_slot(X_LR, frame.lr_off);
@@ -4303,13 +4743,29 @@ fn emit_frame_teardown(frame: &Frame, ctx: &mut FnCtx) {
     if frame.frameless {
         return;
     }
-    ctx.push(
-        encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
-        format!("add sp, sp, #{}", frame.size),
-        CostRule::Alu,
-        Some(X_SP),
-        &[X_SP],
-    );
+    emit_sp_adjust(ctx, frame.size, true);
+}
+
+fn emit_sp_adjust(ctx: &mut FnCtx, bytes: usize, add: bool) {
+    debug_assert_eq!(bytes % FRAME_SP_ALIGN_BYTES as usize, 0);
+    let mut remaining = bytes;
+    while remaining != 0 {
+        // Keep SP 16-byte aligned after every instruction.
+        let immediate = remaining.min(4080);
+        let word = if add {
+            encode::enc_add_imm(X_SP, X_SP, immediate as u16, true)
+        } else {
+            encode::enc_sub_imm(X_SP, X_SP, immediate as u16, true)
+        };
+        ctx.push(
+            word,
+            format!("{} sp, sp, #{immediate}", if add { "add" } else { "sub" }),
+            CostRule::Alu,
+            Some(X_SP),
+            &[X_SP],
+        );
+        remaining -= immediate;
+    }
 }
 
 enum InterruptCellRmw {
@@ -5260,6 +5716,7 @@ pub enum BootInitArgSpec {
         count: u64,
         slot_bytes: u64,
     },
+    WordArray(Vec<u64>),
 }
 
 pub const OFF_TURN_BUSY: u64 = 0;
@@ -5306,7 +5763,8 @@ pub fn group_child_payload_off(child_index: usize) -> u64 {
 }
 
 fn actor_of_method_key(key: &str) -> &str {
-    key.split('.').next().unwrap_or(key)
+    let actor = key.split('.').next().unwrap_or(key);
+    actor.strip_prefix("struct:").unwrap_or(actor)
 }
 fn method_name_of_key(key: &str) -> &str {
     key.split('.').nth(1).unwrap_or(key)
@@ -5512,9 +5970,9 @@ fn apply_flow_frame_plan(
     frame.entropy_scratch_off = frame.entropy_scratch_off.map(shift);
     frame.lr_off = shift(frame.lr_off);
     frame.size = shift(frame.size).max(new_temp_end).div_ceil(16) * 16;
-    if frame.size + TURN_RECORD_SIZE as usize > 4095 {
+    if frame.size + TURN_RECORD_SIZE as usize > FRAME_X_IMMEDIATE_MAX_BYTES {
         return Err(CodegenError::unimplemented(
-            "colored Flow frame exceeds the immediate offset range",
+            "colored Flow frame exceeds the scaled 64-bit load/store immediate offset range",
         ));
     }
     Ok(())
@@ -5790,6 +6248,7 @@ impl FnCtx<'_> {
 fn emit_marshal_and_call(
     method_idx: usize,
     arg_temps: &[Temp],
+    f: &MwirFn,
     ctx: &mut FnCtx,
     symbol: &str,
     waker_self_key: Option<&str>,
@@ -5801,6 +6260,7 @@ fn emit_marshal_and_call(
     }
     for reg in [1u8, 2u8] {
         match arg_temps.get(reg as usize - 1) {
+            Some(t) if is_aggregate(&f.temp_types[t.0]) => ctx.addr_of_slot(reg, ctx.frame.off(*t)),
             Some(t) => ctx.load_slot(reg, ctx.frame.off(*t)),
             None => ctx.push(
                 encode::enc_mov_reg(reg, X_ZR, true),
@@ -5854,11 +6314,12 @@ fn emit_send(
     method_key: &str,
     arg_temps: &[Temp],
     take_arg_temps: &[Temp],
+    f: &MwirFn,
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
 ) -> Result<(), CodegenError> {
     let (actor, idx) = lookup_method_idx(method_key, method_index)?;
-    emit_marshal_and_call(idx, arg_temps, ctx, &rt_enqueue_symbol(&actor), None)?;
+    emit_marshal_and_call(idx, arg_temps, f, ctx, &rt_enqueue_symbol(&actor), None)?;
     let dst_off = ctx.frame.off(dst);
     let dst_size = ctx.frame.size_of_temp(dst);
     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(0));
@@ -6703,6 +7164,7 @@ fn emit_flow_op(
             method_key,
             arg_temps,
             take_arg_temps,
+            f,
             ctx,
             method_index,
         ),
@@ -7055,6 +7517,7 @@ fn emit_await_suspend(
             emit_marshal_and_call(
                 idx,
                 arg_temps,
+                f,
                 ctx,
                 &rt_enqueue_symbol(&actor),
                 Some(fn_key),
@@ -7364,15 +7827,6 @@ fn emit_not_admitted_local(
     result_size: usize,
     take_arg_temps: &[Temp],
 ) -> Result<(), CodegenError> {
-    for t in take_arg_temps {
-        let sz = ctx.frame.size_of_temp(*t);
-        if sz != 8 {
-            return Err(CodegenError::unimplemented(
-                "NotAdmitted take-arg handback for a non-scalar argument (plans/M13.md item H; \
-                 spill aggregates on the fail branch is not implemented)",
-            ));
-        }
-    }
     let mut w = 0usize;
     while w < result_size {
         ctx.store_slot(X_ZR, result_off + w);
@@ -7386,15 +7840,15 @@ fn emit_not_admitted_local(
     ctx.store_slot(X_A, result_off + 16);
     let mut off = 24usize;
     for t in take_arg_temps {
-        if off + 8 > result_size {
+        let size = ctx.frame.size_of_temp(*t);
+        if off.checked_add(size).is_none_or(|end| end > result_size) {
             return Err(CodegenError::internal(
                 "NotAdmitted take-arg tuple does not fit the composed CallError temp \
                  (size_of/compose_call_error disagree with this site)",
             ));
         }
-        ctx.load_slot(X_A, ctx.frame.off(*t));
-        ctx.store_slot(X_A, result_off + off);
-        off += 8;
+        ctx.copy_slot_to_slot(result_off + off, ctx.frame.off(*t), size);
+        off += size;
     }
     Ok(())
 }
@@ -8105,7 +8559,9 @@ pub fn async_frame_sizes(
     };
     let mut out = BTreeMap::new();
     for (key, f) in &flow.fns {
-        let (frame, _) = build_frame_flow(f, layout)?;
+        let (frame, _) = build_frame_flow(f, layout).map_err(|error| CodegenError {
+            message: format!("{} in `{key}`", error.message),
+        })?;
         out.insert(key.clone(), frame.size as u64);
     }
     Ok(out)
@@ -8423,6 +8879,48 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                     &[31],
                 );
                 Ok(bytes)
+            }
+            BootInitArgSpec::WordArray(values) => {
+                let raw = values
+                    .len()
+                    .checked_mul(8)
+                    .ok_or_else(|| "word-array byte count overflow".to_string())?;
+                let bytes = raw.div_ceil(16) * 16;
+                if bytes == 0 || bytes >= 4096 {
+                    return Err(format!(
+                        "word array wants {bytes} bytes (count={}); boot's unsigned-immediate \
+                         SUB reaches 4095",
+                        values.len()
+                    ));
+                }
+                push(
+                    words,
+                    encode::enc_sub_imm(31, 31, bytes as u16, true),
+                    format!("sub sp, sp, #{bytes}  ; word table"),
+                    CostRule::Alu,
+                    Some(31),
+                    &[31],
+                );
+                for (index, value) in values.iter().enumerate() {
+                    load_imm(words, 9, *value, "word table element");
+                    push(
+                        words,
+                        encode::enc_str_x_imm(9, 31, (index * 8) as u16),
+                        format!("str x9, [sp, #{}]", index * 8),
+                        CostRule::Store,
+                        None,
+                        &[9, 31],
+                    );
+                }
+                push(
+                    words,
+                    encode::enc_add_imm(reg, 31, 0, true),
+                    format!("mov {}, sp", reg_name(reg)),
+                    CostRule::Alu,
+                    Some(reg),
+                    &[31],
+                );
+                Ok(bytes as u64)
             }
         }
     }
@@ -9794,14 +10292,14 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_over_4095_bytes_fails_closed() {
+    fn a_frame_over_the_scaled_x_load_store_range_fails_closed() {
         let f = MwirFn {
             receiver: None,
             params: vec![],
             ret: Type::Unit,
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
-                Box::new(ast::Expr::Int(ast::Span::default(), "600".to_string())),
+                Box::new(ast::Expr::Int(ast::Span::default(), "4100".to_string())),
             )],
             body: vec![Inst::Return { value: None }],
         };
@@ -9810,14 +10308,14 @@ mod tests {
     }
 
     #[test]
-    fn an_async_frame_is_bounded_by_imm12_less_the_slot_bias() {
+    fn an_async_frame_is_bounded_by_the_scaled_x_range_less_the_slot_bias() {
         let f = MwirFn {
             receiver: None,
             params: vec![],
             ret: Type::Unit,
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
-                Box::new(ast::Expr::Int(ast::Span::default(), "504".to_string())),
+                Box::new(ast::Expr::Int(ast::Span::default(), "4087".to_string())),
             )],
             body: vec![Inst::Return { value: None }],
         };
@@ -9825,11 +10323,11 @@ mod tests {
 
         let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("legal for a sync frame");
-        assert_eq!(sync.size, 4048);
+        assert_eq!(sync.size, 32704);
 
         let bias = TURN_RECORD_SIZE as usize;
         assert!(
-            sync.size + bias > 4095,
+            sync.size + bias > FRAME_X_IMMEDIATE_MAX_BYTES,
             "this fixture must straddle the boundary to be a regression lock"
         );
         let Err(err) = build_frame(
@@ -9844,7 +10342,8 @@ mod tests {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
-            err.message.contains("4031"),
+            err.message
+                .contains(&(FRAME_X_IMMEDIATE_MAX_BYTES - bias).to_string()),
             "the diagnostic names the biased ceiling: {}",
             err.message
         );
@@ -9852,7 +10351,7 @@ mod tests {
         let smaller = MwirFn {
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
-                Box::new(ast::Expr::Int(ast::Span::default(), "500".to_string())),
+                Box::new(ast::Expr::Int(ast::Span::default(), "4079".to_string())),
             )],
             ..f
         };
@@ -9865,8 +10364,8 @@ mod tests {
             &regalloc::Assignment::none(64),
             true,
         )
-        .expect("fits under 4031 with the bias");
-        assert!(ok.size + bias <= 4095);
+        .expect("fits under the scaled load/store range with the bias");
+        assert!(ok.size + bias <= FRAME_X_IMMEDIATE_MAX_BYTES);
     }
 
     #[test]
@@ -11011,12 +11510,27 @@ pub fn r(a: u64, b: u64) -> u64:
     }
 
     #[test]
-    fn a_float_typed_constant_fails_closed() {
+    fn a_float_constant_is_materialized_as_its_ieee_bits_without_fp_instructions() {
         let (mwir_program, layout) = compile(
             "module examples.codegen_float_fails_closed\n\npub fn half() -> f64:\n    return 0.5\n",
         );
-        let err = codegen_program(&mwir_program, &layout).unwrap_err();
-        assert!(err.message.contains("floating-point"));
+        let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
+        let half = program.fns.get("half").expect("half");
+        assert!(
+            half.code
+                .iter()
+                .any(|word| word.text.contains("#0x3fe0") && word.text.contains("lsl #48")),
+            "the f64 bit pattern must be built with integer move-wide instructions: {:?}",
+            half.code.iter().map(|word| &word.text).collect::<Vec<_>>()
+        );
+        assert!(
+            half.code.iter().all(|word| {
+                !word.text.starts_with('f')
+                    && !word.text.starts_with("ldr d")
+                    && !word.text.starts_with("str d")
+            }),
+            "P5 constant materialization must not install FP/SIMD execution"
+        );
     }
 
     #[test]

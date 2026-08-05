@@ -361,6 +361,10 @@ pub struct PixelsFnMeta {
 pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
     pub statics: BTreeMap<String, TypedStatic>,
+    /// Static names declared by this module. `statics` also contains imported
+    /// views needed while checking bodies, so image placement must use this
+    /// set to retain each declaration exactly once.
+    pub declared_statics: BTreeSet<String>,
     pub fns: BTreeMap<String, TypedFn>,
     pub structs: BTreeMap<String, TypedStruct>,
     pub tests: Vec<TestDecl>,

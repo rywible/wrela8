@@ -10,10 +10,10 @@ use crate::mwir::{self, Inst, Temp};
 use crate::sema::bodies;
 use crate::sema::typed::{
     CalleeKey, TypedCallArg, TypedDeferBody, TypedElif, TypedExpr, TypedExprKind, TypedFn,
-    TypedForIter, TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
-    TypedStmtKind, TypedStruct,
+    TypedForIter, TypedInstantiation, TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram,
+    TypedStmt, TypedStmtKind, TypedStruct,
 };
-use crate::sema::types::Type;
+use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{AccessMode, BinOp};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +283,28 @@ fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStr
         .or_else(|| prog.imported.structs.get(name))
 }
 
+fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p TypedInstantiation> {
+    prog.instantiations
+        .get(key)
+        .or_else(|| prog.imported.instantiations.get(key))
+}
+
+fn resolve_struct<'p>(
+    prog: &'p TypedProgram,
+    name: &str,
+    targs: &[TypeArg],
+) -> Option<&'p TypedStruct> {
+    if targs.is_empty() {
+        struct_by_name(prog, name)
+    } else {
+        let key = crate::sema::generics::canonical_key(bodies::InstKind::Struct, name, targs);
+        match instantiation_by_key(prog, &key) {
+            Some(TypedInstantiation::Struct(strukt)) => Some(strukt),
+            _ => None,
+        }
+    }
+}
+
 fn missing_struct(prog: &TypedProgram, name: &str) -> FlowError {
     if let Some(note) = prog.imported.unresolvable.get(name) {
         return FlowError::named(format!("`{name}` {note}"));
@@ -330,10 +352,10 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
             ))),
         };
     }
-    let Type::Named(sname, _) = base_ty else {
+    let Type::Named(sname, targs) = base_ty else {
         return Err(FlowError::internal("field base is not a `Named` type"));
     };
-    let s = struct_by_name(prog, sname).ok_or_else(|| missing_struct(prog, sname))?;
+    let s = resolve_struct(prog, sname, targs).ok_or_else(|| missing_struct(prog, sname))?;
     s.fields
         .iter()
         .position(|f| f == field_name)
@@ -429,8 +451,27 @@ fn resolve_callee_fn<'p>(
                 .or_else(|| e.assoc_fns.get(member))
                 .ok_or_else(|| missing_callee(prog, key))
         }
-        CalleeKey::FnInstance(_) | CalleeKey::MethodInstance(_, _) => {
-            Err(missing_callee(prog, key))
+        CalleeKey::FnInstance(instance) => match instantiation_by_key(prog, instance) {
+            Some(TypedInstantiation::Fn(function)) => Ok(function),
+            _ => Err(missing_callee(prog, key)),
+        },
+        CalleeKey::MethodInstance(instance, member) => {
+            let Some(TypedInstantiation::Struct(strukt)) = instantiation_by_key(prog, instance)
+            else {
+                return Err(missing_callee(prog, key));
+            };
+            strukt
+                .methods
+                .get(member)
+                .or_else(|| strukt.assoc_fns.get(member))
+                .or_else(|| {
+                    if member == "init" {
+                        strukt.init.as_ref()
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| missing_callee(prog, key))
         }
     }
 }
@@ -559,6 +600,43 @@ pub fn lower_program_with(
             if f.is_async && !fns.contains_key(&key) && reachable.contains(&key) {
                 fns.insert(key, lower_fn(f, program)?);
             }
+        }
+    }
+    for (instance_key, instance) in program
+        .instantiations
+        .iter()
+        .chain(program.imported.instantiations.iter())
+    {
+        match instance {
+            TypedInstantiation::Fn(function) => {
+                if function.is_async
+                    && reachable.contains(instance_key)
+                    && !fns.contains_key(instance_key)
+                {
+                    fns.insert(instance_key.clone(), lower_fn(function, program)?);
+                }
+            }
+            TypedInstantiation::Struct(strukt) => {
+                for (member, function) in &strukt.methods {
+                    let key = format!("{instance_key}.{member}");
+                    if function.is_async && reachable.contains(&key) && !fns.contains_key(&key) {
+                        fns.insert(key, lower_fn(function, program)?);
+                    }
+                }
+                for (member, function) in &strukt.assoc_fns {
+                    let key = format!("{instance_key}.{member}");
+                    if function.is_async && reachable.contains(&key) && !fns.contains_key(&key) {
+                        fns.insert(key, lower_fn(function, program)?);
+                    }
+                }
+                if let Some(function) = &strukt.init {
+                    let key = format!("{instance_key}.init");
+                    if function.is_async && reachable.contains(&key) && !fns.contains_key(&key) {
+                        fns.insert(key, lower_fn(function, program)?);
+                    }
+                }
+            }
+            TypedInstantiation::Enum(_) => {}
         }
     }
     Ok(FlowWirProgram { fns })
@@ -2155,7 +2233,7 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             args,
         } => lower_flow_call(callee, receiver, args, &e.ty, b, env),
         TypedExprKind::StructLiteral { name, fields } => {
-            let Type::Named(sname, _) = &e.ty else {
+            let Type::Named(sname, targs) = &e.ty else {
                 return Err(FlowError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
@@ -2170,7 +2248,8 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 b.emit_mwir(Inst::Copy { dst, src: nanos });
                 return Ok(dst);
             }
-            let s = struct_by_name(b.prog, sname).ok_or_else(|| missing_struct(b.prog, sname))?;
+            let s = resolve_struct(b.prog, sname, targs)
+                .ok_or_else(|| missing_struct(b.prog, sname))?;
             let mut slots: Vec<Option<Temp>> = vec![None; s.fields.len()];
             for (fname, fval) in fields {
                 let idx = s

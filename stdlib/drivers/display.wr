@@ -49,3 +49,9 @@ static DISPLAY_MEMORY: DisplayMemory
 
 @placed(0x08006000)
 static DISPLAY_DOORBELL: DisplayDoorbell
+
+pub fn __wrela_pixels_display_present(sequence: u64) -> unit:
+    # This is the canonical retained presentation path. P5 roots it for the
+    # sealed orchestration closure but never calls it before a frame exists.
+    DISPLAY_DOORBELL.present = sequence
+    return unit

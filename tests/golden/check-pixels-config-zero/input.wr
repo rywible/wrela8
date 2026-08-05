@@ -1,0 +1,10 @@
+module input
+
+from core.__image_pixels import N_RENDERERS
+
+@image
+pub fn build() -> Image:
+    assert N_RENDERERS == 0, "zero-renderer stub must report zero"
+    img = Image(name="check-pixels-config-zero", target=Target.wrela_machine_v1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

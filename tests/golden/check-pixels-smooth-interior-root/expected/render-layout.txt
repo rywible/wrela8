@@ -1,0 +1,1 @@
+error[pixels]: Pixels dump requires exactly one `@image` fn, found 0

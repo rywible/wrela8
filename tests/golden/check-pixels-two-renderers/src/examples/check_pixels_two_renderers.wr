@@ -1,5 +1,6 @@
 module examples.check_pixels_two_renderers
 
+from core.__image_pixels import N_RENDERERS
 from core.field import Rgb, Vec3
 from core.render import (
     AoConfig, CameraBounds, LightConfig, ProbeConfig, RenderProfile,
@@ -8,13 +9,20 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 from examples.two_renderer_scene import Params, shade, world
 
+fn generated_renderer_count() -> usize:
+    return N_RENDERERS
+
 @image
 fn build() -> Image:
-    img = Image(name="check-pixels-two-renderers", target=Target.wrela_machine_v1)
+    img = Image(name="check-pixels-two-renderers", target=Target.wrela_machine_v1, cores=2)
     device_a = img.device[DisplayDevice](transport=0x6000)
-    display_a = img.driver(Display, device=device_a, width=64, height=32, refresh_hz=60)
+    display_a = img.driver(
+        Display, device=device_a, width=64, height=32, refresh_hz=60, core=0,
+    )
     device_b = img.device[DisplayDevice](transport=0x7000)
-    display_b = img.driver(Display, device=device_b, width=64, height=32, refresh_hz=60)
+    display_b = img.driver(
+        Display, device=device_b, width=64, height=32, refresh_hz=60, core=0,
+    )
     renderer_a = img.renderer[Params](
         field=world, material=shade, display=display_a,
         width=64, height=32, refresh_hz=60, shade_hz=60,

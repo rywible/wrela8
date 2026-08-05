@@ -70,6 +70,12 @@ impl VerifiedProjectiveProgram {
     }
 }
 
+pub fn check_program(
+    program: super::program::FrameProgram,
+) -> Result<super::program::VerifiedFrameProgram, String> {
+    wrela_machine::pixels::verify_frame_program_model_v1(&program)?;
+    Ok(super::program::VerifiedFrameProgram::new(program))
+}
 fn field_children(kind: &FieldKind) -> Vec<FieldId> {
     match kind {
         FieldKind::Primitive(_) => Vec::new(),
@@ -426,10 +432,21 @@ fn verify_parameters(
             .checked_add(slot.scalar_ty.size())
             .ok_or_else(|| "pixels::verify: parameter end overflow".to_string())?;
     }
-    if prior_end != program.params.packed_bytes {
+    let snapshot_alignment = program
+        .params
+        .slots
+        .iter()
+        .map(|slot| slot.scalar_ty.size())
+        .max()
+        .unwrap_or(1);
+    let expected_packed_bytes = prior_end
+        .checked_add(snapshot_alignment - 1)
+        .map(|value| value / snapshot_alignment * snapshot_alignment)
+        .ok_or_else(|| "P015: packed parameter alignment overflow".to_string())?;
+    if expected_packed_bytes != program.params.packed_bytes {
         return Err(format!(
-            "pixels::verify: packed byte count {} does not equal final slot end {prior_end}",
-            program.params.packed_bytes
+            "pixels::verify: packed byte count {} does not equal aligned final slot end {expected_packed_bytes}",
+            program.params.packed_bytes,
         ));
     }
     Ok(())
@@ -1285,14 +1302,35 @@ fn verify_capacities(graph: &SymbolicGraph, program: &StructuralProgram) -> Resu
     {
         return Err("pixels::verify: output double-buffer derivation is inconsistent".to_string());
     }
-    let expected_state = checked_sum(
+    let pre_framebuffer = checked_sum(
         &[
             capacities.state_header_bytes,
             capacities.coefficient_snapshot_bytes,
             capacities.frame_dependency_snapshot_bytes,
             capacities.frame_complex_double_buffer_bytes,
             capacities.all_worker_scratch_bytes,
-            capacities.output_double_buffer_bytes,
+        ],
+        "pre-framebuffer renderer state",
+    )?;
+    let page = wrela_machine::layout::PIXELS_STATE_PAGE_ALIGNMENT;
+    let framebuffer_offset = pre_framebuffer
+        .checked_add(page - 1)
+        .map(|value| value & !(page - 1))
+        .ok_or_else(|| "pixels::verify: framebuffer alignment overflow".to_string())?;
+    let after_framebuffer = framebuffer_offset
+        .checked_add(capacities.output_double_buffer_bytes)
+        .ok_or_else(|| "pixels::verify: framebuffer state overflow".to_string())?;
+    let probe_offset = if capacities.probe_bytes == 0 {
+        after_framebuffer
+    } else {
+        after_framebuffer
+            .checked_add(page - 1)
+            .map(|value| value & !(page - 1))
+            .ok_or_else(|| "pixels::verify: probe alignment overflow".to_string())?
+    };
+    let expected_state = checked_sum(
+        &[
+            probe_offset,
             capacities.probe_bytes,
             capacities.kinetic_certificate_bytes,
             capacities.tile_descriptor_bytes,
@@ -3390,6 +3428,42 @@ mod tests {
     use super::*;
     use crate::sema::types::Type;
 
+    #[test]
+    fn every_dynamic_frame_record_family_rejects_truncation() {
+        use wrela_machine::pixels::FrameProgramTableKindV1 as Kind;
+
+        let cases = [
+            (Kind::Scalar, 29),
+            (Kind::Field, 27),
+            (Kind::Object, 1),
+            (Kind::Feature, 1),
+            (Kind::Material, 3),
+            (Kind::Parameter, 1),
+            (Kind::Event, 4),
+            (Kind::FixedDomain, 2),
+            (Kind::FixedDomain, 4),
+            (Kind::FixedDomain, 20),
+            (Kind::FixedDomain, 23),
+            (Kind::FixedDomain, 24),
+            (Kind::FixedDomain, 26),
+            (Kind::FixedDomain, 28),
+            (Kind::FixedDomain, 30),
+        ];
+        for (kind, tag) in cases {
+            let record = super::super::program::FrameRecord {
+                stable_id: 0,
+                tag,
+                flags: 0,
+                operands: Vec::new(),
+            };
+            assert!(
+                wrela_machine::pixels::verify_frame_record_shape_v1(kind, &record).is_err(),
+                "{} opcode {tag} accepted a truncated record",
+                kind.stable_name()
+            );
+        }
+    }
+
     fn empty_graph() -> SymbolicGraph {
         SymbolicGraph {
             renderer_index: 0,
@@ -4196,6 +4270,7 @@ mod tests {
             symbolic_graphs: vec![graph],
             structural_programs: vec![structural],
             projective_programs: vec![projective],
+            compiled_renderers: Vec::new(),
         };
         let mut report = String::new();
         super::super::report::append_program_set(&mut report, &program_set).unwrap();
@@ -5859,9 +5934,11 @@ mod tests {
         program.capacities.state_header_bytes =
             super::super::capacities::RENDERER_STATE_HEADER_BYTES_V1;
         program.capacities.failure_record_bytes = super::super::capacities::FAILURE_RECORD_BYTES_V1;
-        program.capacities.total_renderer_state_bytes = program.capacities.state_header_bytes
-            + program.capacities.all_worker_scratch_bytes
-            + program.capacities.failure_record_bytes;
+        let pre_framebuffer =
+            program.capacities.state_header_bytes + program.capacities.all_worker_scratch_bytes;
+        let page = wrela_machine::layout::PIXELS_STATE_PAGE_ALIGNMENT;
+        program.capacities.total_renderer_state_bytes =
+            ((pre_framebuffer + page - 1) & !(page - 1)) + program.capacities.failure_record_bytes;
         program.capacities.total_renderer_state_bytes_instrumented =
             program.capacities.total_renderer_state_bytes;
         let graph = empty_graph();

@@ -2,8 +2,18 @@ module render
 
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 
+pub fn __wrela_pixels_p5_finite(value: f32) -> bool:
+    max_finite: f32 = 340282346638528859811704183484516925440.0
+    return value == value and value <= max_finite and value >= -max_finite
+
 pub struct RenderPath:
     pub component: u32
+
+    pub fn renderer_unavailable() -> RenderPath:
+        return RenderPath(component=1)
+
+    pub fn is_renderer_unavailable(read self) -> bool:
+        return self.component == 1
 
 pub struct TileId:
     pub value: u32
@@ -151,6 +161,22 @@ pub struct Camera:
             return Err(CameraError.InvalidBasis)
         return Ok(Camera(eye=eye, forward=forward, right=right, up=up))
 
+    fn __wrela_p5_finite(read self) -> bool:
+        return (
+            __wrela_pixels_p5_finite(self.eye.x)
+            and __wrela_pixels_p5_finite(self.eye.y)
+            and __wrela_pixels_p5_finite(self.eye.z)
+            and __wrela_pixels_p5_finite(self.forward.x)
+            and __wrela_pixels_p5_finite(self.forward.y)
+            and __wrela_pixels_p5_finite(self.forward.z)
+            and __wrela_pixels_p5_finite(self.right.x)
+            and __wrela_pixels_p5_finite(self.right.y)
+            and __wrela_pixels_p5_finite(self.right.z)
+            and __wrela_pixels_p5_finite(self.up.x)
+            and __wrela_pixels_p5_finite(self.up.y)
+            and __wrela_pixels_p5_finite(self.up.z)
+        )
+
 pub enum LightKind:
     Disabled
     Point
@@ -159,6 +185,7 @@ pub enum LightKind:
     Disk
 
 pub struct Light:
+    kind: usize
     position: Vec3
     direction: Vec3
     axis_u: Vec3
@@ -169,6 +196,7 @@ pub struct Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         black = Rgb(r=0.0, g=0.0, b=0.0)
         return Light(
+            kind=0,
             position=zero,
             direction=zero,
             axis_u=zero,
@@ -179,6 +207,7 @@ pub struct Light:
     pub fn point(position: Vec3, radiance: Rgb) -> Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         return Light(
+            kind=1,
             position=position,
             direction=zero,
             axis_u=zero,
@@ -189,6 +218,7 @@ pub struct Light:
     pub fn directional(direction: Vec3, radiance: Rgb) -> Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         return Light(
+            kind=2,
             position=zero,
             direction=direction,
             axis_u=zero,
@@ -199,6 +229,7 @@ pub struct Light:
     pub fn rectangle(center: Vec3, axis_u: Vec3, axis_v: Vec3, radiance: Rgb) -> Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         return Light(
+            kind=3,
             position=center,
             direction=zero,
             axis_u=axis_u,
@@ -209,11 +240,34 @@ pub struct Light:
     pub fn disk(center: Vec3, axis_u: Vec3, axis_v: Vec3, radiance: Rgb) -> Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         return Light(
+            kind=4,
             position=center,
             direction=zero,
             axis_u=axis_u,
             axis_v=axis_v,
             radiance=radiance,
+        )
+
+    pub fn __wrela_p5_matches_kind(read self, expected: usize) -> bool:
+        return self.kind == expected
+
+    pub fn __wrela_p5_finite(read self) -> bool:
+        return (
+            __wrela_pixels_p5_finite(self.position.x)
+            and __wrela_pixels_p5_finite(self.position.y)
+            and __wrela_pixels_p5_finite(self.position.z)
+            and __wrela_pixels_p5_finite(self.direction.x)
+            and __wrela_pixels_p5_finite(self.direction.y)
+            and __wrela_pixels_p5_finite(self.direction.z)
+            and __wrela_pixels_p5_finite(self.axis_u.x)
+            and __wrela_pixels_p5_finite(self.axis_u.y)
+            and __wrela_pixels_p5_finite(self.axis_u.z)
+            and __wrela_pixels_p5_finite(self.axis_v.x)
+            and __wrela_pixels_p5_finite(self.axis_v.y)
+            and __wrela_pixels_p5_finite(self.axis_v.z)
+            and __wrela_pixels_p5_finite(self.radiance.r)
+            and __wrela_pixels_p5_finite(self.radiance.g)
+            and __wrela_pixels_p5_finite(self.radiance.b)
         )
 
 pub struct LightFrame:
@@ -416,9 +470,403 @@ pub struct RenderedFrame[P]:
     pub reused_tiles: u32
 
 @actor
+pub struct RendererWorker:
+    renderer_index: u32
+    frameprog_base: usize
+    workspace_base: usize
+    workspace_bytes: usize
+    tiles_start: u32
+    tiles_end: u32
+
+    init(
+        mut self,
+        renderer_index: u32,
+        frameprog_base: usize,
+        workspace_base: usize,
+        workspace_bytes: usize,
+        tiles_start: u32,
+        tiles_end: u32,
+    ):
+        self.renderer_index = renderer_index
+        self.frameprog_base = frameprog_base
+        self.workspace_base = workspace_base
+        self.workspace_bytes = workspace_bytes
+        self.tiles_start = tiles_start
+        self.tiles_end = tiles_end
+
+    pub async fn run_job(mut self, job: u64) -> u64:
+        return job
+
+pub struct RendererWorkers:
+    worker_0: Actor[RendererWorker]
+    worker_1: Actor[RendererWorker]
+    worker_2: Actor[RendererWorker]
+    worker_3: Actor[RendererWorker]
+    worker_4: Actor[RendererWorker]
+    worker_5: Actor[RendererWorker]
+    worker_6: Actor[RendererWorker]
+    worker_7: Actor[RendererWorker]
+    worker_8: Actor[RendererWorker]
+    worker_9: Actor[RendererWorker]
+    worker_10: Actor[RendererWorker]
+    worker_11: Actor[RendererWorker]
+    worker_12: Actor[RendererWorker]
+    worker_13: Actor[RendererWorker]
+    worker_14: Actor[RendererWorker]
+    worker_15: Actor[RendererWorker]
+    worker_16: Actor[RendererWorker]
+    worker_17: Actor[RendererWorker]
+    worker_18: Actor[RendererWorker]
+    worker_19: Actor[RendererWorker]
+    worker_20: Actor[RendererWorker]
+    worker_21: Actor[RendererWorker]
+    worker_22: Actor[RendererWorker]
+    worker_23: Actor[RendererWorker]
+    worker_24: Actor[RendererWorker]
+    worker_25: Actor[RendererWorker]
+    worker_26: Actor[RendererWorker]
+    worker_27: Actor[RendererWorker]
+    worker_28: Actor[RendererWorker]
+    worker_29: Actor[RendererWorker]
+    worker_30: Actor[RendererWorker]
+    worker_31: Actor[RendererWorker]
+
+pub struct RendererFrameBounds:
+    exposure_min: f32
+    exposure_max: f32
+    environment_min_r: f32
+    environment_min_g: f32
+    environment_min_b: f32
+    environment_max_r: f32
+    environment_max_g: f32
+    environment_max_b: f32
+    camera_eye_x_min: f32
+    camera_eye_x_max: f32
+    camera_eye_y_min: f32
+    camera_eye_y_max: f32
+    camera_eye_z_min: f32
+    camera_eye_z_max: f32
+    camera_forward_x_min: f32
+    camera_forward_x_max: f32
+    camera_forward_y_min: f32
+    camera_forward_y_max: f32
+    camera_forward_z_min: f32
+    camera_forward_z_max: f32
+    camera_right_x_min: f32
+    camera_right_x_max: f32
+    camera_right_y_min: f32
+    camera_right_y_max: f32
+    camera_right_z_min: f32
+    camera_right_z_max: f32
+    camera_up_x_min: f32
+    camera_up_x_max: f32
+    camera_up_y_min: f32
+    camera_up_y_max: f32
+    camera_up_z_min: f32
+    camera_up_z_max: f32
+    light_capacity: usize
+    light_kind_0: usize
+    light_kind_1: usize
+    light_kind_2: usize
+    light_kind_3: usize
+    light_kind_4: usize
+    light_kind_5: usize
+    light_kind_6: usize
+    light_kind_7: usize
+
+    pub fn __wrela_p5_accepts_camera(read self, read camera: Camera) -> bool:
+        return (
+            camera.eye.x >= self.camera_eye_x_min
+            and camera.eye.x <= self.camera_eye_x_max
+            and camera.eye.y >= self.camera_eye_y_min
+            and camera.eye.y <= self.camera_eye_y_max
+            and camera.eye.z >= self.camera_eye_z_min
+            and camera.eye.z <= self.camera_eye_z_max
+            and camera.forward.x >= self.camera_forward_x_min
+            and camera.forward.x <= self.camera_forward_x_max
+            and camera.forward.y >= self.camera_forward_y_min
+            and camera.forward.y <= self.camera_forward_y_max
+            and camera.forward.z >= self.camera_forward_z_min
+            and camera.forward.z <= self.camera_forward_z_max
+            and camera.right.x >= self.camera_right_x_min
+            and camera.right.x <= self.camera_right_x_max
+            and camera.right.y >= self.camera_right_y_min
+            and camera.right.y <= self.camera_right_y_max
+            and camera.right.z >= self.camera_right_z_min
+            and camera.right.z <= self.camera_right_z_max
+            and camera.up.x >= self.camera_up_x_min
+            and camera.up.x <= self.camera_up_x_max
+            and camera.up.y >= self.camera_up_y_min
+            and camera.up.y <= self.camera_up_y_max
+            and camera.up.z >= self.camera_up_z_min
+            and camera.up.z <= self.camera_up_z_max
+        )
+
+@actor
 pub struct Renderer[P]:
-    generated_state: u64
+    workers: RendererWorkers
+    worker_count: u32
+    display: usize
+    renderer_index: u32
+    frameprog_base: usize
+    state_base: usize
+    state_bytes: usize
+    bounds: RendererFrameBounds
+
+    init(
+        mut self,
+        workers: RendererWorkers,
+        worker_count: u32,
+        display: usize,
+        renderer_index: u32,
+        frameprog_base: usize,
+        state_base: usize,
+        state_bytes: usize,
+        bounds: RendererFrameBounds,
+    ):
+        self.workers = workers
+        self.worker_count = worker_count
+        self.display = display
+        self.renderer_index = renderer_index
+        self.frameprog_base = frameprog_base
+        self.state_base = state_base
+        self.state_bytes = state_bytes
+        self.bounds = bounds
+
+    fn __validate_fixed_frame(read self, read frame: RenderFrame[P])
+        -> Result[unit, RenderError]:
+        if not __wrela_pixels_p5_finite(frame.exposure):
+            return Err(RenderError.NonFiniteInput(RenderPath(component=2)))
+        if frame.exposure < self.bounds.exposure_min or frame.exposure > self.bounds.exposure_max:
+            return Err(RenderError.ParameterOutOfRange(RenderPath(component=2)))
+        if (
+            not __wrela_pixels_p5_finite(frame.environment.r)
+            or not __wrela_pixels_p5_finite(frame.environment.g)
+            or not __wrela_pixels_p5_finite(frame.environment.b)
+        ):
+            return Err(RenderError.NonFiniteInput(RenderPath(component=3)))
+        if (
+            frame.environment.r < self.bounds.environment_min_r
+            or frame.environment.r > self.bounds.environment_max_r
+            or frame.environment.g < self.bounds.environment_min_g
+            or frame.environment.g > self.bounds.environment_max_g
+            or frame.environment.b < self.bounds.environment_min_b
+            or frame.environment.b > self.bounds.environment_max_b
+        ):
+            return Err(RenderError.ParameterOutOfRange(RenderPath(component=3)))
+        if not frame.camera.__wrela_p5_finite():
+            return Err(RenderError.NonFiniteInput(RenderPath(component=4)))
+        if not self.bounds.__wrela_p5_accepts_camera(frame.camera):
+            return Err(RenderError.FrameContractMismatch(RenderPath(component=4)))
+        index: usize = 0
+        @budget(bound=8)
+        while index < 8:
+            light = frame.lights.lights[index]
+            if not light.__wrela_p5_finite():
+                return Err(RenderError.NonFiniteInput(RenderPath(component=5)))
+            expected_kind: usize = 0
+            if index == 0:
+                expected_kind = self.bounds.light_kind_0
+            if index == 1:
+                expected_kind = self.bounds.light_kind_1
+            if index == 2:
+                expected_kind = self.bounds.light_kind_2
+            if index == 3:
+                expected_kind = self.bounds.light_kind_3
+            if index == 4:
+                expected_kind = self.bounds.light_kind_4
+            if index == 5:
+                expected_kind = self.bounds.light_kind_5
+            if index == 6:
+                expected_kind = self.bounds.light_kind_6
+            if index == 7:
+                expected_kind = self.bounds.light_kind_7
+            if index >= self.bounds.light_capacity:
+                expected_kind = 0
+            if not light.__wrela_p5_matches_kind(expected_kind):
+                return Err(RenderError.FrameContractMismatch(RenderPath(component=5)))
+            index = index + 1
+        return Ok(unit)
+
+    fn __validate_and_unavailable(read self, take frame: RenderFrame[P])
+        -> Result[RenderedFrame[P], RenderError]:
+        fixed = self.__validate_fixed_frame(frame)
+        match fixed:
+            case .Err(error):
+                return Err(take error)
+            case .Ok(_):
+                pass
+        return self.__unavailable(take frame)
+
+    fn __unavailable(read self, take frame: RenderFrame[P])
+        -> Result[RenderedFrame[P], RenderError]:
+        return Err(RenderError.FrameContractMismatch(RenderPath.renderer_unavailable()))
+
+    async fn __bootstrap_worker_path_0(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_0.run_job(job=0)
+
+    async fn __bootstrap_worker_path_1(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_1.run_job(job=0)
+
+    async fn __bootstrap_worker_path_2(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_2.run_job(job=0)
+
+    async fn __bootstrap_worker_path_3(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_3.run_job(job=0)
+
+    async fn __bootstrap_worker_path_4(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_4.run_job(job=0)
+
+    async fn __bootstrap_worker_path_5(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_5.run_job(job=0)
+
+    async fn __bootstrap_worker_path_6(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_6.run_job(job=0)
+
+    async fn __bootstrap_worker_path_7(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_7.run_job(job=0)
+
+    async fn __bootstrap_worker_path_8(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_8.run_job(job=0)
+
+    async fn __bootstrap_worker_path_9(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_9.run_job(job=0)
+
+    async fn __bootstrap_worker_path_10(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_10.run_job(job=0)
+
+    async fn __bootstrap_worker_path_11(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_11.run_job(job=0)
+
+    async fn __bootstrap_worker_path_12(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_12.run_job(job=0)
+
+    async fn __bootstrap_worker_path_13(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_13.run_job(job=0)
+
+    async fn __bootstrap_worker_path_14(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_14.run_job(job=0)
+
+    async fn __bootstrap_worker_path_15(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_15.run_job(job=0)
+
+    async fn __bootstrap_worker_path_16(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_16.run_job(job=0)
+
+    async fn __bootstrap_worker_path_17(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_17.run_job(job=0)
+
+    async fn __bootstrap_worker_path_18(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_18.run_job(job=0)
+
+    async fn __bootstrap_worker_path_19(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_19.run_job(job=0)
+
+    async fn __bootstrap_worker_path_20(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_20.run_job(job=0)
+
+    async fn __bootstrap_worker_path_21(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_21.run_job(job=0)
+
+    async fn __bootstrap_worker_path_22(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_22.run_job(job=0)
+
+    async fn __bootstrap_worker_path_23(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_23.run_job(job=0)
+
+    async fn __bootstrap_worker_path_24(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_24.run_job(job=0)
+
+    async fn __bootstrap_worker_path_25(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_25.run_job(job=0)
+
+    async fn __bootstrap_worker_path_26(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_26.run_job(job=0)
+
+    async fn __bootstrap_worker_path_27(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_27.run_job(job=0)
+
+    async fn __bootstrap_worker_path_28(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_28.run_job(job=0)
+
+    async fn __bootstrap_worker_path_29(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_29.run_job(job=0)
+
+    async fn __bootstrap_worker_path_30(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_30.run_job(job=0)
+
+    async fn __bootstrap_worker_path_31(mut self) -> Result[u64, CallError[never]]:
+        return await self.workers.worker_31.run_job(job=0)
 
     pub async fn render(mut self, take frame: RenderFrame[P])
         -> Result[RenderedFrame[P], RenderError]:
-        return Err(RenderError.InternalInvariant(RenderInvariant(kind=1)))
+        # P5 validates the owned frame but does not snapshot it or touch
+        # renderer/display state. P7.2 adds the packed snapshot and reuse rules.
+        return self.__validate_and_unavailable(take frame)
+
+pub fn __wrela_pixels_bootstrap_dispatch(table: u32, tag: u32) -> Result[u32, RenderError]:
+    if table == 1 and tag >= 1 and tag <= 32:
+        return Ok(tag)
+    if table == 2 and tag >= 1 and tag <= 8:
+        return Ok(tag)
+    if table == 2 and tag >= 20 and tag <= 30:
+        return Ok(tag)
+    if table == 3 and tag == 1:
+        return Ok(tag)
+    if table == 4 and tag >= 1 and tag <= 3:
+        return Ok(tag)
+    if table == 5 and tag >= 1 and tag <= 3:
+        return Ok(tag)
+    if table == 6 and tag == 1:
+        return Ok(tag)
+    if table == 7 and tag >= 1 and tag <= 14:
+        return Ok(tag)
+    if table == 8 and tag >= 1 and tag <= 6:
+        return Ok(tag)
+    if table == 9 and tag >= 1 and tag <= 4:
+        return Ok(tag)
+    if table == 9 and tag >= 10 and tag <= 17:
+        return Ok(tag)
+    if table == 9 and tag >= 20 and tag <= 28:
+        return Ok(tag)
+    if table == 9 and tag >= 30 and tag <= 35:
+        return Ok(tag)
+    if table == 11 and tag == 1:
+        return Ok(tag)
+    return Err(RenderError.InternalInvariant(RenderInvariant(kind=tag)))
+
+pub fn __wrela_pixels_bootstrap_scalar(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(1, tag)
+
+pub fn __wrela_pixels_bootstrap_field(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(2, tag)
+
+pub fn __wrela_pixels_bootstrap_object(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(3, tag)
+
+pub fn __wrela_pixels_bootstrap_feature(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(4, tag)
+
+pub fn __wrela_pixels_bootstrap_material(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(5, tag)
+
+pub fn __wrela_pixels_bootstrap_parameter(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(6, tag)
+
+pub fn __wrela_pixels_bootstrap_event(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(7, tag)
+
+pub fn __wrela_pixels_bootstrap_csg(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(8, tag)
+
+pub fn __wrela_pixels_bootstrap_fixed_domain(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(9, tag)
+
+pub fn __wrela_pixels_bootstrap_camera_light_post(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(11, tag)
+
+pub fn __wrela_pixels_present_placeholder() -> Result[unit, RenderError]:
+    # P5 deliberately has no sweep result to present. Keeping this bounded
+    # entry point rooted proves the coordinator's failure path cannot touch
+    # the display doorbell.
+    return Err(RenderError.FrameContractMismatch(RenderPath.renderer_unavailable()))

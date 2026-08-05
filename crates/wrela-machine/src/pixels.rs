@@ -20,8 +20,226 @@ pub const TILE_BYTES: usize = 32;
 pub const CONTROL_BASE: u64 = crate::layout::DRAM_BASE + 0x10_0000;
 pub const TILES_BASE: u64 = CONTROL_BASE + 0x100;
 pub const FRAMEBUFFER_BASE: u64 = CONTROL_BASE + 0x1000;
-pub const FRAME_PROGRAM_BASE: u64 = FRAMEBUFFER_BASE + FRAME_BYTES as u64;
+/// Fixed P-1 compatibility metadata used only by the walking-skeleton renderer.
+///
+/// Production FrameProgram v1 blobs use compiler-assigned renderer placements.
+pub const PLANE_SEED_METADATA_BASE: u64 = FRAMEBUFFER_BASE + FRAME_BYTES as u64;
 pub const DOORBELL_ADDR: u64 = crate::mmio::MMIO_BASE + 0x6000;
+
+// FrameProgram v1 is shared format data. The compiler writes every field
+// explicitly; these structs document and size-check the wire envelope only.
+pub const FRAME_PROGRAM_MAGIC_V1: [u8; 8] = *b"WRELAPX\0";
+pub const FRAME_PROGRAM_VERSION_V1: u16 = 1;
+pub const FRAME_PROGRAM_HEADER_BYTES_V1: u16 = 80;
+pub const FRAME_PROGRAM_TABLE_BYTES_V1: u16 = 16;
+pub const FRAME_PROGRAM_RECORD_BYTES_V1: u16 = 16;
+pub const FRAME_PROGRAM_IMMEDIATE_BYTES_V1: u16 = 24;
+pub const FRAME_PROGRAM_MAX_OPERANDS_V1: usize = u16::MAX as usize;
+pub const FRAME_PROGRAM_TRANSFORM_DEPTH_MAX_V1: usize = 64;
+pub const FRAME_PROGRAM_DIGEST_OFFSET_V1: usize = 48;
+pub const FRAME_PROGRAM_DIGEST_BYTES_V1: usize = 32;
+pub const FRAME_PROGRAM_TABLE_ALIGNMENT_V1: u64 = 16;
+pub const FRAME_PROGRAM_HOT_ALIGNMENT_V1: u64 = 64;
+pub const FRAME_PROGRAM_MAX_BYTES_V1: u64 = 64 * 1024 * 1024;
+pub const FRAME_PROGRAM_NUMERIC_REVISION_V1: u32 = 1;
+pub const FRAME_PROGRAM_FORMAL_REVISION_V1: u32 = 1;
+pub const FRAME_PROGRAM_PROFILE_REVISION_V1: u32 = 1;
+pub const FRAME_PROGRAM_FORMAL_REVISION_STR_V1: &str = "pixels-v1";
+
+#[repr(C)]
+pub struct FrameProgramHeaderV1 {
+    pub magic: [u8; 8],
+    pub version: u16,
+    pub header_bytes: u16,
+    pub flags: u32,
+    pub total_bytes: u32,
+    pub renderer_index: u16,
+    pub reserved0: u16,
+    pub numeric_revision: u32,
+    pub formal_revision: u32,
+    pub table_count: u16,
+    pub reserved1: [u8; 14],
+    pub digest: [u8; 32],
+}
+
+#[repr(C)]
+pub struct FrameProgramTableV1 {
+    pub kind: u16,
+    pub record_bytes: u16,
+    pub count: u32,
+    pub offset: u32,
+    pub byte_len: u32,
+}
+
+#[repr(C)]
+pub struct FrameProgramRecordV1 {
+    pub stable_id: u32,
+    pub tag: u16,
+    pub flags: u16,
+    pub operand_offset: u32,
+    pub operand_count: u16,
+    pub reserved: u16,
+}
+
+#[repr(C)]
+pub struct FrameProgramImmediateV1 {
+    pub owner_kind: u16,
+    pub reserved0: u16,
+    pub owner_id: u32,
+    pub ordinal: u32,
+    pub reserved1: u32,
+    pub value: u64,
+}
+
+const _: [(); FRAME_PROGRAM_HEADER_BYTES_V1 as usize] =
+    [(); std::mem::size_of::<FrameProgramHeaderV1>()];
+const _: [(); FRAME_PROGRAM_TABLE_BYTES_V1 as usize] =
+    [(); std::mem::size_of::<FrameProgramTableV1>()];
+const _: [(); FRAME_PROGRAM_RECORD_BYTES_V1 as usize] =
+    [(); std::mem::size_of::<FrameProgramRecordV1>()];
+const _: [(); FRAME_PROGRAM_IMMEDIATE_BYTES_V1 as usize] =
+    [(); std::mem::size_of::<FrameProgramImmediateV1>()];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FrameProgramTableKindV1 {
+    Scalar,
+    Field,
+    Object,
+    Feature,
+    Material,
+    Parameter,
+    Event,
+    Csg,
+    FixedDomain,
+    Immediate,
+    CameraLightPost,
+    Texture,
+    ShadingSummary,
+    Transparency,
+    Probe,
+    Kinetic,
+    DebugName,
+}
+
+impl FrameProgramTableKindV1 {
+    pub const ALL: [Self; 17] = [
+        Self::Scalar,
+        Self::Field,
+        Self::Object,
+        Self::Feature,
+        Self::Material,
+        Self::Parameter,
+        Self::Event,
+        Self::Csg,
+        Self::FixedDomain,
+        Self::Immediate,
+        Self::CameraLightPost,
+        Self::Texture,
+        Self::ShadingSummary,
+        Self::Transparency,
+        Self::Probe,
+        Self::Kinetic,
+        Self::DebugName,
+    ];
+
+    pub const REQUIRED_COUNT: u16 = Self::ALL.len() as u16;
+
+    pub const fn code(self) -> u16 {
+        match self {
+            Self::Scalar => 1,
+            Self::Field => 2,
+            Self::Object => 3,
+            Self::Feature => 4,
+            Self::Material => 5,
+            Self::Parameter => 6,
+            Self::Event => 7,
+            Self::Csg => 8,
+            Self::FixedDomain => 9,
+            Self::Immediate => 10,
+            Self::CameraLightPost => 11,
+            Self::Texture => 12,
+            Self::ShadingSummary => 13,
+            Self::Transparency => 14,
+            Self::Probe => 15,
+            Self::Kinetic => 16,
+            Self::DebugName => 17,
+        }
+    }
+
+    pub const fn record_bytes(self) -> u16 {
+        match self {
+            Self::Immediate => FRAME_PROGRAM_IMMEDIATE_BYTES_V1,
+            _ => FRAME_PROGRAM_RECORD_BYTES_V1,
+        }
+    }
+
+    pub const fn required_at_runtime(self) -> bool {
+        !matches!(self, Self::DebugName)
+    }
+
+    pub fn from_code(code: u16) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.code() == code)
+    }
+
+    pub const fn stable_name(self) -> &'static str {
+        match self {
+            Self::Scalar => "scalar",
+            Self::Field => "field",
+            Self::Object => "object",
+            Self::Feature => "feature",
+            Self::Material => "material",
+            Self::Parameter => "parameter",
+            Self::Event => "event",
+            Self::Csg => "csg",
+            Self::FixedDomain => "fixed-domain",
+            Self::Immediate => "immediate",
+            Self::CameraLightPost => "camera-light-post",
+            Self::Texture => "texture",
+            Self::ShadingSummary => "shading-summary",
+            Self::Transparency => "transparency",
+            Self::Probe => "probe",
+            Self::Kinetic => "kinetic",
+            Self::DebugName => "debug-name",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameRecordV1 {
+    pub stable_id: u32,
+    pub tag: u16,
+    pub flags: u16,
+    pub operands: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameTableModelV1 {
+    pub kind: FrameProgramTableKindV1,
+    pub records: Vec<FrameRecordV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameProgramModelV1 {
+    pub renderer_index: u16,
+    pub flags: u32,
+    pub numeric_revision: u32,
+    pub formal_revision: u32,
+    pub tables: Vec<FrameTableModelV1>,
+}
+
+impl FrameProgramModelV1 {
+    pub fn table(&self, kind: FrameProgramTableKindV1) -> Option<&FrameTableModelV1> {
+        self.tables.iter().find(|table| table.kind == kind)
+    }
+
+    pub fn record_count(&self, kind: FrameProgramTableKindV1) -> usize {
+        self.table(kind).map_or(0, |table| table.records.len())
+    }
+}
+
+#[path = "pixels_contract.rs"]
+mod contract;
+pub use contract::{verify_frame_program_model_v1, verify_frame_record_shape_v1};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresentControl {

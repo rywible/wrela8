@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 pub const RING_BOOKKEEPING_BYTES: u64 = 3 * 8;
 
 pub const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -60,12 +62,21 @@ pub struct ParsedReport {
     pub image_sha256: String,
     pub input_digests: Vec<(String, String)>,
     pub exec_sections: Vec<ReportSection>,
+    pub frameprog_sections: Vec<ReportSection>,
+    pub renderer_placements: Vec<ReportRendererPlacement>,
     pub blk: Option<BlkConfig>,
     pub irq_injects: Vec<IrqHostInject>,
     pub core_entries: Vec<CoreEntry>,
     pub cores: usize,
     pub core_stacks: Vec<CoreStack>,
     pub request_rings: Vec<RequestRing>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportRendererPlacement {
+    pub index: usize,
+    pub frameprog_base: u64,
+    pub frameprog_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +220,7 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     let mut core_stacks: Vec<CoreStack> = Vec::new();
     let mut request_rings: Vec<RequestRing> = Vec::new();
     let mut sections: Vec<ReportSection> = Vec::new();
+    let mut renderer_placements: Vec<ReportRendererPlacement> = Vec::new();
     let mut ring_ranges: Vec<RingRange> = Vec::new();
     let mut placements: Vec<ReportPlacement> = Vec::new();
     let mut declared_roots: Vec<DeclaredRoot> = Vec::new();
@@ -298,6 +310,34 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 name: name.to_string(),
                 base,
                 size,
+            });
+        } else if let Some(rest) = line.strip_prefix("RendererPlacement ") {
+            let fields = parse_report_fields(
+                "RendererPlacement",
+                rest,
+                &[
+                    "index",
+                    "frameprog_base",
+                    "frameprog_bytes",
+                    "state_base",
+                    "state_bytes",
+                    "coordinator",
+                    "coordinator_core",
+                ],
+            )?;
+            let index = usize::try_from(report_u64("RendererPlacement", &fields, "index")?)
+                .map_err(|_| "`RendererPlacement index=` exceeds usize".to_string())?;
+            let frameprog_base = report_u64("RendererPlacement", &fields, "frameprog_base")?;
+            let frameprog_size = report_u64("RendererPlacement", &fields, "frameprog_bytes")?;
+            if frameprog_size == 0 {
+                return Err(format!(
+                    "`RendererPlacement index={index}` has zero frameprog bytes"
+                ));
+            }
+            renderer_placements.push(ReportRendererPlacement {
+                index,
+                frameprog_base,
+                frameprog_size,
             });
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let rest = rest.trim();
@@ -642,6 +682,50 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         })
         .cloned()
         .collect();
+    let frameprog_sections: Vec<ReportSection> = sections
+        .iter()
+        .filter(|section| section.name == "frameprog")
+        .cloned()
+        .collect();
+    renderer_placements.sort_unstable_by_key(|placement| placement.index);
+    for (expected, placement) in renderer_placements.iter().enumerate() {
+        if placement.index != expected {
+            return Err(format!(
+                "`RendererPlacement index={}` is not the dense canonical index {expected}",
+                placement.index
+            ));
+        }
+    }
+    if !renderer_placements.is_empty() {
+        let [section] = frameprog_sections.as_slice() else {
+            return Err(format!(
+                "{} renderer placement(s) require exactly one `Section name=frameprog` line",
+                renderer_placements.len()
+            ));
+        };
+        let first = renderer_placements
+            .first()
+            .expect("nonempty renderer placements");
+        let last = renderer_placements
+            .last()
+            .expect("nonempty renderer placements");
+        let placement_end = last
+            .frameprog_base
+            .checked_add(last.frameprog_size)
+            .ok_or_else(|| "last renderer frameprog range overflows".to_string())?;
+        if first.frameprog_base != section.base || placement_end != section.end() {
+            return Err(
+                "`RendererPlacement` frameprog ranges do not exactly span the canonical \
+                 `frameprog` section"
+                    .to_string(),
+            );
+        }
+    } else if !frameprog_sections.is_empty() {
+        return Err(
+            "a `Section name=frameprog` line requires at least one `RendererPlacement` line"
+                .to_string(),
+        );
+    }
     let blk = match (blk_device, blk_queue) {
         (None, None) => {
             if !blk_pools.is_empty() {
@@ -700,6 +784,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         image_sha256,
         input_digests,
         exec_sections,
+        frameprog_sections,
+        renderer_placements,
         blk,
         irq_injects,
         core_entries,
@@ -1325,6 +1411,17 @@ pub fn render(parsed: &ParsedReport) -> String {
         out.push_str(&line_section(&s.name, s.base, s.size));
         out.push('\n');
     }
+    for s in &parsed.frameprog_sections {
+        out.push_str(&line_section(&s.name, s.base, s.size));
+        out.push('\n');
+    }
+    for placement in &parsed.renderer_placements {
+        let _ = writeln!(
+            out,
+            "RendererPlacement index={} frameprog_base={:#x} frameprog_bytes={}",
+            placement.index, placement.frameprog_base, placement.frameprog_size
+        );
+    }
     out.push_str(&line_entry(parsed.entry));
     out.push('\n');
     out.push_str(&render_runtime_tail(parsed));
@@ -1351,6 +1448,8 @@ mod tests {
         assert_eq!(parsed.image_sha256, again.image_sha256);
         assert_eq!(parsed.input_digests, again.input_digests);
         assert_eq!(parsed.exec_sections, again.exec_sections);
+        assert_eq!(parsed.frameprog_sections, again.frameprog_sections);
+        assert_eq!(parsed.renderer_placements, again.renderer_placements);
         assert_eq!(parsed.core_entries, again.core_entries);
         assert_eq!(parsed.cores, again.cores);
         assert_eq!(again.cores, 1);

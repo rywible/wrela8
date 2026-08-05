@@ -1,0 +1,11 @@
+RenderLayout v1
+  Renderer index=0
+    FrameProgram base=0x40550000 size=25616
+    State base=0x40560000 size=225472
+    Coordinator core=0 actor=__wrela_renderer_0_coordinator
+    Worker index=0 core=0 actor=__wrela_renderer_0_worker_0 tiles=[0,4) workspace_base=0x40580190 workspace_bytes=1200
+    Worker index=1 core=1 actor=__wrela_renderer_0_worker_1 tiles=[4,8) workspace_base=0x40580640 workspace_bytes=1200
+    Buffer front=0x40581000 back=0x40583000 bytes_each=8192
+    Probe base=0x40585000 bytes=0
+    Telemetry offset=225472 production_bytes=0 instrumented_bytes=384
+    Failure presentation=false error=FrameContractMismatch(RendererUnavailable)

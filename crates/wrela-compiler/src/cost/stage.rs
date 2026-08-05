@@ -313,19 +313,21 @@ fn linked_shipped_program_recording(
         &img.layout_ctx,
         &img.graph,
         Some(&img.checked.renderer_configs),
+        Some(&img.pixels),
+        false,
         &[],
         &std::collections::BTreeSet::new(),
         false,
     )?;
     let placement = crate::placement::place(
-        &img.graph,
+        &compiled.graph,
         &compiled.modules,
         &compiled.layout_ctx,
-        img.graph.cores,
+        compiled.graph.cores,
     )
     .unwrap_or_default();
     let boot = crate::layout::BootCtx {
-        graph: &img.graph,
+        graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
         layout_ctx: &compiled.layout_ctx,
@@ -333,8 +335,10 @@ fn linked_shipped_program_recording(
         group_child_index: &compiled.group_child_index,
         flow: &compiled.flow,
     };
-    let layout =
+    let mut layout =
         crate::layout::layout_program(&compiled.program, Some(boot)).map_err(|e| e.message)?;
+    crate::layout::attach_pixels(&mut layout, &img.pixels.compiled_renderers, false)
+        .map_err(|error| error.message)?;
     let linked = layout
         .linked
         .ok_or_else(|| "image layout did not produce a linked executable stream".to_string())?;
@@ -350,6 +354,7 @@ struct ShippedImage {
     graph: crate::eval::image::ImageGraph,
     layout_ctx: crate::mwir::LayoutCtx,
     checked: crate::eval::image_checks::CheckedImage,
+    pixels: crate::pixels::PixelsProgramSet,
 }
 
 pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
@@ -363,7 +368,7 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
             let image_checked =
                 crate::eval::image_checks::check_sealed(&graph, root, &checked.programs)
                     .map_err(|error| error.message)?;
-            crate::pixels::compile_all(
+            let pixels = crate::pixels::compile_all(
                 &checked.programs,
                 &root.module_path,
                 &graph,
@@ -375,6 +380,7 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
                 graph,
                 layout_ctx,
                 checked: image_checked,
+                pixels,
             })
         }
     };
@@ -395,15 +401,17 @@ pub fn codegen_shipped_from(
         &img.layout_ctx,
         &img.graph,
         Some(&img.checked.renderer_configs),
+        Some(&img.pixels),
+        false,
         &[],
         &std::collections::BTreeSet::new(),
         false,
     )?;
     let placement = crate::placement::place(
-        &img.graph,
+        &compiled.graph,
         &compiled.modules,
         &compiled.layout_ctx,
-        img.graph.cores,
+        compiled.graph.cores,
     )
     .unwrap_or_default();
     Ok((compiled.program, placement, TextScope::Image))

@@ -2,6 +2,70 @@ module pixels_contract
 
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 from core.render import Camera, Light, LightConfig, LightFrame, LightKind, MaterialSample
+from core.render import __wrela_pixels_bootstrap_camera_light_post, __wrela_pixels_bootstrap_csg
+from core.render import __wrela_pixels_bootstrap_dispatch, __wrela_pixels_bootstrap_event
+from core.render import __wrela_pixels_bootstrap_feature, __wrela_pixels_bootstrap_field
+from core.render import __wrela_pixels_bootstrap_fixed_domain, __wrela_pixels_bootstrap_material
+from core.render import __wrela_pixels_bootstrap_object, __wrela_pixels_bootstrap_parameter
+from core.render import __wrela_pixels_bootstrap_scalar
+
+@test
+fn bootstrap_dispatch_covers_every_p5_record_family_and_fails_closed():
+    match __wrela_pixels_bootstrap_scalar(32):
+        case .Ok(value):
+            assert value == 32, "scalar tag ceiling"
+        case .Err(_):
+            assert false, "scalar tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_field(30):
+        case .Ok(value):
+            assert value == 30, "field tag ceiling"
+        case .Err(_):
+            assert false, "field tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_object(1):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "object record must dispatch"
+    match __wrela_pixels_bootstrap_feature(3):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "feature tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_material(3):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "material tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_parameter(1):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "parameter record must dispatch"
+    match __wrela_pixels_bootstrap_event(14):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "event tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_csg(6):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "CSG tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_fixed_domain(35):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "fixed-domain tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_camera_light_post(1):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "camera/light/post record must dispatch"
+    match __wrela_pixels_bootstrap_dispatch(2, 9):
+        case .Err(.InternalInvariant(_)):
+            pass
+        case _:
+            assert false, "a gap in the field tag namespace must fail closed"
 
 @test
 fn dyadic_fixture_coordinates_are_exact():
@@ -99,6 +163,24 @@ fn nonempty_fixed_capacity_light_frame_typechecks():
         ],
     )
     assert true, "a sealed light frame can carry a nonempty numeric payload"
+
+@test
+fn light_kind_validation_does_not_alias_payload_coordinates():
+    zero = Vec3(x=0.0, y=0.0, z=0.0)
+    white = Rgb(r=1.0, g=1.0, b=1.0)
+    plus_x = Light.directional(
+        direction=Vec3(x=1.0, y=0.0, z=0.0),
+        radiance=white,
+    )
+    point_at_two = Light.point(
+        position=Vec3(x=2.0, y=0.0, z=0.0),
+        radiance=white,
+    )
+    assert plus_x.__wrela_p5_matches_kind(2), "directional kind is explicit"
+    assert not plus_x.__wrela_p5_matches_kind(1), "direction payload cannot spoof point"
+    assert point_at_two.__wrela_p5_matches_kind(1), "point kind is explicit"
+    assert not point_at_two.__wrela_p5_matches_kind(2), "position payload cannot spoof directional"
+    assert Light.zero().__wrela_p5_matches_kind(0), "disabled kind is explicit"
 
 @test
 fn material_sample_sanitizes_nonfinite_color_and_clamps_roughness():

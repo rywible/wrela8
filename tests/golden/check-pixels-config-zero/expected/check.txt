@@ -1,0 +1,4 @@
+Module path=__image_pixels
+  Const N_RENDERERS: usize
+Module path=input
+  Fn build() -> Image

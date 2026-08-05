@@ -35,6 +35,13 @@ pub mod layout {
     pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x4_0000;
 
     pub const RTDATA_SIZE_MAX: u64 = 256 << 10;
+
+    pub const PIXELS_DATA_BASE_MIN: u64 = RTDATA_BASE;
+    pub const PIXELS_PROGRAM_BYTES_MAX: u64 = 64 << 20;
+    pub const PIXELS_STATE_BYTES_MAX: u64 = 512 << 20;
+    pub const PIXELS_FRAMEBUFFER_BYTES_MAX: u64 = 128 << 20;
+    pub const PIXELS_REGION_ALIGNMENT: u64 = 64 << 10;
+    pub const PIXELS_STATE_PAGE_ALIGNMENT: u64 = 4096;
 }
 
 pub mod machine_info {

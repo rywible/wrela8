@@ -241,6 +241,19 @@ fn stage_boots(stage: &str) -> bool {
     stage == "test" || stage == "test-omit-dmb"
 }
 
+fn renderer_dump_stage(stage: &str) -> Result<(&str, Option<usize>), String> {
+    let Some((base, raw_renderer)) = stage.rsplit_once("-renderer-") else {
+        return Ok((stage, None));
+    };
+    if !matches!(base, "field-graph" | "frame-program" | "render-layout") {
+        return Ok((stage, None));
+    }
+    let renderer = raw_renderer
+        .parse::<usize>()
+        .map_err(|error| format!("bad renderer-qualified golden stage `{stage}`: {error}"))?;
+    Ok((base, Some(renderer)))
+}
+
 fn stage_selected(stage: &str, boot: BootSel) -> bool {
     match boot {
         BootSel::All => true,
@@ -309,6 +322,7 @@ fn run_case(
                 .and_then(|s| s.to_str())
                 .ok_or_else(|| format!("bad expected file name: {}", exp.display()))?
                 .to_string();
+            let (command_stage, renderer) = renderer_dump_stage(&stage)?;
             if !stage_selected(&stage, boot) {
                 continue;
             }
@@ -392,10 +406,15 @@ fn run_case(
                     .output()
                     .map_err(|e| format!("run wrela: {e}"))?
             } else {
-                Command::new(&wrela)
+                let mut command = Command::new(&wrela);
+                command
                     .current_dir(root())
                     .arg("dump")
-                    .arg(format!("--stage={stage}"))
+                    .arg(format!("--stage={command_stage}"));
+                if let Some(renderer) = renderer {
+                    command.arg(format!("--renderer={renderer}"));
+                }
+                command
                     .arg(rel_input)
                     .output()
                     .map_err(|e| format!("run wrela: {e}"))?
@@ -431,6 +450,24 @@ fn run_case(
             let mut actual = String::from_utf8_lossy(&out.stdout).into_owned();
             actual.push_str(&String::from_utf8_lossy(&out.stderr));
             cases += 1;
+            let accepted_pixels = case
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("check-pixels-"))
+                && expected_dir.join("image.txt").is_file();
+            if accepted_pixels
+                && matches!(command_stage, "frame-program" | "render-layout" | "report")
+                && actual
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.starts_with("error["))
+            {
+                failures.push(format!(
+                    "{} [{stage}]: accepted Pixels output normalized a diagnostic:\n{actual}",
+                    case.display()
+                ));
+                continue;
+            }
             if update {
                 std::fs::write(&exp, &actual)
                     .map_err(|e| format!("write {}: {e}", exp.display()))?;

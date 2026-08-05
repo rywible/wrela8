@@ -58,7 +58,10 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 fn build() -> Image:
     img = Image(name="check-pixels-source-example", target=Target.wrela_machine_v1, cores=4)
     device = img.device[DisplayDevice](transport=Transport.Blob)
-    display = img.driver(Display, device=device, vector=5, mailbox=2)
+    display = img.driver(
+        Display, device=device, width=1920, height=1080, refresh_hz=60,
+        vector=5, mailbox=2, core=0,
+    )
     renderer = img.renderer[SceneParams](
         field=world, material=shade, display=display,
         width=1920, height=1080, refresh_hz=60, shade_hz=30,
