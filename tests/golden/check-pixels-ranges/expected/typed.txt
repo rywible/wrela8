@@ -2961,6 +2961,1565 @@ Program
                   Float text=16.0 ty=f32
   Struct name=ScalarRange
   Struct name=TileId
+Module path=render_interval
+Program
+  Fn name=fixed_domain ret=FixedDomainOutcome
+    Param name=exponent mode=read ty=i32
+    Param name=min_raw mode=read ty=i32
+    Param name=max_raw mode=read ty=i32
+    Body
+      If
+        Or ty=bool
+          Or ty=bool
+            Binary op=< ty=bool
+              Local name=exponent ty=i32
+              Neg ty=i32
+                Int text=96 ty=i32
+            Binary op=> ty=bool
+              Local name=exponent ty=i32
+              Int text=63 ty=i32
+          Binary op=> ty=bool
+            Local name=min_raw ty=i32
+            Local name=max_raw ty=i32
+        Then
+          Return
+            EnumConstruct enum=FixedDomainOutcome variant=Error ty=FixedDomainOutcome
+      Return
+        EnumConstruct enum=FixedDomainOutcome variant=Value ty=FixedDomainOutcome
+          StructLiteral name=FixedDomain ty=FixedDomain
+            Field name=exponent
+              Local name=exponent ty=i32
+            Field name=min_raw
+              Local name=min_raw ty=i32
+            Field name=max_raw
+              Local name=max_raw ty=i32
+  Fn name=interval_abs ret=NumericOutcome
+    Param name=value mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Not ty=bool
+          Call key=interval_valid ty=bool
+            Local name=value ty=Iv32
+            Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=lo_abs ty=i64
+        ToScalar ty=i64
+          Field name=lo ty=i32
+            Local name=value ty=Iv32
+      If
+        Binary op=< ty=bool
+          Local name=lo_abs ty=i64
+          Int text=0 ty=i64
+        Then
+          Assign
+            Local name=lo_abs ty=i64
+            Neg ty=i64
+              Local name=lo_abs ty=i64
+      Let name=hi_abs ty=i64
+        ToScalar ty=i64
+          Field name=hi ty=i32
+            Local name=value ty=Iv32
+      If
+        Binary op=< ty=bool
+          Local name=hi_abs ty=i64
+          Int text=0 ty=i64
+        Then
+          Assign
+            Local name=hi_abs ty=i64
+            Neg ty=i64
+              Local name=hi_abs ty=i64
+      Let name=maximum ty=i64
+        Local name=lo_abs ty=i64
+      If
+        Binary op=> ty=bool
+          Local name=hi_abs ty=i64
+          Local name=maximum ty=i64
+        Then
+          Assign
+            Local name=maximum ty=i64
+            Local name=hi_abs ty=i64
+      If
+        Call key=interval_contains_zero ty=bool
+          Local name=value ty=Iv32
+        Then
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Int text=0 ty=i64
+              Local name=maximum ty=i64
+              Local name=domain ty=FixedDomain
+      Let name=minimum ty=i64
+        Local name=lo_abs ty=i64
+      If
+        Binary op=< ty=bool
+          Local name=hi_abs ty=i64
+          Local name=minimum ty=i64
+        Then
+          Assign
+            Local name=minimum ty=i64
+            Local name=hi_abs ty=i64
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Local name=minimum ty=i64
+          Local name=maximum ty=i64
+          Local name=domain ty=FixedDomain
+  Fn name=interval_add ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Binary op=+ ty=i64
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=a ty=Iv32
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=b ty=Iv32
+          Binary op=+ ty=i64
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=a ty=Iv32
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=b ty=Iv32
+          Local name=domain ty=FixedDomain
+  Fn name=interval_affine ret=NumericOutcome
+    Param name=input mode=read ty=Iv32
+    Param name=scale mode=read ty=Iv32
+    Param name=bias mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      Match
+        Call key=interval_mul ty=NumericOutcome
+          Local name=input ty=Iv32
+          Local name=scale ty=Iv32
+          Local name=domain ty=FixedDomain
+        Case
+          VariantPattern enum=NumericOutcome variant=Value ty=NumericOutcome
+            Binding name=product ty=Iv32
+          Return
+            Call key=interval_add ty=NumericOutcome
+              Local name=product ty=Iv32
+              Local name=bias ty=Iv32
+              Local name=domain ty=FixedDomain
+        Case
+          Wildcard ty=NumericOutcome
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+  Fn name=interval_ceil_div ret=i64
+    Param name=value mode=read ty=i64
+    Param name=scale mode=read ty=i64
+    Body
+      Let name=q ty=i64
+        Binary op=/ ty=i64
+          Local name=value ty=i64
+          Local name=scale ty=i64
+      Let name=r ty=i64
+        Binary op=% ty=i64
+          Local name=value ty=i64
+          Local name=scale ty=i64
+      If
+        And ty=bool
+          Binary op=!= ty=bool
+            Local name=r ty=i64
+            Int text=0 ty=i64
+          Binary op=> ty=bool
+            Local name=value ty=i64
+            Int text=0 ty=i64
+        Then
+          Return
+            Binary op=+ ty=i64
+              Local name=q ty=i64
+              Int text=1 ty=i64
+      Return
+        Local name=q ty=i64
+  Fn name=interval_contains_zero ret=bool
+    Param name=value mode=read ty=Iv32
+    Body
+      Return
+        And ty=bool
+          Binary op=<= ty=bool
+            Field name=lo ty=i32
+              Local name=value ty=Iv32
+            Int text=0 ty=i32
+          Binary op=>= ty=bool
+            Field name=hi ty=i32
+              Local name=value ty=Iv32
+            Int text=0 ty=i32
+  Fn name=interval_convert ret=NumericOutcome
+    Param name=value mode=read ty=Iv32
+    Param name=source mode=read ty=FixedDomain
+    Param name=destination mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Or ty=bool
+            Or ty=bool
+              Not ty=bool
+                Call key=interval_valid ty=bool
+                  Local name=value ty=Iv32
+                  Local name=source ty=FixedDomain
+              Binary op=< ty=bool
+                Field name=exponent ty=i32
+                  Local name=destination ty=FixedDomain
+                Neg ty=i32
+                  Int text=96 ty=i32
+            Binary op=> ty=bool
+              Field name=exponent ty=i32
+                Local name=destination ty=FixedDomain
+              Int text=63 ty=i32
+          Binary op=> ty=bool
+            Field name=min_raw ty=i32
+              Local name=destination ty=FixedDomain
+            Field name=max_raw ty=i32
+              Local name=destination ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=shift ty=i32
+        Binary op=- ty=i32
+          Field name=exponent ty=i32
+            Local name=source ty=FixedDomain
+          Field name=exponent ty=i32
+            Local name=destination ty=FixedDomain
+      If
+        Binary op=>= ty=bool
+          Local name=shift ty=i32
+          Int text=0 ty=i32
+        Then
+          If
+            Binary op=>= ty=bool
+              Local name=shift ty=i32
+              Int text=128 ty=i32
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          If
+            Binary op=>= ty=bool
+              Local name=shift ty=i32
+              Int text=63 ty=i32
+            Then
+              If
+                And ty=bool
+                  Binary op=== ty=bool
+                    Call key=Iv32.lower ty=i32
+                      Receiver
+                        Local name=value ty=Iv32
+                    Int text=0 ty=i32
+                  Binary op=== ty=bool
+                    Call key=Iv32.upper ty=i32
+                      Receiver
+                        Local name=value ty=Iv32
+                    Int text=0 ty=i32
+                Then
+                  Return
+                    Call key=interval_narrow ty=NumericOutcome
+                      Int text=0 ty=i64
+                      Int text=0 ty=i64
+                      Local name=destination ty=FixedDomain
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Let name=factor ty=i64
+            Int text=1 ty=i64
+          Let name=i ty=i32
+            Int text=0 ty=i32
+          While budget=62
+            Binary op=< ty=bool
+              Local name=i ty=i32
+              Local name=shift ty=i32
+            Body
+              Assign
+                Local name=factor ty=i64
+                Binary op=* ty=i64
+                  Local name=factor ty=i64
+                  Int text=2 ty=i64
+              Assign
+                Local name=i ty=i32
+                Binary op=+ ty=i32
+                  Local name=i ty=i32
+                  Int text=1 ty=i32
+          If
+            Or ty=bool
+              Binary op=< ty=bool
+                ToScalar ty=i64
+                  Call key=Iv32.lower ty=i32
+                    Receiver
+                      Local name=value ty=Iv32
+                Binary op=/ ty=i64
+                  Neg ty=i64
+                    Int text=2147483648 ty=i64
+                  Local name=factor ty=i64
+              Binary op=> ty=bool
+                ToScalar ty=i64
+                  Call key=Iv32.upper ty=i32
+                    Receiver
+                      Local name=value ty=Iv32
+                Binary op=/ ty=i64
+                  Int text=2147483647 ty=i64
+                  Local name=factor ty=i64
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Binary op=* ty=i64
+                ToScalar ty=i64
+                  Call key=Iv32.lower ty=i32
+                    Receiver
+                      Local name=value ty=Iv32
+                Local name=factor ty=i64
+              Binary op=* ty=i64
+                ToScalar ty=i64
+                  Call key=Iv32.upper ty=i32
+                    Receiver
+                      Local name=value ty=Iv32
+                Local name=factor ty=i64
+              Local name=destination ty=FixedDomain
+      If
+        Binary op=< ty=bool
+          Local name=shift ty=i32
+          Neg ty=i32
+            Int text=62 ty=i32
+        Then
+          Let name=lo ty=i64
+            Int text=0 ty=i64
+          Let name=hi ty=i64
+            Int text=0 ty=i64
+          If
+            Binary op=< ty=bool
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+              Int text=0 ty=i32
+            Then
+              Assign
+                Local name=lo ty=i64
+                Neg ty=i64
+                  Int text=1 ty=i64
+          If
+            Binary op=> ty=bool
+              Field name=hi ty=i32
+                Local name=value ty=Iv32
+              Int text=0 ty=i32
+            Then
+              Assign
+                Local name=hi ty=i64
+                Int text=1 ty=i64
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Local name=lo ty=i64
+              Local name=hi ty=i64
+              Local name=destination ty=FixedDomain
+      Let name=divisor ty=i64
+        Int text=1 ty=i64
+      Let name=i ty=i32
+        Int text=0 ty=i32
+      While budget=62
+        Binary op=< ty=bool
+          Local name=i ty=i32
+          Neg ty=i32
+            Local name=shift ty=i32
+        Body
+          Assign
+            Local name=divisor ty=i64
+            Binary op=* ty=i64
+              Local name=divisor ty=i64
+              Int text=2 ty=i64
+          Assign
+            Local name=i ty=i32
+            Binary op=+ ty=i32
+              Local name=i ty=i32
+              Int text=1 ty=i32
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Call key=interval_floor_div ty=i64
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+            Local name=divisor ty=i64
+          Call key=interval_ceil_div ty=i64
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=value ty=Iv32
+            Local name=divisor ty=i64
+          Local name=destination ty=FixedDomain
+  Fn name=interval_floor_div ret=i64
+    Param name=value mode=read ty=i64
+    Param name=scale mode=read ty=i64
+    Body
+      Let name=q ty=i64
+        Binary op=/ ty=i64
+          Local name=value ty=i64
+          Local name=scale ty=i64
+      Let name=r ty=i64
+        Binary op=% ty=i64
+          Local name=value ty=i64
+          Local name=scale ty=i64
+      If
+        And ty=bool
+          Binary op=!= ty=bool
+            Local name=r ty=i64
+            Int text=0 ty=i64
+          Binary op=< ty=bool
+            Local name=value ty=i64
+            Int text=0 ty=i64
+        Then
+          Return
+            Binary op=- ty=i64
+              Local name=q ty=i64
+              Int text=1 ty=i64
+      Return
+        Local name=q ty=i64
+  Fn name=interval_from_f32_bits ret=NumericOutcome
+    Param name=bits mode=read ty=u32
+    Param name=radius_raw mode=read ty=u32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Or ty=bool
+            Binary op=< ty=bool
+              Field name=exponent ty=i32
+                Local name=domain ty=FixedDomain
+              Neg ty=i32
+                Int text=96 ty=i32
+            Binary op=> ty=bool
+              Field name=exponent ty=i32
+                Local name=domain ty=FixedDomain
+              Int text=63 ty=i32
+          Binary op=> ty=bool
+            Field name=min_raw ty=i32
+              Local name=domain ty=FixedDomain
+            Field name=max_raw ty=i32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=raw_exponent ty=i32
+        ToScalar ty=i32
+          Binary op=& ty=u32
+            Binary op=>> ty=u32
+              Local name=bits ty=u32
+              Int text=23 ty=u32
+            Int text=255 ty=u32
+      Let name=fraction ty=i64
+        ToScalar ty=i64
+          Binary op=& ty=u32
+            Local name=bits ty=u32
+            Int text=8388607 ty=u32
+      If
+        Binary op=== ty=bool
+          Local name=raw_exponent ty=i32
+          Int text=255 ty=i32
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=mantissa ty=i64
+        Local name=fraction ty=i64
+      Let name=binary_exponent ty=i32
+        Neg ty=i32
+          Int text=149 ty=i32
+      If
+        Binary op=!= ty=bool
+          Local name=raw_exponent ty=i32
+          Int text=0 ty=i32
+        Then
+          Assign
+            Local name=mantissa ty=i64
+            Binary op=+ ty=i64
+              Local name=mantissa ty=i64
+              Int text=8388608 ty=i64
+          Assign
+            Local name=binary_exponent ty=i32
+            Binary op=- ty=i32
+              Binary op=- ty=i32
+                Local name=raw_exponent ty=i32
+                Int text=127 ty=i32
+              Int text=23 ty=i32
+      If
+        Binary op=!= ty=bool
+          Binary op=>> ty=u32
+            Local name=bits ty=u32
+            Int text=31 ty=u32
+          Int text=0 ty=u32
+        Then
+          Assign
+            Local name=mantissa ty=i64
+            Neg ty=i64
+              Local name=mantissa ty=i64
+      Let name=shift ty=i32
+        Binary op=- ty=i32
+          Local name=binary_exponent ty=i32
+          Field name=exponent ty=i32
+            Local name=domain ty=FixedDomain
+      Let name=lo ty=i64
+        Local name=mantissa ty=i64
+      Let name=hi ty=i64
+        Local name=mantissa ty=i64
+      If
+        Binary op=>= ty=bool
+          Local name=shift ty=i32
+          Int text=0 ty=i32
+        Then
+          If
+            Binary op=> ty=bool
+              Local name=shift ty=i32
+              Int text=30 ty=i32
+            Then
+              If
+                Binary op=== ty=bool
+                  Local name=mantissa ty=i64
+                  Int text=0 ty=i64
+                Then
+                  Return
+                    Call key=interval_narrow ty=NumericOutcome
+                      Neg ty=i64
+                        ToScalar ty=i64
+                          Local name=radius_raw ty=u32
+                      ToScalar ty=i64
+                        Local name=radius_raw ty=u32
+                      Local name=domain ty=FixedDomain
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Let name=factor ty=i64
+            Int text=1 ty=i64
+          Let name=i ty=i32
+            Int text=0 ty=i32
+          While budget=30
+            Binary op=< ty=bool
+              Local name=i ty=i32
+              Local name=shift ty=i32
+            Body
+              Assign
+                Local name=factor ty=i64
+                Binary op=* ty=i64
+                  Local name=factor ty=i64
+                  Int text=2 ty=i64
+              Assign
+                Local name=i ty=i32
+                Binary op=+ ty=i32
+                  Local name=i ty=i32
+                  Int text=1 ty=i32
+          If
+            Or ty=bool
+              Binary op=< ty=bool
+                Local name=mantissa ty=i64
+                Binary op=/ ty=i64
+                  Neg ty=i64
+                    Int text=2147483648 ty=i64
+                  Local name=factor ty=i64
+              Binary op=> ty=bool
+                Local name=mantissa ty=i64
+                Binary op=/ ty=i64
+                  Int text=2147483647 ty=i64
+                  Local name=factor ty=i64
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Assign
+            Local name=lo ty=i64
+            Binary op=* ty=i64
+              Local name=mantissa ty=i64
+              Local name=factor ty=i64
+          Assign
+            Local name=hi ty=i64
+            Local name=lo ty=i64
+        Else
+          If
+            Binary op=< ty=bool
+              Local name=shift ty=i32
+              Neg ty=i32
+                Int text=62 ty=i32
+            Then
+              Assign
+                Local name=lo ty=i64
+                Int text=0 ty=i64
+              Assign
+                Local name=hi ty=i64
+                Int text=0 ty=i64
+              If
+                Binary op=< ty=bool
+                  Local name=mantissa ty=i64
+                  Int text=0 ty=i64
+                Then
+                  Assign
+                    Local name=lo ty=i64
+                    Neg ty=i64
+                      Int text=1 ty=i64
+              If
+                Binary op=> ty=bool
+                  Local name=mantissa ty=i64
+                  Int text=0 ty=i64
+                Then
+                  Assign
+                    Local name=hi ty=i64
+                    Int text=1 ty=i64
+            Else
+              Let name=divisor ty=i64
+                Int text=1 ty=i64
+              Let name=i ty=i32
+                Int text=0 ty=i32
+              While budget=62
+                Binary op=< ty=bool
+                  Local name=i ty=i32
+                  Neg ty=i32
+                    Local name=shift ty=i32
+                Body
+                  Assign
+                    Local name=divisor ty=i64
+                    Binary op=* ty=i64
+                      Local name=divisor ty=i64
+                      Int text=2 ty=i64
+                  Assign
+                    Local name=i ty=i32
+                    Binary op=+ ty=i32
+                      Local name=i ty=i32
+                      Int text=1 ty=i32
+              Assign
+                Local name=lo ty=i64
+                Call key=interval_floor_div ty=i64
+                  Local name=mantissa ty=i64
+                  Local name=divisor ty=i64
+              Assign
+                Local name=hi ty=i64
+                Call key=interval_ceil_div ty=i64
+                  Local name=mantissa ty=i64
+                  Local name=divisor ty=i64
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Binary op=- ty=i64
+            Local name=lo ty=i64
+            ToScalar ty=i64
+              Local name=radius_raw ty=u32
+          Binary op=+ ty=i64
+            Local name=hi ty=i64
+            ToScalar ty=i64
+              Local name=radius_raw ty=u32
+          Local name=domain ty=FixedDomain
+  Fn name=interval_hull ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=lo ty=i32
+        Field name=lo ty=i32
+          Local name=a ty=Iv32
+      Let name=hi ty=i32
+        Field name=hi ty=i32
+          Local name=a ty=Iv32
+      If
+        Binary op=< ty=bool
+          Field name=lo ty=i32
+            Local name=b ty=Iv32
+          Local name=lo ty=i32
+        Then
+          Assign
+            Local name=lo ty=i32
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      If
+        Binary op=> ty=bool
+          Field name=hi ty=i32
+            Local name=b ty=Iv32
+          Local name=hi ty=i32
+        Then
+          Assign
+            Local name=hi ty=i32
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      Return
+        EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+          Call key=Iv32.range ty=Iv32
+            Local name=lo ty=i32
+            Local name=hi ty=i32
+  Fn name=interval_intersect ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=lo ty=i32
+        Field name=lo ty=i32
+          Local name=a ty=Iv32
+      Let name=hi ty=i32
+        Field name=hi ty=i32
+          Local name=a ty=Iv32
+      If
+        Binary op=> ty=bool
+          Field name=lo ty=i32
+            Local name=b ty=Iv32
+          Local name=lo ty=i32
+        Then
+          Assign
+            Local name=lo ty=i32
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      If
+        Binary op=< ty=bool
+          Field name=hi ty=i32
+            Local name=b ty=Iv32
+          Local name=hi ty=i32
+        Then
+          Assign
+            Local name=hi ty=i32
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      If
+        Binary op=> ty=bool
+          Local name=lo ty=i32
+          Local name=hi ty=i32
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Empty ty=NumericOutcome
+      Return
+        EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+          StructLiteral name=Iv32 ty=Iv32
+            Field name=lo
+              Local name=lo ty=i32
+            Field name=hi
+              Local name=hi ty=i32
+  Fn name=interval_max ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=lo ty=i32
+        Field name=lo ty=i32
+          Local name=a ty=Iv32
+      Let name=hi ty=i32
+        Field name=hi ty=i32
+          Local name=a ty=Iv32
+      If
+        Binary op=> ty=bool
+          Field name=lo ty=i32
+            Local name=b ty=Iv32
+          Local name=lo ty=i32
+        Then
+          Assign
+            Local name=lo ty=i32
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      If
+        Binary op=> ty=bool
+          Field name=hi ty=i32
+            Local name=b ty=Iv32
+          Local name=hi ty=i32
+        Then
+          Assign
+            Local name=hi ty=i32
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      Return
+        EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+          Call key=Iv32.range ty=Iv32
+            Local name=lo ty=i32
+            Local name=hi ty=i32
+  Fn name=interval_min ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=lo ty=i32
+        Field name=lo ty=i32
+          Local name=a ty=Iv32
+      Let name=hi ty=i32
+        Field name=hi ty=i32
+          Local name=a ty=Iv32
+      If
+        Binary op=< ty=bool
+          Field name=lo ty=i32
+            Local name=b ty=Iv32
+          Local name=lo ty=i32
+        Then
+          Assign
+            Local name=lo ty=i32
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      If
+        Binary op=< ty=bool
+          Field name=hi ty=i32
+            Local name=b ty=Iv32
+          Local name=hi ty=i32
+        Then
+          Assign
+            Local name=hi ty=i32
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      Return
+        EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+          Call key=Iv32.range ty=Iv32
+            Local name=lo ty=i32
+            Local name=hi ty=i32
+  Fn name=interval_mul ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=p0 ty=i64
+        Binary op=* ty=i64
+          ToScalar ty=i64
+            Field name=lo ty=i32
+              Local name=a ty=Iv32
+          ToScalar ty=i64
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      Let name=p1 ty=i64
+        Binary op=* ty=i64
+          ToScalar ty=i64
+            Field name=lo ty=i32
+              Local name=a ty=Iv32
+          ToScalar ty=i64
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      Let name=p2 ty=i64
+        Binary op=* ty=i64
+          ToScalar ty=i64
+            Field name=hi ty=i32
+              Local name=a ty=Iv32
+          ToScalar ty=i64
+            Field name=lo ty=i32
+              Local name=b ty=Iv32
+      Let name=p3 ty=i64
+        Binary op=* ty=i64
+          ToScalar ty=i64
+            Field name=hi ty=i32
+              Local name=a ty=Iv32
+          ToScalar ty=i64
+            Field name=hi ty=i32
+              Local name=b ty=Iv32
+      Let name=lo ty=i64
+        Local name=p0 ty=i64
+      Let name=hi ty=i64
+        Local name=p0 ty=i64
+      If
+        Binary op=< ty=bool
+          Local name=p1 ty=i64
+          Local name=lo ty=i64
+        Then
+          Assign
+            Local name=lo ty=i64
+            Local name=p1 ty=i64
+      If
+        Binary op=< ty=bool
+          Local name=p2 ty=i64
+          Local name=lo ty=i64
+        Then
+          Assign
+            Local name=lo ty=i64
+            Local name=p2 ty=i64
+      If
+        Binary op=< ty=bool
+          Local name=p3 ty=i64
+          Local name=lo ty=i64
+        Then
+          Assign
+            Local name=lo ty=i64
+            Local name=p3 ty=i64
+      If
+        Binary op=> ty=bool
+          Local name=p1 ty=i64
+          Local name=hi ty=i64
+        Then
+          Assign
+            Local name=hi ty=i64
+            Local name=p1 ty=i64
+      If
+        Binary op=> ty=bool
+          Local name=p2 ty=i64
+          Local name=hi ty=i64
+        Then
+          Assign
+            Local name=hi ty=i64
+            Local name=p2 ty=i64
+      If
+        Binary op=> ty=bool
+          Local name=p3 ty=i64
+          Local name=hi ty=i64
+        Then
+          Assign
+            Local name=hi ty=i64
+            Local name=p3 ty=i64
+      If
+        Binary op=<= ty=bool
+          Field name=exponent ty=i32
+            Local name=domain ty=FixedDomain
+          Int text=0 ty=i32
+        Then
+          If
+            Binary op=< ty=bool
+              Field name=exponent ty=i32
+                Local name=domain ty=FixedDomain
+              Neg ty=i32
+                Int text=62 ty=i32
+            Then
+              Let name=out_lo ty=i64
+                Int text=0 ty=i64
+              Let name=out_hi ty=i64
+                Int text=0 ty=i64
+              If
+                Binary op=< ty=bool
+                  Local name=lo ty=i64
+                  Int text=0 ty=i64
+                Then
+                  Assign
+                    Local name=out_lo ty=i64
+                    Neg ty=i64
+                      Int text=1 ty=i64
+              If
+                Binary op=> ty=bool
+                  Local name=hi ty=i64
+                  Int text=0 ty=i64
+                Then
+                  Assign
+                    Local name=out_hi ty=i64
+                    Int text=1 ty=i64
+              Return
+                Call key=interval_narrow ty=NumericOutcome
+                  Local name=out_lo ty=i64
+                  Local name=out_hi ty=i64
+                  Local name=domain ty=FixedDomain
+          Let name=scale ty=i64
+            Int text=1 ty=i64
+          Let name=i ty=i32
+            Int text=0 ty=i32
+          While budget=62
+            Binary op=< ty=bool
+              Local name=i ty=i32
+              Neg ty=i32
+                Field name=exponent ty=i32
+                  Local name=domain ty=FixedDomain
+            Body
+              Assign
+                Local name=scale ty=i64
+                Binary op=* ty=i64
+                  Local name=scale ty=i64
+                  Int text=2 ty=i64
+              Assign
+                Local name=i ty=i32
+                Binary op=+ ty=i32
+                  Local name=i ty=i32
+                  Int text=1 ty=i32
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Call key=interval_floor_div ty=i64
+                Local name=lo ty=i64
+                Local name=scale ty=i64
+              Call key=interval_ceil_div ty=i64
+                Local name=hi ty=i64
+                Local name=scale ty=i64
+              Local name=domain ty=FixedDomain
+      If
+        Binary op=> ty=bool
+          Field name=exponent ty=i32
+            Local name=domain ty=FixedDomain
+          Int text=30 ty=i32
+        Then
+          If
+            And ty=bool
+              Binary op=== ty=bool
+                Local name=lo ty=i64
+                Int text=0 ty=i64
+              Binary op=== ty=bool
+                Local name=hi ty=i64
+                Int text=0 ty=i64
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+                  Call key=Iv32.point ty=Iv32
+                    Int text=0 ty=i32
+          If
+            And ty=bool
+              And ty=bool
+                Binary op=== ty=bool
+                  Field name=exponent ty=i32
+                    Local name=domain ty=FixedDomain
+                  Int text=31 ty=i32
+                Binary op=>= ty=bool
+                  Local name=lo ty=i64
+                  Neg ty=i64
+                    Int text=1 ty=i64
+              Binary op=<= ty=bool
+                Local name=hi ty=i64
+                Int text=0 ty=i64
+            Then
+              Return
+                Call key=interval_narrow ty=NumericOutcome
+                  Binary op=* ty=i64
+                    Local name=lo ty=i64
+                    Int text=2147483648 ty=i64
+                  Binary op=* ty=i64
+                    Local name=hi ty=i64
+                    Int text=2147483648 ty=i64
+                  Local name=domain ty=FixedDomain
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Let name=scale ty=i64
+        Int text=1 ty=i64
+      Let name=i ty=i32
+        Int text=0 ty=i32
+      While budget=30
+        Binary op=< ty=bool
+          Local name=i ty=i32
+          Field name=exponent ty=i32
+            Local name=domain ty=FixedDomain
+        Body
+          Assign
+            Local name=scale ty=i64
+            Binary op=* ty=i64
+              Local name=scale ty=i64
+              Int text=2 ty=i64
+          Assign
+            Local name=i ty=i32
+            Binary op=+ ty=i32
+              Local name=i ty=i32
+              Int text=1 ty=i32
+      If
+        Or ty=bool
+          Binary op=< ty=bool
+            Local name=lo ty=i64
+            Binary op=/ ty=i64
+              Neg ty=i64
+                Int text=2147483648 ty=i64
+              Local name=scale ty=i64
+          Binary op=> ty=bool
+            Local name=hi ty=i64
+            Binary op=/ ty=i64
+              Int text=2147483647 ty=i64
+              Local name=scale ty=i64
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Binary op=* ty=i64
+            Local name=lo ty=i64
+            Local name=scale ty=i64
+          Binary op=* ty=i64
+            Local name=hi ty=i64
+            Local name=scale ty=i64
+          Local name=domain ty=FixedDomain
+  Fn name=interval_narrow ret=NumericOutcome
+    Param name=lo mode=read ty=i64
+    Param name=hi mode=read ty=i64
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Binary op=< ty=bool
+            Local name=lo ty=i64
+            Neg ty=i64
+              Int text=2147483648 ty=i64
+          Binary op=> ty=bool
+            Local name=hi ty=i64
+            Int text=2147483647 ty=i64
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      If
+        Or ty=bool
+          Binary op=< ty=bool
+            Local name=lo ty=i64
+            ToScalar ty=i64
+              Field name=min_raw ty=i32
+                Local name=domain ty=FixedDomain
+          Binary op=> ty=bool
+            Local name=hi ty=i64
+            ToScalar ty=i64
+              Field name=max_raw ty=i32
+                Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Return
+        EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+          StructLiteral name=Iv32 ty=Iv32
+            Field name=lo
+              ToScalar ty=i32
+                Local name=lo ty=i64
+            Field name=hi
+              ToScalar ty=i32
+                Local name=hi ty=i64
+  Fn name=interval_negate ret=NumericOutcome
+    Param name=value mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Not ty=bool
+          Call key=interval_valid ty=bool
+            Local name=value ty=Iv32
+            Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Neg ty=i64
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=value ty=Iv32
+          Neg ty=i64
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+          Local name=domain ty=FixedDomain
+  Fn name=interval_scale_pow2 ret=NumericOutcome
+    Param name=value mode=read ty=Iv32
+    Param name=shift mode=read ty=i32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Or ty=bool
+            Not ty=bool
+              Call key=interval_valid ty=bool
+                Local name=value ty=Iv32
+                Local name=domain ty=FixedDomain
+            Binary op=< ty=bool
+              Local name=shift ty=i32
+              Neg ty=i32
+                Int text=32768 ty=i32
+          Binary op=> ty=bool
+            Local name=shift ty=i32
+            Int text=32767 ty=i32
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      If
+        Binary op=<= ty=bool
+          Local name=shift ty=i32
+          Neg ty=i32
+            Int text=63 ty=i32
+        Then
+          Let name=out_lo ty=i64
+            Int text=0 ty=i64
+          Let name=out_hi ty=i64
+            Int text=0 ty=i64
+          If
+            Binary op=< ty=bool
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+              Int text=0 ty=i32
+            Then
+              Assign
+                Local name=out_lo ty=i64
+                Neg ty=i64
+                  Int text=1 ty=i64
+          If
+            Binary op=> ty=bool
+              Field name=hi ty=i32
+                Local name=value ty=Iv32
+              Int text=0 ty=i32
+            Then
+              Assign
+                Local name=out_hi ty=i64
+                Int text=1 ty=i64
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Local name=out_lo ty=i64
+              Local name=out_hi ty=i64
+              Local name=domain ty=FixedDomain
+      If
+        Binary op=>= ty=bool
+          Local name=shift ty=i32
+          Int text=0 ty=i32
+        Then
+          If
+            Binary op=>= ty=bool
+              Local name=shift ty=i32
+              Int text=128 ty=i32
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          If
+            Binary op=>= ty=bool
+              Local name=shift ty=i32
+              Int text=63 ty=i32
+            Then
+              If
+                And ty=bool
+                  Binary op=== ty=bool
+                    Field name=lo ty=i32
+                      Local name=value ty=Iv32
+                    Int text=0 ty=i32
+                  Binary op=== ty=bool
+                    Field name=hi ty=i32
+                      Local name=value ty=Iv32
+                    Int text=0 ty=i32
+                Then
+                  Return
+                    EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+                      Local name=value ty=Iv32
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Let name=factor ty=i64
+            Int text=1 ty=i64
+          Let name=i ty=i32
+            Int text=0 ty=i32
+          While budget=62
+            Binary op=< ty=bool
+              Local name=i ty=i32
+              Local name=shift ty=i32
+            Body
+              Assign
+                Local name=factor ty=i64
+                Binary op=* ty=i64
+                  Local name=factor ty=i64
+                  Int text=2 ty=i64
+              Assign
+                Local name=i ty=i32
+                Binary op=+ ty=i32
+                  Local name=i ty=i32
+                  Int text=1 ty=i32
+          If
+            Or ty=bool
+              Binary op=< ty=bool
+                ToScalar ty=i64
+                  Field name=lo ty=i32
+                    Local name=value ty=Iv32
+                Binary op=/ ty=i64
+                  Neg ty=i64
+                    Int text=2147483648 ty=i64
+                  Local name=factor ty=i64
+              Binary op=> ty=bool
+                ToScalar ty=i64
+                  Field name=hi ty=i32
+                    Local name=value ty=Iv32
+                Binary op=/ ty=i64
+                  Int text=2147483647 ty=i64
+                  Local name=factor ty=i64
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+          Return
+            Call key=interval_narrow ty=NumericOutcome
+              Binary op=* ty=i64
+                ToScalar ty=i64
+                  Field name=lo ty=i32
+                    Local name=value ty=Iv32
+                Local name=factor ty=i64
+              Binary op=* ty=i64
+                ToScalar ty=i64
+                  Field name=hi ty=i32
+                    Local name=value ty=Iv32
+                Local name=factor ty=i64
+              Local name=domain ty=FixedDomain
+      Let name=divisor ty=i64
+        Int text=1 ty=i64
+      Let name=i ty=i32
+        Int text=0 ty=i32
+      While budget=62
+        Binary op=< ty=bool
+          Local name=i ty=i32
+          Neg ty=i32
+            Local name=shift ty=i32
+        Body
+          Assign
+            Local name=divisor ty=i64
+            Binary op=* ty=i64
+              Local name=divisor ty=i64
+              Int text=2 ty=i64
+          Assign
+            Local name=i ty=i32
+            Binary op=+ ty=i32
+              Local name=i ty=i32
+              Int text=1 ty=i32
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Call key=interval_floor_div ty=i64
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+            Local name=divisor ty=i64
+          Call key=interval_ceil_div ty=i64
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=value ty=Iv32
+            Local name=divisor ty=i64
+          Local name=domain ty=FixedDomain
+  Fn name=interval_square ret=NumericOutcome
+    Param name=value mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Not ty=bool
+          Call key=interval_valid ty=bool
+            Local name=value ty=Iv32
+            Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Match
+        Call key=interval_mul ty=NumericOutcome
+          Local name=value ty=Iv32
+          Local name=value ty=Iv32
+          Local name=domain ty=FixedDomain
+        Case
+          VariantPattern enum=NumericOutcome variant=Value ty=NumericOutcome
+            Binding name=product ty=Iv32
+          If
+            Call key=interval_contains_zero ty=bool
+              Local name=value ty=Iv32
+            Then
+              Return
+                EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+                  Call key=Iv32.range ty=Iv32
+                    Int text=0 ty=i32
+                    Call key=Iv32.upper ty=i32
+                      Receiver
+                        Local name=product ty=Iv32
+          Return
+            EnumConstruct enum=NumericOutcome variant=Value ty=NumericOutcome
+              Local name=product ty=Iv32
+        Case
+          Wildcard ty=NumericOutcome
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+  Fn name=interval_strict_negative ret=bool
+    Param name=value mode=read ty=Iv32
+    Body
+      Return
+        Binary op=< ty=bool
+          Field name=hi ty=i32
+            Local name=value ty=Iv32
+          Int text=0 ty=i32
+  Fn name=interval_strict_positive ret=bool
+    Param name=value mode=read ty=Iv32
+    Body
+      Return
+        Binary op=> ty=bool
+          Field name=lo ty=i32
+            Local name=value ty=Iv32
+          Int text=0 ty=i32
+  Fn name=interval_sub ret=NumericOutcome
+    Param name=a mode=read ty=Iv32
+    Param name=b mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      If
+        Or ty=bool
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=a ty=Iv32
+              Local name=domain ty=FixedDomain
+          Not ty=bool
+            Call key=interval_valid ty=bool
+              Local name=b ty=Iv32
+              Local name=domain ty=FixedDomain
+        Then
+          Return
+            EnumConstruct enum=NumericOutcome variant=Error ty=NumericOutcome
+      Return
+        Call key=interval_narrow ty=NumericOutcome
+          Binary op=- ty=i64
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=a ty=Iv32
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=b ty=Iv32
+          Binary op=- ty=i64
+            ToScalar ty=i64
+              Field name=hi ty=i32
+                Local name=a ty=Iv32
+            ToScalar ty=i64
+              Field name=lo ty=i32
+                Local name=b ty=Iv32
+          Local name=domain ty=FixedDomain
+  Fn name=interval_valid ret=bool
+    Param name=value mode=read ty=Iv32
+    Param name=domain mode=read ty=FixedDomain
+    Body
+      Return
+        And ty=bool
+          And ty=bool
+            And ty=bool
+              And ty=bool
+                And ty=bool
+                  Binary op=>= ty=bool
+                    Field name=exponent ty=i32
+                      Local name=domain ty=FixedDomain
+                    Neg ty=i32
+                      Int text=96 ty=i32
+                  Binary op=<= ty=bool
+                    Field name=exponent ty=i32
+                      Local name=domain ty=FixedDomain
+                    Int text=63 ty=i32
+                Binary op=<= ty=bool
+                  Field name=min_raw ty=i32
+                    Local name=domain ty=FixedDomain
+                  Field name=max_raw ty=i32
+                    Local name=domain ty=FixedDomain
+              Binary op=<= ty=bool
+                Field name=lo ty=i32
+                  Local name=value ty=Iv32
+                Field name=hi ty=i32
+                  Local name=value ty=Iv32
+            Binary op=>= ty=bool
+              Field name=lo ty=i32
+                Local name=value ty=Iv32
+              Field name=min_raw ty=i32
+                Local name=domain ty=FixedDomain
+          Binary op=<= ty=bool
+            Field name=hi ty=i32
+              Local name=value ty=Iv32
+            Field name=max_raw ty=i32
+              Local name=domain ty=FixedDomain
+  Struct name=FixedDomain
+    Method name=contains_raw ret=bool
+      Receiver mode=read ty=FixedDomain
+      Param name=value mode=read ty=i32
+      Body
+        Return
+          And ty=bool
+            And ty=bool
+              And ty=bool
+                Binary op=>= ty=bool
+                  Field name=exponent ty=i32
+                    Local name=self ty=FixedDomain
+                  Neg ty=i32
+                    Int text=96 ty=i32
+                Binary op=<= ty=bool
+                  Field name=exponent ty=i32
+                    Local name=self ty=FixedDomain
+                  Int text=63 ty=i32
+              Binary op=>= ty=bool
+                Local name=value ty=i32
+                Field name=min_raw ty=i32
+                  Local name=self ty=FixedDomain
+            Binary op=<= ty=bool
+              Local name=value ty=i32
+              Field name=max_raw ty=i32
+                Local name=self ty=FixedDomain
+    Method name=exponent_value ret=i32
+      Receiver mode=read ty=FixedDomain
+      Body
+        Return
+          Field name=exponent ty=i32
+            Local name=self ty=FixedDomain
+    AssocFn name=full ret=FixedDomain
+      Param name=exponent mode=read ty=i32
+      Body
+        Return
+          StructLiteral name=FixedDomain ty=FixedDomain
+            Field name=exponent
+              Local name=exponent ty=i32
+            Field name=min_raw
+              Neg ty=i32
+                Int text=2147483648 ty=i32
+            Field name=max_raw
+              Int text=2147483647 ty=i32
+  Struct name=Iv32
+    Method name=lower ret=i32
+      Receiver mode=read ty=Iv32
+      Body
+        Return
+          Field name=lo ty=i32
+            Local name=self ty=Iv32
+    Method name=upper ret=i32
+      Receiver mode=read ty=Iv32
+      Body
+        Return
+          Field name=hi ty=i32
+            Local name=self ty=Iv32
+    AssocFn name=point ret=Iv32
+      Param name=raw mode=read ty=i32
+      Body
+        Return
+          StructLiteral name=Iv32 ty=Iv32
+            Field name=lo
+              Local name=raw ty=i32
+            Field name=hi
+              Local name=raw ty=i32
+    AssocFn name=range ret=Iv32
+      Param name=lo mode=read ty=i32
+      Param name=hi mode=read ty=i32
+      Body
+        Return
+          StructLiteral name=Iv32 ty=Iv32
+            Field name=lo
+              Local name=lo ty=i32
+            Field name=hi
+              Local name=hi ty=i32
 Module path=display
 Program
   Fn name=__wrela_pixels_display_present ret=unit

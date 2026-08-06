@@ -1,0 +1,8 @@
+module pixels_numeric
+
+from core.render_test_vectors import VECTOR_COUNT, VECTOR_DIGEST
+
+@test
+fn generated_scalar_correspondence_lane_is_present():
+    assert VECTOR_COUNT > 0
+    assert VECTOR_DIGEST > 0

@@ -36,8 +36,6 @@ theorem conditionalEventCover
     (onOpenRun : Subject → State → State → State → Prop)
     (invariant : OpenRunInvariant State)
     (accounted : ∀ subject, emitted subject ∨ excluded subject)
-    (emittedCover : ∀ subject, changes subject → emitted subject →
-      ∃ endpoint, endpoint = subject)
     (excludedAbsent : ∀ subject, excluded subject → ¬ changes subject)
     (openRunNoActiveZero : ∀ subject before after,
       openRun subject before after →
@@ -63,8 +61,7 @@ theorem conditionalEventCover
   constructor
   · intro subject hchange
     rcases accounted subject with hemitted | hexcluded
-    · rcases emittedCover subject hchange hemitted with ⟨_, rfl⟩
-      exact hemitted
+    · exact hemitted
     · exact False.elim ((excludedAbsent subject hexcluded) hchange)
   · intro subject before after hopen
     have hnonzero := openRunNoActiveZero subject before after hopen

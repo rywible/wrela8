@@ -7,7 +7,8 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/field.wr sha256=60da4f19bb3ef2811585acae73d7dd25477d16c795d549a0e106ff62f9c706d1
-  Input path=core/render.wr sha256=00cdda37628c6dafc33b2ae73b3929aa59962acbfd5b12fb95a04110067decb5
+  Input path=core/render.wr sha256=3973f8cba8eac3236f7e3ff7de331e390d2586c21e741b9f788594c781db91dd
+  Input path=core/render_interval.wr sha256=02865a0800dd6fa78f8997f17b6df194e703c7dab1df7ed8614e3aa0ae734713
   Input path=drivers/display.wr sha256=92dffc8dd9c05e1d1950b662003cce1331e6d345d10429ff627bfb6f4fc7e261
   Input path=examples/check_pixels_source_example.wr sha256=3839b8a0160f9a2dde782b3721b34b3001a98a85196106e48624fbeaff2afda7
   Input path=<generated> sha256=3aec8c08657ab09acce663c433d852b95d537b16f99e20856835b740250f0a77
@@ -118,7 +119,7 @@ PixelsCompilerReport v3
     ProjectiveCapacity field=p4_row_start_roots value=3 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
     ProjectiveCapacity field=p4_row_event_intervals value=16 why=[10 completed local generators; 1 competition pairs survive; 2^2 leaves per isolated root]
     ProjectiveCapacity field=p4_index_bytes value=800104 why=[completed offset/count cells plus sorted contiguous ID tables]
-    FrameProgram version=1 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1 wire_bytes=4889360 digest=ec1d3b33c954fcf1d2b016ea9482896a5c747542bdb00d8ebbbe8e3b4c734578 rich_records=612 rich_operands=203287
+    FrameProgram version=1 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1 wire_bytes=4890320 digest=6acca15c7fac55818f3de362a029609caa1884d13837b9ef5d13e6e2b3d561ea rich_records=613 rich_operands=203328
     WireTable kind=scalar count=29 record_bytes=16 offset=0x180 bytes=464
     WireTable kind=field count=6 record_bytes=16 offset=0x380 bytes=96
     WireTable kind=object count=2 record_bytes=16 offset=0x400 bytes=32
@@ -127,9 +128,9 @@ PixelsCompilerReport v3
     WireTable kind=parameter count=3 record_bytes=16 offset=0x4c0 bytes=48
     WireTable kind=event count=10 record_bytes=16 offset=0x500 bytes=160
     WireTable kind=csg count=3 record_bytes=16 offset=0x5c0 bytes=48
-    WireTable kind=fixed-domain count=553 record_bytes=16 offset=0x600 bytes=8848
-    WireTable kind=immediate count=203287 record_bytes=24 offset=0x28c0 bytes=4878888
-    WireTable kind=camera-light-post count=1 record_bytes=16 offset=0x4a9b00 bytes=16
+    WireTable kind=fixed-domain count=554 record_bytes=16 offset=0x600 bytes=8864
+    WireTable kind=immediate count=203328 record_bytes=24 offset=0x28c0 bytes=4879872
+    WireTable kind=camera-light-post count=1 record_bytes=16 offset=0x4a9ec0 bytes=16
     WireTable kind=texture count=0 record_bytes=16 offset=0x0 bytes=0
     WireTable kind=shading-summary count=0 record_bytes=16 offset=0x0 bytes=0
     WireTable kind=transparency count=0 record_bytes=16 offset=0x0 bytes=0
@@ -217,9 +218,9 @@ PixelsCompilerReport v3
   Section name=checkpoint base=0x4051b360 size=28
   Section name=rtdata base=0x40540000 size=33048
   Section name=devregs base=0x40548118 size=8
-  Section name=frameprog base=0x40550000 size=4889360
+  Section name=frameprog base=0x40550000 size=4890320
   Section name=pixelsdata base=0x40a00000 size=223969600
-  RendererPlacement index=0 frameprog_base=0x40550000 frameprog_bytes=4889360 state_base=0x40a00000 state_bytes=223969600 coordinator=__wrela_renderer_0_coordinator coordinator_core=0
+  RendererPlacement index=0 frameprog_base=0x40550000 frameprog_bytes=4890320 state_base=0x40a00000 state_bytes=223969600 coordinator=__wrela_renderer_0_coordinator coordinator_core=0
   RendererWorker renderer=0 index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,2040) workspace_base=0x48890568 workspace_bytes=4048
   RendererWorker renderer=0 index=1 actor=__wrela_renderer_0_worker_1 core=1 tiles=[2040,4080) workspace_base=0x48891538 workspace_bytes=4048
   RendererWorker renderer=0 index=2 actor=__wrela_renderer_0_worker_2 core=2 tiles=[4080,6120) workspace_base=0x48892508 workspace_bytes=4048
@@ -313,14 +314,14 @@ PixelsCompilerReport v3
   PlacedStatic name=MB9_DATA type=Mb9Data addr=0x40547980 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=2304
-  PlacedStatic name=R0_CAMERA_LIGHT_POST_TABLE type=R0CameraLightPostTableView addr=0x409f9b00 size=16
+  PlacedStatic name=R0_CAMERA_LIGHT_POST_TABLE type=R0CameraLightPostTableView addr=0x409f9ec0 size=16
   PlacedStatic name=R0_CSG_TABLE type=R0CsgTableView addr=0x405505c0 size=48
   PlacedStatic name=R0_EVENT_TABLE type=R0EventTableView addr=0x40550500 size=160
   PlacedStatic name=R0_FEATURE_TABLE type=R0FeatureTableView addr=0x40550440 size=32
   PlacedStatic name=R0_FIELD_TABLE type=R0FieldTableView addr=0x40550380 size=96
-  PlacedStatic name=R0_FIXED_DOMAIN_TABLE type=R0FixedDomainTableView addr=0x40550600 size=8848
+  PlacedStatic name=R0_FIXED_DOMAIN_TABLE type=R0FixedDomainTableView addr=0x40550600 size=8864
   PlacedStatic name=R0_FRAME_PROGRAM type=R0FrameProgramRootView addr=0x40550000 size=352
-  PlacedStatic name=R0_IMMEDIATE_TABLE type=R0ImmediateTableView addr=0x405528c0 size=4878888
+  PlacedStatic name=R0_IMMEDIATE_TABLE type=R0ImmediateTableView addr=0x405528c0 size=4879872
   PlacedStatic name=R0_MATERIAL_TABLE type=R0MaterialTableView addr=0x40550480 size=48
   PlacedStatic name=R0_OBJECT_TABLE type=R0ObjectTableView addr=0x40550400 size=32
   PlacedStatic name=R0_PARAMETER_TABLE type=R0ParameterTableView addr=0x405504c0 size=48
@@ -351,14 +352,14 @@ PixelsCompilerReport v3
   Totals actors=6 drivers=1 ready_queue=8 group_arena=0 bytes=33048
   DeviceRegs device=device#0 type=DisplayDevice driver=Display base=0x40548118 size=8
 PixelsImageContract v1
-  GeneratedModule address=core.__image_pixels bytes=11066 digest=92f788f4a7589303631a9822253d34ffc7dd5e6967797a431cf7f4e0ebb43a69
-  Renderer index=0 profile=AaaByteExact frameprog_base=0x40550000 frameprog_bytes=4889360 frameprog_blob_digest=adb3517b961591a1c16b91038f9485e82856f656079113518e1d84f17fe60e05 state_base=0x40a00000 state_reservation_bytes=223969600 framebuffer_base=0x48895000 framebuffer_bytes=16588800 probe_base=0x49867000 probe_bytes=0 coordinator=__wrela_renderer_0_coordinator@core0 fallback=FrameContractMismatch(RendererUnavailable) presentation=none
+  GeneratedModule address=core.__image_pixels bytes=11066 digest=cdb4b925f53d6f17e9456cda47f640065cfe3619e0d6c4b6e1f371d7da056f53
+  Renderer index=0 profile=AaaByteExact frameprog_base=0x40550000 frameprog_bytes=4890320 frameprog_blob_digest=03047194e017537e9e3cc3f6d93ec1e334447568d92c578509a1ea45d3dafaef state_base=0x40a00000 state_reservation_bytes=223969600 framebuffer_base=0x48895000 framebuffer_bytes=16588800 probe_base=0x49867000 probe_bytes=0 coordinator=__wrela_renderer_0_coordinator@core0 fallback=FrameContractMismatch(RendererUnavailable) presentation=none
     Field key=examples.check_pixels_source_example::world material_key=examples.check_pixels_source_example::shade display_ref=driver#0
     Mode width=1920 height=1080 refresh_hz=60 shade_hz=30 tone_curve=FilmicV1
     Capacity objects=2 features=2 events=10 sheets_per_row=3 runs_per_row=17 transparent_layers=1
     Formal contract=pixels-v1 numeric_revision=1 formal_revision=1
     Fallback bounded_local_rebuild=false dense_frame=false presentation=false
-    BuildIdentity frame_program_digest=ec1d3b33c954fcf1d2b016ea9482896a5c747542bdb00d8ebbbe8e3b4c734578 tone_transfer_digest=d2629c419e756bfc9f90b07ec69200d2572809190c8c3161b0bf8c903a9f4a40 profile_revision=1 numeric_revision=1 formal_theorem_set=pixels-v1 renderer_layout_digest=d19b93650ba91e83d1ee21b08b40bc4f26e5561b1b12b389655a93c543690190
+    BuildIdentity frame_program_digest=6acca15c7fac55818f3de362a029609caa1884d13837b9ef5d13e6e2b3d561ea tone_transfer_digest=aa90747ebbbb99e2618b42effa9d35dee9d82955184d343c9d81e27720aad203 profile_revision=1 numeric_revision=1 formal_theorem_set=pixels-v1 renderer_layout_digest=292a48df4662eec0d0c296049265ef7ab342d94e2f634c6622244a037b017a8c
     Worker index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,2040) workspace_base=0x48890568 workspace_bytes=4048
     Worker index=1 actor=__wrela_renderer_0_worker_1 core=1 tiles=[2040,4080) workspace_base=0x48891538 workspace_bytes=4048
     Worker index=2 actor=__wrela_renderer_0_worker_2 core=2 tiles=[4080,6120) workspace_base=0x48892508 workspace_bytes=4048

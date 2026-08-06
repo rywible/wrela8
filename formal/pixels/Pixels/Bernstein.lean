@@ -1,6 +1,78 @@
-import Mathlib
+import Pixels.Interval
 
 namespace Pixels
+
+noncomputable def bernsteinAverage (left right : Interval) : Interval where
+  lo := (left.lo + right.lo) / 2
+  hi := (left.hi + right.hi) / 2
+  ordered := by linarith [left.ordered, right.ordered]
+
+theorem bernstein_average_contains
+    (left right : Interval) (x y : ℝ)
+    (leftContains : left.Contains x)
+    (rightContains : right.Contains y) :
+    (bernsteinAverage left right).Contains ((x + y) / 2) := by
+  constructor <;>
+    simp only [bernsteinAverage] <;>
+    linarith [leftContains.1, leftContains.2,
+      rightContains.1, rightContains.2]
+
+theorem bernstein_lerp_ratio_contains
+    (left right : Interval) (x y parameter : ℝ)
+    (leftContains : left.Contains x)
+    (rightContains : right.Contains y)
+    (parameterLower : 0 ≤ parameter)
+    (parameterUpper : parameter ≤ 1) :
+    (1 - parameter) * left.lo + parameter * right.lo ≤
+        (1 - parameter) * x + parameter * y ∧
+      (1 - parameter) * x + parameter * y ≤
+        (1 - parameter) * left.hi + parameter * right.hi := by
+  have complement : 0 ≤ 1 - parameter := by linarith
+  constructor
+  · exact add_le_add
+      (mul_le_mul_of_nonneg_left leftContains.1 complement)
+      (mul_le_mul_of_nonneg_left rightContains.1 parameterLower)
+  · exact add_le_add
+      (mul_le_mul_of_nonneg_left leftContains.2 complement)
+      (mul_le_mul_of_nonneg_left rightContains.2 parameterLower)
+
+theorem rational_subdivision_parameter_matches_cell_split
+    (lo mid hi : ℝ) (nonempty : hi ≠ lo) :
+    lo + ((mid - lo) / (hi - lo)) * (hi - lo) = mid := by
+  field_simp
+  ring
+
+def polynomialHorner : List ℝ → ℝ → ℝ
+  | [], _ => 0
+  | coefficient :: rest, x =>
+      coefficient + x * polynomialHorner rest x
+
+theorem polynomial_horner_model
+    (coefficient : ℝ) (rest : List ℝ) (x : ℝ) :
+    polynomialHorner (coefficient :: rest) x =
+      coefficient + x * polynomialHorner rest x := by
+  rfl
+
+def polynomialCompose
+    (outer candidate : ℝ → ℝ) (x : ℝ) : ℝ :=
+  outer (candidate x)
+
+theorem polynomial_compose_model
+    (outer candidate : ℝ → ℝ) (x : ℝ) :
+    polynomialCompose outer candidate x = outer (candidate x) := by
+  rfl
+
+def sparseMonomial
+    (coefficient : ℝ) (inputs : Fin 4 → ℝ)
+    (powers : Fin 4 → Nat) : ℝ :=
+  coefficient * ∏ index, inputs index ^ powers index
+
+theorem polynomial_sparse_term_model
+    (coefficient : ℝ) (inputs : Fin 4 → ℝ)
+    (powers : Fin 4 → Nat) :
+    sparseMonomial coefficient inputs powers =
+      coefficient * ∏ index, inputs index ^ powers index := by
+  rfl
 
 /-- A complete Bernstein coefficient sign scan proves the polynomial sign
 because evaluation is a convex combination of the coefficients. -/
@@ -175,13 +247,71 @@ theorem quadraticCorrectionFaces
       q0 + correction + q1 * x + q2 * x ^ 2) := by
   apply Prod.ext <;> simp <;> ring
 
+def quadratic2Value
+    (c bu bv buu buv bvv u v : ℝ) : ℝ :=
+  c + bu * u + bv * v + buu * u ^ 2 + buv * u * v + bvv * v ^ 2
+
+/--
+The four one-dimensional schedules and the coupled stationary candidate used
+by the Rust/Wrela exact quadratic scan are algebraically the same bivariate
+quadratic. The nonzero determinant branch proves that the emitted rational
+interior candidate makes both partial derivatives zero; the zero-determinant
+branch intentionally uses only the already-exact edge schedules.
+-/
+theorem quadratic_candidate_schedule_exact
+    (c bu bv buu buv bvv x : ℝ)
+    (determinantNonzero : 4 * buu * bvv - buv ^ 2 ≠ 0) :
+    (quadratic2Value c bu bv buu buv bvv x 0 =
+        c + bu * x + buu * x ^ 2) ∧
+    (quadratic2Value c bu bv buu buv bvv x 1 =
+        (c + bv + bvv) + (bu + buv) * x + buu * x ^ 2) ∧
+    (quadratic2Value c bu bv buu buv bvv 0 x =
+        c + bv * x + bvv * x ^ 2) ∧
+    (quadratic2Value c bu bv buu buv bvv 1 x =
+        (c + bu + buu) + (bv + buv) * x + bvv * x ^ 2) ∧
+    let determinant := 4 * buu * bvv - buv ^ 2
+    let u := (buv * bv - 2 * bvv * bu) / determinant
+    let v := (buv * bu - 2 * buu * bv) / determinant
+    bu + 2 * buu * u + buv * v = 0 ∧
+      bv + buv * u + 2 * bvv * v = 0 := by
+  dsimp [quadratic2Value]
+  constructor
+  · ring
+  constructor
+  · ring
+  constructor
+  · ring
+  constructor
+  · ring
+  have determinantCommutes₁ :
+      buu * bvv * 4 - buv ^ 2 = 4 * buu * bvv - buv ^ 2 := by
+    ring
+  have determinantCommutes₂ :
+      -buv ^ 2 + bvv * buu * 4 = 4 * buu * bvv - buv ^ 2 := by
+    ring
+  have nonzero₁ : buu * bvv * 4 - buv ^ 2 ≠ 0 := by
+    rw [determinantCommutes₁]
+    exact determinantNonzero
+  have nonzero₂ : -buv ^ 2 + bvv * buu * 4 ≠ 0 := by
+    rw [determinantCommutes₂]
+    exact determinantNonzero
+  constructor
+  · field_simp [determinantNonzero, nonzero₁]
+    ring
+  · rw [div_eq_mul_inv, div_eq_mul_inv]
+    calc
+      _ = bv * (1 -
+          (4 * buu * bvv - buv ^ 2) *
+            (4 * buu * bvv - buv ^ 2)⁻¹) := by ring
+      _ = 0 := by rw [mul_inv_cancel₀ determinantNonzero]; ring
+
 /-- The derivative program emitted for a power monomial has its canonical
 coefficient and degree. -/
 theorem powerDerivative (coefficient x : ℝ) (degree : ℕ) :
     HasDerivAt (fun y : ℝ => coefficient * y ^ (degree + 1))
       (coefficient * (degree + 1) * x ^ degree) x := by
-  convert (hasDerivAt_pow (degree + 1) x).const_mul coefficient using 1 <;>
-    simp [Nat.cast_add, mul_left_comm, mul_comm]
+  simpa [Nat.cast_add, mul_left_comm, mul_comm] using
+    (hasDerivAt_pow (degree + 1) x).const_mul coefficient
 
 /-- A strict sign scan has zero sign variations, the bounded base case used
 before subdivision/root isolation. -/

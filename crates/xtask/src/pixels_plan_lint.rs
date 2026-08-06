@@ -508,10 +508,10 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         ],
         "err-pixels-capacity" => &["count=257", "REQUIRED_FEATURES"],
         "err-pixels-projective-zero" => &["near=0.0", "DENOMINATOR_RAW"],
-        "err-pixels-fixed-q" => &["scale=2147483648.0", "REQUIRED_RAW_BITS"],
+        "err-pixels-fixed-q" => &["near=0.000000000000000000000000000001", "REQUIRED_RAW_BITS"],
         "err-pixels-tone-table" => &["INVALID_TONE_TABLE", "[TABLE_LEFT_CODE, TABLE_RIGHT_CODE]"],
         "err-pixels-cost" => &["width=1920", "height=1080", "initialization_deadline_ms=1"],
-        "boot-pixels-numeric" => &["smooth_union(", "VECTOR_COUNT"],
+        "boot-pixels-numeric" => &["interval_add(", "byte_singleton(", "VECTOR_COUNT"],
         "boot-pixels-plane" => &["plane(", "WIDTH", "HEIGHT"],
         "boot-pixels-quality" => &[
             "round_box(",
@@ -684,22 +684,28 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
         let fixture_source = fixture_wrela_sources(&path)?;
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;
-        for required in [
-            "@field",
-            "@material",
-            "@test(runtime)",
-            "fn pinned_scene_contract()",
-            "@image",
-            "img.renderer[SceneParams](",
-            "field=world",
-            "material=shade",
-            "camera_bounds=",
-            "light_config=",
-            "world_min=",
-            "world_max=",
-        ]
-        .into_iter()
-        .chain(fixture_source_requirements(directory_name).iter().copied())
+        let scene_requirements: &[&str] = if directory_name == "boot-pixels-numeric" {
+            &["@test(runtime)"]
+        } else {
+            &[
+                "@field",
+                "@material",
+                "@test(runtime)",
+                "fn pinned_scene_contract()",
+                "@image",
+                "img.renderer[SceneParams](",
+                "field=world",
+                "material=shade",
+                "camera_bounds=",
+                "light_config=",
+                "world_min=",
+                "world_max=",
+            ]
+        };
+        for required in scene_requirements
+            .into_iter()
+            .copied()
+            .chain(fixture_source_requirements(directory_name).iter().copied())
         {
             if !fixture_source.contains(required) {
                 return Err(format!(

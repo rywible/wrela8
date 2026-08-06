@@ -1,0 +1,128 @@
+module render_display
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
+
+pub enum QuantizeOutcome:
+    Value(i32)
+    Error
+
+pub enum ByteSingletonOutcome:
+    Value(i32)
+    NotSingleton
+    Error
+
+pub fn quantize_ties_even(value: i32, fraction_bits: i32) -> QuantizeOutcome:
+    if value < 0 or fraction_bits < 0 or fraction_bits >= 31:
+        return .Error
+    if fraction_bits == 0:
+        if value > 255:
+            return .Error
+        return .Value(value)
+    scale: i64 = 1
+    i: i32 = 0
+    @budget(bound=31)
+    while i < fraction_bits:
+        scale = scale * 2
+        i = i + 1
+    quotient = value.to[i64]() / scale
+    remainder = value.to[i64]() % scale
+    half = scale / 2
+    if remainder > half or (remainder == half and quotient % 2 != 0):
+        quotient = quotient + 1
+    if quotient < 0 or quotient > 255:
+        return .Error
+    return .Value(quotient.to[i32]())
+
+pub fn exposure_channel(value: Iv32, multiplier: Iv32, domain: FixedDomain) -> NumericOutcome:
+    return interval_mul(value, multiplier, domain)
+
+pub fn color_matrix_channel(c0: Iv32, c1: Iv32, c2: Iv32, m0: Iv32, m1: Iv32, m2: Iv32, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(c0, m0, domain):
+        case .Value(v0):
+            match interval_mul(c1, m1, domain):
+                case .Value(v1):
+                    match interval_mul(c2, m2, domain):
+                        case .Value(v2):
+                            match interval_add(v0, v1, domain):
+                                case .Value(partial):
+                                    return interval_add(partial, v2, domain)
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn monotone_lut17(value: Iv32, table: [u16; 17], fraction_bits: i32) -> NumericOutcome:
+    if fraction_bits < 0 or fraction_bits > 16:
+        return .Error
+    i: i32 = 1
+    @budget(bound=16)
+    while i < 17:
+        if table[i.to[usize]()] < table[(i - 1).to[usize]()] :
+            return .Error
+        i = i + 1
+    scale: i64 = 1
+    i = 0
+    @budget(bound=16)
+    while i < fraction_bits:
+        scale = scale * 2
+        i = i + 1
+    maximum = 16 * scale
+    if value.lower() < 0 or value.upper().to[i64]() > maximum:
+        return .Error
+    lo_index = value.lower().to[i64]() / scale
+    hi_index = value.upper().to[i64]() / scale
+    lo_fraction = value.lower().to[i64]() % scale
+    hi_fraction = value.upper().to[i64]() % scale
+    lo_base = table[lo_index.to[usize]()].to[i64]()
+    hi_base = table[hi_index.to[usize]()].to[i64]()
+    lo_delta: i64 = 0
+    hi_delta: i64 = 0
+    if lo_index < 16:
+        lo_delta = table[(lo_index + 1).to[usize]()].to[i64]() - lo_base
+    if hi_index < 16:
+        hi_delta = table[(hi_index + 1).to[usize]()].to[i64]() - hi_base
+    lo = lo_base + interval_floor_div(lo_delta * lo_fraction, scale)
+    hi = hi_base + interval_ceil_div(hi_delta * hi_fraction, scale)
+    if lo < -2147483648 or hi > 2147483647:
+        return .Error
+    return .Value(Iv32.range(lo.to[i32](), hi.to[i32]()))
+
+pub fn byte_singleton(value: Iv32, fraction_bits: i32) -> ByteSingletonOutcome:
+    match quantize_ties_even(value.lower(), fraction_bits):
+        case .Value(lo):
+            match quantize_ties_even(value.upper(), fraction_bits):
+                case .Value(hi):
+                    if lo != hi:
+                        return .NotSingleton
+                    return .Value(lo)
+                case .Error:
+                    return .Error
+        case .Error:
+            return .Error
+
+pub enum RgbSingletonOutcome:
+    Value([i32; 3])
+    NotSingleton
+    Error
+
+pub fn rgb_singleton(color: [Iv32; 3], fraction_bits: i32) -> RgbSingletonOutcome:
+    if fraction_bits < 0 or fraction_bits >= 31:
+        return .Error
+    codes: [i32; 3] = [0; 3]
+    channel: i32 = 0
+    @budget(bound=3)
+    while channel < 3:
+        value = color[channel.to[usize]()]
+        match byte_singleton(value, fraction_bits):
+            case .Value(code):
+                codes[channel.to[usize]()] = code
+            case .NotSingleton:
+                return .NotSingleton
+            case .Error:
+                return .Error
+        channel = channel + 1
+    return .Value(codes)

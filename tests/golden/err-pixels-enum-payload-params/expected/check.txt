@@ -329,6 +329,50 @@ Module path=render
   Fn __wrela_pixels_bootstrap_fixed_domain(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_camera_light_post(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_present_placeholder() -> Result[unit, RenderError]
+Module path=render_interval
+  Struct FixedDomain data
+    field exponent: i32
+    field min_raw: i32
+    field max_raw: i32
+    fn full(exponent: read i32) -> FixedDomain
+    fn contains_raw(read self, value: read i32) -> bool
+    fn exponent_value(read self) -> i32
+  Enum FixedDomainOutcome data
+    variant Value(FixedDomain)
+    variant Error
+  Fn fixed_domain(exponent: read i32, min_raw: read i32, max_raw: read i32) -> FixedDomainOutcome
+  Struct Iv32 data
+    field lo: i32
+    field hi: i32
+    fn point(raw: read i32) -> Iv32
+    fn range(lo: read i32, hi: read i32) -> Iv32
+    fn lower(read self) -> i32
+    fn upper(read self) -> i32
+  Enum NumericOutcome data
+    variant Value(Iv32)
+    variant Empty
+    variant Error
+  Fn interval_valid(value: read Iv32, domain: read FixedDomain) -> bool
+  Fn interval_narrow(lo: read i64, hi: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_add(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_sub(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_contains_zero(value: read Iv32) -> bool
+  Fn interval_strict_positive(value: read Iv32) -> bool
+  Fn interval_strict_negative(value: read Iv32) -> bool
+  Fn interval_negate(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_floor_div(value: read i64, scale: read i64) -> i64
+  Fn interval_ceil_div(value: read i64, scale: read i64) -> i64
+  Fn interval_mul(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_square(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_scale_pow2(value: read Iv32, shift: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_intersect(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_hull(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_min(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_max(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_abs(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_affine(input: read Iv32, scale: read Iv32, bias: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_convert(value: read Iv32, source: read FixedDomain, destination: read FixedDomain) -> NumericOutcome
+  Fn interval_from_f32_bits(bits: read u32, radius_raw: read u32, domain: read FixedDomain) -> NumericOutcome
 Module path=examples.err_pixels_enum_payload_params
   Enum Choice data
     variant Value(f32)

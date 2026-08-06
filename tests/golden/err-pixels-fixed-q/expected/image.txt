@@ -1,0 +1,2 @@
+error[pixels P017]: fixed-q setup cannot represent the certified q/dq/ddq envelope in any v1 dyadic i32 domain at 59:41
+note: q range is [0.0078125, 999999999999999900000000000000], |dq| <= 999999999999999900000000000000, |ddq| <= 1999999999999999800000000000000, exponent range is [-96, 63], and saturation is forbidden

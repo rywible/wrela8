@@ -46,6 +46,22 @@ pub const FRAME_PROGRAM_FORMAL_REVISION_V1: u32 = 1;
 pub const FRAME_PROGRAM_PROFILE_REVISION_V1: u32 = 1;
 pub const FRAME_PROGRAM_FORMAL_REVISION_STR_V1: &str = "pixels-v1";
 
+// Canonical output-referred tables are part of the machine-v1 wire contract,
+// not merely compiler defaults. Keeping them here lets both the compiler and
+// the independent decoder validate the same sealed bytes.
+pub const LINEAR_TONE_LUT_V1: [u16; 17] = [
+    0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36863, 40959, 45055, 49151, 53247,
+    57343, 61439, 65535,
+];
+pub const FILMIC_TONE_LUT_V1: [u16; 17] = [
+    0, 6975, 12799, 17731, 21958, 25620, 28827, 31656, 34170, 36420, 38444, 40272, 41929, 43437,
+    44812, 46070, 47222,
+];
+pub const SRGB_TRANSFER_LUT_V1: [u16; 17] = [
+    0, 18173, 25465, 30815, 35199, 38980, 42341, 45388, 48192, 50797, 53238, 55541, 57725, 59805,
+    61793, 63701, 65535,
+];
+
 #[repr(C)]
 pub struct FrameProgramHeaderV1 {
     pub magic: [u8; 8],
@@ -239,7 +255,10 @@ impl FrameProgramModelV1 {
 
 #[path = "pixels_contract.rs"]
 mod contract;
-pub use contract::{verify_frame_program_model_v1, verify_frame_record_shape_v1};
+pub use contract::{
+    FixedQPolicyV1, derive_fixed_q_envelope_v1, derive_fixed_q_policy_v1,
+    verify_frame_program_model_v1, verify_frame_record_shape_v1,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresentControl {

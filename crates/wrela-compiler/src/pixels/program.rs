@@ -602,6 +602,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn machine_verifier_rejects_rehashed_numeric_policy_mutations() {
+        let base = minimal_verified_frame_program().program().clone();
+
+        let mut changed_lut = base.clone();
+        let camera = changed_lut
+            .tables
+            .iter_mut()
+            .find(|table| table.kind == FrameProgramTableKindV1::CameraLightPost)
+            .unwrap();
+        camera.records[0].operands[25] += 1;
+        let error = super::super::verify::check_program(changed_lut)
+            .expect_err("monotone but noncanonical LUT");
+        assert!(error.contains("sealed curve IDs"), "{error}");
+
+        let mut weakened_radius = base.clone();
+        let fixed = weakened_radius
+            .tables
+            .iter_mut()
+            .find(|table| table.kind == FrameProgramTableKindV1::FixedDomain)
+            .unwrap();
+        let policy = fixed
+            .records
+            .iter_mut()
+            .find(|record| record.tag == 5)
+            .unwrap();
+        policy.operands[3] = policy.operands[3].saturating_sub(1);
+        let error = super::super::verify::check_program(weakened_radius)
+            .expect_err("weakened fixed-q radius");
+        assert!(
+            error.contains("does not match sealed camera policy"),
+            "{error}"
+        );
+
+        let mut missing_policy = base;
+        let fixed = missing_policy
+            .tables
+            .iter_mut()
+            .find(|table| table.kind == FrameProgramTableKindV1::FixedDomain)
+            .unwrap();
+        fixed.records.retain(|record| record.tag != 5);
+        for (stable_id, record) in fixed.records.iter_mut().enumerate() {
+            record.stable_id = stable_id as u32;
+        }
+        let error = super::super::verify::check_program(missing_policy)
+            .expect_err("missing fixed-q policy");
+        assert!(error.contains("expected exactly one"), "{error}");
+    }
+
     fn program_with_local_index_ids(ids: usize) -> FrameProgram {
         let mut program = minimal_verified_frame_program().program().clone();
         let fixed = program
@@ -1639,6 +1688,29 @@ pub fn finish_frame_program(
     projective: &super::verify::VerifiedProjectiveProgram,
     config: &super::config::RendererConfig,
 ) -> Result<FrameProgram, String> {
+    let q_lo = 1.0 / config.far;
+    let q_hi = 1.0 / config.near;
+    let q_span = q_hi - q_lo;
+    // For three consecutive values within the certified near/far q range,
+    // |dq| <= span and |ddq| <= 2*span. The family setup is deliberately
+    // conservative; P7 may select tighter per-run records but may not exceed
+    // this sealed domain/error policy.
+    let reciprocal_model_error = q_hi * f64::from(f32::EPSILON) * 8.0 + f64::EPSILON;
+    let fixed_q_setup = super::reference::fixed_q::setup_from_real_envelopes(
+        q_lo,
+        q_hi,
+        q_span,
+        q_span * 2.0,
+        64,
+        reciprocal_model_error,
+    )
+    .map_err(|_| {
+        format!(
+            "P017: fixed-q setup cannot represent the certified q/dq/ddq envelope in any v1 dyadic i32 domain\n\
+             q range is [{q_lo}, {q_hi}], |dq| <= {q_span}, |ddq| <= {}, exponent range is [-96, 63], and saturation is forbidden",
+            q_span * 2.0,
+        )
+    })?;
     let renderer_index = u16::try_from(renderer_index)
         .map_err(|_| "P015: renderer index exceeds FrameProgram u16".to_string())?;
     let structural = structural.program();
@@ -1964,6 +2036,19 @@ pub fn finish_frame_program(
         1,
         0,
         capacity_values(&structural.capacities, &projective.capacities),
+    );
+    push_record(
+        fixed,
+        5,
+        0,
+        vec![
+            fixed_q_setup.run.domain.exponent as i64 as u64,
+            u64::try_from(fixed_q_setup.maximum_raw)
+                .map_err(|_| "P017: fixed-q maximum raw value is negative".to_string())?,
+            u64::from(fixed_q_setup.run.microtile_width),
+            u64::try_from(fixed_q_setup.run.error_radius)
+                .map_err(|_| "P017: fixed-q error radius is negative".to_string())?,
+        ],
     );
     // PositiveMargin `facts` are compiler-only explanatory strings. Runtime
     // consumes the versioned rule tag plus the exclusion's exact margin and
@@ -2464,6 +2549,33 @@ pub fn finish_frame_program(
         config.probe_initialization_worst_case_ms.into(),
         config.initialization_deadline_ms.into(),
     ]);
+    let tone_lut =
+        super::reference::display::sealed_tone_lut(&config.tone_curve).ok_or_else(|| {
+            format!(
+                "P022: unsupported sealed tone curve `{}`",
+                config.tone_curve
+            )
+        })?;
+    super::reference::display::validate_monotone_lut(tone_lut)
+        .map_err(|_| "P022: tone LUT is not monotone".to_string())?;
+    super::reference::display::validate_monotone_lut(&super::reference::display::SRGB_TRANSFER_LUT)
+        .map_err(|_| "P022: transfer LUT is not monotone".to_string())?;
+    operands.extend([
+        match config.tone_curve.as_str() {
+            "Linear" => 0,
+            "FilmicV1" => 1,
+            _ => unreachable!("sealed tone curve checked above"),
+        },
+        tone_lut.len() as u64,
+    ]);
+    operands.extend(tone_lut.iter().copied().map(u64::from));
+    operands.push(super::reference::display::SRGB_TRANSFER_LUT.len() as u64);
+    operands.extend(
+        super::reference::display::SRGB_TRANSFER_LUT
+            .iter()
+            .copied()
+            .map(u64::from),
+    );
     for value in [
         config.world_min.x,
         config.world_min.y,
@@ -2598,6 +2710,21 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         flags: 0,
         operands: vec![1; 31],
     });
+    let near = 0.1_f64;
+    let far = 128.0_f64;
+    let policy = wrela_machine::pixels::derive_fixed_q_policy_v1(near, far)
+        .expect("minimal camera has a fixed-q policy");
+    records(&mut tables, FrameProgramTableKindV1::FixedDomain).push(FrameRecord {
+        stable_id: 1,
+        tag: 5,
+        flags: 0,
+        operands: vec![
+            policy.exponent as i64 as u64,
+            policy.maximum_raw as u64,
+            u64::from(policy.reset_width),
+            policy.error_radius as u64,
+        ],
+    });
     for index_kind in 0..6 {
         let fixed = records(&mut tables, FrameProgramTableKindV1::FixedDomain);
         fixed.push(FrameRecord {
@@ -2607,6 +2734,52 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
             operands: vec![0, index_kind, 0, 0, 0],
         });
     }
+    let mut camera = vec![
+        64,
+        32,
+        60,
+        60,
+        near.to_bits(),
+        far.to_bits(),
+        u64::from(0.0_f32.to_bits()),
+        0,
+    ];
+    camera.extend([0; 8]);
+    camera.extend([
+        u64::from(0.0_f32.to_bits()),
+        u64::from(0.0_f32.to_bits()),
+        0,
+        0,
+        0,
+        1,
+        0,
+        17,
+    ]);
+    camera.extend(
+        super::reference::display::LINEAR_TONE_LUT
+            .iter()
+            .copied()
+            .map(u64::from),
+    );
+    camera.push(17);
+    camera.extend(
+        super::reference::display::SRGB_TRANSFER_LUT
+            .iter()
+            .copied()
+            .map(u64::from),
+    );
+    camera.extend(
+        [0.0_f32; 6]
+            .into_iter()
+            .chain([0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0])
+            .map(|value| u64::from(value.to_bits())),
+    );
+    records(&mut tables, FrameProgramTableKindV1::CameraLightPost).push(FrameRecord {
+        stable_id: 0,
+        tag: 1,
+        flags: 0,
+        operands: camera,
+    });
     super::verify::check_program(FrameProgram {
         renderer_index: 0,
         flags: 0,

@@ -1,0 +1,370 @@
+module render_material
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_abs, interval_add, interval_ceil_div, interval_contains_zero, interval_floor_div, interval_max, interval_mul, interval_narrow, interval_square, interval_sub, interval_valid
+
+pub struct Iv3:
+    x: Iv32
+    y: Iv32
+    z: Iv32
+
+    pub fn z_lower(read self) -> i32:
+        return self.z.lower()
+
+    pub fn x_lower(read self) -> i32:
+        return self.x.lower()
+
+    pub fn x_upper(read self) -> i32:
+        return self.x.upper()
+
+    pub fn y_lower(read self) -> i32:
+        return self.y.lower()
+
+    pub fn y_upper(read self) -> i32:
+        return self.y.upper()
+
+    pub fn z_upper(read self) -> i32:
+        return self.z.upper()
+
+pub fn normal_vector(x: Iv32, y: Iv32, z: Iv32) -> Iv3:
+    return Iv3(x=x, y=y, z=z)
+
+pub struct NormalCone:
+    direction: Iv3
+    norm_squared: Iv32
+
+    pub fn direction_value(read self) -> Iv3:
+        return self.direction
+
+    pub fn norm_value(read self) -> Iv32:
+        return self.norm_squared
+
+pub enum NormalConeOutcome:
+    Value(NormalCone)
+    Rejected
+    Error
+
+pub enum Iv3Outcome:
+    Value(Iv3)
+    Error
+
+pub struct NormalRawRange:
+    lo: i64
+    hi: i64
+    valid: bool
+
+pub fn normal_raw_product(a: Iv32, b: Iv32) -> NormalRawRange:
+    p0 = a.lower().to[i64]() * b.lower().to[i64]()
+    p1 = a.lower().to[i64]() * b.upper().to[i64]()
+    p2 = a.upper().to[i64]() * b.lower().to[i64]()
+    p3 = a.upper().to[i64]() * b.upper().to[i64]()
+    lo = p0
+    hi = p0
+    if p1 < lo:
+        lo = p1
+    if p2 < lo:
+        lo = p2
+    if p3 < lo:
+        lo = p3
+    if p1 > hi:
+        hi = p1
+    if p2 > hi:
+        hi = p2
+    if p3 > hi:
+        hi = p3
+    return NormalRawRange(lo=lo, hi=hi, valid=true)
+
+pub fn normal_raw_square(value: Iv32) -> NormalRawRange:
+    lo_magnitude = value.lower().to[i64]()
+    if lo_magnitude < 0:
+        lo_magnitude = -lo_magnitude
+    hi_magnitude = value.upper().to[i64]()
+    if hi_magnitude < 0:
+        hi_magnitude = -hi_magnitude
+    maximum = lo_magnitude
+    if hi_magnitude > maximum:
+        maximum = hi_magnitude
+    minimum = lo_magnitude
+    if hi_magnitude < minimum:
+        minimum = hi_magnitude
+    if interval_contains_zero(value):
+        minimum = 0
+    return NormalRawRange(lo=minimum * minimum, hi=maximum * maximum, valid=true)
+
+pub fn normal_raw_add(a: NormalRawRange, b: NormalRawRange) -> NormalRawRange:
+    if not a.valid or not b.valid:
+        return NormalRawRange(lo=0, hi=0, valid=false)
+    maximum: i64 = 9223372036854775807
+    minimum: i64 = -9223372036854775807
+    if b.lo > 0 and a.lo > maximum - b.lo:
+        return NormalRawRange(lo=0, hi=0, valid=false)
+    if b.lo < 0 and a.lo < minimum - b.lo:
+        return NormalRawRange(lo=0, hi=0, valid=false)
+    if b.hi > 0 and a.hi > maximum - b.hi:
+        return NormalRawRange(lo=0, hi=0, valid=false)
+    if b.hi < 0 and a.hi < minimum - b.hi:
+        return NormalRawRange(lo=0, hi=0, valid=false)
+    return NormalRawRange(lo=a.lo + b.lo, hi=a.hi + b.hi, valid=true)
+
+pub fn normal_raw_dot(a: Iv3, b: Iv3) -> NormalRawRange:
+    xy = normal_raw_add(normal_raw_product(a.x, b.x), normal_raw_product(a.y, b.y))
+    return normal_raw_add(xy, normal_raw_product(a.z, b.z))
+
+pub fn normal_raw_norm_squared(value: Iv3) -> NormalRawRange:
+    xy = normal_raw_add(normal_raw_square(value.x), normal_raw_square(value.y))
+    return normal_raw_add(xy, normal_raw_square(value.z))
+
+pub fn normal_bound(q: Iv32, qu: Iv32, qv: Iv32, uqu: Iv32, vqv: Iv32) -> Iv3Outcome:
+    z_lo = q.lower().to[i64]() - uqu.upper().to[i64]() - vqv.upper().to[i64]()
+    z_hi = q.upper().to[i64]() - uqu.lower().to[i64]() - vqv.lower().to[i64]()
+    if z_lo < -2147483648 or z_hi > 2147483647:
+        return .Error
+    return .Value(Iv3(x=qu, y=qv, z=Iv32.range(z_lo.to[i32](), z_hi.to[i32]())))
+
+pub fn normal_cone(u: Iv32, v: Iv32, q: Iv32, qu: Iv32, qv: Iv32, domain: FixedDomain) -> NormalConeOutcome:
+    match interval_mul(u, qu, domain):
+        case .Value(uqu):
+            match interval_mul(v, qv, domain):
+                case .Value(vqv):
+                    match interval_sub(q, uqu, domain):
+                        case .Value(q_minus_u):
+                            match interval_sub(q_minus_u, vqv, domain):
+                                case .Value(z):
+                                    direction = normal_vector(qu, qv, z)
+                                    match normal_norm_squared(direction, domain):
+                                        case .Value(norm):
+                                            if norm.lower() <= 0:
+                                                return .Rejected
+                                            return .Value(NormalCone(direction=direction, norm_squared=norm))
+                                        case _:
+                                            return .Error
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn normal_norm_squared(value: Iv3, domain: FixedDomain) -> NumericOutcome:
+    match interval_square(value.x, domain):
+        case .Value(xx):
+            match interval_square(value.y, domain):
+                case .Value(yy):
+                    match interval_square(value.z, domain):
+                        case .Value(zz):
+                            match interval_add(xx, yy, domain):
+                                case .Value(xy):
+                                    return interval_add(xy, zz, domain)
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn normal_safe(value: Iv3, domain: FixedDomain) -> bool:
+    match normal_norm_squared(value, domain):
+        case .Value(norm):
+            return norm.lower() > 0
+        case _:
+            return false
+
+pub fn normal_dot(a: Iv3, b: Iv3, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(a.x, b.x, domain):
+        case .Value(xx):
+            match interval_mul(a.y, b.y, domain):
+                case .Value(yy):
+                    match interval_mul(a.z, b.z, domain):
+                        case .Value(zz):
+                            match interval_add(xx, yy, domain):
+                                case .Value(xy):
+                                    return interval_add(xy, zz, domain)
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn normal_floor_sqrt(value: i64) -> i64:
+    if value < 0:
+        return -1
+    if value < 2:
+        return value
+    lo: i64 = 1
+    hi: i64 = 3037000499
+    answer: i64 = 1
+    @budget(bound=32)
+    while lo <= hi:
+        midpoint = lo + (hi - lo) / 2
+        if midpoint <= value / midpoint:
+            answer = midpoint
+            lo = midpoint + 1
+        else:
+            hi = midpoint - 1
+    return answer
+
+pub fn normal_cone_dot(a: Iv3, b: Iv3, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a.x, domain) or not interval_valid(a.y, domain) or not interval_valid(a.z, domain) or not interval_valid(b.x, domain) or not interval_valid(b.y, domain) or not interval_valid(b.z, domain):
+        return .Error
+    numerator = normal_raw_dot(a, b)
+    norm_a = normal_raw_norm_squared(a)
+    norm_b = normal_raw_norm_squared(b)
+    if not numerator.valid or not norm_a.valid or not norm_b.valid or norm_a.lo <= 0 or norm_b.lo <= 0:
+        return .Error
+    root_a_lo = normal_floor_sqrt(norm_a.lo)
+    root_b_lo = normal_floor_sqrt(norm_b.lo)
+    root_a_hi = normal_floor_sqrt(norm_a.hi)
+    root_b_hi = normal_floor_sqrt(norm_b.hi)
+    if root_a_hi * root_a_hi < norm_a.hi:
+        root_a_hi = root_a_hi + 1
+    if root_b_hi * root_b_hi < norm_b.hi:
+        root_b_hi = root_b_hi + 1
+    maximum: i64 = 9223372036854775807
+    if root_a_lo <= 0 or root_b_lo <= 0 or root_a_lo > maximum / root_b_lo or root_a_hi > maximum / root_b_hi:
+        return .Error
+    denominator_lo = root_a_lo * root_b_lo
+    denominator_hi = root_a_hi * root_b_hi
+    if numerator.lo < -36028797018963967 or numerator.hi > 36028797018963967:
+        return .Error
+    p0 = numerator.lo * 256
+    p1 = numerator.hi * 256
+    lo = interval_floor_div(p0, denominator_lo)
+    candidate = interval_floor_div(p0, denominator_hi)
+    if candidate < lo:
+        lo = candidate
+    candidate = interval_floor_div(p1, denominator_lo)
+    if candidate < lo:
+        lo = candidate
+    candidate = interval_floor_div(p1, denominator_hi)
+    if candidate < lo:
+        lo = candidate
+    hi = interval_ceil_div(p0, denominator_lo)
+    candidate = interval_ceil_div(p0, denominator_hi)
+    if candidate > hi:
+        hi = candidate
+    candidate = interval_ceil_div(p1, denominator_lo)
+    if candidate > hi:
+        hi = candidate
+    candidate = interval_ceil_div(p1, denominator_hi)
+    if candidate > hi:
+        hi = candidate
+    if lo < -256:
+        lo = -256
+    if hi > 256:
+        hi = 256
+    return interval_narrow(lo, hi, FixedDomain.full(-8))
+
+pub fn material_affine(center: Iv32, du: Iv32, dv: Iv32, offset_u: Iv32, offset_v: Iv32, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(du, offset_u, domain):
+        case .Value(u_term):
+            match interval_mul(dv, offset_v, domain):
+                case .Value(v_term):
+                    match interval_add(center, u_term, domain):
+                        case .Value(partial):
+                            return interval_add(partial, v_term, domain)
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn material_affine_vector(center: Iv3, du: Iv3, dv: Iv3, offset_u: Iv32, offset_v: Iv32, domain: FixedDomain) -> Iv3Outcome:
+    match material_affine(center.x, du.x, dv.x, offset_u, offset_v, domain):
+        case .Value(x):
+            match material_affine(center.y, du.y, dv.y, offset_u, offset_v, domain):
+                case .Value(y):
+                    match material_affine(center.z, du.z, dv.z, offset_u, offset_v, domain):
+                        case .Value(z):
+                            return .Value(normal_vector(x, y, z))
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn material_footprint(du: Iv32, dv: Iv32, domain: FixedDomain) -> NumericOutcome:
+    match interval_abs(du, domain):
+        case .Value(abs_du):
+            match interval_abs(dv, domain):
+                case .Value(abs_dv):
+                    return interval_max(abs_du, abs_dv, domain)
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub enum MaterialPredicateOutcome:
+    Value(bool)
+    Error
+
+pub fn material_residual(residual: Iv32, radius: i32, budget: i32, domain: FixedDomain) -> MaterialPredicateOutcome:
+    if not interval_valid(residual, domain) or radius < 0 or budget < 0:
+        return .Error
+    negative_lower = -residual.lower().to[i64]()
+    if negative_lower > 2147483647:
+        return .Error
+    maximum = residual.upper().to[i64]()
+    if negative_lower > maximum:
+        maximum = negative_lower
+    total = maximum + radius.to[i64]()
+    return .Value(total <= budget.to[i64]())
+
+pub struct CenteredMoments:
+    mean: Iv32
+    first: Iv32
+    second: Iv32
+
+    pub fn mean_value(read self) -> Iv32:
+        return self.mean
+
+    pub fn first_value(read self) -> Iv32:
+        return self.first
+
+    pub fn second_value(read self) -> Iv32:
+        return self.second
+
+pub enum MomentOutcome:
+    Value(CenteredMoments)
+    Error
+
+pub fn material_affine_moments(center: Iv32, slope: Iv32, centered_first: Iv32, centered_second: Iv32, domain: FixedDomain) -> MomentOutcome:
+    match interval_mul(slope, centered_first, domain):
+        case .Value(mean_delta):
+            match interval_add(center, mean_delta, domain):
+                case .Value(mean):
+                    match interval_mul(slope, centered_second, domain):
+                        case .Value(first):
+                            return .Value(CenteredMoments(mean=mean, first=first, second=Iv32.point(0)))
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn material_quadratic_moments(center: Iv32, slope: Iv32, curvature: Iv32, centered_first: Iv32, centered_second: Iv32, half: Iv32, domain: FixedDomain) -> MomentOutcome:
+    match interval_mul(curvature, centered_second, domain):
+        case .Value(curvature_second):
+            match interval_mul(curvature_second, half, domain):
+                case .Value(quadratic):
+                    match material_affine_moments(center, slope, centered_first, centered_second, domain):
+                        case .Value(affine):
+                            match interval_add(affine.mean, quadratic, domain):
+                                case .Value(mean):
+                                    return .Value(CenteredMoments(mean=mean, first=affine.first, second=curvature))
+                                case _:
+                                    return .Error
+                        case .Error:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error

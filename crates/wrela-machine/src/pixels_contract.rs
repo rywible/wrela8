@@ -6,6 +6,186 @@
 
 use super::{FrameProgramModelV1, FrameProgramTableKindV1, FrameRecordV1};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FixedQPolicyV1 {
+    pub exponent: i16,
+    pub maximum_raw: i32,
+    pub reset_width: u8,
+    pub error_radius: i32,
+}
+
+/// Recompute the canonical v1 fixed-q family policy from the camera depth
+/// envelope. This is shared by the compiler and decoder so a rehashed program
+/// cannot weaken the certified radius or reset width.
+pub fn derive_fixed_q_policy_v1(near: f64, far: f64) -> Option<FixedQPolicyV1> {
+    if !near.is_finite() || !far.is_finite() || near <= 0.0 || near >= far {
+        return None;
+    }
+    let q_lo = 1.0 / far;
+    let q_hi = 1.0 / near;
+    let span = q_hi - q_lo;
+    let model_error = q_hi * f64::from(f32::EPSILON) * 8.0 + f64::EPSILON;
+    derive_fixed_q_envelope_v1(q_lo, q_hi, span, 2.0 * span, 64, model_error)
+}
+
+pub fn derive_fixed_q_envelope_v1(
+    q_lo: f64,
+    q_hi: f64,
+    dq_abs: f64,
+    ddq_abs: f64,
+    requested_width: u8,
+    model_error: f64,
+) -> Option<FixedQPolicyV1> {
+    if !q_lo.is_finite()
+        || !q_hi.is_finite()
+        || !dq_abs.is_finite()
+        || !ddq_abs.is_finite()
+        || !model_error.is_finite()
+        || q_lo > q_hi
+        || dq_abs < 0.0
+        || ddq_abs < 0.0
+        || model_error < 0.0
+        || requested_width == 0
+    {
+        return None;
+    }
+    let preferred_width = requested_width.min(32);
+    let mut best = None;
+    for exponent in -96_i16..=63 {
+        let Some(q) = quantize_interval(q_lo, q_hi, exponent) else {
+            continue;
+        };
+        let Some(dq) = quantize_interval(-dq_abs, dq_abs, exponent) else {
+            continue;
+        };
+        let Some(ddq) = quantize_interval(-ddq_abs, ddq_abs, exponent) else {
+            continue;
+        };
+        let scale = 2.0_f64.powi(i32::from(exponent));
+        let model_radius = (model_error / scale).ceil();
+        if model_radius > f64::from(i32::MAX) {
+            continue;
+        }
+        let maximum_width = requested_width.min(64);
+        let mut width = 32_u8.min(maximum_width).next_power_of_two();
+        if width > maximum_width {
+            width /= 2;
+        }
+        loop {
+            if recurrence_fits(q, dq, ddq, width) {
+                let Some(q_radius) = interval_radius(q) else {
+                    break;
+                };
+                let Some(dq_radius) = interval_radius(dq) else {
+                    break;
+                };
+                let Some(ddq_radius) = interval_radius(ddq) else {
+                    break;
+                };
+                let triangular = i64::from(width) * i64::from(width.saturating_sub(1)) / 2;
+                let Some(error_radius) = i64::from(q_radius)
+                    .checked_add(i64::from(dq_radius) * i64::from(width))
+                    .and_then(|value| value.checked_add(i64::from(ddq_radius) * triangular))
+                    .and_then(|value| value.checked_add(model_radius as i64))
+                else {
+                    break;
+                };
+                let Some(maximum_raw) = recurrence_maximum(q, dq, ddq, width) else {
+                    break;
+                };
+                let Ok(error_radius) = i32::try_from(error_radius) else {
+                    break;
+                };
+                let policy = FixedQPolicyV1 {
+                    exponent,
+                    maximum_raw,
+                    reset_width: width,
+                    error_radius,
+                };
+                if width == preferred_width {
+                    return Some(policy);
+                }
+                if best.is_none_or(|prior: FixedQPolicyV1| width > prior.reset_width) {
+                    best = Some(policy);
+                }
+                break;
+            }
+            width /= 2;
+            if width == 0 {
+                break;
+            }
+        }
+    }
+    best
+}
+
+fn quantize_interval(lo: f64, hi: f64, exponent: i16) -> Option<(i32, i32)> {
+    let scale = 2.0_f64.powi(i32::from(exponent));
+    let lo = (lo / scale).floor();
+    let hi = (hi / scale).ceil();
+    if lo < f64::from(i32::MIN) || hi > f64::from(i32::MAX) {
+        return None;
+    }
+    Some((lo as i32, hi as i32))
+}
+
+fn interval_radius((lo, hi): (i32, i32)) -> Option<i32> {
+    let width = i64::from(hi).checked_sub(i64::from(lo))?;
+    i32::try_from(width / 2 + width % 2).ok()
+}
+
+fn recurrence_fits(q: (i32, i32), dq: (i32, i32), ddq: (i32, i32), width: u8) -> bool {
+    recurrence_corners(q, dq, ddq).all(|(q0, d1, d2)| {
+        let mut q = i64::from(q0);
+        let mut dq = i64::from(d1);
+        for _ in 0..width {
+            q += dq;
+            dq += i64::from(d2);
+            if q < i64::from(i32::MIN)
+                || q > i64::from(i32::MAX)
+                || dq < i64::from(i32::MIN)
+                || dq > i64::from(i32::MAX)
+            {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+fn recurrence_maximum(q: (i32, i32), dq: (i32, i32), ddq: (i32, i32), width: u8) -> Option<i32> {
+    let mut maximum = 0_i64;
+    for (q0, d1, d2) in recurrence_corners(q, dq, ddq) {
+        let mut q = i64::from(q0);
+        let mut dq = i64::from(d1);
+        maximum = maximum.max(q.abs()).max(dq.abs()).max(i64::from(d2).abs());
+        for _ in 0..width {
+            q = q.checked_add(dq)?;
+            dq = dq.checked_add(i64::from(d2))?;
+            maximum = maximum.max(q.abs()).max(dq.abs());
+        }
+    }
+    i32::try_from(maximum).ok()
+}
+
+fn recurrence_corners(
+    q: (i32, i32),
+    dq: (i32, i32),
+    ddq: (i32, i32),
+) -> impl Iterator<Item = (i32, i32, i32)> {
+    [
+        (q.0, dq.0, ddq.0),
+        (q.0, dq.0, ddq.1),
+        (q.0, dq.1, ddq.0),
+        (q.0, dq.1, ddq.1),
+        (q.1, dq.0, ddq.0),
+        (q.1, dq.0, ddq.1),
+        (q.1, dq.1, ddq.0),
+        (q.1, dq.1, ddq.1),
+    ]
+    .into_iter()
+}
+
 fn exact_operands(
     kind: FrameProgramTableKindV1,
     record: &FrameRecordV1,
@@ -81,8 +261,42 @@ fn verify_camera_light_post_numeric_domains(record: &FrameRecordV1) -> Result<()
     if exposure_min > exposure_max {
         return Err("pixels::verify: camera/light/post has a reversed exposure range".to_string());
     }
+    if record.operands[22] > 1 || record.operands[23] != 17 || record.operands[41] != 17 {
+        return Err("pixels::verify: camera/light/post has an invalid LUT header".to_string());
+    }
+    let expected_tone = if record.operands[22] == 0 {
+        &super::LINEAR_TONE_LUT_V1
+    } else {
+        &super::FILMIC_TONE_LUT_V1
+    };
+    if record.operands[24..41]
+        .iter()
+        .copied()
+        .ne(expected_tone.iter().copied().map(u64::from))
+        || record.operands[42..59]
+            .iter()
+            .copied()
+            .ne(super::SRGB_TRANSFER_LUT_V1.iter().copied().map(u64::from))
+    {
+        return Err(
+            "pixels::verify: camera/light/post LUT bytes do not match the sealed curve IDs"
+                .to_string(),
+        );
+    }
+    for (label, table) in [
+        ("tone", &record.operands[24..41]),
+        ("transfer", &record.operands[42..59]),
+    ] {
+        if table.iter().any(|value| *value > u64::from(u16::MAX))
+            || table.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return Err(format!(
+                "pixels::verify: camera/light/post {label} LUT is not canonical monotone u16"
+            ));
+        }
+    }
     let mut values = [0.0_f32; 12];
-    for (target, index) in values.iter_mut().zip(22..34) {
+    for (target, index) in values.iter_mut().zip(59..71) {
         *target = f32_at(index, "world/environment bound")?;
     }
     for (label, lo, hi) in [
@@ -735,7 +949,7 @@ pub fn verify_frame_record_shape_v1(
             cursor.finish()?;
         }
         FrameProgramTableKindV1::CameraLightPost => {
-            exact_operands(kind, record, 34)?;
+            exact_operands(kind, record, 71)?;
             verify_camera_light_post_numeric_domains(record)?;
             let booleans = [record.operands[18], record.operands[19]];
             if booleans.iter().any(|value| *value > 1)
@@ -759,6 +973,20 @@ pub fn verify_frame_record_shape_v1(
         }
         FrameProgramTableKindV1::FixedDomain => match record.tag {
             1 => exact_operands(kind, record, 31)?,
+            5 => {
+                exact_operands(kind, record, 4)?;
+                let exponent = record.operands[0] as i64;
+                if !(-96..=63).contains(&exponent)
+                    || record.operands[1] > i32::MAX as u64
+                    || !record.operands[2].is_power_of_two()
+                    || record.operands[2] > 64
+                    || record.operands[3] > i32::MAX as u64
+                {
+                    return Err(
+                        "pixels::verify: fixed-q domain record is outside v1 bounds".to_string()
+                    );
+                }
+            }
             2 => {
                 let mut cursor = OperandCursor::new(kind, record);
                 cursor.skip(2, "exclusion identity")?;
@@ -1105,6 +1333,52 @@ fn verify_local_index_chunks(program: &FrameProgramModelV1) -> Result<(), String
     Ok(())
 }
 
+fn verify_sealed_numeric_policy(program: &FrameProgramModelV1) -> Result<(), String> {
+    let camera_table = program
+        .table(FrameProgramTableKindV1::CameraLightPost)
+        .expect("namespace checked");
+    let [camera] = camera_table.records.as_slice() else {
+        return Err(format!(
+            "pixels::verify: frame program has {} camera/light/post records, expected exactly one",
+            camera_table.records.len()
+        ));
+    };
+    let fixed = program
+        .table(FrameProgramTableKindV1::FixedDomain)
+        .expect("namespace checked");
+    let policies = fixed
+        .records
+        .iter()
+        .filter(|record| record.tag == 5)
+        .collect::<Vec<_>>();
+    let [record] = policies.as_slice() else {
+        return Err(format!(
+            "pixels::verify: frame program has {} fixed-q policy records, expected exactly one",
+            policies.len()
+        ));
+    };
+    let near = f64::from_bits(camera.operands[4]);
+    let far = f64::from_bits(camera.operands[5]);
+    let expected = derive_fixed_q_policy_v1(near, far)
+        .ok_or_else(|| "pixels::verify: camera bounds have no v1 fixed-q policy".to_string())?;
+    let actual = FixedQPolicyV1 {
+        exponent: i16::try_from(record.operands[0] as i64)
+            .map_err(|_| "pixels::verify: fixed-q exponent is not signed i16".to_string())?,
+        maximum_raw: i32::try_from(record.operands[1])
+            .map_err(|_| "pixels::verify: fixed-q maximum exceeds i32".to_string())?,
+        reset_width: u8::try_from(record.operands[2])
+            .map_err(|_| "pixels::verify: fixed-q reset width exceeds u8".to_string())?,
+        error_radius: i32::try_from(record.operands[3])
+            .map_err(|_| "pixels::verify: fixed-q error radius exceeds i32".to_string())?,
+    };
+    if actual != expected {
+        return Err(format!(
+            "pixels::verify: fixed-q policy {actual:?} does not match sealed camera policy {expected:?}"
+        ));
+    }
+    Ok(())
+}
+
 pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<(), String> {
     if program.numeric_revision != super::FRAME_PROGRAM_NUMERIC_REVISION_V1
         || program.formal_revision != super::FRAME_PROGRAM_FORMAL_REVISION_V1
@@ -1178,7 +1452,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
                 FrameProgramTableKindV1::Csg => (1..=6).contains(&record.tag),
                 FrameProgramTableKindV1::FixedDomain => matches!(
                     record.tag,
-                    1..=4 | 10..=17 | 20..=28 | 30..=35
+                    1..=5 | 10..=17 | 20..=28 | 30..=35
                 ),
                 FrameProgramTableKindV1::CameraLightPost => record.tag == 1,
                 _ => false,
@@ -1214,6 +1488,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
             verify_frame_record_shape_v1(table.kind, record)?;
         }
     }
+    verify_sealed_numeric_policy(program)?;
     verify_local_index_chunks(program)?;
     let object_count = program.record_count(FrameProgramTableKindV1::Object);
     let field_count = program.record_count(FrameProgramTableKindV1::Field);
@@ -1933,5 +2208,35 @@ mod tests {
         let error = verify_transform_operands(&[1, 0, u64::MAX, 0], Some(1))
             .expect_err("dangling transform scalar");
         assert!(error.contains("names scalar"), "{error}");
+    }
+
+    #[test]
+    fn fixed_q_domain_shape_is_bounded_and_signed() {
+        let valid = FrameRecordV1 {
+            stable_id: 1,
+            tag: 5,
+            flags: 0,
+            operands: vec![(-8_i64) as u64, i32::MAX as u64, 32, 7],
+        };
+        verify_frame_record_shape_v1(FrameProgramTableKindV1::FixedDomain, &valid)
+            .expect("valid fixed-q domain");
+
+        for operands in [
+            vec![(-97_i64) as u64, 1, 32, 0],
+            vec![64, 1, 32, 0],
+            vec![0, i32::MAX as u64 + 1, 32, 0],
+            vec![0, 1, 3, 0],
+            vec![0, 1, 128, 0],
+            vec![0, 1, 32, i32::MAX as u64 + 1],
+        ] {
+            let invalid = FrameRecordV1 {
+                operands,
+                ..valid.clone()
+            };
+            let error =
+                verify_frame_record_shape_v1(FrameProgramTableKindV1::FixedDomain, &invalid)
+                    .expect_err("out-of-range fixed-q record");
+            assert!(error.contains("outside v1 bounds"), "{error}");
+        }
     }
 }

@@ -1,0 +1,141 @@
+module render_transfer
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
+
+pub struct Transfer:
+    r: Iv32
+    g: Iv32
+    b: Iv32
+    t: Iv32
+
+    pub fn make(r: Iv32, g: Iv32, b: Iv32, t: Iv32) -> Transfer:
+        return Transfer(r=r, g=g, b=b, t=t)
+
+    pub fn red_lower(read self) -> i32:
+        return self.r.lower()
+
+    pub fn red_upper(read self) -> i32:
+        return self.r.upper()
+
+    pub fn transmittance_lower(read self) -> i32:
+        return self.t.lower()
+
+    pub fn transmittance_upper(read self) -> i32:
+        return self.t.upper()
+
+pub enum TransferOutcome:
+    Value(Transfer)
+    Error
+
+pub fn transfer_channel(front: Iv32, transmittance: Iv32, back: Iv32, rounding: Iv32, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(transmittance, back, domain):
+        case .Value(attenuated):
+            match interval_add(front, attenuated, domain):
+                case .Value(combined):
+                    return interval_add(combined, rounding, domain)
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn transfer_compose(front: Transfer, back: Transfer, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    if fraction_bits != 8:
+        return .Error
+    if rounding_radius < 0:
+        return .Error
+    domain = FixedDomain.full(-8)
+    match interval_narrow(-rounding_radius.to[i64](), rounding_radius.to[i64](), domain):
+        case .Value(rounding):
+            match transfer_channel(front.r, front.t, back.r, rounding, domain):
+                case .Value(r):
+                    match transfer_channel(front.g, front.t, back.g, rounding, domain):
+                        case .Value(g):
+                            match transfer_channel(front.b, front.t, back.b, rounding, domain):
+                                case .Value(b):
+                                    match interval_mul(front.t, back.t, domain):
+                                        case .Value(product_t):
+                                            match interval_add(product_t, rounding, domain):
+                                                case .Value(t):
+                                                    return .Value(Transfer(r=r, g=g, b=b, t=t))
+                                                case _:
+                                                    return .Error
+                                        case _:
+                                            return .Error
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn transfer_balanced2(first: Transfer, second: Transfer, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    return transfer_compose(first, second, fraction_bits, rounding_radius)
+
+pub fn transfer_replace2(first: Transfer, second: Transfer, replacement: Transfer, replace_second: bool, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    if replace_second:
+        return transfer_compose(first, replacement, fraction_bits, rounding_radius)
+    return transfer_compose(replacement, second, fraction_bits, rounding_radius)
+
+pub fn transfer_balanced64(take layers: [Transfer; 64], count: u8, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    if count > 64 or fraction_bits != 8 or rounding_radius < 0:
+        return .Error
+    identity = Transfer.make(Iv32.point(0), Iv32.point(0), Iv32.point(0), Iv32.point(256))
+    frame_lo: [u8; 8] = [0; 8]
+    frame_hi: [u8; 8] = [0; 8]
+    frame_state: [u8; 8] = [0; 8]
+    left_results: [Transfer; 8] = [identity; 8]
+    depth: i32 = 1
+    frame_hi[0] = count
+    current = identity
+    @budget(bound=253)
+    while depth > 0:
+        frame = depth - 1
+        lo = frame_lo[frame.to[usize]()].to[i32]()
+        hi = frame_hi[frame.to[usize]()].to[i32]()
+        length = hi - lo
+        if length == 0:
+            current = identity
+            depth = depth - 1
+        elif length == 1:
+            current = layers[lo.to[usize]()]
+            depth = depth - 1
+        elif frame_state[frame.to[usize]()] == 0:
+            if depth >= 8:
+                return .Error
+            middle = lo + length / 2
+            frame_state[frame.to[usize]()] = 1
+            frame_lo[depth.to[usize]()] = lo.to[u8]()
+            frame_hi[depth.to[usize]()] = middle.to[u8]()
+            frame_state[depth.to[usize]()] = 0
+            depth = depth + 1
+        elif frame_state[frame.to[usize]()] == 1:
+            if depth >= 8:
+                return .Error
+            middle = lo + length / 2
+            left_results[frame.to[usize]()] = current
+            frame_state[frame.to[usize]()] = 2
+            frame_lo[depth.to[usize]()] = middle.to[u8]()
+            frame_hi[depth.to[usize]()] = hi.to[u8]()
+            frame_state[depth.to[usize]()] = 0
+            depth = depth + 1
+        else:
+            match transfer_compose(left_results[frame.to[usize]()], current, fraction_bits, rounding_radius):
+                case .Value(value):
+                    current = value
+                case .Error:
+                    return .Error
+            depth = depth - 1
+    return .Value(current)
+
+pub fn transfer_replace64(take layers: [Transfer; 64], count: u8, index: u8, replacement: Transfer, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    if count > 64 or index >= count:
+        return .Error
+    layers[index.to[usize]()] = replacement
+    return transfer_balanced64(take layers, count, fraction_bits, rounding_radius)
+
+pub fn transparency_tail(transmittance: i32, maximum_radiance: i32, budget: i32) -> bool:
+    if transmittance < 0 or maximum_radiance < 0 or budget < 0:
+        return false
+    return transmittance.to[i64]() * maximum_radiance.to[i64]() <= budget.to[i64]() * 256

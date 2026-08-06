@@ -22,6 +22,7 @@ mod corpus_sema_context;
 mod agnostic_sweep;
 mod bench;
 mod corpus;
+mod dev;
 mod diff_blk;
 mod fuzz;
 mod golden;
@@ -29,11 +30,13 @@ mod lane2_freq;
 mod pixels_formal;
 mod pixels_plan_lint;
 mod pixels_repro;
+mod pixels_vectors;
 mod stdlib_test;
 
 use agnostic_sweep::*;
 use bench::*;
 use corpus::*;
+use dev::*;
 use diff_blk::{blk_shape, diff_blk, fill_blk_ring, qemu_path};
 use fuzz::*;
 use golden::*;
@@ -41,6 +44,7 @@ use lane2_freq::*;
 use pixels_formal::*;
 use pixels_plan_lint::*;
 use pixels_repro::*;
+use pixels_vectors::*;
 use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
@@ -67,7 +71,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-repro\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -92,6 +96,7 @@ fn main() -> ExitCode {
     }
     let result = match args.first().map(String::as_str) {
         Some("verify") => no_args("verify", &args).and_then(|()| verify()),
+        Some("dev") => dev(&args[1..]),
         Some("verify-deep") => no_args("verify-deep", &args).and_then(|()| verify_deep()),
         Some("pixels-plan-lint") => {
             no_args("pixels-plan-lint", &args).and_then(|()| pixels_plan_lint())
@@ -100,6 +105,11 @@ fn main() -> ExitCode {
             no_args("pixels-formal-scan", &args).and_then(|()| pixels_formal_scan())
         }
         Some("pixels-formal") => no_args("pixels-formal", &args).and_then(|()| pixels_formal()),
+        Some("pixels-vectors") => match args.as_slice() {
+            [_] => pixels_vectors(false),
+            [_, flag] if flag == "--update" => pixels_vectors(true),
+            _ => Err("usage: cargo xtask pixels-vectors [--update]".to_string()),
+        },
         Some("pixels-repro") => no_args("pixels-repro", &args).and_then(|()| pixels_repro()),
         Some("verify-milestone") => Err(
             "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
@@ -424,8 +434,14 @@ fn verify() -> Result<(), String> {
     verify_stage(
         LANE,
         "Pixels formal",
-        "cargo xtask pixels-formal-scan",
-        pixels_formal_scan,
+        "cargo xtask pixels-formal",
+        pixels_formal,
+    )?;
+    verify_stage(
+        LANE,
+        "Pixels numeric correspondence",
+        "cargo xtask pixels-vectors",
+        || pixels_vectors(false),
     )?;
     verify_stage(
         LANE,
@@ -463,28 +479,7 @@ fn verify() -> Result<(), String> {
         "cargo xtask verify",
         test_wrela_vmm_hvf_signed_smoke,
     )?;
-    verify_stage(
-        LANE,
-        "boot goldens",
-        "cargo xtask golden --only-boot",
-        || {
-            golden(&GoldenOpts {
-                boot: BootSel::Only,
-                ..GoldenOpts::default()
-            })
-        },
-    )?;
-    verify_stage(
-        LANE,
-        "static goldens",
-        "cargo xtask golden --no-boot",
-        || {
-            golden(&GoldenOpts {
-                boot: BootSel::None,
-                ..GoldenOpts::default()
-            })
-        },
-    )?;
+    verify_goldens_parallel()?;
     verify_stage(LANE, "documentation corpus", "cargo xtask corpus", || {
         corpus(&[])
     })?;
@@ -498,6 +493,63 @@ fn verify() -> Result<(), String> {
     verify_stage(LANE, "stdlib", "cargo xtask stdlib-test", stdlib_test)?;
     println!("verify: ok");
     Ok(())
+}
+
+fn verify_goldens_parallel() -> Result<(), String> {
+    let jobs = golden::default_jobs();
+    let boot_jobs = (jobs / 2).max(1);
+    let static_jobs = jobs.saturating_sub(boot_jobs).max(1);
+    let (boot, static_goldens) = std::thread::scope(|scope| {
+        let boot = scope.spawn(|| {
+            verify_stage(
+                "verify",
+                "boot goldens",
+                "cargo xtask golden --only-boot",
+                || {
+                    golden(&GoldenOpts {
+                        boot: BootSel::Only,
+                        jobs: boot_jobs,
+                        ..GoldenOpts::default()
+                    })
+                },
+            )
+        });
+        let static_goldens = scope.spawn(|| {
+            verify_stage(
+                "verify",
+                "static goldens",
+                "cargo xtask golden --no-boot",
+                || {
+                    golden(&GoldenOpts {
+                        boot: BootSel::None,
+                        jobs: static_jobs,
+                        ..GoldenOpts::default()
+                    })
+                },
+            )
+        });
+        (
+            boot.join()
+                .map_err(|_| "verify: boot golden worker panicked".to_string()),
+            static_goldens
+                .join()
+                .map_err(|_| "verify: static golden worker panicked".to_string()),
+        )
+    });
+    let mut failures = Vec::new();
+    match boot {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) | Err(error) => failures.push(error),
+    }
+    match static_goldens {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) | Err(error) => failures.push(error),
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n\n"))
+    }
 }
 
 fn verify_deep() -> Result<(), String> {
@@ -578,8 +630,33 @@ fn verify_deep() -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) struct ProducedPixelsRenderer {
+    pub(crate) field_graph: String,
+    pub(crate) frame_program: String,
+    pub(crate) render_layout: String,
+}
+
+pub(crate) struct ProducedImageArtifacts {
+    pub(crate) report: String,
+    pub(crate) image: Option<Vec<u8>>,
+    pub(crate) image_dump: Option<String>,
+    pub(crate) renderers: Vec<ProducedPixelsRenderer>,
+}
+
+impl ProducedImageArtifacts {
+    fn diagnostic(report: String) -> Self {
+        Self {
+            report,
+            image: None,
+            image_dump: None,
+            renderers: Vec::new(),
+        }
+    }
+}
+
 pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
-    produce_report_and_image_with_discovery_order(target, false, false)
+    let produced = produce_image_artifacts_with_discovery_order(target, false, false)?;
+    Ok((produced.report, produced.image))
 }
 
 pub(crate) fn produce_report_and_image_with_discovery_order(
@@ -587,6 +664,20 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
     reverse_imports: bool,
     include_field_graph: bool,
 ) -> Result<(String, Option<Vec<u8>>), String> {
+    let produced =
+        produce_image_artifacts_with_discovery_order(target, reverse_imports, include_field_graph)?;
+    Ok((produced.report, produced.image))
+}
+
+pub(crate) fn produce_image_artifacts(target: &Path) -> Result<ProducedImageArtifacts, String> {
+    produce_image_artifacts_with_discovery_order(target, false, false)
+}
+
+fn produce_image_artifacts_with_discovery_order(
+    target: &Path,
+    reverse_imports: bool,
+    include_field_graph: bool,
+) -> Result<ProducedImageArtifacts, String> {
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
             format!("error[{}]: {}\n", e.category, e.message)
@@ -608,19 +699,19 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
     let tokens = match lexer::lex(&source) {
         Ok(t) => t,
         Err(e) => {
-            return Ok((
-                format!("error[lex]: {} at {}:{}\n", e.message, e.line, e.col),
-                None,
-            ));
+            return Ok(ProducedImageArtifacts::diagnostic(format!(
+                "error[lex]: {} at {}:{}\n",
+                e.message, e.line, e.col
+            )));
         }
     };
     let parsed = match parser::parse(tokens) {
         Ok(m) => m,
         Err(e) => {
-            return Ok((
-                format!("error[parse]: {} at {}:{}\n", e.message, e.line, e.col),
-                None,
-            ));
+            return Ok(ProducedImageArtifacts::diagnostic(format!(
+                "error[parse]: {} at {}:{}\n",
+                e.message, e.line, e.col
+            )));
         }
     };
 
@@ -640,7 +731,7 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                 programs.insert(addr, program);
                 (programs, file_paths, modules_by_addr)
             }
-            Err(e) => return Ok((render_sema_error(&e), None)),
+            Err(e) => return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e))),
         }
     } else {
         match loader::load_closure_with_discovery_order(target, reverse_imports) {
@@ -672,22 +763,26 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                             .collect();
                         (programs, file_paths, modules_by_addr)
                     }
-                    Err(e) => return Ok((render_sema_error(&e), None)),
+                    Err(e) => {
+                        return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e)));
+                    }
                 }
             }
             Err(loader::LoadError::Lex(e)) => {
-                return Ok((
-                    format!("error[lex]: {} at {}:{}\n", e.message, e.line, e.col),
-                    None,
-                ));
+                return Ok(ProducedImageArtifacts::diagnostic(format!(
+                    "error[lex]: {} at {}:{}\n",
+                    e.message, e.line, e.col
+                )));
             }
             Err(loader::LoadError::Parse(e)) => {
-                return Ok((
-                    format!("error[parse]: {} at {}:{}\n", e.message, e.line, e.col),
-                    None,
-                ));
+                return Ok(ProducedImageArtifacts::diagnostic(format!(
+                    "error[parse]: {} at {}:{}\n",
+                    e.message, e.line, e.col
+                )));
             }
-            Err(loader::LoadError::Build(e)) => return Ok((render_sema_error(&e), None)),
+            Err(loader::LoadError::Build(e)) => {
+                return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e)));
+            }
         }
     };
 
@@ -696,9 +791,8 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
         .filter_map(|(m, p)| p.image_fn.as_ref().map(|f| (m, f)))
         .collect();
     match candidates.len() {
-        0 => Ok((
+        0 => Ok(ProducedImageArtifacts::diagnostic(
             "error[build]: no `@image` fn found in the build closure\n".to_string(),
-            None,
         )),
         1 => {
             let (module, fn_name) = candidates[0];
@@ -714,10 +808,9 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                         ) {
                             Ok(program_set) => program_set,
                             Err(error) => {
-                                return Ok((
-                                    render_sema_error(&eval::image_checks::pixels_error(error)),
-                                    None,
-                                ));
+                                return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(
+                                    &eval::image_checks::pixels_error(error),
+                                )));
                             }
                         };
                         let field_graph = if include_field_graph
@@ -742,8 +835,26 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                         };
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in &file_paths {
-                            if path.to_string_lossy()
-                                == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
+                            let relative = report::address_to_relative_path(addr);
+                            if relative == wrela_compiler::loader::RUNTIME_INPUT_PATH {
+                                let runtime_key: Vec<String> =
+                                    wrela_compiler::loader::RUNTIME_MODULE_KEY
+                                        .iter()
+                                        .map(|segment| (*segment).to_string())
+                                        .collect();
+                                let explicit = modules_by_addr.values().any(|module| {
+                                    module
+                                        .imports
+                                        .iter()
+                                        .any(|import| import.path == runtime_key)
+                                });
+                                if !explicit {
+                                    continue;
+                                }
+                            }
+                            if relative == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
+                                || path.to_string_lossy()
+                                    == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
                                 || addr.as_str() == wrela_compiler::rtconfig::MODULE_ADDR
                                 || addr.as_str() == wrela_compiler::loader::IMAGE_PIXELS_MODULE_ADDR
                                 || path.to_string_lossy()
@@ -756,40 +867,69 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                             let bytes = std::fs::read(path)
                                 .map_err(|e| format!("read {}: {e}", path.display()))?;
                             inputs.push(report::BuildInput {
-                                path: report::address_to_relative_path(addr),
+                                path: relative,
                                 digest: report::sha256_hex(&bytes),
                             });
                         }
                         let mut layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
                             .map_err(|e| render_sema_error(&e))?;
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
-                        let placement = match placement::place(
+                        let layout_result = layout::try_layout_with_codegen(
+                            &programs,
+                            &layout_ctx,
                             &graph,
                             &modules_by_addr,
-                            &layout_ctx,
-                            graph.cores,
+                            Some(&checked_image.renderer_configs),
+                            Some(&pixels_programs),
+                            false,
+                        )
+                        .map_err(|error| format!("error[build]: layout: {error}\n"))?;
+                        let fallback_placement;
+                        let (report_graph, report_placement) =
+                            if let Some((_, _, generated_graph, generated_placement)) =
+                                layout_result.as_ref()
+                            {
+                                (generated_graph, generated_placement)
+                            } else {
+                                fallback_placement = placement::place(
+                                    &graph,
+                                    &modules_by_addr,
+                                    &layout_ctx,
+                                    graph.cores,
+                                )
+                                .map_err(|error| format!("error[build]: {error}\n"))?;
+                                (&graph, &fallback_placement)
+                            };
+                        let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        for (key, definition) in
+                            program.enums.iter().chain(program.imported.enums.iter())
+                        {
+                            enum_variants
+                                .entry(key.clone())
+                                .or_insert_with(|| definition.variants.clone());
+                        }
+                        match report::render(
+                            &inputs,
+                            &enum_variants,
+                            report_graph,
+                            report_placement,
                         ) {
-                            Ok(p) => p,
-                            Err(e) => return Ok((format!("error[build]: {e}\n"), None)),
-                        };
-                        let enum_variants: BTreeMap<String, Vec<String>> = program
-                            .enums
-                            .iter()
-                            .map(|(k, e)| (k.clone(), e.variants.clone()))
-                            .collect();
-                        match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
                                 if let Some(field_graph) = &field_graph {
                                     text.push_str("\nDeterminism FieldGraph\n");
                                     text.push_str(field_graph);
                                 }
-                                text.push('\n');
                                 wrela_compiler::pixels::report::append_program_set(
                                     &mut text,
                                     &pixels_programs,
                                 )?;
                                 let mut layout_types = Vec::new();
                                 for (key, module) in &modules_by_addr {
+                                    if key == wrela_compiler::rtconfig::MODULE_ADDR
+                                        || key == "__image_runtime"
+                                    {
+                                        continue;
+                                    }
                                     let specialized = sema::specialize::specialize(module)
                                         .map_err(|e| render_sema_error(&e))?;
                                     let mut layouts = sema::types::check_layouts(&specialized)
@@ -806,16 +946,8 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                                 }
                                 report::render_exact_bytes_section(&mut text, &layout_types)
                                     .map_err(|e| render_sema_error(&e))?;
-                                let img = match layout::try_layout_program(
-                                    &programs,
-                                    &layout_ctx,
-                                    &graph,
-                                    &modules_by_addr,
-                                    Some(&checked_image.renderer_configs),
-                                    Some(&pixels_programs),
-                                    false,
-                                ) {
-                                    Ok(Some(image_layout)) => {
+                                let (img, renderer_artifacts) = match layout_result {
+                                    Some((image_layout, codegen, _, placement)) => {
                                         if let Some(ref tables) = image_layout.runtime {
                                             let rt_text =
                                                 wrela_compiler::rtconfig::generate_and_typecheck(
@@ -840,44 +972,125 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                                             &image_layout,
                                             false,
                                         )?;
+                                        let cost_source = file_paths
+                                            .get(module.as_str())
+                                            .map(|path| path.as_path());
+                                        let cost_result =
+                                            if let Some(linked) = image_layout.linked.as_ref() {
+                                                report::append_linked_cost_summary(
+                                                    &mut text,
+                                                    linked,
+                                                    &placement,
+                                                    wrela_compiler::cost::profile_ghz(),
+                                                )
+                                            } else {
+                                                report::append_cost_summary(
+                                                    &mut text,
+                                                    &codegen,
+                                                    &placement,
+                                                    wrela_compiler::cost::profile_ghz(),
+                                                    cost_source,
+                                                )
+                                            };
+                                        cost_result.map_err(|error| {
+                                            if error.ends_with('\n') {
+                                                format!("error[build]: {error}")
+                                            } else {
+                                                format!("error[build]: {error}\n")
+                                            }
+                                        })?;
+                                        report::append_convention_section(&mut text, &codegen);
                                         if let Err(diag) =
                                             eval::layout_assert::run(program, &graph, &image_layout)
                                         {
-                                            return Ok((diag, None));
+                                            return Ok(ProducedImageArtifacts::diagnostic(diag));
                                         }
-                                        Some(image_layout.blob)
+                                        let generated_source =
+                                            wrela_compiler::pixels::glue::configuration_source(
+                                                &image_layout.renderers,
+                                                &pixels_programs.compiled_renderers,
+                                                false,
+                                            )?;
+                                        let mut renderer_artifacts = Vec::new();
+                                        for index in 0..pixels_programs.compiled_renderers.len() {
+                                            let placement = image_layout
+                                                .renderers
+                                                .iter()
+                                                .find(|placement| placement.index == index)
+                                                .ok_or_else(|| {
+                                                    format!(
+                                                        "pixels bundle: renderer {index} has no image placement"
+                                                    )
+                                                })?;
+                                            let field_graph =
+                                                wrela_compiler::pixels::dump_structural_graphs(
+                                                    &[(
+                                                        index,
+                                                        pixels_programs.symbolic_graphs[index]
+                                                            .clone(),
+                                                        pixels_programs.structural_programs[index]
+                                                            .clone(),
+                                                        pixels_programs.projective_programs[index]
+                                                            .clone(),
+                                                    )],
+                                                    &checked_image.renderer_configs,
+                                                );
+                                            let frame_program =
+                                                wrela_compiler::pixels::dump_frame_program(
+                                                    &pixels_programs.compiled_renderers[index],
+                                                    placement,
+                                                    &generated_source,
+                                                )?;
+                                            let render_layout =
+                                                wrela_compiler::pixels::dump_render_layout(
+                                                    &pixels_programs.compiled_renderers[index],
+                                                    placement,
+                                                );
+                                            renderer_artifacts.push(ProducedPixelsRenderer {
+                                                field_graph,
+                                                frame_program,
+                                                render_layout,
+                                            });
+                                        }
+                                        (Some(image_layout.blob), renderer_artifacts)
                                     }
-                                    Ok(None) => {
+                                    None => {
                                         if !graph.layout_asserts.is_empty() {
                                             let names: Vec<&str> = graph
                                                 .layout_asserts
                                                 .iter()
                                                 .map(|a| a.fn_key.as_str())
                                                 .collect();
-                                            return Ok((
+                                            return Ok(ProducedImageArtifacts::diagnostic(
                                                 format!(
                                                     "error[build]: registered `@layout_assert` fn(s) \
                                                      ({}) require a laid-out image; this program's \
                                                      reachable surface did not fully lower\n",
                                                     names.join(", ")
                                                 ),
-                                                None,
                                             ));
                                         }
-                                        None
-                                    }
-                                    Err(e) => {
-                                        return Ok((format!("error[build]: layout: {e}\n"), None));
+                                        (None, Vec::new())
                                     }
                                 };
-                                Ok((text, img))
+                                let image_dump = eval::image::dump(&enum_variants, &graph);
+                                Ok(ProducedImageArtifacts {
+                                    report: text,
+                                    image: img,
+                                    image_dump: Some(image_dump),
+                                    renderers: renderer_artifacts,
+                                })
                             }
-                            Err(e) => Ok((format!("error[build]: {e}\n"), None)),
+                            Err(e) => Ok(ProducedImageArtifacts::diagnostic(format!(
+                                "error[build]: {e}\n"
+                            ))),
                         }
                     }
-                    Err(e) => Ok((render_sema_error(&e), None)),
+                    Err(e) => Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e))),
                 },
-                Err(e) => Ok((render_sema_error(&eval::to_sema_error(e)), None)),
+                Err(e) => Ok(ProducedImageArtifacts::diagnostic(render_sema_error(
+                    &eval::to_sema_error(e),
+                ))),
             }
         }
         _ => {
@@ -885,13 +1098,10 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
                 .iter()
                 .map(|(m, f)| format!("{m}::{f}"))
                 .collect();
-            Ok((
-                format!(
-                    "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
-                    names.join(", ")
-                ),
-                None,
-            ))
+            Ok(ProducedImageArtifacts::diagnostic(format!(
+                "error[build]: more than one `@image` fn reachable in the build closure ({})\n",
+                names.join(", ")
+            )))
         }
     }
 }

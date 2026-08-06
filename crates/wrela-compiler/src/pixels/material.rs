@@ -63,6 +63,20 @@ fn analytic_class(
             }
         }
         ScalarOp::Neg(value) => child(*value, memo)?,
+        ScalarOp::Abs(value) => {
+            let value = child(*value, memo)?;
+            AnalyticClass {
+                degree: value.degree,
+                crossings: value
+                    .crossings
+                    .checked_mul(2)
+                    .ok_or_else(|| "P014: material kink crossing bound overflows u32".to_string())?
+                    .max(1),
+                // The |x| kink itself is an event boundary even when the
+                // surrounding comparison has a stable sign on either side.
+                procedural: true,
+            }
+        }
         ScalarOp::Add(a, b) | ScalarOp::Sub(a, b) => {
             let a = child(*a, memo)?;
             let b = child(*b, memo)?;
@@ -358,6 +372,28 @@ mod tests {
                 NodeOrigin::synthetic("predicate"),
             )
             .unwrap();
+        let absolute = scalar
+            .push(
+                ScalarNode {
+                    op: ScalarOp::Abs(x),
+                    dependency: Dependency::Coordinate,
+                },
+                NodeOrigin::synthetic("absolute-kink"),
+            )
+            .unwrap();
+        let kink_predicate = scalar
+            .push(
+                ScalarNode {
+                    op: ScalarOp::Compare {
+                        op: CompareOp::Ge,
+                        a: absolute,
+                        b: zero,
+                    },
+                    dependency: Dependency::Coordinate,
+                },
+                NodeOrigin::synthetic("kink-predicate"),
+            )
+            .unwrap();
         let graph = SymbolicGraph {
             renderer_index: 0,
             field_key: String::new(),
@@ -406,6 +442,22 @@ mod tests {
                         rule: "test",
                     },
                 ),
+                (
+                    absolute,
+                    ScalarBound {
+                        value: super::super::reference::interval::F64Interval::new(0.0, 10.0)
+                            .unwrap(),
+                        rule: "test",
+                    },
+                ),
+                (
+                    kink_predicate,
+                    ScalarBound {
+                        value: super::super::reference::interval::F64Interval::new(0.0, 1.0)
+                            .unwrap(),
+                        rule: "test",
+                    },
+                ),
             ]
             .into_iter()
             .collect(),
@@ -413,6 +465,11 @@ mod tests {
         let (_, kind) = predicate_crossing_bound(&graph, &values, predicate)
             .unwrap()
             .unwrap();
+        assert_eq!(kind, MaterialEventKind::ProceduralBoundary);
+        let (crossings, kind) = predicate_crossing_bound(&graph, &values, kink_predicate)
+            .unwrap()
+            .expect("an absolute-value kink requires an event coverage path");
+        assert!(crossings >= 2);
         assert_eq!(kind, MaterialEventKind::ProceduralBoundary);
     }
 }

@@ -5334,7 +5334,11 @@ fn prepare_fn(
     rodata: &mut RodataPool,
 ) -> Result<PreparedFn, CodegenError> {
     let naive = regalloc::Assignment::none(f.temp_types.len());
-    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true)?;
+    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true).map_err(
+        |error| CodegenError {
+            message: format!("function `{key}`: {}", error.message),
+        },
+    )?;
 
     let block_ids = if block_count_instruments(key) {
         assign_mwir_block_ids(&f.body)?

@@ -47,6 +47,54 @@ theorem CsgExpr.force_eval
   | or left right ihLeft ihRight =>
       simp [force, eval, ihLeft, ihRight]
 
+inductive CrossingOrientation where
+  | enter
+  | exit
+  deriving DecidableEq
+
+def orientedToggleModel
+    (inside : Bool) (orientation : CrossingOrientation) : Option Bool :=
+  match inside, orientation with
+  | false, .enter => some true
+  | true, .exit => some false
+  | _, _ => none
+
+theorem csg_oriented_toggle_contract
+    (inside : Bool) (orientation : CrossingOrientation) :
+    orientedToggleModel inside orientation =
+      match inside, orientation with
+      | false, .enter => some true
+      | true, .exit => some false
+      | _, _ => none := by
+  cases inside <;> cases orientation <;> rfl
+
+def boundaryInfluencesModel (outside inside : Bool) : Bool :=
+  outside != inside
+
+theorem csg_boundary_influence_contract
+    (outside inside : Bool) :
+    boundaryInfluencesModel outside inside = true ↔ outside ≠ inside := by
+  cases outside <;> cases inside <;> decide
+
+def firstTransitionModel (initial : Bool) : List Bool → Option Nat
+  | [] => none
+  | value :: rest =>
+      if value != initial then some 0
+      else (firstTransitionModel initial rest).map Nat.succ
+
+theorem csg_first_transition_contract
+    (initial value : Bool) (rest : List Bool) :
+    (value ≠ initial →
+      firstTransitionModel initial (value :: rest) = some 0) ∧
+    (value = initial →
+      firstTransitionModel initial (value :: rest) =
+        (firstTransitionModel initial rest).map Nat.succ) := by
+  constructor
+  · intro changed
+    simp [firstTransitionModel, changed]
+  · intro unchanged
+    simp [firstTransitionModel, unchanged]
+
 inductive CsgInst where
   | push (id : Nat)
   | not

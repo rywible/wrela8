@@ -10,6 +10,67 @@ structure Interval where
 def Interval.Contains (interval : Interval) (value : ℝ) : Prop :=
   interval.lo ≤ value ∧ value ≤ interval.hi
 
+theorem Interval.contains_zero_model (interval : Interval) :
+    interval.Contains 0 ↔ interval.lo ≤ 0 ∧ 0 ≤ interval.hi := by
+  rfl
+
+theorem Interval.strict_positive_model (interval : Interval) :
+    0 < interval.lo → ∀ value, interval.Contains value → 0 < value := by
+  intro positive value contained
+  exact lt_of_lt_of_le positive contained.1
+
+theorem Interval.strict_negative_model (interval : Interval) :
+    interval.hi < 0 → ∀ value, interval.Contains value → value < 0 := by
+  intro negative value contained
+  exact lt_of_le_of_lt contained.2 negative
+
+structure RawDomain where
+  min : Int
+  max : Int
+
+def RawDomain.Contains (domain : RawDomain) (value : Int) : Prop :=
+  domain.min ≤ value ∧ value ≤ domain.max
+
+noncomputable def RawDomain.checkedAdd
+    (domain : RawDomain) (left right : Int) : Option Int :=
+  by
+    classical
+    exact if domain.Contains left ∧ domain.Contains right ∧
+        domain.Contains (left + right) then
+      some (left + right)
+    else
+      none
+
+theorem Interval.restricted_add_contract
+    (domain : RawDomain) (left right : Int) :
+    domain.checkedAdd left right = some (left + right) ↔
+      domain.Contains left ∧ domain.Contains right ∧
+        domain.Contains (left + right) := by
+  classical
+  simp [RawDomain.checkedAdd]
+
+structure FixedDomainModel where
+  exponent : Int
+  min : Int
+  max : Int
+
+def FixedDomainModel.Valid (domain : FixedDomainModel) : Prop :=
+  -96 ≤ domain.exponent ∧ domain.exponent ≤ 63 ∧ domain.min ≤ domain.max
+
+noncomputable def checkedFixedDomain
+    (exponent min max : Int) : Option FixedDomainModel :=
+  by
+    classical
+    let domain := FixedDomainModel.mk exponent min max
+    exact if domain.Valid then some domain else none
+
+theorem fixed_domain_contract (exponent min max : Int) :
+    checkedFixedDomain exponent min max =
+        some (FixedDomainModel.mk exponent min max) ↔
+      -96 ≤ exponent ∧ exponent ≤ 63 ∧ min ≤ max := by
+  classical
+  simp [checkedFixedDomain, FixedDomainModel.Valid]
+
 def Interval.add (a b : Interval) : Interval where
   lo := a.lo + b.lo
   hi := a.hi + b.hi
@@ -20,6 +81,23 @@ theorem Interval.add_contains
     (hx : a.Contains x) (hy : b.Contains y) :
     (a.add b).Contains (x + y) := by
   constructor <;> simp only [add, Contains] at * <;> linarith
+
+noncomputable def Interval.scalePow2
+    (interval : Interval) (shift : Int) : Interval where
+  lo := interval.lo * (2 : ℝ) ^ shift
+  hi := interval.hi * (2 : ℝ) ^ shift
+  ordered := mul_le_mul_of_nonneg_right interval.ordered
+    (le_of_lt (zpow_pos (by norm_num) shift))
+
+theorem Interval.scale_pow2_contains
+    (interval : Interval) (value : ℝ) (shift : Int)
+    (contained : interval.Contains value) :
+    (interval.scalePow2 shift).Contains (value * (2 : ℝ) ^ shift) := by
+  constructor
+  · exact mul_le_mul_of_nonneg_right contained.1
+      (le_of_lt (zpow_pos (by norm_num) shift))
+  · exact mul_le_mul_of_nonneg_right contained.2
+      (le_of_lt (zpow_pos (by norm_num) shift))
 
 def Interval.neg (a : Interval) : Interval where
   lo := -a.hi
@@ -117,6 +195,16 @@ theorem Interval.mulHull_contains
     rw [abs_mul]
     exact mul_le_mul hxa hya (abs_nonneg y) ha
   exact (abs_le.mp hxy)
+
+theorem Interval.affine_contains
+    (input scale bias : Interval) (x multiplier offset : ℝ)
+    (hx : input.Contains x)
+    (hm : scale.Contains multiplier)
+    (ho : bias.Contains offset) :
+    ((scale.mulHull input).add bias).Contains
+      (multiplier * x + offset) :=
+  Interval.add_contains _ _ _ _
+    (Interval.mulHull_contains scale input _ _ hm hx) ho
 
 def Interval.squareInterval (a : Interval) : Interval where
   lo := 0

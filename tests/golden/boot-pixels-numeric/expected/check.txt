@@ -1,1 +1,434 @@
-error[comptime]: comptime assert failed: production Pixels stage is not implemented; implemented in task P6.11 at 32:5
+Module path=render_coverage
+  Enum CoverageOutcome data
+    variant Value(Iv32)
+    variant Error
+  Fn coverage_line_twice_area(a: read i32, b: read i32, c: read i32) -> CoverageOutcome
+  Fn coverage_quadratic(chord: read Iv32, strip: read i32) -> Iv32
+  Fn coverage_quadratic_strip(a: read i32, b: read i32, c: read i32, strip: read i32) -> CoverageOutcome
+  Fn coverage_quadratic_split(c: read i32, b: read i32, a: read i32) -> Iv32
+  Fn coverage_quadratic_graph(c: read i32, b: read i32, a: read i32, strip: read i32, foreground_below: read bool, owner_lower_or_left: read bool) -> CoverageOutcome
+  Fn coverage_color_error(coverage: read Iv32, contrast: read Iv32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_display
+  Enum QuantizeOutcome data
+    variant Value(i32)
+    variant Error
+  Enum ByteSingletonOutcome data
+    variant Value(i32)
+    variant NotSingleton
+    variant Error
+  Fn quantize_ties_even(value: read i32, fraction_bits: read i32) -> QuantizeOutcome
+  Fn exposure_channel(value: read Iv32, multiplier: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn color_matrix_channel(c0: read Iv32, c1: read Iv32, c2: read Iv32, m0: read Iv32, m1: read Iv32, m2: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn monotone_lut17(value: read Iv32, table: read [u16; 17], fraction_bits: read i32) -> NumericOutcome
+  Fn byte_singleton(value: read Iv32, fraction_bits: read i32) -> ByteSingletonOutcome
+  Enum RgbSingletonOutcome data
+    variant Value([i32; 3])
+    variant NotSingleton
+    variant Error
+  Fn rgb_singleton(color: read [Iv32; 3], fraction_bits: read i32) -> RgbSingletonOutcome
+Module path=render_events
+  Fn root_is_identically_zero(coefficients: read [Iv32; 3]) -> bool
+  Fn root_bracket_step(lo: read i32, hi: read i32, lo_negative: read bool, mid_negative: read bool) -> Iv32
+  Fn root_count(sign0: read i32, sign1: read i32, sign2: read i32) -> i32
+  Struct RootSet8 data
+    field lows: [i32; 16]
+    field highs: [i32; 16]
+    field unique: [bool; 16]
+    field count: u8
+    fn root_count_value(read self) -> u8
+    fn root_low(read self, index: read usize) -> i32
+    fn root_high(read self, index: read usize) -> i32
+    fn root_unique(read self, index: read usize) -> bool
+  Enum RootOutcome8 data
+    variant Roots(RootSet8)
+    variant CertifiedNone
+    variant Unresolved(i32)
+    variant Error
+  Struct RootIsolationConfig data
+    field q_domain: Iv32
+    field domain: FixedDomain
+    field tolerance_raw: u32
+    field max_depth: u8
+    field root_capacity: u8
+    field use_taylor: bool
+    field remainder: Iv32
+  Fn root_isolate8(coefficients: read [Iv32; 9], degree: read u8, q_domain: read Iv32, domain: read FixedDomain, tolerance_raw: read u32, max_depth: read u8, root_capacity: read u8) -> RootOutcome8
+  Fn root_isolate_taylor8(coefficients: read [Iv32; 9], degree: read u8, remainder: read Iv32, q_domain: read Iv32, domain: read FixedDomain, tolerance_raw: read u32, max_depth: read u8, root_capacity: read u8) -> RootOutcome8
+  Fn root_isolate_program8(coefficients: read [Iv32; 9], degree: read u8, config: read RootIsolationConfig) -> RootOutcome8
+Module path=render_interval
+  Struct FixedDomain data
+    field exponent: i32
+    field min_raw: i32
+    field max_raw: i32
+    fn full(exponent: read i32) -> FixedDomain
+    fn contains_raw(read self, value: read i32) -> bool
+    fn exponent_value(read self) -> i32
+  Enum FixedDomainOutcome data
+    variant Value(FixedDomain)
+    variant Error
+  Fn fixed_domain(exponent: read i32, min_raw: read i32, max_raw: read i32) -> FixedDomainOutcome
+  Struct Iv32 data
+    field lo: i32
+    field hi: i32
+    fn point(raw: read i32) -> Iv32
+    fn range(lo: read i32, hi: read i32) -> Iv32
+    fn lower(read self) -> i32
+    fn upper(read self) -> i32
+  Enum NumericOutcome data
+    variant Value(Iv32)
+    variant Empty
+    variant Error
+  Fn interval_valid(value: read Iv32, domain: read FixedDomain) -> bool
+  Fn interval_narrow(lo: read i64, hi: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_add(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_sub(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_contains_zero(value: read Iv32) -> bool
+  Fn interval_strict_positive(value: read Iv32) -> bool
+  Fn interval_strict_negative(value: read Iv32) -> bool
+  Fn interval_negate(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_floor_div(value: read i64, scale: read i64) -> i64
+  Fn interval_ceil_div(value: read i64, scale: read i64) -> i64
+  Fn interval_mul(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_square(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_scale_pow2(value: read Iv32, shift: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_intersect(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_hull(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_min(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_max(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_abs(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_affine(input: read Iv32, scale: read Iv32, bias: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_convert(value: read Iv32, source: read FixedDomain, destination: read FixedDomain) -> NumericOutcome
+  Fn interval_from_f32_bits(bits: read u32, radius_raw: read u32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_material
+  Struct Iv3 data
+    field x: Iv32
+    field y: Iv32
+    field z: Iv32
+    fn z_lower(read self) -> i32
+    fn x_lower(read self) -> i32
+    fn x_upper(read self) -> i32
+    fn y_lower(read self) -> i32
+    fn y_upper(read self) -> i32
+    fn z_upper(read self) -> i32
+  Fn normal_vector(x: read Iv32, y: read Iv32, z: read Iv32) -> Iv3
+  Struct NormalCone data
+    field direction: Iv3
+    field norm_squared: Iv32
+    fn direction_value(read self) -> Iv3
+    fn norm_value(read self) -> Iv32
+  Enum NormalConeOutcome data
+    variant Value(NormalCone)
+    variant Rejected
+    variant Error
+  Enum Iv3Outcome data
+    variant Value(Iv3)
+    variant Error
+  Struct NormalRawRange data
+    field lo: i64
+    field hi: i64
+    field valid: bool
+  Fn normal_raw_product(a: read Iv32, b: read Iv32) -> NormalRawRange
+  Fn normal_raw_square(value: read Iv32) -> NormalRawRange
+  Fn normal_raw_add(a: read NormalRawRange, b: read NormalRawRange) -> NormalRawRange
+  Fn normal_raw_dot(a: read Iv3, b: read Iv3) -> NormalRawRange
+  Fn normal_raw_norm_squared(value: read Iv3) -> NormalRawRange
+  Fn normal_bound(q: read Iv32, qu: read Iv32, qv: read Iv32, uqu: read Iv32, vqv: read Iv32) -> Iv3Outcome
+  Fn normal_cone(u: read Iv32, v: read Iv32, q: read Iv32, qu: read Iv32, qv: read Iv32, domain: read FixedDomain) -> NormalConeOutcome
+  Fn normal_norm_squared(value: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn normal_safe(value: read Iv3, domain: read FixedDomain) -> bool
+  Fn normal_dot(a: read Iv3, b: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn normal_floor_sqrt(value: read i64) -> i64
+  Fn normal_cone_dot(a: read Iv3, b: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn material_affine(center: read Iv32, du: read Iv32, dv: read Iv32, offset_u: read Iv32, offset_v: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn material_affine_vector(center: read Iv3, du: read Iv3, dv: read Iv3, offset_u: read Iv32, offset_v: read Iv32, domain: read FixedDomain) -> Iv3Outcome
+  Fn material_footprint(du: read Iv32, dv: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Enum MaterialPredicateOutcome data
+    variant Value(bool)
+    variant Error
+  Fn material_residual(residual: read Iv32, radius: read i32, budget: read i32, domain: read FixedDomain) -> MaterialPredicateOutcome
+  Struct CenteredMoments data
+    field mean: Iv32
+    field first: Iv32
+    field second: Iv32
+    fn mean_value(read self) -> Iv32
+    fn first_value(read self) -> Iv32
+    fn second_value(read self) -> Iv32
+  Enum MomentOutcome data
+    variant Value(CenteredMoments)
+    variant Error
+  Fn material_affine_moments(center: read Iv32, slope: read Iv32, centered_first: read Iv32, centered_second: read Iv32, domain: read FixedDomain) -> MomentOutcome
+  Fn material_quadratic_moments(center: read Iv32, slope: read Iv32, curvature: read Iv32, centered_first: read Iv32, centered_second: read Iv32, half: read Iv32, domain: read FixedDomain) -> MomentOutcome
+Module path=render_program
+  Struct FrameProgramHeaderV1 data
+    field magic: [u8; 8]
+    field version: u16
+    field header_bytes: u16
+    field flags: u32
+    field total_bytes: u32
+    field renderer_index: u16
+    field reserved0: u16
+    field numeric_revision: u32
+    field formal_revision: u32
+    field table_count: u16
+    field reserved1: [u8; 14]
+    field digest: [u8; 32]
+  Struct FrameProgramTableV1 data
+    field kind: u16
+    field record_bytes: u16
+    field count: u32
+    field offset: u32
+    field byte_len: u32
+  Struct FrameProgramRecordV1 data
+    field stable_id: u32
+    field tag: u16
+    field flags: u16
+    field operand_offset: u32
+    field operand_count: u16
+    field reserved: u16
+  Struct FrameProgramImmediateV1 data
+    field owner_kind: u16
+    field reserved0: u16
+    field owner_id: u32
+    field ordinal: u32
+    field reserved1: u32
+    field value: u64
+  Fn program_floor_div(value: read i64, scale: read i64) -> i64
+  Fn program_ceil_div(value: read i64, scale: read i64) -> i64
+  Enum BernsteinOutcome3 data
+    variant Value([Iv32; 3])
+    variant Error
+  Enum BernsteinSplitOutcome3 data
+    variant Value([Iv32; 6])
+    variant Error
+  Struct Polynomial9 data
+    field coefficients: [Iv32; 9]
+    field degree: u8
+    fn coefficient(read self, index: read usize) -> Iv32
+    fn degree_value(read self) -> u8
+  Struct BernsteinSplit9 data
+    field left: [Iv32; 9]
+    field right: [Iv32; 9]
+    field degree: u8
+    fn left_coefficient(read self, index: read usize) -> Iv32
+    fn right_coefficient(read self, index: read usize) -> Iv32
+  Enum Polynomial9Outcome data
+    variant Value(Polynomial9)
+    variant Error
+  Enum BernsteinSplit9Outcome data
+    variant Value(BernsteinSplit9)
+    variant Error
+  Struct SparseTerm data
+    field coefficient: Iv32
+    field powers: [u8; 4]
+    fn make(coefficient: read Iv32, powers: read [u8; 4]) -> SparseTerm
+  Fn polynomial_horner9(coefficients: read [Iv32; 9], degree: read u8, x: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_derivative9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_multiply9(left: read Polynomial9, right: read Polynomial9, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_compose9(outer_coefficients: read [Iv32; 9], outer_degree: read u8, candidate_coefficients: read [Iv32; 9], candidate_degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_sparse32(terms: read [SparseTerm; 32], count: read u8, variables: read [Iv32; 4], domain: read FixedDomain) -> NumericOutcome
+  Fn program_binomial(n: read i32, k: read i32) -> i64
+  Fn program_gcd(a: read i64, b: read i64) -> i64
+  Fn bernstein_from_power9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn bernstein_subdivide9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> BernsteinSplit9Outcome
+  Fn bernstein_compose(a0: read i32, a1: read i32, a2: read i32, domain: read FixedDomain) -> BernsteinOutcome3
+  Fn bernstein_sign(coefficients: read [Iv32; 3]) -> i32
+  Fn bernstein_average(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_lerp_ratio(a: read Iv32, b: read Iv32, numerator: read i64, denominator: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_subdivide(coefficients: read [Iv32; 3], domain: read FixedDomain) -> BernsteinSplitOutcome3
+  Enum QuadraticRangeOutcome data
+    variant Value([i32; 2])
+    variant Error
+  Enum QuadraticRangeWideOutcome data
+    variant Value([i64; 2])
+    variant Error
+  Fn quadratic_range_wide(c: read i64, b: read i64, a: read i64) -> QuadraticRangeWideOutcome
+  Fn quadratic_range(c: read i32, b: read i32, a: read i32) -> QuadraticRangeOutcome
+  Fn quadratic_range2(c: read i32, bu: read i32, bv: read i32, buu: read i32, buv: read i32, bvv: read i32) -> QuadraticRangeOutcome
+  Fn polynomial_sparse(c0: read i32, c1: read i32, u: read i32, t: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_taylor(c0: read i32, c1: read i32, x: read i32, remainder_radius: read i32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_raster
+  Struct QRunScalar data
+    field q: i32
+    field dq: i32
+    field ddq: i32
+    field domain: FixedDomain
+    field error_radius: i32
+    field microtile_width: u8
+    field step: u8
+    fn make(q: read i32, dq: read i32, ddq: read i32, error_radius: read i32) -> QRunScalar
+    fn certified(q: read i32, dq: read i32, ddq: read i32, domain: read FixedDomain, error_radius: read i32, microtile_width: read u8) -> QRunScalar
+    fn value(read self) -> i32
+    fn delta(read self) -> i32
+    fn second_delta(read self) -> i32
+    fn error(read self) -> i32
+    fn width(read self) -> u8
+    fn exponent(read self) -> i32
+  Enum QStep data
+    variant Value(QRunScalar)
+    variant Error
+  Enum QSetup data
+    variant Value(QRunScalar)
+    variant Error
+  Fn fixed_q_select_integer_domain(maximum_abs: read i64) -> i32
+  Fn fixed_q_quantize_integer(value: read i32, exponent: read i32) -> NumericOutcome
+  Fn fixed_q_recurrence_fits(q: read Iv32, dq: read Iv32, ddq: read Iv32, width: read u8, domain: read FixedDomain) -> bool
+  Fn fixed_q_setup(q: read i32, dq: read i32, ddq: read i32, requested_width: read u8, model_error_radius: read i32) -> QSetup
+  Fn fixed_q_step(run: read QRunScalar) -> QStep
+  Fn fixed_q_nearer(a_q: read i32, a_error: read i32, b_q: read i32, b_error: read i32) -> bool
+Module path=render_sweep
+  Enum RootCertMethod data
+    variant BernsteinFaces
+    variant MonotoneTube
+    variant Krawczyk
+  Struct RootCertificate data
+    field correction: Iv32
+    field derivative_margin: Iv32
+    field face_margin: Iv32
+    field contraction_margin: Iv32
+    field method: RootCertMethod
+    fn derivative_margin_value(read self) -> i32
+    fn face_margin_value(read self) -> i32
+    fn contraction_margin_value(read self) -> i32
+    fn method_tag(read self) -> i32
+  Enum RootCertificateOutcome data
+    variant Value(RootCertificate)
+    variant Rejected
+    variant Error
+  Struct CertifiedRun data
+    field certificate: RootCertificate
+    field composition_shape: i32
+    fn method_tag(read self) -> i32
+    fn composition_shape_tag(read self) -> i32
+    fn derivative_margin_value(read self) -> i32
+    fn face_margin_value(read self) -> i32
+    fn contraction_margin_value(read self) -> i32
+  Enum CertifiedRunOutcome data
+    variant Value(CertifiedRun)
+    variant Rejected
+    variant Error
+  Struct CertificateRequest data
+    pub field composition_shape: i32
+    pub field lower_coefficients: [Iv32; 3]
+    pub field upper_coefficients: [Iv32; 3]
+    pub field lower_face: Iv32
+    pub field upper_face: Iv32
+    pub field derivative: Iv32
+    pub field reciprocal_derivative: Iv32
+    pub field residual: Iv32
+    pub field correction: Iv32
+    pub field one: Iv32
+    pub field domain: FixedDomain
+  Fn strict_margin(value: read Iv32) -> i32
+  Fn monotone_certificate(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> RootCertificateOutcome
+  Fn bernstein_certificate(lower: read [Iv32; 3], upper: read [Iv32; 3], derivative: read Iv32) -> RootCertificateOutcome
+  Fn bernstein_face_margin3(lower: read [Iv32; 3], upper: read [Iv32; 3]) -> i32
+  Fn bernstein_certificate_subdivided(lower: read [Iv32; 3], upper: read [Iv32; 3], derivative: read Iv32, domain: read FixedDomain, maximum_depth: read u8) -> RootCertificateOutcome
+  Fn krawczyk_certificate(reciprocal_derivative: read Iv32, residual: read Iv32, derivative: read Iv32, correction: read Iv32, one: read Iv32, domain: read FixedDomain) -> RootCertificateOutcome
+  Fn certify_run(request: read CertificateRequest) -> CertifiedRunOutcome
+  Fn run_certificate(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> bool
+  Fn q_order(a: read Iv32, b: read Iv32) -> bool
+  Struct OrderedRoot data
+    field q: Iv32
+    field feature_id: u32
+    field orientation: i32
+    fn make(q: read Iv32, feature_id: read u32, orientation: read i32) -> OrderedRoot
+    fn q_value(read self) -> Iv32
+    fn feature(read self) -> u32
+    fn orientation_value(read self) -> i32
+  Struct OrderedRootSet64 data
+    field roots: [OrderedRoot; 64]
+    field count: u8
+    fn root(read self, index: read usize) -> OrderedRoot
+  Enum OrderedRootSetOutcome data
+    variant Value(OrderedRootSet64)
+    variant Error
+  Enum OrderedSlackOutcome data
+    variant Value(i32)
+    variant Error
+  Fn q_storage_before(a: read OrderedRoot, b: read OrderedRoot) -> bool
+  Fn q_feature_before(a: read OrderedRoot, b: read OrderedRoot) -> bool
+  Fn q_sort64(values: read [OrderedRoot; 64], count: read u8) -> OrderedRootSetOutcome
+  Fn q_adjacent_slack64(values: read [OrderedRoot; 64], count: read u8) -> OrderedSlackOutcome
+  Fn q_sort3(values: read [Iv32; 3]) -> [Iv32; 3]
+  Fn q_adjacent_slack3(values: read [Iv32; 3]) -> i32
+  Fn csg_transition(before: read bool, after: read bool) -> bool
+  Enum CsgEvaluateOutcome data
+    variant Value(bool)
+    variant Error
+  Enum CsgInfluenceOutcome data
+    variant Value(bool)
+    variant Error
+  Enum CsgTransitionOutcome data
+    variant Value(i32)
+    variant None
+    variant Error
+  Fn csg_evaluate64(program: read [i32; 64], count: read u8, inside_bits: read u64) -> CsgEvaluateOutcome
+  Enum CsgBitsOutcome data
+    variant Value(u64)
+    variant Error
+  Fn csg_oriented_toggle64(inside_bits: read u64, object: read i32, orientation: read i32) -> CsgBitsOutcome
+  Fn csg_boundary_influences64(program: read [i32; 64], count: read u8, inside_bits: read u64, object: read i32) -> CsgInfluenceOutcome
+  Fn csg_first_transition64(program: read [i32; 64], program_count: read u8, inside_bits: read u64, objects: read [i32; 64], orientations: read [i32; 64], crossing_count: read u8) -> CsgTransitionOutcome
+  Fn kinetic_slack(slack: read i32, perturbation: read i32) -> bool
+Module path=render_test_vectors
+  Const VECTOR_COUNT: u64
+  Const VECTOR_DIGEST: u64
+  Fn fold2(a: read i32, b: read i32) -> i64
+  Fn fold4(a: read i32, b: read i32, c: read i32, d: read i32) -> i64
+  Fn fold6(a: read i32, b: read i32, c: read i32, d: read i32, e: read i32, f: read i32) -> i64
+  Fn fold6_small(a: read i32, b: read i32, c: read i32, d: read i32, e: read i32, f: read i32) -> i64
+  Fn fold12(values: read [i32; 12]) -> i64
+  Fn bool_result(value: read bool) -> i64
+  Fn numeric_result(value: read NumericOutcome) -> i64
+  Enum VectorResult data
+    variant Value(i64)
+    variant Error
+  Fn vector_transfer_balanced(in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_transfer_replace(in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_order_roots(in0: read i32, count_input: read i32) -> [OrderedRoot; 64]
+  Fn vector_q_sort(in0: read i32, in3: read i32) -> i64
+  Fn vector_q_slack(in0: read i32, in3: read i32) -> i64
+  Fn vector_root_outcome_field(outcome: read RootOutcome8, requested_selector: read i32) -> i64
+  Fn vector_result_raw_low(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw_mid(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw_high(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> VectorResult
+  Fn vector_case_matches(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32, expected: read i64, expect_error: read bool) -> bool
+  Fn run_vector_chunk_0() -> unit
+  Fn run_vector_chunk_1() -> unit
+  Fn run_vector_chunk_2() -> unit
+  Fn run_vector_chunk_3() -> unit
+  Fn run_vector_chunk_4() -> unit
+  Fn run_vector_chunk_5() -> unit
+  Fn run_vector_chunk_6() -> unit
+  Fn run_vector_chunk_7() -> unit
+  Fn run_vector_chunk_8() -> unit
+  Fn run_vector_chunk_9() -> unit
+  Fn run_vector_chunk_10() -> unit
+  Fn run_vector_chunk_11() -> unit
+  Fn run_vector_chunk_12() -> unit
+  Fn run_all_vectors() -> unit
+Module path=render_transfer
+  Struct Transfer data
+    field r: Iv32
+    field g: Iv32
+    field b: Iv32
+    field t: Iv32
+    fn make(r: read Iv32, g: read Iv32, b: read Iv32, t: read Iv32) -> Transfer
+    fn red_lower(read self) -> i32
+    fn red_upper(read self) -> i32
+    fn transmittance_lower(read self) -> i32
+    fn transmittance_upper(read self) -> i32
+  Enum TransferOutcome data
+    variant Value(Transfer)
+    variant Error
+  Fn transfer_channel(front: read Iv32, transmittance: read Iv32, back: read Iv32, rounding: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn transfer_compose(front: read Transfer, back: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced2(first: read Transfer, second: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace2(first: read Transfer, second: read Transfer, replacement: read Transfer, replace_second: read bool, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced64(layers: take [Transfer; 64], count: read u8, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace64(layers: take [Transfer; 64], count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transparency_tail(transmittance: read i32, maximum_radiance: read i32, budget: read i32) -> bool
+Module path=examples.boot_pixels_numeric
+  Fn pixels_numeric_vectors() -> unit

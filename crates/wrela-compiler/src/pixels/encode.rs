@@ -278,7 +278,7 @@ mod tests {
         }
         assert_eq!(
             wrela_machine::sha256::sha256_hex(&first),
-            "35aed53c5fb34d6ee7367154ec8330efcad77f57c8a691a3bcc3e6826f7f03e4"
+            "d82e72d2f67908813d7d52fa1baadadeff66f116b98ef6e0974727af5a003acf"
         );
     }
 

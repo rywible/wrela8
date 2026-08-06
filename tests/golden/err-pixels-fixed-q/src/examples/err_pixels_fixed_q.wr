@@ -5,8 +5,7 @@ from core.field import (
     Rgb,
     Vec3,
     mark,
-    sphere,
-    uniform_scale,
+    plane,
 )
 from core.render import (
     AoConfig,
@@ -27,10 +26,7 @@ const FIXTURE_ID: u32 = 30
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P6.7"
-
-const REQUIRED_RAW_BITS: u8 = 33
+const REQUIRED_RAW_BITS: u8 = 101
 const AVAILABLE_RAW_BITS: u8 = 31
 
 struct SceneParams:
@@ -43,8 +39,8 @@ enum MaterialId:
 
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    huge = uniform_scale(sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0), scale=2147483648.0)
-    return mark(huge, object=30, material=MaterialId.Ground)
+    ground = plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=0.0)
+    return mark(ground, object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
@@ -53,7 +49,7 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 30, "fixture id must remain pinned"
-    assert REQUIRED_RAW_BITS == 33, "adversarial scene value must remain pinned"
+    assert REQUIRED_RAW_BITS == 101, "adversarial scene value must remain pinned"
 
 @image
 pub fn build() -> Image:
@@ -70,10 +66,10 @@ pub fn build() -> Image:
         shade_hz=60,
         profile=RenderProfile.AaaByteExact,
         tone_curve=ToneCurve.Linear,
-        near=0.1,
+        near=0.000000000000000000000000000001,
         far=128.0,
-        world_min=Vec3(x=-2147483648.0, y=-2147483648.0, z=-2147483648.0),
-        world_max=Vec3(x=2147483648.0, y=2147483648.0, z=2147483648.0),
+        world_min=Vec3(x=-128.0, y=-128.0, z=-128.0),
+        world_max=Vec3(x=128.0, y=128.0, z=128.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
         light_config=LightConfig.fixed(capacity=0),
         exposure_range=ScalarRange(min=-1.0, max=1.0),

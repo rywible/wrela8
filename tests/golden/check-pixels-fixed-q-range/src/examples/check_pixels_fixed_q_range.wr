@@ -22,7 +22,7 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 18
-# production Pixels stage is not implemented; implemented in task P6.7
+# P6.7 active: fixed-q domain checks use verified scalar kernels in P6
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -69,8 +69,8 @@ pub fn build() -> Image:
         tone_curve=ToneCurve.Linear,
         near=0.1,
         far=128.0,
-        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
-        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        world_min=Vec3(x=-2147483648.0, y=-2147483648.0, z=-2147483648.0),
+        world_max=Vec3(x=2147483648.0, y=2147483648.0, z=2147483648.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
         light_config=LightConfig.fixed(capacity=0),
         exposure_range=ScalarRange(min=-1.0, max=1.0),

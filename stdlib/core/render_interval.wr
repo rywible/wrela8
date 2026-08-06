@@ -1,0 +1,357 @@
+module render_interval
+
+# Scalar guest counterpart of the checked Rust Iv32 reference. Arithmetic is
+# widened before narrowing and every failed precondition is explicit.
+
+pub struct FixedDomain:
+    exponent: i32
+    min_raw: i32
+    max_raw: i32
+
+    pub fn full(exponent: i32) -> FixedDomain:
+        return FixedDomain(exponent=exponent, min_raw=-2147483648, max_raw=2147483647)
+
+    pub fn contains_raw(read self, value: i32) -> bool:
+        return self.exponent >= -96 and self.exponent <= 63 and value >= self.min_raw and value <= self.max_raw
+
+    pub fn exponent_value(read self) -> i32:
+        return self.exponent
+
+pub enum FixedDomainOutcome:
+    Value(FixedDomain)
+    Error
+
+pub fn fixed_domain(exponent: i32, min_raw: i32, max_raw: i32) -> FixedDomainOutcome:
+    if exponent < -96 or exponent > 63 or min_raw > max_raw:
+        return .Error
+    return .Value(FixedDomain(exponent=exponent, min_raw=min_raw, max_raw=max_raw))
+
+pub struct Iv32:
+    lo: i32
+    hi: i32
+
+    pub fn point(raw: i32) -> Iv32:
+        return Iv32(lo=raw, hi=raw)
+
+    pub fn range(lo: i32, hi: i32) -> Iv32:
+        return Iv32(lo=lo, hi=hi)
+
+    pub fn lower(read self) -> i32:
+        return self.lo
+
+    pub fn upper(read self) -> i32:
+        return self.hi
+
+pub enum NumericOutcome:
+    Value(Iv32)
+    Empty
+    Error
+
+pub fn interval_valid(value: Iv32, domain: FixedDomain) -> bool:
+    return domain.exponent >= -96 and domain.exponent <= 63 and domain.min_raw <= domain.max_raw and value.lo <= value.hi and value.lo >= domain.min_raw and value.hi <= domain.max_raw
+
+pub fn interval_narrow(lo: i64, hi: i64, domain: FixedDomain) -> NumericOutcome:
+    if lo < -2147483648 or hi > 2147483647:
+        return .Error
+    if lo < domain.min_raw.to[i64]() or hi > domain.max_raw.to[i64]():
+        return .Error
+    return .Value(Iv32(lo=lo.to[i32](), hi=hi.to[i32]()))
+
+pub fn interval_add(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    return interval_narrow(a.lo.to[i64]() + b.lo.to[i64](), a.hi.to[i64]() + b.hi.to[i64](), domain)
+
+pub fn interval_sub(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    return interval_narrow(a.lo.to[i64]() - b.hi.to[i64](), a.hi.to[i64]() - b.lo.to[i64](), domain)
+
+pub fn interval_contains_zero(value: Iv32) -> bool:
+    return value.lo <= 0 and value.hi >= 0
+
+pub fn interval_strict_positive(value: Iv32) -> bool:
+    return value.lo > 0
+
+pub fn interval_strict_negative(value: Iv32) -> bool:
+    return value.hi < 0
+
+pub fn interval_negate(value: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(value, domain):
+        return .Error
+    return interval_narrow(-value.hi.to[i64](), -value.lo.to[i64](), domain)
+
+pub fn interval_floor_div(value: i64, scale: i64) -> i64:
+    q = value / scale
+    r = value % scale
+    if r != 0 and value < 0:
+        return q - 1
+    return q
+
+pub fn interval_ceil_div(value: i64, scale: i64) -> i64:
+    q = value / scale
+    r = value % scale
+    if r != 0 and value > 0:
+        return q + 1
+    return q
+
+pub fn interval_mul(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    p0 = a.lo.to[i64]() * b.lo.to[i64]()
+    p1 = a.lo.to[i64]() * b.hi.to[i64]()
+    p2 = a.hi.to[i64]() * b.lo.to[i64]()
+    p3 = a.hi.to[i64]() * b.hi.to[i64]()
+    lo = p0
+    hi = p0
+    if p1 < lo:
+        lo = p1
+    if p2 < lo:
+        lo = p2
+    if p3 < lo:
+        lo = p3
+    if p1 > hi:
+        hi = p1
+    if p2 > hi:
+        hi = p2
+    if p3 > hi:
+        hi = p3
+    if domain.exponent <= 0:
+        if domain.exponent < -62:
+            out_lo: i64 = 0
+            out_hi: i64 = 0
+            if lo < 0:
+                out_lo = -1
+            if hi > 0:
+                out_hi = 1
+            return interval_narrow(out_lo, out_hi, domain)
+        scale: i64 = 1
+        i: i32 = 0
+        @budget(bound=62)
+        while i < -domain.exponent:
+            scale = scale * 2
+            i = i + 1
+        return interval_narrow(interval_floor_div(lo, scale), interval_ceil_div(hi, scale), domain)
+    if domain.exponent > 30:
+        if lo == 0 and hi == 0:
+            return .Value(Iv32.point(0))
+        # At exponent 31 the only nonzero raw product whose rescaled value
+        # fits i32 is -1, which maps exactly to i32::MIN. At larger positive
+        # exponents every nonzero integral product is out of range.
+        if domain.exponent == 31 and lo >= -1 and hi <= 0:
+            return interval_narrow(lo * 2147483648, hi * 2147483648, domain)
+        return .Error
+    scale: i64 = 1
+    i: i32 = 0
+    @budget(bound=30)
+    while i < domain.exponent:
+        scale = scale * 2
+        i = i + 1
+    if lo < -2147483648 / scale or hi > 2147483647 / scale:
+        return .Error
+    return interval_narrow(lo * scale, hi * scale, domain)
+
+pub fn interval_square(value: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(value, domain):
+        return .Error
+    match interval_mul(value, value, domain):
+        case .Value(product):
+            if interval_contains_zero(value):
+                return .Value(Iv32.range(0, product.upper()))
+            return .Value(product)
+        case _:
+            return .Error
+
+pub fn interval_scale_pow2(value: Iv32, shift: i32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(value, domain) or shift < -32768 or shift > 32767:
+        return .Error
+    if shift <= -63:
+        out_lo: i64 = 0
+        out_hi: i64 = 0
+        if value.lo < 0:
+            out_lo = -1
+        if value.hi > 0:
+            out_hi = 1
+        return interval_narrow(out_lo, out_hi, domain)
+    if shift >= 0:
+        if shift >= 128:
+            return .Error
+        if shift >= 63:
+            if value.lo == 0 and value.hi == 0:
+                return .Value(value)
+            return .Error
+        factor: i64 = 1
+        i: i32 = 0
+        @budget(bound=62)
+        while i < shift:
+            factor = factor * 2
+            i = i + 1
+        if value.lo.to[i64]() < -2147483648 / factor or value.hi.to[i64]() > 2147483647 / factor:
+            return .Error
+        return interval_narrow(value.lo.to[i64]() * factor, value.hi.to[i64]() * factor, domain)
+    divisor: i64 = 1
+    i: i32 = 0
+    @budget(bound=62)
+    while i < -shift:
+        divisor = divisor * 2
+        i = i + 1
+    return interval_narrow(interval_floor_div(value.lo.to[i64](), divisor), interval_ceil_div(value.hi.to[i64](), divisor), domain)
+
+pub fn interval_intersect(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    lo = a.lo
+    hi = a.hi
+    if b.lo > lo:
+        lo = b.lo
+    if b.hi < hi:
+        hi = b.hi
+    if lo > hi:
+        return .Empty
+    return .Value(Iv32(lo=lo, hi=hi))
+
+pub fn interval_hull(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    lo = a.lo
+    hi = a.hi
+    if b.lo < lo:
+        lo = b.lo
+    if b.hi > hi:
+        hi = b.hi
+    return .Value(Iv32.range(lo, hi))
+
+pub fn interval_min(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    lo = a.lo
+    hi = a.hi
+    if b.lo < lo:
+        lo = b.lo
+    if b.hi < hi:
+        hi = b.hi
+    return .Value(Iv32.range(lo, hi))
+
+pub fn interval_max(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain):
+        return .Error
+    lo = a.lo
+    hi = a.hi
+    if b.lo > lo:
+        lo = b.lo
+    if b.hi > hi:
+        hi = b.hi
+    return .Value(Iv32.range(lo, hi))
+
+pub fn interval_abs(value: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(value, domain):
+        return .Error
+    lo_abs = value.lo.to[i64]()
+    if lo_abs < 0:
+        lo_abs = -lo_abs
+    hi_abs = value.hi.to[i64]()
+    if hi_abs < 0:
+        hi_abs = -hi_abs
+    maximum = lo_abs
+    if hi_abs > maximum:
+        maximum = hi_abs
+    if interval_contains_zero(value):
+        return interval_narrow(0, maximum, domain)
+    minimum = lo_abs
+    if hi_abs < minimum:
+        minimum = hi_abs
+    return interval_narrow(minimum, maximum, domain)
+
+pub fn interval_affine(input: Iv32, scale: Iv32, bias: Iv32, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(input, scale, domain):
+        case .Value(product):
+            return interval_add(product, bias, domain)
+        case _:
+            return .Error
+
+pub fn interval_convert(value: Iv32, source: FixedDomain, destination: FixedDomain) -> NumericOutcome:
+    if not interval_valid(value, source) or destination.exponent < -96 or destination.exponent > 63 or destination.min_raw > destination.max_raw:
+        return .Error
+    shift = source.exponent - destination.exponent
+    if shift >= 0:
+        if shift >= 128:
+            return .Error
+        if shift >= 63:
+            if value.lower() == 0 and value.upper() == 0:
+                return interval_narrow(0, 0, destination)
+            return .Error
+        factor: i64 = 1
+        i: i32 = 0
+        @budget(bound=62)
+        while i < shift:
+            factor = factor * 2
+            i = i + 1
+        if value.lower().to[i64]() < -2147483648 / factor or value.upper().to[i64]() > 2147483647 / factor:
+            return .Error
+        return interval_narrow(value.lower().to[i64]() * factor, value.upper().to[i64]() * factor, destination)
+    if shift < -62:
+        lo: i64 = 0
+        hi: i64 = 0
+        if value.lo < 0:
+            lo = -1
+        if value.hi > 0:
+            hi = 1
+        return interval_narrow(lo, hi, destination)
+    divisor: i64 = 1
+    i: i32 = 0
+    @budget(bound=62)
+    while i < -shift:
+        divisor = divisor * 2
+        i = i + 1
+    return interval_narrow(interval_floor_div(value.lo.to[i64](), divisor), interval_ceil_div(value.hi.to[i64](), divisor), destination)
+
+pub fn interval_from_f32_bits(bits: u32, radius_raw: u32, domain: FixedDomain) -> NumericOutcome:
+    if domain.exponent < -96 or domain.exponent > 63 or domain.min_raw > domain.max_raw:
+        return .Error
+    raw_exponent = ((bits >> 23) & 255).to[i32]()
+    fraction = (bits & 8388607).to[i64]()
+    if raw_exponent == 255:
+        return .Error
+    mantissa = fraction
+    binary_exponent: i32 = -149
+    if raw_exponent != 0:
+        mantissa = mantissa + 8388608
+        binary_exponent = raw_exponent - 127 - 23
+    if bits >> 31 != 0:
+        mantissa = -mantissa
+    shift = binary_exponent - domain.exponent
+    lo = mantissa
+    hi = mantissa
+    if shift >= 0:
+        if shift > 30:
+            if mantissa == 0:
+                return interval_narrow(-radius_raw.to[i64](), radius_raw.to[i64](), domain)
+            return .Error
+        factor: i64 = 1
+        i: i32 = 0
+        @budget(bound=30)
+        while i < shift:
+            factor = factor * 2
+            i = i + 1
+        if mantissa < -2147483648 / factor or mantissa > 2147483647 / factor:
+            return .Error
+        lo = mantissa * factor
+        hi = lo
+    else:
+        if shift < -62:
+            lo = 0
+            hi = 0
+            if mantissa < 0:
+                lo = -1
+            if mantissa > 0:
+                hi = 1
+        else:
+            divisor: i64 = 1
+            i: i32 = 0
+            @budget(bound=62)
+            while i < -shift:
+                divisor = divisor * 2
+                i = i + 1
+            lo = interval_floor_div(mantissa, divisor)
+            hi = interval_ceil_div(mantissa, divisor)
+    return interval_narrow(lo - radius_raw.to[i64](), hi + radius_raw.to[i64](), domain)

@@ -1,0 +1,179 @@
+module render_raster
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_ceil_div, interval_floor_div, interval_narrow
+
+pub struct QRunScalar:
+    q: i32
+    dq: i32
+    ddq: i32
+    domain: FixedDomain
+    error_radius: i32
+    microtile_width: u8
+    step: u8
+
+    pub fn make(q: i32, dq: i32, ddq: i32, error_radius: i32) -> QRunScalar:
+        return QRunScalar(q=q, dq=dq, ddq=ddq, domain=FixedDomain.full(0), error_radius=error_radius, microtile_width=64, step=0)
+
+    pub fn certified(q: i32, dq: i32, ddq: i32, domain: FixedDomain, error_radius: i32, microtile_width: u8) -> QRunScalar:
+        return QRunScalar(q=q, dq=dq, ddq=ddq, domain=domain, error_radius=error_radius, microtile_width=microtile_width, step=0)
+
+    pub fn value(read self) -> i32:
+        return self.q
+
+    pub fn delta(read self) -> i32:
+        return self.dq
+
+    pub fn second_delta(read self) -> i32:
+        return self.ddq
+
+    pub fn error(read self) -> i32:
+        return self.error_radius
+
+    pub fn width(read self) -> u8:
+        return self.microtile_width
+
+    pub fn exponent(read self) -> i32:
+        return self.domain.exponent_value()
+
+pub enum QStep:
+    Value(QRunScalar)
+    Error
+
+pub enum QSetup:
+    Value(QRunScalar)
+    Error
+
+pub fn fixed_q_select_integer_domain(maximum_abs: i64) -> i32:
+    if maximum_abs < 0:
+        return 64
+    exponent: i32 = -30
+    factor: i64 = 1073741824
+    @budget(bound=31)
+    while exponent < 0:
+        if maximum_abs <= 2147483647 / factor:
+            return exponent
+        exponent = exponent + 1
+        factor = factor / 2
+    divisor: i64 = 1
+    @budget(bound=64)
+    while exponent <= 63:
+        if interval_ceil_div(maximum_abs, divisor) <= 2147483647:
+            return exponent
+        exponent = exponent + 1
+        divisor = divisor * 2
+    return 64
+
+pub fn fixed_q_quantize_integer(value: i32, exponent: i32) -> NumericOutcome:
+    if exponent < 0:
+        factor: i64 = 1
+        i: i32 = 0
+        @budget(bound=30)
+        while i < -exponent:
+            factor = factor * 2
+            i = i + 1
+        raw = value.to[i64]() * factor
+        return interval_narrow(raw, raw, FixedDomain.full(exponent))
+    divisor: i64 = 1
+    i: i32 = 0
+    @budget(bound=63)
+    while i < exponent:
+        divisor = divisor * 2
+        i = i + 1
+    return interval_narrow(interval_floor_div(value.to[i64](), divisor), interval_ceil_div(value.to[i64](), divisor), FixedDomain.full(exponent))
+
+pub fn fixed_q_recurrence_fits(q: Iv32, dq: Iv32, ddq: Iv32, width: u8, domain: FixedDomain) -> bool:
+    corner: i32 = 0
+    @budget(bound=8)
+    while corner < 8:
+        q_value = q.lower().to[i64]()
+        if corner & 1 != 0:
+            q_value = q.upper().to[i64]()
+        dq_value = dq.lower().to[i64]()
+        if corner & 2 != 0:
+            dq_value = dq.upper().to[i64]()
+        ddq_value = ddq.lower().to[i64]()
+        if corner & 4 != 0:
+            ddq_value = ddq.upper().to[i64]()
+        step: i32 = 0
+        @budget(bound=64)
+        while step < width.to[i32]():
+            q_value = q_value + dq_value
+            dq_value = dq_value + ddq_value
+            if q_value < -2147483648 or q_value > 2147483647 or dq_value < -2147483648 or dq_value > 2147483647:
+                return false
+            if not domain.contains_raw(q_value.to[i32]()) or not domain.contains_raw(dq_value.to[i32]()):
+                return false
+            step = step + 1
+        corner = corner + 1
+    return true
+
+pub fn fixed_q_setup(q: i32, dq: i32, ddq: i32, requested_width: u8, model_error_radius: i32) -> QSetup:
+    if requested_width == 0 or model_error_radius < 0:
+        return .Error
+    width64 = requested_width.to[i64]()
+    if width64 > 64:
+        width64 = 64
+    triangular = width64 * (width64 - 1) / 2
+    q_abs = q.to[i64]()
+    if q_abs < 0:
+        q_abs = -q_abs
+    dq_abs = dq.to[i64]()
+    if dq_abs < 0:
+        dq_abs = -dq_abs
+    ddq_abs = ddq.to[i64]()
+    if ddq_abs < 0:
+        ddq_abs = -ddq_abs
+    envelope = q_abs + width64 * dq_abs + triangular * ddq_abs
+    exponent = fixed_q_select_integer_domain(envelope)
+    if exponent > 63:
+        return .Error
+    match fixed_q_quantize_integer(q, exponent):
+        case .Value(q_interval):
+            match fixed_q_quantize_integer(dq, exponent):
+                case .Value(dq_interval):
+                    match fixed_q_quantize_integer(ddq, exponent):
+                        case .Value(ddq_interval):
+                            width: i32 = 1
+                            limit = requested_width.to[i32]()
+                            if limit > 32:
+                                limit = 32
+                            @budget(bound=6)
+                            while width * 2 <= limit:
+                                width = width * 2
+                            @budget(bound=6)
+                            while width > 0 and not fixed_q_recurrence_fits(q_interval, dq_interval, ddq_interval, width.to[u8](), FixedDomain.full(exponent)):
+                                width = width / 2
+                            if width == 0:
+                                return .Error
+                            q_center = q_interval.lower() + (q_interval.upper() - q_interval.lower()) / 2
+                            dq_center = dq_interval.lower() + (dq_interval.upper() - dq_interval.lower()) / 2
+                            ddq_center = ddq_interval.lower() + (ddq_interval.upper() - ddq_interval.lower()) / 2
+                            q_radius = (q_interval.upper() - q_interval.lower() + 1) / 2
+                            dq_radius = (dq_interval.upper() - dq_interval.lower() + 1) / 2
+                            ddq_radius = (ddq_interval.upper() - ddq_interval.lower() + 1) / 2
+                            error = q_radius + width * dq_radius + width * (width - 1) / 2 * ddq_radius + model_error_radius
+                            return .Value(QRunScalar.certified(q_center, dq_center, ddq_center, FixedDomain.full(exponent), error, width.to[u8]()))
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn fixed_q_step(run: QRunScalar) -> QStep:
+    if run.error_radius < 0 or run.microtile_width == 0 or run.microtile_width > 64 or run.step >= run.microtile_width:
+        return .Error
+    q64 = run.q.to[i64]() + run.dq.to[i64]()
+    dq64 = run.dq.to[i64]() + run.ddq.to[i64]()
+    if q64 < -2147483648 or q64 > 2147483647 or dq64 < -2147483648 or dq64 > 2147483647:
+        return .Error
+    q = q64.to[i32]()
+    dq = dq64.to[i32]()
+    if not run.domain.contains_raw(q) or not run.domain.contains_raw(dq):
+        return .Error
+    return .Value(QRunScalar(q=q, dq=dq, ddq=run.ddq, domain=run.domain, error_radius=run.error_radius, microtile_width=run.microtile_width, step=run.step + 1))
+
+pub fn fixed_q_nearer(a_q: i32, a_error: i32, b_q: i32, b_error: i32) -> bool:
+    if a_error < 0 or b_error < 0:
+        return false
+    return a_q.to[i64]() - a_error.to[i64]() > b_q.to[i64]() + b_error.to[i64]()

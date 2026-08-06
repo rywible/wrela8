@@ -1,6 +1,7 @@
 module render
 
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
+from core.render_interval import Iv32
 
 pub fn __wrela_pixels_p5_finite(value: f32) -> bool:
     max_finite: f32 = 340282346638528859811704183484516925440.0

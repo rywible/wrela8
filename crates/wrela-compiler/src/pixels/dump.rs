@@ -2379,6 +2379,14 @@ pub fn dump_frame_program(
         structural.capacities.max_transparent_layers,
         renderer.mutable_layout.total_bytes,
     ));
+    let fixed_q = program
+        .table(super::version::FrameProgramTableKindV1::FixedDomain)
+        .and_then(|table| table.records.iter().find(|record| record.tag == 5))
+        .ok_or_else(|| "pixels::dump: fixed-q domain record is missing".to_string())?;
+    out.push_str(&format!(
+        "  FixedQDomain exponent={} maximum_raw={} reset_width={} error_radius={}\n",
+        fixed_q.operands[0] as i64, fixed_q.operands[1], fixed_q.operands[2], fixed_q.operands[3],
+    ));
     for event in &projective.events.generators {
         out.push_str(&format!(
             "  Event id={} kind={} repr={} roots={} subdivision_depth={} pixels=[{},{};{},{}] \

@@ -1,9 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
 use crate::root;
 
 const FORBIDDEN: &[&str] = &["sorry", "admit", "axiom", "unsafe", "native_decide"];
+const PINNED_LEAN_TOOLCHAIN: &str = "leanprover/lean4:v4.32.2";
 
 fn strip_lean(source: &str) -> Result<String, String> {
     let bytes = source.as_bytes();
@@ -159,11 +161,7 @@ fn normalize_axioms(output: &str) -> String {
 pub(crate) fn pixels_formal() -> Result<(), String> {
     pixels_formal_scan()?;
     let dir = root().join("formal/pixels");
-    let output = Command::new("lake")
-        .current_dir(&dir)
-        .arg("build")
-        .output()
-        .map_err(|error| lake_error("build the project", &error))?;
+    let output = build_pixels(&dir)?;
     if !output.status.success() {
         return Err(format!(
             "pixels formal: `lake build` failed:\n{}{}",
@@ -191,12 +189,98 @@ pub(crate) fn pixels_formal() -> Result<(), String> {
     Ok(())
 }
 
+fn build_pixels(dir: &Path) -> Result<std::process::Output, String> {
+    let root_olean = dir.join(".lake/build/lib/lean/Pixels.olean");
+    if !root_olean.is_file() {
+        for chunk in formal_module_order(dir)?.chunks(4) {
+            let mut command = Command::new("lake");
+            command.current_dir(dir).arg("build");
+            for module in chunk {
+                command.arg(format!("+{module}"));
+            }
+            let output = command
+                .output()
+                .map_err(|error| lake_error("build a cold four-module batch", &error))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "pixels formal: cold module batch `{}` failed:\n{}{}",
+                    chunk.join(" "),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+    }
+    Command::new("lake")
+        .current_dir(dir)
+        .arg("build")
+        .output()
+        .map_err(|error| lake_error("build the project", &error))
+}
+
+fn formal_module_order(dir: &Path) -> Result<Vec<String>, String> {
+    let source_dir = dir.join("Pixels");
+    let mut dependencies = BTreeMap::<String, BTreeSet<String>>::new();
+    for entry in std::fs::read_dir(&source_dir)
+        .map_err(|error| format!("pixels formal: read {}: {error}", source_dir.display()))?
+    {
+        let path = entry
+            .map_err(|error| format!("pixels formal: read module entry: {error}"))?
+            .path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("lean") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| format!("pixels formal: non-UTF-8 module path {}", path.display()))?;
+        let module = format!("Pixels.{stem}");
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| format!("pixels formal: read {}: {error}", path.display()))?;
+        let imports = source
+            .lines()
+            .filter_map(|line| line.strip_prefix("import Pixels."))
+            .map(|suffix| format!("Pixels.{}", suffix.trim()))
+            .collect();
+        dependencies.insert(module, imports);
+    }
+    let names: BTreeSet<String> = dependencies.keys().cloned().collect();
+    for (module, imports) in &dependencies {
+        for import in imports {
+            if !names.contains(import) {
+                return Err(format!(
+                    "pixels formal: {module} imports unknown local module {import}"
+                ));
+            }
+        }
+    }
+    let mut built = BTreeSet::new();
+    let mut order = Vec::with_capacity(names.len());
+    while order.len() != names.len() {
+        let ready = names
+            .iter()
+            .filter(|name| !built.contains(*name))
+            .find(|name| {
+                dependencies
+                    .get(*name)
+                    .is_some_and(|imports| imports.is_subset(&built))
+            })
+            .cloned();
+        let Some(module) = ready else {
+            return Err("pixels formal: local import graph contains a cycle".to_string());
+        };
+        built.insert(module.clone());
+        order.push(module);
+    }
+    Ok(order)
+}
+
 fn lake_error(action: &str, error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
         format!(
             "pixels formal: required `lake` executable was not found while trying to {action}. \
              Install the pinned Lean toolchain with \
-             `elan toolchain install leanprover/lean4:v4.30.0` and ensure `lake` is on PATH"
+             `elan toolchain install {PINNED_LEAN_TOOLCHAIN}` and ensure `lake` is on PATH"
         )
     } else {
         format!("pixels formal: could not {action} with `lake`: {error}")
@@ -270,6 +354,6 @@ mod tests {
             "build the project",
             &std::io::Error::from(std::io::ErrorKind::NotFound),
         );
-        assert!(error.contains("elan toolchain install leanprover/lean4:v4.30.0"));
+        assert!(error.contains(&format!("elan toolchain install {PINNED_LEAN_TOOLCHAIN}")));
     }
 }

@@ -1,6 +1,6 @@
 RenderLayout v1
   Renderer index=1
-    FrameProgram base=0x40556440 size=25808
+    FrameProgram base=0x40556840 size=26832
     State base=0x405a0000 size=225472
     Coordinator core=0 actor=__wrela_renderer_1_coordinator
     Worker index=0 core=0 actor=__wrela_renderer_1_worker_0 tiles=[0,4) workspace_base=0x405c0210 workspace_bytes=1200

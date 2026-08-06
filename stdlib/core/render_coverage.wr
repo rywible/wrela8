@@ -1,0 +1,196 @@
+module render_coverage
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_abs, interval_ceil_div, interval_contains_zero, interval_floor_div, interval_mul, interval_narrow, interval_valid
+from core.render_program import QuadraticRangeOutcome, QuadraticRangeWideOutcome, program_ceil_div, program_floor_div, quadratic_range, quadratic_range_wide
+
+pub enum CoverageOutcome:
+    Value(Iv32)
+    Error
+
+pub fn coverage_line_twice_area(a: i32, b: i32, c: i32) -> CoverageOutcome:
+    # Reflect negative coefficients into the positive quadrant. For A,B >= 0,
+    # the area below A*x+B*y=t is the inclusion/exclusion sum of four squared
+    # hinges divided by 2*A*B. The returned scale is 512.
+    if a < -1000000 or a > 1000000 or b < -1000000 or b > 1000000 or c < -1000000 or c > 1000000:
+        return .Error
+    aa = a.to[i64]()
+    bb = b.to[i64]()
+    cc = c.to[i64]()
+    if aa < 0:
+        cc = cc + aa
+        aa = -aa
+    if bb < 0:
+        cc = cc + bb
+        bb = -bb
+    t = -cc
+    if t <= 0:
+        return .Value(Iv32.point(512))
+    if t >= aa + bb:
+        return .Value(Iv32.point(0))
+    if aa == 0:
+        numerator = (bb - t) * 512
+        return .Value(Iv32.range(interval_floor_div(numerator, bb).to[i32](), interval_ceil_div(numerator, bb).to[i32]()))
+    if bb == 0:
+        numerator = (aa - t) * 512
+        return .Value(Iv32.range(interval_floor_div(numerator, aa).to[i32](), interval_ceil_div(numerator, aa).to[i32]()))
+    h0 = t * t
+    h1: i64 = 0
+    h2: i64 = 0
+    h3: i64 = 0
+    if t > aa:
+        h1 = (t - aa) * (t - aa)
+    if t > bb:
+        h2 = (t - bb) * (t - bb)
+    if t > aa + bb:
+        h3 = (t - aa - bb) * (t - aa - bb)
+    denominator = 2 * aa * bb
+    foreground_numerator = denominator - (h0 - h1 - h2 + h3)
+    scaled = foreground_numerator * 512
+    return .Value(Iv32.range(interval_floor_div(scaled, denominator).to[i32](), interval_ceil_div(scaled, denominator).to[i32]()))
+
+pub fn coverage_quadratic(chord: Iv32, strip: i32) -> Iv32:
+    lo = chord.lower() - strip
+    hi = chord.upper() + strip
+    if lo < 0:
+        lo = 0
+    if hi > 256:
+        hi = 256
+    return Iv32.range(lo, hi)
+
+pub fn coverage_quadratic_strip(a: i32, b: i32, c: i32, strip: i32) -> CoverageOutcome:
+    if strip < 0:
+        return .Error
+    match coverage_line_twice_area(a, b, c):
+        case .Value(chord):
+            lo = chord.lower() - strip
+            hi = chord.upper() + strip
+            if lo < 0:
+                lo = 0
+            if hi > 512:
+                hi = 512
+            return .Value(Iv32.range(lo, hi))
+        case .Error:
+            return .Error
+
+pub fn coverage_quadratic_split(c: i32, b: i32, a: i32) -> Iv32:
+    if a == 0:
+        return Iv32.point(-1)
+    numerator = -b.to[i64]() * 256
+    denominator = 2 * a.to[i64]()
+    if denominator < 0:
+        numerator = -numerator
+        denominator = -denominator
+    if numerator <= 0 or numerator >= denominator * 256:
+        return Iv32.point(-1)
+    return Iv32.range(interval_floor_div(numerator, denominator).to[i32](), interval_ceil_div(numerator, denominator).to[i32]())
+
+pub fn coverage_quadratic_graph(c: i32, b: i32, a: i32, strip: i32, foreground_below: bool, owner_lower_or_left: bool) -> CoverageOutcome:
+    if strip < 0:
+        return .Error
+    match quadratic_range(c, b, a):
+        case .Value(range):
+            if range[0] < 0 or range[1] > 256:
+                if c < -1000000 or c > 1000000 or b < -1000000 or b > 1000000 or a < -1000000 or a > 1000000:
+                    return .Value(Iv32.range(0, 256))
+                pieces: i64 = 256
+                denominator: i64 = 65536
+                stationary_numerator = -b.to[i64]()
+                stationary_denominator = 2 * a.to[i64]()
+                if stationary_denominator < 0:
+                    stationary_numerator = -stationary_numerator
+                    stationary_denominator = -stationary_denominator
+                stationary_value_numerator = 4 * a.to[i64]() * c.to[i64]() - b.to[i64]() * b.to[i64]()
+                stationary_value_denominator = 4 * a.to[i64]()
+                if stationary_value_denominator < 0:
+                    stationary_value_numerator = -stationary_value_numerator
+                    stationary_value_denominator = -stationary_value_denominator
+                lower_sum: i64 = 0
+                upper_sum: i64 = 0
+                piece: i64 = 0
+                @budget(bound=256)
+                while piece < pieces:
+                    left_numerator = c.to[i64]() * denominator + b.to[i64]() * piece * pieces + a.to[i64]() * piece * piece
+                    right_x = piece + 1
+                    right_numerator = c.to[i64]() * denominator + b.to[i64]() * right_x * pieces + a.to[i64]() * right_x * right_x
+                    lo = program_floor_div(left_numerator, denominator)
+                    hi = program_ceil_div(left_numerator, denominator)
+                    right_lo = program_floor_div(right_numerator, denominator)
+                    right_hi = program_ceil_div(right_numerator, denominator)
+                    if right_lo < lo:
+                        lo = right_lo
+                    if right_hi > hi:
+                        hi = right_hi
+                    if a != 0:
+                        scaled_stationary = stationary_numerator * pieces
+                        lower = piece * stationary_denominator
+                        upper = (piece + 1) * stationary_denominator
+                        assigned = lower < scaled_stationary and scaled_stationary < upper
+                        if owner_lower_or_left and lower == scaled_stationary:
+                            assigned = true
+                        if not owner_lower_or_left and upper == scaled_stationary:
+                            assigned = true
+                        if assigned:
+                            stationary_lo = program_floor_div(stationary_value_numerator, stationary_value_denominator)
+                            stationary_hi = program_ceil_div(stationary_value_numerator, stationary_value_denominator)
+                            if stationary_lo < lo:
+                                lo = stationary_lo
+                            if stationary_hi > hi:
+                                hi = stationary_hi
+                    if lo < 0:
+                        lo = 0
+                    if lo > 256:
+                        lo = 256
+                    if hi < 0:
+                        hi = 0
+                    if hi > 256:
+                        hi = 256
+                    lower_sum = lower_sum + lo
+                    upper_sum = upper_sum + hi
+                    piece = piece + 1
+                lo = program_floor_div(lower_sum, pieces).to[i32]()
+                hi = program_ceil_div(upper_sum, pieces).to[i32]()
+                if not foreground_below:
+                    old_lo = lo
+                    lo = 256 - hi
+                    hi = 256 - old_lo
+                lo = lo - strip
+                hi = hi + strip
+                if lo < 0:
+                    lo = 0
+                if hi > 256:
+                    hi = 256
+                return .Value(Iv32.range(lo, hi))
+        case .Error:
+            return .Error
+    numerator = 6 * c.to[i64]() + 3 * b.to[i64]() + 2 * a.to[i64]()
+    lo = interval_floor_div(numerator, 6).to[i32]()
+    hi = interval_ceil_div(numerator, 6).to[i32]()
+    if not foreground_below:
+        old_lo = lo
+        lo = 256 - hi
+        hi = 256 - old_lo
+    lo = lo - strip
+    hi = hi + strip
+    if lo < 0:
+        lo = 0
+    if hi > 256:
+        hi = 256
+    return .Value(Iv32.range(lo, hi))
+
+pub fn coverage_color_error(coverage: Iv32, contrast: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(coverage, domain) or not interval_valid(contrast, domain):
+        return .Error
+    width = coverage.upper().to[i64]() - coverage.lower().to[i64]()
+    match interval_narrow(-width, width, domain):
+        case .Value(coverage_error):
+            match interval_abs(contrast, domain):
+                case .Value(abs_contrast):
+                    match interval_mul(coverage_error, abs_contrast, domain):
+                        case .Value(product):
+                            return interval_abs(product, domain)
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error

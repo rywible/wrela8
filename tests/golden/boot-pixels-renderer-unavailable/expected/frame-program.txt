@@ -1,5 +1,5 @@
-FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede12152ced243471d3768
-  Header bytes=80 flags=0x1 total_bytes=30224 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1
+FrameProgram v1 renderer=0 digest=f327ec17379bb07d9c9ac46719fdd0bc1ade482379f42ba46336a5fbe41cd362
+  Header bytes=80 flags=0x1 total_bytes=31248 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1
   Directory count=17 offset=80
   Table kind=scalar code=1 record_bytes=16 count=12 offset=384 byte_len=192
   Table kind=field code=2 record_bytes=16 count=2 offset=576 byte_len=32
@@ -9,9 +9,9 @@ FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede1
   Table kind=parameter code=6 record_bytes=16 count=1 offset=832 byte_len=16
   Table kind=event code=7 record_bytes=16 count=4 offset=896 byte_len=64
   Table kind=csg code=8 record_bytes=16 count=1 offset=960 byte_len=16
-  Table kind=fixed-domain code=9 record_bytes=16 count=136 offset=1024 byte_len=2176
-  Table kind=immediate code=10 record_bytes=24 count=1124 offset=3200 byte_len=26976
-  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=30208 byte_len=16
+  Table kind=fixed-domain code=9 record_bytes=16 count=137 offset=1024 byte_len=2192
+  Table kind=immediate code=10 record_bytes=24 count=1165 offset=3264 byte_len=27960
+  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=31232 byte_len=16
   Table kind=texture code=12 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=shading-summary code=13 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=transparency code=14 record_bytes=16 count=0 offset=0 byte_len=0
@@ -19,6 +19,7 @@ FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede1
   Table kind=kinetic code=16 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=debug-name code=17 record_bytes=16 count=0 offset=0 byte_len=0
   Capacity objects=1 features=1 candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_intervals_per_row=4 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=5 corridors_per_row=4 transparent_layers=1 state_bytes=229568
+  FixedQDomain exponent=-17 maximum_raw=1342439424 reset_width=32 error_radius=1341783554
   Event id=e0 kind=silhouette repr=linear-leading-coefficient:predicate=poly8:root=poly0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
   Event id=e1 kind=near-clip repr=clip-q:10.000000000000002 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
   Event id=e2 kind=far-clip repr=clip-q:0.007812499999999999 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
@@ -27,7 +28,7 @@ FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede1
   Exclusion id=x1 subject=event:projected-bound-exit:feature=g0:owner=-:ordinal=1 reason=full-domain-projection domain=domain0 proof=proof1 margin=[0.49999999999999994,0.5000000000000001]
   ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
   ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
-  GeneratedConfig module=core.__image_pixels frameprog_base=0x40560000 frameprog_bytes=30224 state_base=0x40570000 state_bytes=229568
+  GeneratedConfig module=core.__image_pixels frameprog_base=0x40560000 frameprog_bytes=31248 state_base=0x40570000 state_bytes=229568
   GeneratedModule begin
     module __image_pixels
 
@@ -91,7 +92,7 @@ FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede1
     pub const N_RENDERERS: usize = 1
 
     const R0_FRAMEPROG_BASE: usize = 1079377920
-    const R0_FRAMEPROG_BYTES: usize = 30224
+    const R0_FRAMEPROG_BYTES: usize = 31248
     const R0_STATE_BASE: usize = 1079443456
     const R0_STATE_BYTES: usize = 229568
     const R0_WIDTH: usize = 64
@@ -284,28 +285,28 @@ FrameProgram v1 renderer=0 digest=be403bd12d7e00a3ffe99242d4001bd111f61627a9ede1
     @placed(0x405603c0)
     static R0_CSG_TABLE: R0CsgTableView
     const R0_FIXED_DOMAIN_BASE: usize = 0x40560400
-    const R0_FIXED_DOMAIN_COUNT: usize = 136
-    const R0_FIXED_DOMAIN_BYTES: usize = 2176
+    const R0_FIXED_DOMAIN_COUNT: usize = 137
+    const R0_FIXED_DOMAIN_BYTES: usize = 2192
     @layout(runtime, endian=little)
     struct R0FixedDomainTableView:
         records: [FrameProgramRecordV1; R0_FIXED_DOMAIN_COUNT]
     @placed(0x40560400)
     static R0_FIXED_DOMAIN_TABLE: R0FixedDomainTableView
-    const R0_IMMEDIATE_BASE: usize = 0x40560c80
-    const R0_IMMEDIATE_COUNT: usize = 1124
-    const R0_IMMEDIATE_BYTES: usize = 26976
+    const R0_IMMEDIATE_BASE: usize = 0x40560cc0
+    const R0_IMMEDIATE_COUNT: usize = 1165
+    const R0_IMMEDIATE_BYTES: usize = 27960
     @layout(runtime, endian=little)
     struct R0ImmediateTableView:
         records: [FrameProgramImmediateV1; R0_IMMEDIATE_COUNT]
-    @placed(0x40560c80)
+    @placed(0x40560cc0)
     static R0_IMMEDIATE_TABLE: R0ImmediateTableView
-    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40567600
+    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40567a00
     const R0_CAMERA_LIGHT_POST_COUNT: usize = 1
     const R0_CAMERA_LIGHT_POST_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0CameraLightPostTableView:
         records: [FrameProgramRecordV1; R0_CAMERA_LIGHT_POST_COUNT]
-    @placed(0x40567600)
+    @placed(0x40567a00)
     static R0_CAMERA_LIGHT_POST_TABLE: R0CameraLightPostTableView
     const R0_TEXTURE_BASE: usize = 0x0
     const R0_TEXTURE_COUNT: usize = 0

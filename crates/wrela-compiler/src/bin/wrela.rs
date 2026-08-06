@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
@@ -1771,6 +1772,46 @@ fn find_vmm_binary(explicit: Option<&str>) -> Option<PathBuf> {
     }
 }
 
+struct VmmSlot {
+    _file: std::fs::File,
+}
+
+impl VmmSlot {
+    fn acquire() -> Result<Option<Self>, String> {
+        let Some(raw_dir) = std::env::var_os("WRELA_VMM_SLOT_DIR") else {
+            return Ok(None);
+        };
+        let dir = PathBuf::from(raw_dir);
+        let mut slots = std::fs::read_dir(&dir)
+            .map_err(|error| format!("read VMM slot directory {}: {error}", dir.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read VMM slot entry: {error}"))?;
+        slots.sort_by_key(|entry| entry.file_name());
+        if slots.is_empty() {
+            return Err(format!("VMM slot directory {} is empty", dir.display()));
+        }
+        loop {
+            for entry in &slots {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(entry.path())
+                    .map_err(|error| {
+                        format!("open VMM slot {}: {error}", entry.path().display())
+                    })?;
+                match file.try_lock() {
+                    Ok(()) => return Ok(Some(Self { _file: file })),
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(error)) => {
+                        return Err(format!("lock VMM slot {}: {error}", entry.path().display()));
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 fn test_cmd(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     wrela_compiler::codegen::set_block_count(false);
@@ -2092,6 +2133,19 @@ fn test_cmd(args: &[String]) -> ExitCode {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;
     }
+    let _vmm_slot = match VmmSlot::acquire() {
+        Ok(slot) => slot,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            for line in &comptime_lines {
+                println!("{line}");
+            }
+            print_line_diagnostic(&format!(
+                "error[build]: could not acquire VMM slot: {error}"
+            ));
+            return ExitCode::FAILURE;
+        }
+    };
     let out = Command::new(&vmm_path)
         .arg(&report_path)
         .arg(&img_path)

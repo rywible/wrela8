@@ -1,5 +1,7 @@
 module render_program
 
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
+
 # Stable guest-side scalar views shared by generated core.__image_pixels.
 # The generated module supplies exact array extents and @placed roots for the
 # renderer set sealed into one image.
@@ -44,3 +46,507 @@ pub struct FrameProgramImmediateV1:
     ordinal: u32
     reserved1: u32
     value: u64
+
+# Scalar P6 proof-kernel counterparts. Generated frame programs seal the
+# degree and invoke specialized fixed-array forms; these degree-two controls
+# keep the correspondence lane executable before P12 code generation.
+pub fn program_floor_div(value: i64, scale: i64) -> i64:
+    quotient = value / scale
+    remainder = value % scale
+    if remainder != 0 and value < 0:
+        return quotient - 1
+    return quotient
+
+pub fn program_ceil_div(value: i64, scale: i64) -> i64:
+    quotient = value / scale
+    remainder = value % scale
+    if remainder != 0 and value > 0:
+        return quotient + 1
+    return quotient
+
+pub enum BernsteinOutcome3:
+    Value([Iv32; 3])
+    Error
+
+pub enum BernsteinSplitOutcome3:
+    Value([Iv32; 6])
+    Error
+
+pub struct Polynomial9:
+    coefficients: [Iv32; 9]
+    degree: u8
+
+    pub fn coefficient(read self, index: usize) -> Iv32:
+        return self.coefficients[index]
+
+    pub fn degree_value(read self) -> u8:
+        return self.degree
+
+pub struct BernsteinSplit9:
+    left: [Iv32; 9]
+    right: [Iv32; 9]
+    degree: u8
+
+    pub fn left_coefficient(read self, index: usize) -> Iv32:
+        return self.left[index]
+
+    pub fn right_coefficient(read self, index: usize) -> Iv32:
+        return self.right[index]
+
+pub enum Polynomial9Outcome:
+    Value(Polynomial9)
+    Error
+
+pub enum BernsteinSplit9Outcome:
+    Value(BernsteinSplit9)
+    Error
+
+pub struct SparseTerm:
+    coefficient: Iv32
+    powers: [u8; 4]
+
+    pub fn make(coefficient: Iv32, powers: [u8; 4]) -> SparseTerm:
+        return SparseTerm(coefficient=coefficient, powers=powers)
+
+pub fn polynomial_horner9(coefficients: [Iv32; 9], degree: u8, x: Iv32, domain: FixedDomain) -> NumericOutcome:
+    if degree > 8 or not interval_valid(x, domain):
+        return .Error
+    accumulator = Iv32.point(0)
+    index = degree.to[i32]()
+    @budget(bound=9)
+    while index >= 0:
+        match interval_mul(accumulator, x, domain):
+            case .Value(product):
+                match interval_add(product, coefficients[index.to[usize]()], domain):
+                    case .Value(sum):
+                        accumulator = sum
+                    case _:
+                        return .Error
+            case _:
+                return .Error
+        index = index - 1
+    return .Value(accumulator)
+
+pub fn polynomial_derivative9(coefficients: [Iv32; 9], degree: u8, domain: FixedDomain) -> Polynomial9Outcome:
+    if degree > 8:
+        return .Error
+    output: [Iv32; 9] = [Iv32.point(0); 9]
+    if degree == 0:
+        return .Value(Polynomial9(coefficients=output, degree=0))
+    power: i32 = 1
+    @budget(bound=8)
+    while power <= degree.to[i32]():
+        lo = coefficients[power.to[usize]()].lower().to[i64]() * power.to[i64]()
+        hi = coefficients[power.to[usize]()].upper().to[i64]() * power.to[i64]()
+        match interval_narrow(lo, hi, domain):
+            case .Value(value):
+                output[(power - 1).to[usize]()] = value
+            case _:
+                return .Error
+        power = power + 1
+    return .Value(Polynomial9(coefficients=output, degree=degree - 1))
+
+pub fn polynomial_multiply9(left: Polynomial9, right: Polynomial9, domain: FixedDomain) -> Polynomial9Outcome:
+    degree = left.degree.to[i32]() + right.degree.to[i32]()
+    if degree > 8:
+        return .Error
+    output: [Iv32; 9] = [Iv32.point(0); 9]
+    left_power: i32 = 0
+    @budget(bound=9)
+    while left_power <= left.degree.to[i32]():
+        right_power: i32 = 0
+        @budget(bound=9)
+        while right_power <= right.degree.to[i32]():
+            match interval_mul(left.coefficients[left_power.to[usize]()], right.coefficients[right_power.to[usize]()], domain):
+                case .Value(product):
+                    slot = (left_power + right_power).to[usize]()
+                    match interval_add(output[slot], product, domain):
+                        case .Value(sum):
+                            output[slot] = sum
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+            right_power = right_power + 1
+        left_power = left_power + 1
+    return .Value(Polynomial9(coefficients=output, degree=degree.to[u8]()))
+
+pub fn polynomial_compose9(outer_coefficients: [Iv32; 9], outer_degree: u8, candidate_coefficients: [Iv32; 9], candidate_degree: u8, domain: FixedDomain) -> Polynomial9Outcome:
+    if outer_degree > 8 or candidate_degree > 8 or outer_degree.to[i32]() * candidate_degree.to[i32]() > 8:
+        return .Error
+    result_coefficients: [Iv32; 9] = [Iv32.point(0); 9]
+    result = Polynomial9(coefficients=result_coefficients, degree=0)
+    candidate = Polynomial9(coefficients=candidate_coefficients, degree=candidate_degree)
+    power = outer_degree.to[i32]()
+    @budget(bound=9)
+    while power >= 0:
+        match polynomial_multiply9(result, candidate, domain):
+            case .Value(product):
+                result = product
+            case .Error:
+                return .Error
+        match interval_add(result.coefficients[0], outer_coefficients[power.to[usize]()], domain):
+            case .Value(sum):
+                updated = result.coefficients
+                updated[0] = sum
+                result = Polynomial9(coefficients=updated, degree=result.degree)
+            case _:
+                return .Error
+        power = power - 1
+    return .Value(result)
+
+pub fn polynomial_sparse32(terms: [SparseTerm; 32], count: u8, variables: [Iv32; 4], domain: FixedDomain) -> NumericOutcome:
+    if count > 32:
+        return .Error
+    sum = Iv32.point(0)
+    term_index: i32 = 0
+    @budget(bound=32)
+    while term_index < count.to[i32]():
+        term = terms[term_index.to[usize]()]
+        value = term.coefficient
+        variable_index: i32 = 0
+        @budget(bound=4)
+        while variable_index < 4:
+            power = term.powers[variable_index.to[usize]()]
+            if power > 8:
+                return .Error
+            repetition: i32 = 0
+            @budget(bound=8)
+            while repetition < power.to[i32]():
+                match interval_mul(value, variables[variable_index.to[usize]()], domain):
+                    case .Value(product):
+                        value = product
+                    case _:
+                        return .Error
+                repetition = repetition + 1
+            variable_index = variable_index + 1
+        match interval_add(sum, value, domain):
+            case .Value(next):
+                sum = next
+            case _:
+                return .Error
+        term_index = term_index + 1
+    return .Value(sum)
+
+pub fn program_binomial(n: i32, k: i32) -> i64:
+    if k < 0 or k > n:
+        return 0
+    reduced = k
+    if n - k < reduced:
+        reduced = n - k
+    value: i64 = 1
+    index: i32 = 1
+    @budget(bound=8)
+    while index <= reduced:
+        value = value * (n - reduced + index).to[i64]() / index.to[i64]()
+        index = index + 1
+    return value
+
+pub fn program_gcd(a: i64, b: i64) -> i64:
+    left = a
+    right = b
+    @budget(bound=16)
+    while right != 0:
+        remainder = left % right
+        left = right
+        right = remainder
+    return left
+
+pub fn bernstein_from_power9(coefficients: [Iv32; 9], degree: u8, domain: FixedDomain) -> Polynomial9Outcome:
+    if degree > 8:
+        return .Error
+    output: [Iv32; 9] = [Iv32.point(0); 9]
+    k: i32 = 0
+    @budget(bound=9)
+    while k <= degree.to[i32]():
+        lo: i64 = 0
+        hi: i64 = 0
+        common_denominator: i64 = 1
+        denominator_index: i32 = 0
+        @budget(bound=9)
+        while denominator_index <= k:
+            denominator = program_binomial(degree.to[i32](), denominator_index)
+            common_denominator = common_denominator / program_gcd(common_denominator, denominator) * denominator
+            denominator_index = denominator_index + 1
+        i: i32 = 0
+        @budget(bound=9)
+        while i <= k:
+            numerator = program_binomial(k, i)
+            denominator = program_binomial(degree.to[i32](), i)
+            factor = common_denominator / denominator
+            lo = lo + coefficients[i.to[usize]()].lower().to[i64]() * numerator * factor
+            hi = hi + coefficients[i.to[usize]()].upper().to[i64]() * numerator * factor
+            i = i + 1
+        match interval_narrow(
+            program_floor_div(lo, common_denominator),
+            program_ceil_div(hi, common_denominator),
+            domain,
+        ):
+            case .Value(value):
+                output[k.to[usize]()] = value
+            case _:
+                return .Error
+        k = k + 1
+    return .Value(Polynomial9(coefficients=output, degree=degree))
+
+pub fn bernstein_subdivide9(coefficients: [Iv32; 9], degree: u8, domain: FixedDomain) -> BernsteinSplit9Outcome:
+    if degree > 8:
+        return .Error
+    triangle: [[Iv32; 9]; 9] = [[Iv32.point(0); 9]; 9]
+    triangle[0] = coefficients
+    row: i32 = 1
+    @budget(bound=8)
+    while row <= degree.to[i32]():
+        column: i32 = 0
+        @budget(bound=8)
+        while column <= degree.to[i32]() - row:
+            match bernstein_average(triangle[(row - 1).to[usize]()][column.to[usize]()], triangle[(row - 1).to[usize]()][(column + 1).to[usize]()], domain):
+                case .Value(value):
+                    triangle[row.to[usize]()][column.to[usize]()] = value
+                case _:
+                    return .Error
+            column = column + 1
+        row = row + 1
+    left: [Iv32; 9] = [Iv32.point(0); 9]
+    right: [Iv32; 9] = [Iv32.point(0); 9]
+    row = 0
+    @budget(bound=9)
+    while row <= degree.to[i32]():
+        left[row.to[usize]()] = triangle[row.to[usize]()][0]
+        right[(degree.to[i32]() - row).to[usize]()] = triangle[row.to[usize]()][(degree.to[i32]() - row).to[usize]()]
+        row = row + 1
+    return .Value(BernsteinSplit9(left=left, right=right, degree=degree))
+
+pub fn bernstein_compose(a0: i32, a1: i32, a2: i32, domain: FixedDomain) -> BernsteinOutcome3:
+    if not interval_valid(Iv32.point(a0), domain) or not interval_valid(Iv32.point(a1), domain) or not interval_valid(Iv32.point(a2), domain):
+        return .Error
+    middle_lo = interval_floor_div(a0.to[i64]() * 2 + a1.to[i64](), 2)
+    middle_hi = interval_ceil_div(a0.to[i64]() * 2 + a1.to[i64](), 2)
+    match interval_narrow(middle_lo, middle_hi, domain):
+        case .Value(middle):
+            match interval_add(Iv32.point(a0), Iv32.point(a1), domain):
+                case .Value(linear):
+                    match interval_add(linear, Iv32.point(a2), domain):
+                        case .Value(last):
+                            return .Value([Iv32.point(a0), middle, last])
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn bernstein_sign(coefficients: [Iv32; 3]) -> i32:
+    if coefficients[0].lower() > 0 and coefficients[1].lower() > 0 and coefficients[2].lower() > 0:
+        return 1
+    if coefficients[0].upper() < 0 and coefficients[1].upper() < 0 and coefficients[2].upper() < 0:
+        return -1
+    return 0
+
+pub fn bernstein_average(a: Iv32, b: Iv32, domain: FixedDomain) -> NumericOutcome:
+    return interval_narrow(
+        interval_floor_div(a.lower().to[i64]() + b.lower().to[i64](), 2),
+        interval_ceil_div(a.upper().to[i64]() + b.upper().to[i64](), 2),
+        domain,
+    )
+
+pub fn bernstein_lerp_ratio(a: Iv32, b: Iv32, numerator: i64, denominator: i64, domain: FixedDomain) -> NumericOutcome:
+    if not interval_valid(a, domain) or not interval_valid(b, domain) or numerator <= 0 or numerator >= denominator:
+        return .Error
+    complement = denominator - numerator
+    lo = a.lower().to[i64]() * complement + b.lower().to[i64]() * numerator
+    hi = a.upper().to[i64]() * complement + b.upper().to[i64]() * numerator
+    return interval_narrow(interval_floor_div(lo, denominator), interval_ceil_div(hi, denominator), domain)
+
+pub fn bernstein_subdivide(coefficients: [Iv32; 3], domain: FixedDomain) -> BernsteinSplitOutcome3:
+    match bernstein_average(coefficients[0], coefficients[1], domain):
+        case .Value(m01):
+            match bernstein_average(coefficients[1], coefficients[2], domain):
+                case .Value(m12):
+                    match bernstein_average(m01, m12, domain):
+                        case .Value(center):
+                            return .Value([coefficients[0], m01, center, center, m12, coefficients[2]])
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub enum QuadraticRangeOutcome:
+    Value([i32; 2])
+    Error
+
+pub enum QuadraticRangeWideOutcome:
+    Value([i64; 2])
+    Error
+
+pub fn quadratic_range_wide(c: i64, b: i64, a: i64) -> QuadraticRangeWideOutcome:
+    at0 = c
+    at1 = c + b + a
+    lo = at0
+    hi = at0
+    if at1 < lo:
+        lo = at1
+    if at1 > hi:
+        hi = at1
+    if a != 0:
+        if b < -2000000000 or b > 2000000000:
+            return .Error
+        root_numerator = -b
+        root_denominator = 2 * a
+        if (root_denominator > 0 and root_numerator >= 0 and root_numerator <= root_denominator) or (root_denominator < 0 and root_numerator <= 0 and root_numerator >= root_denominator):
+            square = b * b
+            correction_numerator = square
+            correction_denominator = 4 * a
+            if correction_denominator < 0:
+                correction_numerator = -correction_numerator
+                correction_denominator = -correction_denominator
+            correction_lo = program_floor_div(correction_numerator, correction_denominator)
+            correction_hi = program_ceil_div(correction_numerator, correction_denominator)
+            value_lo = c.to[i64]() - correction_hi
+            value_hi = c.to[i64]() - correction_lo
+            if value_lo < lo:
+                lo = value_lo
+            if value_hi > hi:
+                hi = value_hi
+    return .Value([lo, hi])
+
+pub fn quadratic_range(c: i32, b: i32, a: i32) -> QuadraticRangeOutcome:
+    match quadratic_range_wide(c.to[i64](), b.to[i64](), a.to[i64]()):
+        case .Error:
+            return .Error
+        case .Value(range):
+            lo = range[0]
+            hi = range[1]
+            if lo < -2147483648 or hi > 2147483647:
+                return .Error
+            return .Value([lo.to[i32](), hi.to[i32]()])
+
+# Exact six-coefficient range for
+# c + bu*u + bv*v + buu*u*u + buv*u*v + bvv*v*v on [0,1]^2.
+# Edge extrema use widened one-dimensional arithmetic. A coupled interior
+# stationary point is evaluated exactly when its i64 schedule is sealed safe;
+# larger coupled schedules fail explicitly instead of wrapping.
+pub fn quadratic_range2(c: i32, bu: i32, bv: i32, buu: i32, buv: i32, bvv: i32) -> QuadraticRangeOutcome:
+    lo: i64 = 9223372036854775807
+    hi: i64 = -9223372036854775807
+    edge_c: [i64; 4] = [
+        c.to[i64](),
+        c.to[i64]() + bv.to[i64]() + bvv.to[i64](),
+        c.to[i64](),
+        c.to[i64]() + bu.to[i64]() + buu.to[i64](),
+    ]
+    edge_b: [i64; 4] = [
+        bu.to[i64](),
+        bu.to[i64]() + buv.to[i64](),
+        bv.to[i64](),
+        bv.to[i64]() + buv.to[i64](),
+    ]
+    edge_a: [i64; 4] = [
+        buu.to[i64](),
+        buu.to[i64](),
+        bvv.to[i64](),
+        bvv.to[i64](),
+    ]
+    edge: i32 = 0
+    @budget(bound=4)
+    while edge < 4:
+        match quadratic_range_wide(edge_c[edge.to[usize]()], edge_b[edge.to[usize]()], edge_a[edge.to[usize]()]):
+            case .Error:
+                return .Error
+            case .Value(range):
+                if range[0] < lo:
+                    lo = range[0]
+                if range[1] > hi:
+                    hi = range[1]
+        edge = edge + 1
+
+    # The edge ranges already contain the stationary point when either
+    # coordinate is on the box boundary. Only a genuinely coupled interior
+    # point remains.
+    if buv != 0:
+        if c < -512 or c > 512 or bu < -512 or bu > 512 or bv < -512 or bv > 512 or buu < -512 or buu > 512 or buv < -512 or buv > 512 or bvv < -512 or bvv > 512:
+            return .Error
+        determinant = 4 * buu.to[i64]() * bvv.to[i64]() - buv.to[i64]() * buv.to[i64]()
+        if determinant != 0:
+            u_numerator = buv.to[i64]() * bv.to[i64]() - 2 * bvv.to[i64]() * bu.to[i64]()
+            v_numerator = buv.to[i64]() * bu.to[i64]() - 2 * buu.to[i64]() * bv.to[i64]()
+            if determinant < 0:
+                determinant = -determinant
+                u_numerator = -u_numerator
+                v_numerator = -v_numerator
+            if u_numerator >= 0 and u_numerator <= determinant and v_numerator >= 0 and v_numerator <= determinant:
+                determinant_squared = determinant * determinant
+                numerator = c.to[i64]() * determinant_squared
+                numerator = numerator + bu.to[i64]() * u_numerator * determinant
+                numerator = numerator + bv.to[i64]() * v_numerator * determinant
+                numerator = numerator + buu.to[i64]() * u_numerator * u_numerator
+                numerator = numerator + buv.to[i64]() * u_numerator * v_numerator
+                numerator = numerator + bvv.to[i64]() * v_numerator * v_numerator
+                value_lo = program_floor_div(numerator, determinant_squared)
+                value_hi = program_ceil_div(numerator, determinant_squared)
+                if value_lo < lo:
+                    lo = value_lo
+                if value_hi > hi:
+                    hi = value_hi
+    elif buu != 0 and bvv != 0:
+        # A separable interior extremum is not necessarily present on an edge.
+        # Seal the exact common-denominator schedule to the range where i64
+        # products are proven safe.
+        if c < -512 or c > 512 or bu < -512 or bu > 512 or bv < -512 or bv > 512 or buu < -512 or buu > 512 or bvv < -512 or bvv > 512:
+            return .Error
+        u_numerator = -bu.to[i64]()
+        u_denominator = 2 * buu.to[i64]()
+        v_numerator = -bv.to[i64]()
+        v_denominator = 2 * bvv.to[i64]()
+        if u_denominator < 0:
+            u_numerator = -u_numerator
+            u_denominator = -u_denominator
+        if v_denominator < 0:
+            v_numerator = -v_numerator
+            v_denominator = -v_denominator
+        if u_numerator >= 0 and u_numerator <= u_denominator and v_numerator >= 0 and v_numerator <= v_denominator:
+            denominator = u_denominator * u_denominator * v_denominator * v_denominator
+            numerator = c.to[i64]() * denominator
+            numerator = numerator + bu.to[i64]() * u_numerator * u_denominator * v_denominator * v_denominator
+            numerator = numerator + buu.to[i64]() * u_numerator * u_numerator * v_denominator * v_denominator
+            numerator = numerator + bv.to[i64]() * v_numerator * v_denominator * u_denominator * u_denominator
+            numerator = numerator + bvv.to[i64]() * v_numerator * v_numerator * u_denominator * u_denominator
+            value_lo = program_floor_div(numerator, denominator)
+            value_hi = program_ceil_div(numerator, denominator)
+            if value_lo < lo:
+                lo = value_lo
+            if value_hi > hi:
+                hi = value_hi
+    if lo < -2147483648 or hi > 2147483647:
+        return .Error
+    return .Value([lo.to[i32](), hi.to[i32]()])
+
+pub fn polynomial_sparse(c0: i32, c1: i32, u: i32, t: i32, domain: FixedDomain) -> NumericOutcome:
+    match interval_mul(Iv32.point(c1), Iv32.point(u), domain):
+        case .Value(linear):
+            match interval_mul(Iv32.point(t), Iv32.point(t), domain):
+                case .Value(square):
+                    match interval_add(Iv32.point(c0), linear, domain):
+                        case .Value(partial):
+                            return interval_add(partial, square, domain)
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+pub fn polynomial_taylor(c0: i32, c1: i32, x: i32, remainder_radius: i32, domain: FixedDomain) -> NumericOutcome:
+    if remainder_radius < 0:
+        return .Error
+    match interval_mul(Iv32.point(c1), Iv32.point(x), domain):
+        case .Value(linear):
+            match interval_add(Iv32.point(c0), linear, domain):
+                case .Value(value):
+                    return interval_add(value, Iv32.range(-remainder_radius, remainder_radius), domain)
+                case _:
+                    return .Error
+        case _:
+            return .Error

@@ -2,7 +2,7 @@ FieldGraph v1
 Renderers count=1
   Renderer index=0 field=examples.check_pixels_fixed_q_range::world material=examples.check_pixels_fixed_q_range::shade params=SceneParams material_type=MaterialId
     Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
-      World min=[-4,-4,-4] max=[4,4,4]
+      World min=[-2147483648,-2147483648,-2147483648] max=[2147483648,2147483648,2147483648]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
       Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
     Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
@@ -41,7 +41,7 @@ Renderers count=1
     SymbolicQuota steps=21/1000000 nodes=24/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.check_pixels_fixed_q_range::world material_key=examples.check_pixels_fixed_q_range::shade
     ParameterLayout slots=0 packed_bytes=0 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
-      FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
+      FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -2147483648.0, -2147483648.0, -2147483648.0, 2147483648.0, 2147483648.0, 2147483648.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
         FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
         FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
         FrameInput path=frame.camera.right use=Camera type=F32 count=3 offset=24 runtime=true
@@ -58,24 +58,24 @@ Renderers count=1
     ScalarProof id=s0 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s1 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s2 value=[-64,-64] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s3 value=[-4,4] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
-    ScalarProof id=s4 value=[-4,4] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
-    ScalarProof id=s5 value=[-4,4] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
-    ScalarProof id=s6 value=[-4,4] value_rule=dot3-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
-    ScalarProof id=s7 value=[-68,-60] value_rule=add-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s3 value=[-2147483648,2147483648] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s4 value=[-2147483648,2147483648] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s5 value=[-2147483648,2147483648] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s6 value=[-2147483648,2147483648] value_rule=dot3-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
+    ScalarProof id=s7 value=[-2147483648,2147483648] value_rule=add-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
     ScalarProof id=s8 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s9 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s10 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s11 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    WorldBound field=f0 bounds=[-4,-4,-4]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
-    WorldBound field=f1 bounds=[-4,-4,-4]-[4,4,4] rule=identity-mark contributors=[f0] pruned=none
+    WorldBound field=f0 bounds=[-2147483648,-2147483648,-2147483648]-[2147483648,2147483648,2147483648] rule=plane-world-clip contributors=[] pruned=none
+    WorldBound field=f1 bounds=[-2147483648,-2147483648,-2147483648]-[2147483648,2147483648,2147483648] rule=identity-mark contributors=[f0] pruned=none
     Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
     Support field=f1 max=[0,0] leaves=f0@0>f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
     IdentitySet id=0 pairs=[examples.check_pixels_fixed_q_range::MaterialId::Ground=>examples.check_pixels_fixed_q_range::MaterialId::Ground]
-    SmoothObject id=o0 root=f0 scalar=s7 bounds=[-4,-4,-4]-[4,4,4] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
+    SmoothObject id=o0 root=f0 scalar=s7 bounds=[-2147483648,-2147483648,-2147483648]-[2147483648,2147483648,2147483648] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
     Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
       Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
-    Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-4,-4,-4]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
+    Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-2147483648,-2147483648,-2147483648]-[2147483648,2147483648,2147483648] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
     Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=12 derivative_slots=12 parameter_slots=0 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=1 event_subdivisions=4 event_records=4 tile_row_runs=5 csg_events=1 transparent_layers=1 rebuild_queue=5 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=128 run_bytes=160 corridor_bytes=120 fixed_q_bytes=80 shading_bytes=320 transparency_bytes=160 per_worker_scratch_bytes=1128 all_worker_scratch_bytes=1128 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=225472 instrumented_state_bytes=225856
       CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
@@ -179,7 +179,7 @@ Renderers count=1
       Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c64
     Polynomial id=poly7 degrees=u0v0q0x0t0 terms=1 detail=exact
       Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c67
-    Rational id=rat0 numerator=poly1 denominator=poly2 domain=domain0 proof=coefficient:c67:enclosure=[-68.60000000000004,-68.09999999999997]:sign=negative
+    Rational id=rat0 numerator=poly1 denominator=poly2 domain=domain0 proof=coefficient:c67:enclosure=[-2147483712.6000013,-2147483712.0999985]:sign=negative
     CompositionPlan id=cp0 kind=specialized source_degree_u=1 source_degree_q=1 source_degree_x=0 q_hat_degree=2 composed_degree=2 source_terms=4 temporaries=8 coefficient_order=[0,1,2,3]
       CompositionStep source_term=0 u_power=0 q_power=1 lifted_power_offset=2 coefficient_order=0
       CompositionStep source_term=1 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=1
@@ -187,9 +187,9 @@ Renderers count=1
       CompositionStep source_term=3 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=3
       CorrectionFace id=0 sign=-1 output_order=[0,1,2] steps=composition-steps:4
       CorrectionFace id=1 sign=1 output_order=[0,1,2] steps=composition-steps:4
-    ProjectiveFeature id=g0 root=poly0 rational=rat0 q_degree=1 seed=affine:coefficient:c67:enclosure=[-68.60000000000004,-68.09999999999997]:sign=negative isolation=affine composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g0 root=poly0 rational=rat0 q_degree=1 seed=affine:coefficient:c67:enclosure=[-2147483712.6000013,-2147483712.0999985]:sign=negative isolation=affine composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
     DerivativeBundle id=d0 feature=g0 g=poly0 first=[poly3,poly4,poly2] second=[poly5,poly5,poly5,poly5,poly5,poly5] third=[poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5] g_t=poly6 g_tt=none params=[]
-    DerivativeCluster object=o0 leaf_signature=[f0@0] bundles=[d0] smooth_root=s7 scalar_derivative_sources=[s7] value_domain=[-68,-60] first_world=[0,0,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=13.856406460551026 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
+    DerivativeCluster object=o0 leaf_signature=[f0@0] bundles=[d0] smooth_root=s7 scalar_derivative_sources=[s7] value_domain=[-2147483648,2147483648] first_world=[0,0,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=7439101573.518722 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
     ProjectedSpan feature=g0 normalized=[-1,1]x[-1,1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] q=[0.007812499999999999,10.000000000000002] rule=unbounded-plane-full-screen outside_margin=- halos=event:1:filter:1
     Event id=e0 kind=near-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
     Event id=e1 kind=far-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
@@ -197,10 +197,10 @@ Renderers count=1
     CompetitionSummary considered=0 emitted=0 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=1 suppressed_material_only=0
     ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
     ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
-    ExclusionProof id=proof2 payload=bernstein:box=[]:polynomial=poly0:coefficient_root=c67:degrees=[]:coefficient_order=[]:conversion_radius=1.11022302462531456e-16:tree=[0:0:-:negative:68.09999999999997]:sign=negative:minimum_margin=68.09999999999997
+    ExclusionProof id=proof2 payload=bernstein:box=[]:polynomial=poly0:coefficient_root=c67:degrees=[]:coefficient_order=[]:conversion_radius=1.11022937737226119e-16:tree=[0:0:-:negative:2147483712.0999985]:sign=negative:minimum_margin=2147483712.0999985
     X x0 event:projected-bound-enter:g0:-:0 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof0 []
     X x1 event:projected-bound-exit:g0:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof1 []
-    X x2 event:silhouette:g0:-:0 domain0 global-parameter-box-strict-sign [68.09999999999995,68.09999999999998] proof2 []
+    X x2 event:silhouette:g0:-:0 domain0 global-parameter-box-strict-sign [2147483712.099998,2147483712.099999] proof2 []
     Index name=tile_features cells=8 ids=8
       Cell id=0 offset=0 count=1 values=[0]
       Cell id=1 offset=1 count=1 values=[0]

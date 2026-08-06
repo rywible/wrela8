@@ -58,6 +58,7 @@ pub mod scalar;
 pub mod state;
 pub mod support;
 pub mod symbolic;
+pub mod test_vectors;
 pub mod verify;
 pub mod version;
 pub mod world_bounds;
@@ -358,9 +359,10 @@ pub fn compile_all(
         .zip(&structural_programs)
         .zip(&projective_programs)
         .zip(&configs.renderers)
+        .zip(&image.renderers)
         .enumerate()
         .map(
-            |(renderer_index, (((graph, structural), projective), config))| {
+            |(renderer_index, ((((graph, structural), projective), config), renderer))| {
                 let compile = || -> Result<CompiledRenderer, String> {
                     let rich = program::finish_frame_program(
                         renderer_index,
@@ -393,9 +395,17 @@ pub fn compile_all(
                     })
                 };
                 compile().map_err(|message| {
-                    diagnostics::PixelsError::Diagnostic(diagnostics::PixelsDiagnostic::internal(
-                        message,
-                    ))
+                    let prefixed = message.starts_with('P')
+                        && message.get(1..4).is_some_and(|digits| {
+                            digits.chars().all(|character| character.is_ascii_digit())
+                        })
+                        && message.get(4..6) == Some(": ");
+                    let diagnostic = if prefixed {
+                        diagnostics::PixelsDiagnostic::from_prefixed(message, renderer.span, "P020")
+                    } else {
+                        diagnostics::PixelsDiagnostic::internal(message)
+                    };
+                    diagnostics::PixelsError::Diagnostic(diagnostic)
                 })
             },
         )

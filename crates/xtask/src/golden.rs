@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::{golden_case_dirs, root, run};
+use crate::{CompileOptsGuard, golden_case_dirs, root, run};
+use wrela_compiler::opts::CompileMode;
 
 fn read_dir_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
@@ -219,9 +220,9 @@ pub(crate) fn default_jobs() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-// Four concurrent HVF guests intermittently starve multicore quiescence long
-// enough to produce a false `quiesce=timeout` transcript. Two keeps the hosts
-// busy without making scheduler contention part of a golden expectation.
+// Image compilation uses the ordinary worker count. Only the VMM subprocess is
+// throttled: four concurrent HVF guests intermittently starve multicore
+// quiescence long enough to produce a false `quiesce=timeout` transcript.
 pub(crate) const DEFAULT_BOOT_JOBS: usize = 2;
 pub(crate) const VMM_HVF_TESTS: usize = 24;
 
@@ -284,10 +285,38 @@ fn case_has_selected_stage(case: &Path, boot: BootSel) -> Result<(bool, bool), S
     Ok((selected, selected_boot))
 }
 
+fn first_text_difference(expected: &str, actual: &str) -> String {
+    let mut expected_lines = expected.lines();
+    let mut actual_lines = actual.lines();
+    let mut line = 1usize;
+    loop {
+        match (expected_lines.next(), actual_lines.next()) {
+            (Some(left), Some(right)) if left == right => line += 1,
+            (Some(left), Some(right)) => {
+                return format!("line {line}\nexpected: {left}\nactual:   {right}");
+            }
+            (Some(left), None) => {
+                return format!("line {line}\nexpected: {left}\nactual:   <end of output>");
+            }
+            (None, Some(right)) => {
+                return format!("line {line}\nexpected: <end of output>\nactual:   {right}");
+            }
+            (None, None) => {
+                return format!(
+                    "byte mismatch after the final complete line (expected={} bytes, actual={} bytes)",
+                    expected.len(),
+                    actual.len()
+                );
+            }
+        }
+    }
+}
+
 fn run_case(
     case: &Path,
     wrela: &Path,
     vmm: Option<&Path>,
+    vmm_slots: Option<&Path>,
     update: bool,
     boot: BootSel,
 ) -> Result<(usize, Vec<String>), String> {
@@ -316,6 +345,28 @@ fn run_case(
             );
         }
         expected_files.sort();
+        let accepted_pixels = case
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("check-pixels-"))
+            && expected_dir.join("image.txt").is_file();
+        let bundle_needed = accepted_pixels
+            && expected_files.iter().any(|path| {
+                let stage = path
+                    .file_stem()
+                    .and_then(|stage| stage.to_str())
+                    .unwrap_or("");
+                let (base, _) = renderer_dump_stage(stage).unwrap_or((stage, None));
+                matches!(
+                    base,
+                    "field-graph" | "frame-program" | "render-layout" | "report" | "image"
+                ) && stage_selected(stage, boot)
+            });
+        let pixels_bundle = if bundle_needed {
+            Some(crate::produce_image_artifacts(&input)?)
+        } else {
+            None
+        };
         for exp in expected_files {
             let stage = exp
                 .file_stem()
@@ -380,6 +431,58 @@ fn run_case(
                 }
                 continue;
             }
+            let bundled_actual = pixels_bundle
+                .as_ref()
+                .and_then(|bundle| match command_stage {
+                    "report" => Some(bundle.report.clone()),
+                    "image" => bundle.image_dump.clone(),
+                    "field-graph" | "frame-program" | "render-layout" => {
+                        let selected = match renderer {
+                            Some(index) => bundle.renderers.get(index),
+                            None if bundle.renderers.len() == 1 => bundle.renderers.first(),
+                            None => None,
+                        }?;
+                        Some(
+                            match command_stage {
+                                "field-graph" => &selected.field_graph,
+                                "frame-program" => &selected.frame_program,
+                                "render-layout" => &selected.render_layout,
+                                _ => unreachable!(),
+                            }
+                            .clone(),
+                        )
+                    }
+                    _ => None,
+                });
+            if let Some(actual) = bundled_actual {
+                cases += 1;
+                if actual
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.starts_with("error["))
+                {
+                    failures.push(format!(
+                        "{} [{stage}]: accepted Pixels bundle normalized a diagnostic:\n{actual}",
+                        case.display()
+                    ));
+                    continue;
+                }
+                if update {
+                    std::fs::write(&exp, &actual)
+                        .map_err(|e| format!("write {}: {e}", exp.display()))?;
+                    continue;
+                }
+                let expected = std::fs::read_to_string(&exp)
+                    .map_err(|e| format!("read {}: {e}", exp.display()))?;
+                if actual != expected {
+                    failures.push(format!(
+                        "{} [{stage}]: bundled output differs from expectation at {}",
+                        case.display(),
+                        first_text_difference(&expected, &actual),
+                    ));
+                }
+                continue;
+            }
             let out = if stage == "test" || stage == "test-omit-dmb" {
                 let vmm = vmm.ok_or_else(|| {
                     format!(
@@ -389,6 +492,9 @@ fn run_case(
                 })?;
                 let mut cmd = Command::new(&wrela);
                 cmd.current_dir(root()).arg("test").arg(rel_input);
+                if let Some(slots) = vmm_slots {
+                    cmd.env("WRELA_VMM_SLOT_DIR", slots);
+                }
                 if stage == "test-omit-dmb" {
                     cmd.arg("--omit-dmb");
                 }
@@ -450,11 +556,6 @@ fn run_case(
             let mut actual = String::from_utf8_lossy(&out.stdout).into_owned();
             actual.push_str(&String::from_utf8_lossy(&out.stderr));
             cases += 1;
-            let accepted_pixels = case
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("check-pixels-"))
-                && expected_dir.join("image.txt").is_file();
             if accepted_pixels
                 && matches!(command_stage, "frame-program" | "render-layout" | "report")
                 && actual
@@ -534,6 +635,7 @@ fn run_cases_parallel(
     cases: &[PathBuf],
     wrela: &Path,
     vmm: Option<&Path>,
+    vmm_slots: Option<&Path>,
     update: bool,
     boot: BootSel,
     jobs: usize,
@@ -550,12 +652,13 @@ fn run_cases_parallel(
     std::thread::scope(|scope| {
         for _ in 0..jobs {
             scope.spawn(|| {
+                let _mode = CompileOptsGuard::mode(CompileMode::Release);
                 loop {
                     let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if i >= cases.len() {
                         return;
                     }
-                    match run_case(&cases[i], wrela, vmm, update, boot) {
+                    match run_case(&cases[i], wrela, vmm, vmm_slots, update, boot) {
                         Ok((n, f)) => results.lock().expect("results lock").push((i, n, f)),
                         Err(e) => {
                             let mut slot = hard_error.lock().expect("error lock");
@@ -631,10 +734,27 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
     } else {
         Some(build_and_sign_vmm()?)
     };
+    let vmm_slot_dir = if boot_cases.is_empty() {
+        None
+    } else {
+        let dir = root().join(format!("target/golden-vmm-slots-{}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|error| format!("remove {}: {error}", dir.display()))?;
+        }
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| format!("create {}: {error}", dir.display()))?;
+        for index in 0..opts.boot_jobs {
+            std::fs::write(dir.join(format!("slot-{index}")), b"")
+                .map_err(|error| format!("create VMM slot {index}: {error}"))?;
+        }
+        Some(dir)
+    };
     let (n1, mut failures) = run_cases_parallel(
         &dump_cases,
         &wrela,
         vmm.as_deref(),
+        None,
         opts.update,
         opts.boot,
         opts.jobs,
@@ -643,10 +763,15 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         &boot_cases,
         &wrela,
         vmm.as_deref(),
+        vmm_slot_dir.as_deref(),
         opts.update,
         opts.boot,
-        opts.boot_jobs.min(opts.jobs),
+        opts.jobs,
     )?;
+    if let Some(dir) = &vmm_slot_dir {
+        std::fs::remove_dir_all(dir)
+            .map_err(|error| format!("remove {}: {error}", dir.display()))?;
+    }
     failures.extend(boot_failures);
     let cases = n1 + n2;
 

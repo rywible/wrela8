@@ -1,0 +1,260 @@
+module render_events
+
+from core.render_interval import FixedDomain, Iv32, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
+from core.render_program import bernstein_lerp_ratio, polynomial_horner9
+
+pub fn root_is_identically_zero(coefficients: [Iv32; 3]) -> bool:
+    return coefficients[0].lower() == 0 and coefficients[0].upper() == 0 and coefficients[1].lower() == 0 and coefficients[1].upper() == 0 and coefficients[2].lower() == 0 and coefficients[2].upper() == 0
+
+pub fn root_bracket_step(lo: i32, hi: i32, lo_negative: bool, mid_negative: bool) -> Iv32:
+    mid = lo + (hi - lo) / 2
+    if lo_negative == mid_negative:
+        return Iv32.range(mid, hi)
+    return Iv32.range(lo, mid)
+
+pub fn root_count(sign0: i32, sign1: i32, sign2: i32) -> i32:
+    variations: i32 = 0
+    previous: i32 = 0
+    signs = [sign0, sign1, sign2]
+    @budget(bound=3)
+    for raw_sign in signs:
+        sign: i32 = 0
+        if raw_sign < 0:
+            sign = -1
+        if raw_sign > 0:
+            sign = 1
+        if sign != 0:
+            if previous != 0 and previous != sign:
+                variations = variations + 1
+            previous = sign
+    return variations
+
+pub struct RootSet8:
+    lows: [i32; 16]
+    highs: [i32; 16]
+    unique: [bool; 16]
+    count: u8
+
+    pub fn root_count_value(read self) -> u8:
+        return self.count
+
+    pub fn root_low(read self, index: usize) -> i32:
+        return self.lows[index]
+
+    pub fn root_high(read self, index: usize) -> i32:
+        return self.highs[index]
+
+    pub fn root_unique(read self, index: usize) -> bool:
+        return self.unique[index]
+
+pub enum RootOutcome8:
+    Roots(RootSet8)
+    CertifiedNone
+    Unresolved(i32)
+    Error
+
+pub struct RootIsolationConfig:
+    q_domain: Iv32
+    domain: FixedDomain
+    tolerance_raw: u32
+    max_depth: u8
+    root_capacity: u8
+    use_taylor: bool
+    remainder: Iv32
+
+# Fixed-capacity isolation for sealed degrees 1..8. Bernstein mode uses
+# sign-variation counts; interval/Taylor mode evaluates the supplied power
+# polynomial plus a sealed remainder on every cell and never claims
+# uniqueness. Unresolved reason tags: 1 depth, 2 no progress, 3 numeric,
+# 4 roots, 5 stack, 6 zero corridor.
+pub fn root_isolate8(coefficients: [Iv32; 9], degree: u8, q_domain: Iv32, domain: FixedDomain, tolerance_raw: u32, max_depth: u8, root_capacity: u8) -> RootOutcome8:
+    return root_isolate_program8(coefficients, degree, RootIsolationConfig(q_domain=q_domain, domain=domain, tolerance_raw=tolerance_raw, max_depth=max_depth, root_capacity=root_capacity, use_taylor=false, remainder=Iv32.point(0)))
+
+pub fn root_isolate_taylor8(coefficients: [Iv32; 9], degree: u8, remainder: Iv32, q_domain: Iv32, domain: FixedDomain, tolerance_raw: u32, max_depth: u8, root_capacity: u8) -> RootOutcome8:
+    return root_isolate_program8(coefficients, degree, RootIsolationConfig(q_domain=q_domain, domain=domain, tolerance_raw=tolerance_raw, max_depth=max_depth, root_capacity=root_capacity, use_taylor=true, remainder=remainder))
+
+pub fn root_isolate_program8(coefficients: [Iv32; 9], degree: u8, config: RootIsolationConfig) -> RootOutcome8:
+    q_domain = config.q_domain
+    domain = config.domain
+    tolerance_raw = config.tolerance_raw
+    max_depth = config.max_depth
+    root_capacity = config.root_capacity
+    use_taylor = config.use_taylor
+    remainder = config.remainder
+    if degree > 8 or (not use_taylor and degree == 0) or q_domain.lower() >= q_domain.upper() or tolerance_raw == 0 or max_depth == 0 or max_depth > 15 or root_capacity == 0 or root_capacity > 16:
+        return .Error
+    all_zero = true
+    i: i32 = 0
+    @budget(bound=9)
+    while i <= degree.to[i32]():
+        value = coefficients[i.to[usize]()]
+        if value.lower() != 0 or value.upper() != 0:
+            all_zero = false
+        i = i + 1
+    if all_zero and (not use_taylor or (remainder.lower() == 0 and remainder.upper() == 0)):
+        return .Unresolved(6)
+
+    # DFS holds at most max_depth+1 cells; v1 vectors seal max_depth <= 12.
+    stack_coefficients: [[Iv32; 9]; 16] = [[Iv32.point(0); 9]; 16]
+    stack_lo: [i32; 16] = [0; 16]
+    stack_hi: [i32; 16] = [0; 16]
+    stack_depth: [u8; 16] = [0; 16]
+    stack_coefficients[0] = coefficients
+    stack_lo[0] = q_domain.lower()
+    stack_hi[0] = q_domain.upper()
+    stack_len: i32 = 1
+    roots_lo: [i32; 16] = [0; 16]
+    roots_hi: [i32; 16] = [0; 16]
+    roots_unique: [bool; 16] = [false; 16]
+    roots_count: i32 = 0
+
+    @budget(bound=8191)
+    while stack_len > 0:
+        stack_len = stack_len - 1
+        cell = stack_coefficients[stack_len.to[usize]()]
+        cell_lo = stack_lo[stack_len.to[usize]()]
+        cell_hi = stack_hi[stack_len.to[usize]()]
+        depth = stack_depth[stack_len.to[usize]()]
+        all_positive = true
+        all_negative = true
+        all_zero = true
+        inconclusive = false
+        variations: i32 = 0
+        previous: i32 = 0
+        i = 0
+        if use_taylor:
+            match polynomial_horner9(cell, degree, Iv32.range(cell_lo, cell_hi), domain):
+                case .Value(polynomial_range):
+                    match interval_add(polynomial_range, remainder, domain):
+                        case .Value(value):
+                            all_positive = value.lower() > 0
+                            all_negative = value.upper() < 0
+                            all_zero = value.lower() == 0 and value.upper() == 0
+                            inconclusive = not all_positive and not all_negative and not all_zero
+                        case _:
+                            return .Unresolved(3)
+                case _:
+                    return .Unresolved(3)
+        else:
+            @budget(bound=9)
+            while i <= degree.to[i32]():
+                value = cell[i.to[usize]()]
+                if value.lower() <= 0:
+                    all_positive = false
+                if value.upper() >= 0:
+                    all_negative = false
+                sign: i32 = 0
+                if value.lower() > 0:
+                    sign = 1
+                    all_zero = false
+                elif value.upper() < 0:
+                    sign = -1
+                    all_zero = false
+                elif value.lower() != 0 or value.upper() != 0:
+                    inconclusive = true
+                    all_zero = false
+                if sign != 0:
+                    if previous != 0 and sign != previous:
+                        variations = variations + 1
+                    previous = sign
+                i = i + 1
+        endpoint_roots: i32 = 0
+        if not use_taylor and cell[0].lower() == 0 and cell[0].upper() == 0:
+            endpoint_roots = endpoint_roots + 1
+        endpoint = degree.to[usize]()
+        if not use_taylor and cell[endpoint].lower() == 0 and cell[endpoint].upper() == 0 and cell_hi != cell_lo:
+            endpoint_roots = endpoint_roots + 1
+        if all_positive or all_negative:
+            pass
+        elif all_zero:
+            return .Unresolved(6)
+        elif not use_taylor and not inconclusive and variations == 0:
+            if cell[0].lower() == 0 and cell[0].upper() == 0:
+                if roots_count >= root_capacity.to[i32]():
+                    return .Unresolved(4)
+                roots_lo[roots_count.to[usize]()] = cell_lo
+                roots_hi[roots_count.to[usize]()] = cell_lo
+                roots_unique[roots_count.to[usize]()] = false
+                roots_count = roots_count + 1
+            if cell[endpoint].lower() == 0 and cell[endpoint].upper() == 0 and cell_hi != cell_lo:
+                duplicate = roots_count > 0 and roots_lo[(roots_count - 1).to[usize]()] == cell_hi and roots_hi[(roots_count - 1).to[usize]()] == cell_hi
+                if not duplicate:
+                    if roots_count >= root_capacity.to[i32]():
+                        return .Unresolved(4)
+                    roots_lo[roots_count.to[usize]()] = cell_hi
+                    roots_hi[roots_count.to[usize]()] = cell_hi
+                    roots_unique[roots_count.to[usize]()] = false
+                    roots_count = roots_count + 1
+        elif (cell_hi.to[i64]() - cell_lo.to[i64]()).to[u64]() <= tolerance_raw.to[u64]() and (use_taylor or inconclusive or variations + endpoint_roots <= 1):
+            if roots_count >= root_capacity.to[i32]():
+                return .Unresolved(4)
+            roots_lo[roots_count.to[usize]()] = cell_lo
+            roots_hi[roots_count.to[usize]()] = cell_hi
+            roots_unique[roots_count.to[usize]()] = not use_taylor and not inconclusive and variations == 1 and endpoint_roots == 0
+            roots_count = roots_count + 1
+        else:
+            if depth >= max_depth:
+                return .Unresolved(1)
+            midpoint = cell_lo.to[i64]() + (cell_hi.to[i64]() - cell_lo.to[i64]()) / 2
+            if midpoint <= cell_lo.to[i64]() or midpoint >= cell_hi.to[i64]():
+                return .Unresolved(2)
+            left: [Iv32; 9] = cell
+            right: [Iv32; 9] = cell
+            if not use_taylor:
+                triangle: [[Iv32; 9]; 9] = [[Iv32.point(0); 9]; 9]
+                triangle[0] = cell
+                denominator = cell_hi.to[i64]() - cell_lo.to[i64]()
+                numerator = midpoint - cell_lo.to[i64]()
+                row: i32 = 1
+                @budget(bound=8)
+                while row <= degree.to[i32]():
+                    column: i32 = 0
+                    @budget(bound=8)
+                    while column <= degree.to[i32]() - row:
+                        match bernstein_lerp_ratio(triangle[(row - 1).to[usize]()][column.to[usize]()], triangle[(row - 1).to[usize]()][(column + 1).to[usize]()], numerator, denominator, domain):
+                            case .Value(average):
+                                triangle[row.to[usize]()][column.to[usize]()] = average
+                            case _:
+                                return .Unresolved(3)
+                        column = column + 1
+                    row = row + 1
+                left = [Iv32.point(0); 9]
+                right = [Iv32.point(0); 9]
+                row = 0
+                @budget(bound=9)
+                while row <= degree.to[i32]():
+                    left[row.to[usize]()] = triangle[row.to[usize]()][0]
+                    right[(degree.to[i32]() - row).to[usize]()] = triangle[row.to[usize]()][(degree.to[i32]() - row).to[usize]()]
+                    row = row + 1
+            if stack_len + 2 > 16:
+                return .Unresolved(5)
+            stack_coefficients[stack_len.to[usize]()] = left
+            stack_lo[stack_len.to[usize]()] = cell_lo
+            stack_hi[stack_len.to[usize]()] = midpoint.to[i32]()
+            stack_depth[stack_len.to[usize]()] = depth + 1
+            stack_coefficients[(stack_len + 1).to[usize]()] = right
+            stack_lo[(stack_len + 1).to[usize]()] = midpoint.to[i32]()
+            stack_hi[(stack_len + 1).to[usize]()] = cell_hi
+            stack_depth[(stack_len + 1).to[usize]()] = depth + 1
+            stack_len = stack_len + 2
+
+    i = 1
+    @budget(bound=15)
+    while i < roots_count:
+        lo = roots_lo[i.to[usize]()]
+        hi = roots_hi[i.to[usize]()]
+        unique = roots_unique[i.to[usize]()]
+        destination = i
+        @budget(bound=15)
+        while destination > 0 and lo > roots_lo[(destination - 1).to[usize]()] :
+            roots_lo[destination.to[usize]()] = roots_lo[(destination - 1).to[usize]()]
+            roots_hi[destination.to[usize]()] = roots_hi[(destination - 1).to[usize]()]
+            roots_unique[destination.to[usize]()] = roots_unique[(destination - 1).to[usize]()]
+            destination = destination - 1
+        roots_lo[destination.to[usize]()] = lo
+        roots_hi[destination.to[usize]()] = hi
+        roots_unique[destination.to[usize]()] = unique
+        i = i + 1
+    if roots_count == 0:
+        return .CertifiedNone
+    return .Roots(RootSet8(lows=roots_lo, highs=roots_hi, unique=roots_unique, count=roots_count.to[u8]()))

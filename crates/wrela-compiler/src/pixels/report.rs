@@ -390,9 +390,17 @@ pub fn append_layout(
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let tone_transfer_digest = wrela_machine::sha256::sha256_hex(
-            format!("pixels-tone-transfer-v1\0{}", config.tone_curve).as_bytes(),
-        );
+        let tone_lut = super::reference::display::sealed_tone_lut(&config.tone_curve)
+            .ok_or_else(|| "pixels::report: sealed tone LUT is absent".to_string())?;
+        let mut tone_transfer_bytes =
+            format!("pixels-tone-transfer-v1\0{}\0", config.tone_curve).into_bytes();
+        for value in tone_lut
+            .iter()
+            .chain(super::reference::display::SRGB_TRANSFER_LUT.iter())
+        {
+            tone_transfer_bytes.extend(value.to_le_bytes());
+        }
+        let tone_transfer_digest = wrela_machine::sha256::sha256_hex(&tone_transfer_bytes);
         let mut renderer_layout_identity = format!(
             "pixels-renderer-layout-v1\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
             placement.index,

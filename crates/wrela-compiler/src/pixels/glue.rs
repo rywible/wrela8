@@ -1072,6 +1072,7 @@ mod tests {
                 .into_iter()
                 .collect::<Vec<_>>(),
             vec![
+                "camera-light-post",
                 "csg",
                 "feature",
                 "field",

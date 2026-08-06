@@ -1,0 +1,554 @@
+module render_sweep
+
+from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_negate, interval_sub, interval_valid
+from core.render_program import BernsteinSplitOutcome3, bernstein_average, bernstein_sign, bernstein_subdivide
+
+pub enum RootCertMethod:
+    BernsteinFaces
+    MonotoneTube
+    Krawczyk
+
+pub struct RootCertificate:
+    correction: Iv32
+    derivative_margin: Iv32
+    face_margin: Iv32
+    contraction_margin: Iv32
+    method: RootCertMethod
+
+    pub fn derivative_margin_value(read self) -> i32:
+        return self.derivative_margin.lower()
+
+    pub fn face_margin_value(read self) -> i32:
+        return self.face_margin.lower()
+
+    pub fn contraction_margin_value(read self) -> i32:
+        return self.contraction_margin.lower()
+
+    pub fn method_tag(read self) -> i32:
+        match self.method:
+            case .BernsteinFaces:
+                return 0
+            case .MonotoneTube:
+                return 1
+            case .Krawczyk:
+                return 2
+
+pub enum RootCertificateOutcome:
+    Value(RootCertificate)
+    Rejected
+    Error
+
+pub struct CertifiedRun:
+    certificate: RootCertificate
+    composition_shape: i32
+
+    pub fn method_tag(read self) -> i32:
+        return self.certificate.method_tag()
+
+    pub fn composition_shape_tag(read self) -> i32:
+        return self.composition_shape
+
+    pub fn derivative_margin_value(read self) -> i32:
+        return self.certificate.derivative_margin_value()
+
+    pub fn face_margin_value(read self) -> i32:
+        return self.certificate.face_margin_value()
+
+    pub fn contraction_margin_value(read self) -> i32:
+        return self.certificate.contraction_margin_value()
+
+pub enum CertifiedRunOutcome:
+    Value(CertifiedRun)
+    Rejected
+    Error
+
+pub struct CertificateRequest:
+    pub composition_shape: i32
+    pub lower_coefficients: [Iv32; 3]
+    pub upper_coefficients: [Iv32; 3]
+    pub lower_face: Iv32
+    pub upper_face: Iv32
+    pub derivative: Iv32
+    pub reciprocal_derivative: Iv32
+    pub residual: Iv32
+    pub correction: Iv32
+    pub one: Iv32
+    pub domain: FixedDomain
+
+pub fn strict_margin(value: Iv32) -> i32:
+    if value.lower() > 0:
+        return value.lower()
+    if value.upper() < 0:
+        magnitude = -value.upper().to[i64]()
+        if magnitude > 2147483647:
+            return 2147483647
+        return magnitude.to[i32]()
+    return 0
+
+pub fn monotone_certificate(lower: Iv32, upper: Iv32, derivative: Iv32) -> RootCertificateOutcome:
+    if not run_certificate(lower, upper, derivative):
+        return .Rejected
+    face = strict_margin(lower)
+    other_face = strict_margin(upper)
+    if other_face < face:
+        face = other_face
+    return .Value(RootCertificate(
+        correction=Iv32.point(0),
+        derivative_margin=Iv32.point(strict_margin(derivative)),
+        face_margin=Iv32.point(face),
+        contraction_margin=Iv32.point(0),
+        method=.MonotoneTube,
+    ))
+
+pub fn bernstein_certificate(lower: [Iv32; 3], upper: [Iv32; 3], derivative: Iv32) -> RootCertificateOutcome:
+    lower_sign = bernstein_sign(lower)
+    upper_sign = bernstein_sign(upper)
+    if lower_sign == 0 or upper_sign == 0 or lower_sign == upper_sign or strict_margin(derivative) == 0:
+        return .Rejected
+    return .Value(RootCertificate(
+        correction=Iv32.point(0),
+        derivative_margin=Iv32.point(strict_margin(derivative)),
+        face_margin=Iv32.point(bernstein_face_margin3(lower, upper)),
+        contraction_margin=Iv32.point(0),
+        method=.BernsteinFaces,
+    ))
+
+pub fn bernstein_face_margin3(lower: [Iv32; 3], upper: [Iv32; 3]) -> i32:
+    margin: i32 = 2147483647
+    index: i32 = 0
+    @budget(bound=3)
+    while index < 3:
+        lower_margin = strict_margin(lower[index.to[usize]()])
+        upper_margin = strict_margin(upper[index.to[usize]()])
+        if lower_margin < margin:
+            margin = lower_margin
+        if upper_margin < margin:
+            margin = upper_margin
+        index = index + 1
+    return margin
+
+pub fn bernstein_certificate_subdivided(lower: [Iv32; 3], upper: [Iv32; 3], derivative: Iv32, domain: FixedDomain, maximum_depth: u8) -> RootCertificateOutcome:
+    if maximum_depth > 8:
+        return .Error
+    if strict_margin(derivative) == 0:
+        return .Rejected
+    lower0: [Iv32; 16] = [Iv32.point(0); 16]
+    lower1: [Iv32; 16] = [Iv32.point(0); 16]
+    lower2: [Iv32; 16] = [Iv32.point(0); 16]
+    upper0: [Iv32; 16] = [Iv32.point(0); 16]
+    upper1: [Iv32; 16] = [Iv32.point(0); 16]
+    upper2: [Iv32; 16] = [Iv32.point(0); 16]
+    depths: [u8; 16] = [0; 16]
+    lower0[0] = lower[0]
+    lower1[0] = lower[1]
+    lower2[0] = lower[2]
+    upper0[0] = upper[0]
+    upper1[0] = upper[1]
+    upper2[0] = upper[2]
+    length: i32 = 1
+    minimum_margin: i32 = 2147483647
+    @budget(bound=511)
+    while length > 0:
+        length = length - 1
+        index = length.to[usize]()
+        cell_lower = [lower0[index], lower1[index], lower2[index]]
+        cell_upper = [upper0[index], upper1[index], upper2[index]]
+        lower_sign = bernstein_sign(cell_lower)
+        upper_sign = bernstein_sign(cell_upper)
+        if lower_sign != 0 and upper_sign != 0 and lower_sign != upper_sign:
+            margin = bernstein_face_margin3(cell_lower, cell_upper)
+            if margin < minimum_margin:
+                minimum_margin = margin
+        else:
+            if depths[index] >= maximum_depth or length + 2 > 16:
+                return .Rejected
+            match bernstein_subdivide(cell_lower, domain):
+                case .Value(lower_split):
+                    match bernstein_subdivide(cell_upper, domain):
+                        case .Value(upper_split):
+                            next_depth = depths[index] + 1
+                            lower0[length.to[usize]()] = lower_split[3]
+                            lower1[length.to[usize]()] = lower_split[4]
+                            lower2[length.to[usize]()] = lower_split[5]
+                            upper0[length.to[usize]()] = upper_split[3]
+                            upper1[length.to[usize]()] = upper_split[4]
+                            upper2[length.to[usize]()] = upper_split[5]
+                            depths[length.to[usize]()] = next_depth
+                            lower0[(length + 1).to[usize]()] = lower_split[0]
+                            lower1[(length + 1).to[usize]()] = lower_split[1]
+                            lower2[(length + 1).to[usize]()] = lower_split[2]
+                            upper0[(length + 1).to[usize]()] = upper_split[0]
+                            upper1[(length + 1).to[usize]()] = upper_split[1]
+                            upper2[(length + 1).to[usize]()] = upper_split[2]
+                            depths[(length + 1).to[usize]()] = next_depth
+                            length = length + 2
+                        case .Error:
+                            return .Error
+                case .Error:
+                    return .Error
+    return .Value(RootCertificate(
+        correction=Iv32.point(0),
+        derivative_margin=Iv32.point(strict_margin(derivative)),
+        face_margin=Iv32.point(minimum_margin),
+        contraction_margin=Iv32.point(0),
+        method=.BernsteinFaces,
+    ))
+
+pub fn krawczyk_certificate(reciprocal_derivative: Iv32, residual: Iv32, derivative: Iv32, correction: Iv32, one: Iv32, domain: FixedDomain) -> RootCertificateOutcome:
+    if correction.lower() >= correction.upper() or strict_margin(derivative) == 0:
+        return .Rejected
+    match interval_mul(reciprocal_derivative, residual, domain):
+        case .Value(ar):
+            match interval_negate(ar, domain):
+                case .Value(minus_ar):
+                    match interval_mul(reciprocal_derivative, derivative, domain):
+                        case .Value(ad):
+                            match interval_sub(one, ad, domain):
+                                case .Value(contraction):
+                                    match interval_mul(contraction, correction, domain):
+                                        case .Value(contracted):
+                                            match interval_add(minus_ar, contracted, domain):
+                                                case .Value(image):
+                                                    if image.lower() <= correction.lower() or image.upper() >= correction.upper():
+                                                        return .Rejected
+                                                    margin = image.lower().to[i64]() - correction.lower().to[i64]()
+                                                    upper_margin = correction.upper().to[i64]() - image.upper().to[i64]()
+                                                    if upper_margin < margin:
+                                                        margin = upper_margin
+                                                    if margin < 0 or margin > 2147483647:
+                                                        return .Error
+                                                    return .Value(RootCertificate(
+                                                        correction=image,
+                                                        derivative_margin=Iv32.point(strict_margin(derivative)),
+                                                        face_margin=Iv32.point(0),
+                                                        contraction_margin=Iv32.point(margin.to[i32]()),
+                                                        method=.Krawczyk,
+                                                    ))
+                                                case _:
+                                                    return .Error
+                                        case _:
+                                            return .Error
+                                case _:
+                                    return .Error
+                        case _:
+                            return .Error
+                case _:
+                    return .Error
+        case _:
+            return .Error
+
+# Composition shape tags: 0 is interval/Taylor fallback, 1 plane, 2 sphere,
+# and 3 torus. Supported shapes try Bernstein faces first. Every ordinary
+# rejection falls through without changing any supplied tolerance or margin.
+pub fn certify_run(request: CertificateRequest) -> CertifiedRunOutcome:
+    composition_shape = request.composition_shape
+    lower_coefficients = request.lower_coefficients
+    upper_coefficients = request.upper_coefficients
+    lower_face = request.lower_face
+    upper_face = request.upper_face
+    derivative = request.derivative
+    reciprocal_derivative = request.reciprocal_derivative
+    residual = request.residual
+    correction = request.correction
+    one = request.one
+    domain = request.domain
+    if composition_shape < 0 or composition_shape > 3:
+        return .Error
+    if composition_shape != 0:
+        match bernstein_certificate(lower_coefficients, upper_coefficients, derivative):
+            case .Value(certificate):
+                return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+            case .Error:
+                return .Error
+            case .Rejected:
+                pass
+    match monotone_certificate(lower_face, upper_face, derivative):
+        case .Value(certificate):
+            return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+        case .Error:
+            return .Error
+        case .Rejected:
+            pass
+    match krawczyk_certificate(reciprocal_derivative, residual, derivative, correction, one, domain):
+        case .Value(certificate):
+            return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+        case .Error:
+            return .Error
+        case .Rejected:
+            return .Rejected
+
+pub fn run_certificate(lower: Iv32, upper: Iv32, derivative: Iv32) -> bool:
+    faces = (lower.upper() < 0 and upper.lower() > 0) or (lower.lower() > 0 and upper.upper() < 0)
+    monotone = derivative.lower() > 0 or derivative.upper() < 0
+    return faces and monotone
+
+pub fn q_order(a: Iv32, b: Iv32) -> bool:
+    return a.lower() > b.upper()
+
+pub struct OrderedRoot:
+    q: Iv32
+    feature_id: u32
+    orientation: i32
+
+    pub fn make(q: Iv32, feature_id: u32, orientation: i32) -> OrderedRoot:
+        return OrderedRoot(q=q, feature_id=feature_id, orientation=orientation)
+
+    pub fn q_value(read self) -> Iv32:
+        return self.q
+
+    pub fn feature(read self) -> u32:
+        return self.feature_id
+
+    pub fn orientation_value(read self) -> i32:
+        return self.orientation
+
+pub struct OrderedRootSet64:
+    roots: [OrderedRoot; 64]
+    count: u8
+
+    pub fn root(read self, index: usize) -> OrderedRoot:
+        return self.roots[index]
+
+pub enum OrderedRootSetOutcome:
+    Value(OrderedRootSet64)
+    Error
+
+pub enum OrderedSlackOutcome:
+    Value(i32)
+    Error
+
+pub fn q_storage_before(a: OrderedRoot, b: OrderedRoot) -> bool:
+    if a.q.lower() > b.q.lower():
+        return true
+    if a.q.lower() < b.q.lower():
+        return false
+    if a.q.upper() > b.q.upper():
+        return true
+    if a.q.upper() < b.q.upper():
+        return false
+    if a.feature_id < b.feature_id:
+        return true
+    if a.feature_id > b.feature_id:
+        return false
+    return a.orientation < b.orientation
+
+pub fn q_feature_before(a: OrderedRoot, b: OrderedRoot) -> bool:
+    if a.feature_id < b.feature_id:
+        return true
+    if a.feature_id > b.feature_id:
+        return false
+    if a.orientation < b.orientation:
+        return true
+    if a.orientation > b.orientation:
+        return false
+    if a.q.lower() > b.q.lower():
+        return true
+    if a.q.lower() < b.q.lower():
+        return false
+    return a.q.upper() > b.q.upper()
+
+pub fn q_sort64(values: [OrderedRoot; 64], count: u8) -> OrderedRootSetOutcome:
+    if count > 64:
+        return .Error
+    sorted = values
+    i: i32 = 1
+    @budget(bound=63)
+    while i < count.to[i32]():
+        value = sorted[i.to[usize]()]
+        destination = i
+        @budget(bound=63)
+        while destination > 0 and q_storage_before(value, sorted[(destination - 1).to[usize]()] ):
+            sorted[destination.to[usize]()] = sorted[(destination - 1).to[usize]()]
+            destination = destination - 1
+        sorted[destination.to[usize]()] = value
+        i = i + 1
+    component_start: i32 = 0
+    @budget(bound=64)
+    while component_start < count.to[i32]():
+        component_end = component_start + 1
+        component_min_lo = sorted[component_start.to[usize]()].q.lower()
+        @budget(bound=63)
+        while component_end < count.to[i32]() and sorted[component_end.to[usize]()].q.upper() >= component_min_lo:
+            candidate_lo = sorted[component_end.to[usize]()].q.lower()
+            if candidate_lo < component_min_lo:
+                component_min_lo = candidate_lo
+            component_end = component_end + 1
+        i = component_start + 1
+        @budget(bound=63)
+        while i < component_end:
+            value = sorted[i.to[usize]()]
+            destination = i
+            @budget(bound=63)
+            while destination > component_start and q_feature_before(value, sorted[(destination - 1).to[usize]()] ):
+                sorted[destination.to[usize]()] = sorted[(destination - 1).to[usize]()]
+                destination = destination - 1
+            sorted[destination.to[usize]()] = value
+            i = i + 1
+        component_start = component_end
+    return .Value(OrderedRootSet64(roots=sorted, count=count))
+
+pub fn q_adjacent_slack64(values: [OrderedRoot; 64], count: u8) -> OrderedSlackOutcome:
+    if count > 64:
+        return .Error
+    if count < 2:
+        return .Value(2147483647)
+    minimum: i64 = 2147483647
+    index: i32 = 1
+    @budget(bound=63)
+    while index < count.to[i32]():
+        nearer = values[(index - 1).to[usize]()].q
+        farther = values[index.to[usize]()].q
+        if not q_order(nearer, farther):
+            return .Value(0)
+        slack = nearer.lower().to[i64]() - farther.upper().to[i64]()
+        if slack < minimum:
+            minimum = slack
+        index = index + 1
+    if minimum < -2147483648 or minimum > 2147483647:
+        return .Error
+    return .Value(minimum.to[i32]())
+
+pub fn q_sort3(values: [Iv32; 3]) -> [Iv32; 3]:
+    sorted = values
+    i: i32 = 1
+    @budget(bound=2)
+    while i < 3:
+        destination = i
+        @budget(bound=2)
+        while destination > 0 and q_order(sorted[destination.to[usize]()], sorted[(destination - 1).to[usize]()] ):
+            previous = sorted[(destination - 1).to[usize]()]
+            sorted[(destination - 1).to[usize]()] = sorted[destination.to[usize]()]
+            sorted[destination.to[usize]()] = previous
+            destination = destination - 1
+        i = i + 1
+    return sorted
+
+pub fn q_adjacent_slack3(values: [Iv32; 3]) -> i32:
+    if not q_order(values[0], values[1]) or not q_order(values[1], values[2]):
+        return 0
+    first = values[0].lower() - values[1].upper()
+    second = values[1].lower() - values[2].upper()
+    if second < first:
+        return second
+    return first
+
+pub fn csg_transition(before: bool, after: bool) -> bool:
+    return before != after
+
+# Postfix tags: object 0..63, union 64, intersection 65, subtract 66,
+# negate 67. Malformed/capacity-invalid programs are tagged errors.
+pub enum CsgEvaluateOutcome:
+    Value(bool)
+    Error
+
+pub enum CsgInfluenceOutcome:
+    Value(bool)
+    Error
+
+pub enum CsgTransitionOutcome:
+    Value(i32)
+    None
+    Error
+
+pub fn csg_evaluate64(program: [i32; 64], count: u8, inside_bits: u64) -> CsgEvaluateOutcome:
+    if count == 0 or count > 64:
+        return .Error
+    stack: [bool; 64] = [false; 64]
+    length: i32 = 0
+    index: i32 = 0
+    @budget(bound=64)
+    while index < count.to[i32]():
+        instruction = program[index.to[usize]()]
+        if instruction >= 0 and instruction < 64:
+            if length >= 64:
+                return .Error
+            mask = 1.to[u64]() << instruction.to[u64]()
+            stack[length.to[usize]()] = inside_bits & mask != 0
+            length = length + 1
+        elif instruction == 67:
+            if length < 1:
+                return .Error
+            stack[(length - 1).to[usize]()] = not stack[(length - 1).to[usize]()]
+        else:
+            if length < 2 or instruction < 64 or instruction > 66:
+                return .Error
+            right = stack[(length - 1).to[usize]()]
+            left = stack[(length - 2).to[usize]()]
+            length = length - 1
+            if instruction == 64:
+                stack[(length - 1).to[usize]()] = left or right
+            elif instruction == 65:
+                stack[(length - 1).to[usize]()] = left and right
+            else:
+                stack[(length - 1).to[usize]()] = left and not right
+        index = index + 1
+    if length != 1:
+        return .Error
+    return .Value(stack[0])
+
+pub enum CsgBitsOutcome:
+    Value(u64)
+    Error
+
+pub fn csg_oriented_toggle64(inside_bits: u64, object: i32, orientation: i32) -> CsgBitsOutcome:
+    if object < 0 or object >= 64 or orientation < 0 or orientation > 1:
+        return .Error
+    mask = 1.to[u64]() << object.to[u64]()
+    is_inside = inside_bits & mask != 0
+    if (not is_inside and orientation == 1) or (is_inside and orientation == 0):
+        return .Error
+    return .Value(inside_bits ^ mask)
+
+pub fn csg_boundary_influences64(program: [i32; 64], count: u8, inside_bits: u64, object: i32) -> CsgInfluenceOutcome:
+    if object < 0 or object >= 64:
+        return .Error
+    mask = 1.to[u64]() << object.to[u64]()
+    match csg_evaluate64(program, count, inside_bits & ~mask):
+        case .Value(outside):
+            match csg_evaluate64(program, count, inside_bits | mask):
+                case .Value(inside):
+                    return .Value(outside != inside)
+                case .Error:
+                    return .Error
+        case .Error:
+            return .Error
+
+pub fn csg_first_transition64(program: [i32; 64], program_count: u8, inside_bits: u64, objects: [i32; 64], orientations: [i32; 64], crossing_count: u8) -> CsgTransitionOutcome:
+    if crossing_count > 64:
+        return .Error
+    bits = inside_bits
+    occupied: bool = false
+    match csg_evaluate64(program, program_count, bits):
+        case .Value(value):
+            occupied = value
+        case .Error:
+            return .Error
+    index: i32 = 0
+    @budget(bound=64)
+    while index < crossing_count.to[i32]():
+        object = objects[index.to[usize]()]
+        orientation = orientations[index.to[usize]()]
+        influence: bool = false
+        match csg_boundary_influences64(program, program_count, bits, object):
+            case .Value(value):
+                influence = value
+            case .Error:
+                return .Error
+        match csg_oriented_toggle64(bits, object, orientation):
+            case .Value(next_bits):
+                bits = next_bits
+            case .Error:
+                return .Error
+        if influence:
+            match csg_evaluate64(program, program_count, bits):
+                case .Value(next):
+                    if next != occupied:
+                        return .Value(index)
+                    occupied = next
+                case .Error:
+                    return .Error
+        index = index + 1
+    return .None
+
+pub fn kinetic_slack(slack: i32, perturbation: i32) -> bool:
+    return perturbation >= 0 and perturbation < slack
