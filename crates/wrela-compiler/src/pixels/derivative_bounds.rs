@@ -738,9 +738,9 @@ pub fn propagate(graph: &SymbolicGraph, values: &ValueBounds) -> Result<Derivati
                 let cosine = matches!(&node.op, ScalarOp::CosRestricted(_, _));
                 let mut bound = unary_chain(
                     get(*value)?,
-                    f64::from(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1),
-                    f64::from(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1),
-                    f64::from(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1),
+                    f64::from(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2),
+                    f64::from(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2),
+                    f64::from(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2),
                     "source-folded-polynomial-trig-chain",
                 );
                 if !super::reference::interval::source_trig_is_smooth_on(
@@ -1101,7 +1101,7 @@ mod tests {
         )
         .abs();
         assert!(
-            slope <= f64::from(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1),
+            slope <= f64::from(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2),
             "folded source polynomial must not retain a modulo jump: slope={slope}"
         );
 
@@ -1112,10 +1112,54 @@ mod tests {
             }
             let value = super::super::scalar::source_sin(angle);
             assert!(
-                value.abs() <= super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V1,
+                value.abs() <= super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2,
                 "source value factor misses angle={angle} value={value}"
             );
         }
+    }
+
+    #[test]
+    fn pinned_source_trig_factors_dominate_the_derived_suprema() {
+        let derived = super::super::scalar::folded_source_polynomial_derivative_sups();
+        // The suprema are the ones quoted in the `SOURCE_TRIG_*_FACTOR_V2`
+        // derivation. Pin them so a coefficient edit cannot silently move the
+        // ground truth the factors are justified against.
+        let expected = [1.000_002, 1.000_000_001, 1.000_006, 1.000_000_03];
+        for (index, (derived, expected)) in derived.iter().zip(expected).enumerate() {
+            assert!(
+                *derived >= 1.0 && *derived <= expected + 1.0e-4,
+                "derived supremum {index} drifted: {derived}"
+            );
+        }
+
+        // Revision 1 pinned 4/8/32/128 as a "source-f32 operation envelope".
+        // f32 relative error is ~6e-8 and the folded evaluation schedule is
+        // under 16 operations on intermediates below 4, so the envelope is an
+        // absolute term below 4e-6 -- never a multiplicative factor. The
+        // pinned factor must dominate supremum + envelope, and must not
+        // reintroduce slack that is orders of magnitude past it.
+        let envelope = 4.0e-6;
+        let factors = [
+            f64::from(super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2),
+            f64::from(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2),
+            f64::from(super::super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2),
+            f64::from(super::super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2),
+        ];
+        for (index, (factor, derived)) in factors.iter().zip(derived).enumerate() {
+            assert!(
+                *factor >= derived + envelope,
+                "factor {index} = {factor} does not dominate {derived} + {envelope}"
+            );
+            assert!(
+                *factor <= 1.001,
+                "factor {index} = {factor} carries unjustified slack"
+            );
+        }
+        assert_eq!(
+            super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2,
+            1.000_976_562_5_f32,
+            "the sealed source-trig multiplier is 1 + 2^-10"
+        );
     }
 
     #[test]
@@ -1164,19 +1208,19 @@ mod tests {
             assert!(
                 amplitude * first.abs() * frequency_abs
                     <= amplitude
-                        * f64::from(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1)
+                        * f64::from(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2)
                         * frequency_abs
             );
             assert!(
                 amplitude * second.abs() * frequency_abs.powi(2)
                     <= amplitude
-                        * f64::from(super::super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1)
+                        * f64::from(super::super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2)
                         * frequency_abs.powi(2)
             );
             assert!(
                 amplitude * third.abs() * frequency_abs.powi(3)
                     <= amplitude
-                        * f64::from(super::super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1)
+                        * f64::from(super::super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2)
                         * frequency_abs.powi(3)
             );
         }

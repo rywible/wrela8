@@ -1,4 +1,127 @@
 Module path=__image_pixels
   Const N_RENDERERS: usize
+  Const N_RENDER_WORKERS: usize
+  Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
+  Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
+  Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
+  Fn __wrela_pixels_program_digest_byte(renderer: read usize, byte: read usize) -> u8
+  Fn __wrela_pixels_tile_feature_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_feature(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_tile_event_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_event(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
+  Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
+  Fn __wrela_pixels_p7_abs(value: read f32) -> f32
+  Fn __wrela_pixels_p7_power(value: read f32, exponent: read u64) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_coefficient(renderer: read usize, target: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_polynomial_base(renderer: read usize) -> u32
+  Fn __wrela_pixels_p7_feature_polynomial(renderer: read usize, feature: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_feature_polynomial_uv_bounds(renderer: read usize, feature: read u32) -> [f32; 20]
+  Fn __wrela_pixels_p7_event_polynomial(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_torus_event_magnitudes(renderer: read usize, event: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 65]
+  Fn __wrela_pixels_p7_standard_torus_coefficients(renderer: read usize, event: read u32, camera: read [f32; 12]) -> [f32; 57]
+  Fn __wrela_pixels_p7_standard_interval_mul(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p7_standard_torus_cell_positive_hit(u: read f32, v: read f32, ru: read f32, rv: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_standard_torus_feature(renderer: read usize, feature: read u32) -> bool
+  Fn __wrela_pixels_p7_standard_torus_pixel_bounds(coefficients: read [f32; 57], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 8]
+  Fn __wrela_pixels_p7_standard_torus_value(coefficients: read [f32; 57], u: read f32, v: read f32) -> [f32; 3]
+  Fn __wrela_pixels_p7_standard_torus_discriminant(coefficients: read [f32; 57], pixel_bounds: read [f32; 8], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 5]
+  Fn __wrela_pixels_p7_standard_torus_positive_hit(u: read f32, v: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_polynomial_uv2_bounds(renderer: read usize, event: read u32, u: read f32, v: read f32, ru: read f32, rv: read f32, magnitudes: read [f32; 65]) -> [f32; 4]
+  Fn __wrela_pixels_p7_event_clip_q(renderer: read usize, event: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_event_predicate_curve(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 20]
+  Fn __wrela_pixels_p7_deformation_miss_model(renderer: read usize, event: read u32) -> [f32; 21]
+  Fn __wrela_pixels_p7_pinned_camera(renderer: read usize) -> [f32; 13]
+  Fn __wrela_pixels_p7_projected_union_mode(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
+  Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
+  Fn __wrela_pixels_p7_material_event_coverage(renderer: read usize, x: read u32, y: read u32, q: read f32, hit: read bool, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 3]
+  Fn __wrela_pixels_p7_feature_valid(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_feature_valid_filter(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], exponent: read i32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_q_span(renderer: read usize, feature: read u32) -> [f32; 3]
+  Fn __wrela_pixels_p7_feature_world_bounds(renderer: read usize, feature: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p7_object_composed_root(renderer: read usize, object: read u32) -> bool
+  Fn __wrela_pixels_p7_object_support(renderer: read usize, object: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_object_q_tube(renderer: read usize, object: read u32, uv: read [f32; 4], q_lo: read f32, q_hi: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 7]
+  Fn __wrela_pixels_p7_initial_inside(renderer: read usize, u: read f32, v: read f32, q_near: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [u64; 2]
+  Fn __wrela_pixels_p7_polynomial_at_q(polynomial: read [f32; 11], q: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p7_param_slot(renderer: read usize, path_key: read u64) -> [u64; 2]
+  Fn __wrela_pixels_p7_numeric_config(renderer: read usize) -> [i64; 14]
+  Fn __wrela_pixels_p7_csg_occupancy(renderer: read usize, inside_bits: read u64) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_class(representation: read u64, kind: read u64) -> u64
+  Fn __wrela_pixels_p7_worker_error_class(error: read u8) -> u8
+  Fn __wrela_pixels_p7_csg_influence(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_frame_snapshot_store(renderer: read usize, params: read [f32; 16], param_count: read u16, camera: read [f32; 12], light_kinds: read [u64; 8], light_scalars: read [f32; 120], post: read [f32; 4], frame_index: read u64) -> bool
+  Fn __wrela_pixels_p7_frame_snapshot_params(renderer: read usize) -> [f32; 16]
+  Fn __wrela_pixels_p7_frame_snapshot_camera(renderer: read usize) -> [f32; 12]
+  Fn __wrela_pixels_p7_frame_snapshot_light_kinds(renderer: read usize) -> [u64; 8]
+  Fn __wrela_pixels_p7_frame_snapshot_light_scalars(renderer: read usize) -> [f32; 120]
+  Fn __wrela_pixels_p7_frame_snapshot_post(renderer: read usize) -> [f32; 4]
+  Fn __wrela_pixels_p7_frame_snapshot_meta(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p7_worker_assignment(renderer: read usize, worker: read u32) -> [u64; 7]
+  Fn __wrela_pixels_p7_framebuffer_reset(renderer: read usize) -> bool
+  Fn __wrela_pixels_p7_framebuffer_write(renderer: read usize, pixel: read u32, r: read u8, g: read u8, b: read u8, a: read u8) -> bool
+  Fn __wrela_pixels_p7_framebuffer_byte(renderer: read usize, byte: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_framebuffer_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p7_framebuffer_alpha_samples(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_framebuffer_pixel_written(renderer: read usize, pixel: read u32) -> bool
+  Fn __wrela_pixels_p7_workspace_reset(renderer: read usize, worker: read u32, generation: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_charge(renderer: read usize, worker: read u32, slot: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_counter(renderer: read usize, worker: read u32, slot: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_coverage(renderer: read usize, worker: read u32, corridor: read bool, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_store_certified_run(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8], model: read [i64; 8], normal: read [i64; 6], slacks: read [i64; 2], sample_meta: read i64) -> bool
+  Fn __wrela_pixels_p7_workspace_load_certified_run_word(renderer: read usize, worker: read u32, record: read u32, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_root(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_workspace_store_root_tmp(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root_tmp(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_telemetry_reset(renderer: read usize, worker: read u32) -> bool
+  Fn __wrela_pixels_p7_telemetry_charge(renderer: read usize, worker: read u32, counter: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_telemetry_counter(renderer: read usize, worker: read u32, counter: read usize) -> [u64; 2]
+Module path=render_interval
+  Struct FixedDomain data
+    field exponent: i32
+    field min_raw: i32
+    field max_raw: i32
+    fn full(exponent: read i32) -> FixedDomain
+    fn contains_raw(read self, value: read i32) -> bool
+    fn exponent_value(read self) -> i32
+  Enum FixedDomainOutcome data
+    variant Value(FixedDomain)
+    variant Error
+  Fn fixed_domain(exponent: read i32, min_raw: read i32, max_raw: read i32) -> FixedDomainOutcome
+  Struct Iv32 data
+    field lo: i32
+    field hi: i32
+    fn point(raw: read i32) -> Iv32
+    fn range(lo: read i32, hi: read i32) -> Iv32
+    fn lower(read self) -> i32
+    fn upper(read self) -> i32
+  Enum NumericOutcome data
+    variant Value(Iv32)
+    variant Empty
+    variant Error
+  Fn interval_valid(value: read Iv32, domain: read FixedDomain) -> bool
+  Fn interval_narrow(lo: read i64, hi: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_add(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_sub(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_contains_zero(value: read Iv32) -> bool
+  Fn interval_strict_positive(value: read Iv32) -> bool
+  Fn interval_strict_negative(value: read Iv32) -> bool
+  Fn interval_negate(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_floor_div(value: read i64, scale: read i64) -> i64
+  Fn interval_ceil_div(value: read i64, scale: read i64) -> i64
+  Fn interval_mul(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_square(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_scale_pow2(value: read Iv32, shift: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_intersect(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_hull(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_min(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_max(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_abs(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_affine(input: read Iv32, scale: read Iv32, bias: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_convert(value: read Iv32, source: read FixedDomain, destination: read FixedDomain) -> NumericOutcome
+  Fn interval_from_f32_bits(bits: read u32, radius_raw: read u32, domain: read FixedDomain) -> NumericOutcome
 Module path=input
   Fn build() -> Image

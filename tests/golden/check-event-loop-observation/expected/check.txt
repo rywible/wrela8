@@ -1,6 +1,1 @@
-Module path=examples.check_event_loop_observation
-  Struct PendingPage data
-    field words: [u64; 3]
-  Static PENDING: PendingPage placed=0x40007000
-  Fn observe_pending() -> u64
-  Fn event_loop() -> u64
+error[sema]: synchronous `for`/`while` requires a preceding `@budget(bound=N)` with comptime-known integer N ≥ 1, or every path from the loop head to its back edge must pass a vector-observation point (02-language.md §8.1) at 16:5

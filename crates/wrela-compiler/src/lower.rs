@@ -363,7 +363,10 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
         }
     }
     for (name, f) in program.fns.iter().chain(program.imported.fns.iter()) {
-        if f.is_async && !is_host_only_fn(program, name, f, opts) {
+        let sealed_pixels_helper = name.starts_with("__wrela_pixels_p7_worker_job_")
+            || ((name.starts_with("Renderer[") || name.starts_with("struct:Renderer["))
+                && name.contains(".__bootstrap_worker_path_"));
+        if f.is_async && !sealed_pixels_helper && !is_host_only_fn(program, name, f, opts) {
             out.insert(name.clone());
         }
     }
@@ -380,7 +383,7 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
             // placed for this image; treating every type-layout
             // instantiation as a guest entry point would retain idle workers
             // for all machine cores.
-            if ikey == "RendererWorker" {
+            if ikey.starts_with("RendererWorker") || ikey.starts_with("struct:RendererWorker") {
                 continue;
             }
             seed_one_struct(ikey, s, out);
@@ -390,6 +393,14 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
 
 fn seed_struct_entries(structs: &BTreeMap<String, TypedStruct>, out: &mut BTreeSet<String>) {
     for (sname, s) in structs {
+        // Renderer workers are compiler-placed implementation actors. A
+        // source image cannot instantiate the unspecialized generic actor,
+        // and Pixels images force-root exactly the sealed specializations
+        // they need. Treating the generic declaration as an ordinary public
+        // actor entry point retains the entire sweep in unrelated images.
+        if sname == "Renderer" || sname == "RendererWorker" {
+            continue;
+        }
         seed_one_struct(sname, s, out);
     }
 }
@@ -2734,7 +2745,45 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             callee,
             receiver,
             args,
-        } => lower_call(callee, receiver, args, &expr.ty, b, env),
+        } => {
+            if receiver.is_none()
+                && callee.spelling().as_str() == "__wrela_pixels_f64_bits_to_f32"
+                && args.len() == 1
+            {
+                let value = args[0]
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| LowerError::internal("P7 f64 bitcast argument is missing"))?;
+                let src = lower_expr(value, b, env)?;
+                let as_f64 = b.fresh(Type::F64);
+                b.emit(Inst::Copy { dst: as_f64, src });
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Convert {
+                    dst,
+                    ty: Type::F32,
+                    src: as_f64,
+                    abort: mwir::convert_abort_message(&Type::F32),
+                });
+                Ok(dst)
+            } else if receiver.is_none()
+                && matches!(
+                    callee.spelling().as_str(),
+                    "__wrela_pixels_f32_to_bits" | "__wrela_pixels_f32_from_bits"
+                )
+                && args.len() == 1
+            {
+                let value = args[0]
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| LowerError::internal("P7 f32 bitcast argument is missing"))?;
+                let src = lower_expr(value, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Copy { dst, src });
+                Ok(dst)
+            } else {
+                lower_call(callee, receiver, args, &expr.ty, b, env)
+            }
+        }
         TypedExprKind::CallValue(..) => Err(LowerError::unimplemented(
             "calling a closure/fn value indirectly is",
         )),

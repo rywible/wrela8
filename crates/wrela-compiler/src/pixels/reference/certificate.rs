@@ -154,17 +154,21 @@ pub fn monotone_tube(
     {
         return None;
     }
+    let face_margin = if lower_face.strict_negative() {
+        (-i64::from(lower_face.hi)).min(i64::from(upper_face.lo))
+    } else {
+        i64::from(lower_face.lo).min(-i64::from(upper_face.hi))
+    };
+    let derivative_margin = if derivative.strict_positive() {
+        i64::from(derivative.lo)
+    } else {
+        -i64::from(derivative.hi)
+    };
+    let margin = i32::try_from(face_margin.min(derivative_margin)).unwrap_or(i32::MAX);
     Some(RootCertificate {
         correction: Iv32::point(0),
-        derivative_margin: strict_margin(derivative),
-        face_margin: Iv32::point(
-            lower_face
-                .lo
-                .unsigned_abs()
-                .min(lower_face.hi.unsigned_abs())
-                .min(upper_face.lo.unsigned_abs())
-                .min(upper_face.hi.unsigned_abs()) as i32,
-        ),
+        derivative_margin: Iv32::point(margin),
+        face_margin: Iv32::point(margin),
         contraction_margin: Iv32::point(0),
         method: RootCertMethod::MonotoneTube,
     })
@@ -333,7 +337,8 @@ mod tests {
             make([Iv32::point(-4), Iv32::new(-1, 1).unwrap(), Iv32::point(-4)]);
         let tier_one = certify_run(inconclusive).unwrap().unwrap();
         assert_eq!(tier_one.certificate.method, RootCertMethod::MonotoneTube);
-        assert_eq!(tier_one.certificate.face_margin, Iv32::point(4));
+        assert_eq!(tier_one.certificate.derivative_margin, Iv32::point(2));
+        assert_eq!(tier_one.certificate.face_margin, Iv32::point(2));
 
         let mut tier_two = base;
         tier_two.composition_shape = None;

@@ -146,6 +146,45 @@ pub fn append_program_set(
             ));
         }
         let projective = program_set.projective_programs[index].program();
+        // Whether any analytic coverage tier admits itself by comparing the
+        // *runtime* camera against a fixed pose. Such a tier is fail-closed —
+        // a scene that leaves the pose falls back to the arrangement walk
+        // rather than producing a wrong byte — but it falls back per frame,
+        // and until this line existed nothing at build time said so, which is
+        // exactly what made the cost cliff invisible. `pose_conditional=yes`
+        // means: this renderer has a tier whose availability the compile-time
+        // cost model cannot see. Proving the pose at seal time needs a pinned
+        // camera in the renderer declaration, which is a contract change and
+        // is tracked to P12 rather than assumed here.
+        let pinned_pose = program_set
+            .compiled_renderers
+            .get(index)
+            .is_some_and(|renderer| renderer.config.camera_pose.is_some());
+        let pose_conditional_tiers = if pinned_pose {
+            // The declaration pins the camera and frame validation enforces
+            // it, so the runtime pose test is proved rather than gambled on:
+            // no tier here is conditional.
+            0
+        } else {
+            projective
+                .events
+                .generators
+                .iter()
+                .filter(|event| {
+                    program_set
+                        .compiled_renderers
+                        .get(index)
+                        .is_some_and(|renderer| {
+                            super::glue::is_standard_torus_event(renderer, event).unwrap_or(false)
+                        })
+                })
+                .count()
+        };
+        output.push_str(&format!(
+            "    AnalyticTiers pose_conditional={} camera_pinned={}\n",
+            pose_conditional_tiers,
+            u8::from(pinned_pose),
+        ));
         let capacities = &projective.capacities;
         output.push_str(&format!(
             "    Projective features={} polynomials={} coefficients={} derivative_bundles={} derivative_clusters={} events={} competition_pairs={} exclusions={} index_bytes={}\n",
@@ -305,11 +344,11 @@ pub fn append_program_set(
                 compiled.mutable_layout.telemetry.bytes,
             ));
             output.push_str(&format!(
-                "    Generated coordinator={} workers={} mailbox_capacity={} fallback={} presentation=none palette=bootstrap families=[{}]\n",
+                "    Generated coordinator={} workers={} mailbox_capacity={} execution={} presentation=none palette=debug-identity-q families=[{}]\n",
                 compiled.generated.coordinator,
                 compiled.generated.workers.len(),
                 compiled.generated.workers.len() + 2,
-                super::RENDERER_UNAVAILABLE_FALLBACK,
+                super::DEBUG_VISIBILITY_PATH,
                 compiled.generated.bootstrap_families.join(","),
             ));
             for worker in &compiled.generated.workers {
@@ -433,7 +472,7 @@ pub fn append_layout(
             "  Renderer index={} profile={} frameprog_base={:#x} frameprog_bytes={} frameprog_blob_digest={} \
              state_base={:#x} state_reservation_bytes={} framebuffer_base={:#x} \
              framebuffer_bytes={} probe_base={:#x} probe_bytes={} coordinator={}@core{} \
-             fallback={} presentation=none\n",
+             execution={} presentation=none\n",
             placement.index,
             config.profile,
             placement.frameprog_base,
@@ -447,7 +486,7 @@ pub fn append_layout(
             placement.probe_bytes,
             placement.coordinator_actor,
             placement.coordinator_core,
-            super::RENDERER_UNAVAILABLE_FALLBACK,
+            super::DEBUG_VISIBILITY_PATH,
         ));
         output.push_str(&format!(
             "    Field key={} material_key={} display_ref=driver#{}\n\
@@ -455,7 +494,9 @@ pub fn append_layout(
              \x20   Capacity objects={} features={} events={} sheets_per_row={} \
              runs_per_row={} transparent_layers={}\n\
              \x20   Formal contract={} numeric_revision={} formal_revision={}\n\
-             \x20   Fallback bounded_local_rebuild=false dense_frame=false presentation=false\n\
+             \x20   Execution from_scratch_sweep=true bounded_local_rebuild=true \
+             dense_frame=false previous_state=false oracle_runtime=false \
+             debug_visibility=true presentation=false\n\
              \x20   BuildIdentity frame_program_digest={} tone_transfer_digest={} \
              profile_revision={} numeric_revision={} formal_theorem_set={} \
              renderer_layout_digest={}\n",
@@ -496,6 +537,20 @@ pub fn append_layout(
                 worker.workspace_bytes,
             ));
         }
+        output.push_str(&format!(
+            "    CertificateTelemetry version={} decision_input=false merge_order=tile-id \
+             counters_per_worker={} production_bytes=0 instrumented_bytes={}\n\
+             \x20     Schema run_length_bins=8 root_methods=[0:bernstein-faces,1:monotone-tube,2:krawczyk] \
+             composition_shapes=[0:general,1:plane,2:sphere,3:torus]\n\
+             \x20     Schema expiry_causes=[0:domain-end,1:residual,2:validity,3:order,4:branch,5:numeric,6:fixed-q,7:event] \
+             margin_owners=[0:root,1:feature,2:order,3:csg,4:branch,5:numeric,6:fixed-q,7:event]\n\
+             \x20     Schema density_bins=8 subdivision_bins=16 \
+             rebuild_reasons=[0:none,1:x-split,2:q-split,3:feature-split,4:branch-split,5:event-arrangement,6:pixel-cell,7:subpixel-integration,8:exhausted] \
+             numeric_failure_bins=8 pixel_classes=[regular,corridor]\n",
+            super::reference::telemetry::CERTIFICATE_TELEMETRY_VERSION,
+            super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+            compiled.mutable_layout.telemetry.bytes,
+        ));
     }
     Ok(())
 }

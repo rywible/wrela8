@@ -1161,11 +1161,12 @@ fn verify_capacities(graph: &SymbolicGraph, program: &StructuralProgram) -> Resu
         u64::from(capacities.max_event_subdivisions),
         "event records",
     )?;
+    let expected_runs = expected_events
+        .checked_add(1)
+        .ok_or_else(|| "pixels::verify: run record arithmetic overflow".to_string())?
+        .max(u64::from(super::projection_bounds::TILE_WIDTH_V1));
     if u64::from(capacities.max_event_records) != expected_events
-        || u64::from(capacities.max_run_records_per_tile_row)
-            != expected_events
-                .checked_add(1)
-                .ok_or_else(|| "pixels::verify: run record arithmetic overflow".to_string())?
+        || u64::from(capacities.max_run_records_per_tile_row) != expected_runs
     {
         return Err("pixels::verify: event/run capacities are inconsistent".to_string());
     }
@@ -1348,7 +1349,8 @@ fn verify_capacities(graph: &SymbolicGraph, program: &StructuralProgram) -> Resu
             )?
         || capacities.frame_dependency_snapshot_bytes
             != checked_mul(
-                u64::from(program.params.frame_dependencies.runtime_bytes),
+                u64::from(program.params.frame_dependencies.runtime_bytes)
+                    .max(super::capacities::P7_CANONICAL_FRAME_SNAPSHOT_BYTES),
                 2,
                 "frame dependency snapshots",
             )?
@@ -3791,6 +3793,7 @@ mod tests {
                 y: 4.0,
                 z: 4.0,
             },
+            camera_pose: None,
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),
@@ -4050,33 +4053,44 @@ mod tests {
         let structural = super::super::compile_structural_renderer(&graph, &config).unwrap();
         let program =
             super::super::derive_projective_program(&graph, &config, &structural).unwrap();
-        let side = |kind| {
-            program
-                .events
-                .generators
-                .iter()
-                .find(|event| event.kind == kind)
-                .map(|event| event.side_meaning)
-                .unwrap_or_else(|| panic!("minimal projective fixture lacks {kind:?}"))
-        };
-        assert_eq!(
-            side(super::super::event_kinds::EventKind::NearClip),
-            super::super::event_kinds::EventSideMeaning::crossing(
-                super::super::event_kinds::EventSide::InsideClip,
-                super::super::event_kinds::EventSide::OutsideClip,
-            )
-        );
-        assert_eq!(
-            side(super::super::event_kinds::EventKind::FarClip),
-            super::super::event_kinds::EventSideMeaning::crossing(
-                super::super::event_kinds::EventSide::OutsideClip,
-                super::super::event_kinds::EventSide::InsideClip,
-            )
-        );
+        // This fixture's sphere sits well inside the frustum, so its sealed
+        // projected q span clears both clip planes and the near/far clip
+        // families are omitted as vacuous rather than emitted. Their family
+        // accounting still has to be complete: dropping the exclusion that
+        // stands in for the generator must fail verification exactly as
+        // dropping a generator does.
         for kind in [
-            super::super::event_kinds::EventKind::Silhouette,
             super::super::event_kinds::EventKind::NearClip,
             super::super::event_kinds::EventKind::FarClip,
+        ] {
+            let entry = program
+                .events
+                .ledger
+                .iter()
+                .find(|entry| entry.subject.kind == kind)
+                .unwrap_or_else(|| panic!("minimal projective fixture lacks {kind:?}"));
+            assert!(
+                matches!(
+                    entry.omission,
+                    Some(super::super::events::OmissionHint::ClipQOutsideFeatureQSpan { .. })
+                ),
+                "{kind:?} must be omitted by the clip-q separation proof, got {:?}",
+                entry.omission
+            );
+            let subject = entry.subject;
+            let mut corrupt = program.clone();
+            corrupt.exclusions.records.retain(|record| {
+                record.subject != super::super::exclusions::ExclusionSubject::Event(subject)
+            });
+            assert!(
+                verify_event_families(&graph, structural.program(), &corrupt)
+                    .and_then(|()| verify_accounting(structural.program(), &corrupt))
+                    .is_err(),
+                "removing the {kind:?} exclusion must fail verification"
+            );
+        }
+        for kind in [
+            super::super::event_kinds::EventKind::Silhouette,
             super::super::event_kinds::EventKind::FixedPointResetOnly,
         ] {
             let mut corrupt = program.clone();
@@ -4285,9 +4299,12 @@ mod tests {
             "CompetitionOmission a=g0 a_primitive=f0 a_source=sphere:0:0@bytes=0..0 \
              b=g1 b_primitive=f1 b_source=right-column:0:0@bytes=0..0"
         ));
-        assert!(report.contains(
-            "reason=projected-bounds-disjoint proof=proof0 domain=domain0 dependencies=[] margin=["
-        ));
+        // The proof ordinal is a global counter over every exclusion family, so
+        // pin the omission's shape rather than its position in that counter.
+        assert!(report.lines().any(|line| {
+            line.contains("reason=projected-bounds-disjoint proof=proof")
+                && line.contains("domain=domain0 dependencies=[] margin=[")
+        }));
         let mut repeated = String::new();
         super::super::report::append_program_set(&mut repeated, &program_set).unwrap();
         assert_eq!(report, repeated);
@@ -5650,22 +5667,22 @@ mod tests {
             "deform-displacement",
         );
         let amplitude_bound = scalar(
-            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V1.to_bits()),
+            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2.to_bits()),
             Dependency::Constant,
             "deform-amplitude-bound",
         );
         let gradient_bound = scalar(
-            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1.to_bits()),
+            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2.to_bits()),
             Dependency::Constant,
             "deform-gradient-bound",
         );
         let hessian_bound = scalar(
-            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1.to_bits()),
+            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2.to_bits()),
             Dependency::Constant,
             "deform-hessian-bound",
         );
         let third_derivative_bound = scalar(
-            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1.to_bits()),
+            ScalarOp::ConstF32(super::super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2.to_bits()),
             Dependency::Constant,
             "deform-third-bound",
         );
@@ -5758,6 +5775,21 @@ mod tests {
                 .contains("numeric contract")
         );
         let mut corrupt_contract_graph = deform_graph.clone();
+        // This fixture's frequency is 1 and every `SOURCE_TRIG_*_FACTOR_V2` is
+        // the same multiplier, so `amplitude * frequency^k` is one value for
+        // all four bounds: aliasing one contract scalar onto another is no
+        // longer a value-level corruption for it to catch. Declare a bound
+        // that genuinely disagrees with the closed derivation instead.
+        let wrong_bound = corrupt_contract_graph
+            .scalar
+            .push(
+                ScalarNode {
+                    op: ScalarOp::ConstF32(2.0_f32.to_bits()),
+                    dependency: Dependency::Constant,
+                },
+                NodeOrigin::synthetic("corrupt-gradient-bound"),
+            )
+            .unwrap();
         let FieldKind::BoundedDisplace { contract, .. } = &mut corrupt_contract_graph
             .fields
             .get_mut(deformed_root)
@@ -5766,7 +5798,7 @@ mod tests {
         else {
             panic!("test deformation root changed kind")
         };
-        contract.gradient_bound = contract.amplitude_bound;
+        contract.gradient_bound = wrong_bound;
         assert!(
             super::super::compile_structural_renderer(&corrupt_contract_graph, &deform_config)
                 .unwrap_err()
@@ -5919,13 +5951,19 @@ mod tests {
         );
 
         program.report.object_count = 0;
-        program.capacities.max_run_records_per_tile_row = 1;
-        program.capacities.max_local_rebuild_queue = 1;
+        program.capacities.max_run_records_per_tile_row =
+            super::super::projection_bounds::TILE_WIDTH_V1;
+        program.capacities.max_local_rebuild_queue = super::super::projection_bounds::TILE_WIDTH_V1;
         program.capacities.max_transparent_layers = 0;
-        program.capacities.run_bytes = super::super::capacities::RUN_RECORD_BYTES_V1;
-        program.capacities.corridor_bytes = super::super::capacities::CORRIDOR_RECORD_BYTES_V1;
-        program.capacities.fixed_q_bytes = super::super::capacities::FIXED_Q_RECORD_BYTES_V1;
-        program.capacities.shading_bytes = super::super::capacities::SHADING_RECORD_BYTES_V1;
+        let terminal_records = u64::from(super::super::projection_bounds::TILE_WIDTH_V1);
+        program.capacities.run_bytes =
+            terminal_records * super::super::capacities::RUN_RECORD_BYTES_V1;
+        program.capacities.corridor_bytes =
+            terminal_records * super::super::capacities::CORRIDOR_RECORD_BYTES_V1;
+        program.capacities.fixed_q_bytes =
+            terminal_records * super::super::capacities::FIXED_Q_RECORD_BYTES_V1;
+        program.capacities.shading_bytes =
+            terminal_records * super::super::capacities::SHADING_RECORD_BYTES_V1;
         program.capacities.per_worker_scratch_bytes = program.capacities.run_bytes
             + program.capacities.corridor_bytes
             + program.capacities.fixed_q_bytes
@@ -5933,9 +5971,12 @@ mod tests {
         program.capacities.all_worker_scratch_bytes = program.capacities.per_worker_scratch_bytes;
         program.capacities.state_header_bytes =
             super::super::capacities::RENDERER_STATE_HEADER_BYTES_V1;
+        program.capacities.frame_dependency_snapshot_bytes =
+            super::super::capacities::P7_CANONICAL_FRAME_SNAPSHOT_BYTES * 2;
         program.capacities.failure_record_bytes = super::super::capacities::FAILURE_RECORD_BYTES_V1;
-        let pre_framebuffer =
-            program.capacities.state_header_bytes + program.capacities.all_worker_scratch_bytes;
+        let pre_framebuffer = program.capacities.state_header_bytes
+            + program.capacities.frame_dependency_snapshot_bytes
+            + program.capacities.all_worker_scratch_bytes;
         let page = wrela_machine::layout::PIXELS_STATE_PAGE_ALIGNMENT;
         program.capacities.total_renderer_state_bytes =
             ((pre_framebuffer + page - 1) & !(page - 1)) + program.capacities.failure_record_bytes;

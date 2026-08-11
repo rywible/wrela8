@@ -27,6 +27,7 @@ mod diff_blk;
 mod fuzz;
 mod golden;
 mod lane2_freq;
+mod pixels_conformance;
 mod pixels_formal;
 mod pixels_plan_lint;
 mod pixels_repro;
@@ -41,6 +42,7 @@ use diff_blk::{blk_shape, diff_blk, fill_blk_ring, qemu_path};
 use fuzz::*;
 use golden::*;
 use lane2_freq::*;
+use pixels_conformance::*;
 use pixels_formal::*;
 use pixels_plan_lint::*;
 use pixels_repro::*;
@@ -71,7 +73,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]|pixels-conformance\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -110,7 +112,14 @@ fn main() -> ExitCode {
             [_, flag] if flag == "--update" => pixels_vectors(true),
             _ => Err("usage: cargo xtask pixels-vectors [--update]".to_string()),
         },
-        Some("pixels-repro") => no_args("pixels-repro", &args).and_then(|()| pixels_repro()),
+        Some("pixels-repro") => match args.as_slice() {
+            [_] => pixels_repro(),
+            [_, flag] if flag == "--smoke" => pixels_repro_smoke(),
+            _ => Err("usage: cargo xtask pixels-repro [--smoke]".to_string()),
+        },
+        Some("pixels-conformance") => {
+            no_args("pixels-conformance", &args).and_then(|()| pixels_conformance())
+        }
         Some("verify-milestone") => Err(
             "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
              `cargo xtask verify-deep` is an optional maintainer diagnostic"
@@ -445,6 +454,12 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
+        "Pixels visibility conformance",
+        "cargo xtask pixels-conformance",
+        pixels_conformance,
+    )?;
+    verify_stage(
+        LANE,
         "cost inventory",
         "cargo xtask cost-inventory",
         cost_inventory,
@@ -487,7 +502,7 @@ fn verify() -> Result<(), String> {
     verify_stage(
         LANE,
         "Pixels fresh-directory reproduction",
-        "cargo xtask pixels-repro",
+        "cargo xtask pixels-repro --smoke",
         pixels_repro_smoke,
     )?;
     verify_stage(LANE, "stdlib", "cargo xtask stdlib-test", stdlib_test)?;

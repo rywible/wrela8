@@ -7188,6 +7188,794 @@ Run `cargo xtask verify`. Do not implement the sweep until all certificate predi
 
 Milestone result: the generated renderer constructs complete, exact visibility from only `FrameProgram`, current frame inputs, and bounded workspace. It handles first frame, camera cuts, and arbitrary valid frame changes. It emits certified runs or returns a render error; it never needs previous-frame state for correctness.
 
+## P7 as built — recorded deviations that supersede task wording below
+
+These deltas keep every P7 obligation but change the mechanism; where a task
+below disagrees with this list, this list is authoritative.
+
+1. **Box-complete collection replaces point-collect-then-box-certify
+   (P7.5/P7.8/P7.9).** Root collection widens every primitive coefficient by
+   its sealed uv partial bound and runs one bisection walk whose verdicts —
+   certified crossing, proven root-free, unresolved corridor — hold over the
+   whole query box. Smooth-object tubes are box-evaluated during isolation.
+   A span is certified by one box-complete sample; there is no second
+   certification pass and no per-feature exclusion back-check, because
+   omission of a feature root over the box is impossible by construction.
+   The implicit jet (P7.8) is still constructed and remains decision-inert;
+   it lives on the certified row record rather than every visibility sample
+   so sample copies stay cheap. Every unresolved cell of a walk collapses
+   into one conservative corridor per feature (or smooth object) covering
+   the deepest unresolved face and everything farther, certified crossings
+   nearer than the corridor survive it, and the walk prunes cells already
+   inside the corridor — the visibility outcome is unchanged (any corridor
+   in front of the boundary fails the sample; corridors behind it are never
+   consulted) while ambiguous domains stay linear in the resolved frontier
+   instead of exponential in the depth cap. A span overlapping a sealed
+   material-boundary event region resolves per pixel so material coverage
+   is charged to corridors. Residual assumption: the near-plane CSG
+   occupancy seed is evaluated on the centre ray only, exactly as before
+   this rework.
+2. **Sealed CSG programs compile to straight-line Boolean code (P7.6).** The
+   frame-program stack machine is compiled at image generation into a
+   per-renderer Boolean function; a program the old interpreter would have
+   rejected fails at generation. There is no runtime CSG interpreter.
+3. **Worker-error taxonomy (P7.9/P7.10/§2.6).** Codes 4, 42–50 and
+   61–77 (analytic silhouette coverage sub-codes, 60 + cause) plus 100 map to
+   `CertificateExhausted`; 16 (per-row candidate/proposal records) and 17
+   (root/run/corridor records) map to `CapacityExceeded` with the code as the
+   capacity kind; 2 maps to `EventIsolationExhausted`, 6 to
+   `RootIsolationExhausted`, 7 to `FixedPointRangeExceeded`; everything else
+   is an internal invariant.
+4. **The coverage integrand carries its owner (P7.10).** A silhouette
+   coverage byte with no certified point hit resolves its identity from the
+   accepted event's sealed participant list (first feature, else first
+   object), then from deterministic corner rays, and otherwise fails closed
+   with reserved code 50. Coverage is never silently discarded as background.
+5. **Derivative-tube error budget (P7.8, prior finding 8).** The generated
+   `object_q_tube` scales its rounding allowance by the cluster's scalar
+   schedule size (per-op 2^-23, floored at the historical 2^-16) and adds a
+   secant evaluation-error term that scales with 1/width, so narrow cells can
+   no longer fake derivative certificates. Remaining assumption, tracked for
+   closure by interval evaluation of the schedule: face/radius magnitudes are
+   used as the intermediate-magnitude proxy of a running-error bound.
+6. **Instrumented versus production layouts are real (P7.3).**
+   `wrela test --pixels-telemetry` selects the instrumented renderer layout;
+   plain runs and recorded goldens pin the production layout, which stores no
+   telemetry or run evidence. Conformance proves telemetry decision-inertness
+   by requiring the instrumented displayed-frame digest to equal the golden
+   production digest byte-for-byte.
+7. **Renderer display widths must divide by 8 (P7.13).** Framebuffer color
+   and write-once-marker words are shared u64 cells updated by plain
+   read-modify-write; only widths divisible by 8 guarantee no word spans two
+   workers' pixels across a row wrap. The mode is rejected at seal time.
+8. **Per-pixel conformance transport (P7.14).** Instrumented fixtures emit,
+   after their standard observation words, a frame dump: the validated
+   snapshot camera and packed parameters followed by the complete debug
+   framebuffer. The host oracle consumes that camera/parameter state (never a
+   guessed canonical camera), scores every pixel — interior pixels must match
+   hit state and identity exactly, silhouette-adjacent pixels must not be
+   background when the centre ray hits and may only show an adjacent
+   surface's identity, and any oracle-unresolved ray fails the case — and
+   proves one/four-worker invariance over the full frame bytes. Identity
+   truth comes from the semantic feature leaves (smallest |leaf| at the hit
+   point, abstaining on blend seams). The machine console contract was
+   enlarged (4096 descriptors, 128 KiB data) to carry the dump; the console
+   remains an append-only bump channel. The one-core plane and tangent
+   fixtures formerly returned immediately before their instrumented dump
+   hooks; both returns now follow the dump loop. The plan lint rejects this
+   exact unreachable-hook pattern so production-only green transcripts cannot
+   defer the failure to the expensive instrumented lane. The four-worker plane
+   control reads worker 3's final-tile run, matching the sole worker's final
+   run in the one-worker layout; raw evidence equality now compares the same
+   spatial certificate rather than two partition-dependent record-zero slots.
+9. **Golden policy.** A `check-pixels-*`/`boot-pixels-*` fixture transcript
+   containing a failing test can be neither recorded nor accepted by the
+   golden runner; recording a red acceptance fixture is impossible by
+   construction.
+10. **Machine layout headroom.** The image packing window is 4 MiB
+    (`RTDATA_BASE = IMAGE_BASE + 0x40_0000`); branchable text must still fit
+    one 2 MiB region per SOG §4.8, which the slimmed sample record keeps
+    comfortable. `AdrAddressing` stays parked (DRAM pages moved beyond ADR
+    reach when the image base moved), with its reloc machinery kept alive by
+    force-enabling it inside the layout unit test.
+11. **Order-invariant coincident groups.** When an overlap group shares one
+    identity, the composite is currently unoccupied, and every possible
+    first toggle occupies it, the first crossing is a composite boundary
+    under every ordering of the unresolvably close roots — the selector
+    accepts it as a visible hit. A thin slab's enter/exit pair and a
+    tangency's coincident surfaces resolve here instead of dissolving into
+    event ambiguity.
+12. **Graceful work caps everywhere refinement can grind.** Every
+    isolation/refinement loop resolves its budget through a graceful check
+    that classifies exhaustion (`CertificateExhausted`) strictly before the
+    `@budget` trap can fire: the q walks carry visited-cell caps (8192 for
+    primary samples, 64 for subpixel arrangement cells, whose separation
+    belongs to the uv ladder), the subpixel quadtree caps at 16384 cells,
+    and the analytic-coverage refiner at 200000. The byte-driven early stop
+    ends refinement the moment no undecided unit can change the rounded
+    coverage byte. `CertificateExhausted` reports the worker sub-code in the
+    high half of its tile word, so red traces name their cause.
+13. **Known P7 residue (open, tracked) — one root cause, four symptoms.**
+    The remaining P7 gap is *not* four independent geometry problems and is
+    *not* a precision problem. A pixel is decided either by a closed-form
+    analytic coverage integrator, or by the subpixel walk. Boundary shapes
+    with no integrator force every pixel they cover into the walk; the walk
+    then either exhausts its 262144-evaluation budget (worker error 42) or
+    merely costs minutes. That single gap produced four symptoms.
+    **`check-pixels-displace` is now CLOSED** — and the cause was not a
+    missing integrator at all, but a sealed *envelope constant*.
+    `SOURCE_TRIG_{VALUE,GRADIENT,HESSIAN,THIRD}_FACTOR_V1` were `4/8/32/128`,
+    inflating this scene's displacement bounds to `A = 0.5`, `G = 2.0`
+    against authored `0.125`/`0.25`. On a radius-1.0 sphere that widens the
+    silhouette to a ~2px band, so the geometry was ambiguous under the
+    *sealed* bounds while perfectly determined under the true ones, and the
+    walk could never converge on the single pixel sitting on the silhouette
+    (measured: x=30, y=12, ray distance 1.007). Re-derived to
+    `_V2 = 1.0009765625` with a proof: the factors bound `sup |p^(k)|` of the
+    folded source polynomial, which is exactly 1 for true sine and ~1.000006
+    for the pinned f32 coefficients, while the f32 evaluation envelope is 12
+    rounded operations — an *absolute* ~4e-6 term. A *multiplicative* 4x
+    overstated it by six orders of magnitude. The fixture went from 75s-red
+    to **13.8s-green**, and the sealed Taylor remainder fell 2993 -> ~23. A
+    second blocker sat behind it: `feature_normal` emits no case for a
+    displaced feature, which is now treated as *no normal claim* rather than
+    synthesizing the primitive's (wrong) normal. The symptoms present during
+    the fix wave were
+    `check-pixels-hard-csg` (feature boundaries whose `sparse-predicate`
+    curve lives at a per-pixel root q rather than a sealed fixed q, so the
+    clip-curve treatment of deviation 19 does not reach it), and — as time
+    rather than failure — `check-pixels-torus-roots` and
+    `boot-pixels-renderer-unavailable`. `check-pixels-enclosed-feature`
+    passes but takes 3m24s by the same mechanism. Their closure is recorded
+    below; this paragraph remains as the diagnostic history that led to it.
+
+    Three plausible theories were tested and **refuted**; do not re-derive
+    them. (i) *Coefficient widening is not the noise floor.* Cutting
+    `interval_from_f32`'s `magnitude / 65536 + 64` by 16x left displace and
+    hard-csg failing identically, which retires the "extend f32 error terms
+    into the walk" plan recorded in earlier notes. (ii) *The refinement loop
+    is not the wall-clock cost.* Adding a sound byte-driven early stop to
+    `silhouette_coverage`'s refinement quadtree moved
+    `check-pixels-enclosed-feature` from 3m28s to 3m24s. The early stop is
+    retained (it is correct, and it bounds degenerate curves) but it is not
+    the perf lever. (iii) *The large sealed bounds are inert.* displace seals
+    `remainder = 2993.35` and torus bounds up to `4.29e6`, but the guest reads
+    no representation operands at all: scaling every one of them by 1e-9
+    leaves every generated guest numeric kernel byte-identical. Note also
+    that `remainder = M3 * delta^3 / 6` is computed over the whole feature
+    AABB (`world_delta_abs_bound` = 5.196); because it scales as `delta^3`,
+    evaluating the same sealed Taylor model over a pixel-sized cell is ~1e6
+    times tighter and needs no change to any sealed constant.
+
+    (b) A surface passing exactly through the camera eye (admitted by a
+    parameter range) converges only through deep refinement. This is the
+    dominant cost of `boot-pixels-renderer-unavailable`, whose two
+    `phase = 0.0` frames put the ground plane through the eye: measured, 51s
+    with them and 12s without, against the VMM's 30-second `WALL_CAP`. The
+    frame is byte-exact and complete. For a degree-1 ray polynomial the
+    covered set is exactly `{ g(q_far) * g(q_near) <= 0 }`, so it is bounded
+    by the two clip level sets deviation 19 already computes; when the
+    leading coefficient vanishes identically that product is a perfect
+    square and the hit set is a measure-zero line, i.e. coverage 0. The cap
+    must not be raised to hide this, since it is also the only watchdog on a
+    genuinely spinning guest. (c) The busy-guest wall cap only bounds parked
+    sleeps; a spinning guest is killed by the harness watchdog, not the VMM.
+
+    (d) *A red fixture was a compiler bug, not a renderer bug.*
+    `boot-pixels-frame-input` compared two identical `u64` digests as
+    unequal. Root cause in `frame_plan.rs::same_state_interference`: it never
+    modelled that a definition writes its register even when the defined
+    value is dead, so a dead def could take the register of a value live
+    across a suspend and the await flush stored the wrong value. Gated on the
+    `FlowStateRegs` optimization, so only optimized builds were affected.
+    Fixed with the standard def-vs-live-out rule, with a regression test and
+    no golden drift. Any future pixel red should be checked for
+    reproducibility *without* the renderer before geometry is suspected.
+
+    **CLOSED (2026-08-09 review remediation).** The remaining symptoms are
+    closed in-tree. Hard CSG uses the oriented predicate eliminant and
+    integrates sibling predicates jointly; torus roots use the centred
+    Hessian bound, adaptive refinement, and event-keyed torus caches; the
+    renderer-unavailable clip path uses exact-rational half-plane coverage.
+    The union integrator now prefilters at most eight pixel-relevant events
+    once per pixel instead of rereading the full tile table for every
+    refinement cell. `check-pixels-hard-csg`, `check-pixels-torus-roots`, and
+    `boot-pixels-renderer-unavailable` are permanent green runtime fixtures,
+    and `check-pixels-enclosed-feature` remains the structural-discovery
+    performance witness. There is no open P7 residue under this deviation.
+
+    The canonical standalone torus now has a sealed analytic tier rather than
+    depending on the generic arrangement walk for its final coverage byte.
+    The compiler emits the normalized discriminant in `X = u^2`, `Y = v^2`
+    together with outward coefficient intervals, point/cell P-Q
+    classification, and derivative magnitudes. Coefficients are evaluated by
+    short compensated-f32 Horner chains (error-free `TwoSum`/`TwoProduct` plus
+    an explicit second-order remainder), guarded to the finite camera range
+    `0.125 <= eye <= 64`; outside that range the optimization declines. The
+    guest evaluates the bivariate polynomial by outward interval Horner and
+    carries `(value,error)` at every cached sample. Three deterministic host
+    tests range the guarded eye domain against f64 expanded-polynomial truth,
+    range representative `(u,v,eye)` points against the complete normalized
+    discriminant, and check that every P-Q box classification agrees with a
+    dense f64 sample lattice. These are containment tests, not golden-output
+    snapshots.
+
+    Refinement uses a three-point affine basis per cell (`f00`, `f10`, `f01`)
+    with individual evaluator errors; `f11` is enclosed by that basis plus the
+    centred Hessian residual. A split evaluates only the five new shared
+    vertices and maps the inherited basis into its four children. The tier
+    attempts the fixed precision ladder `1048576`, `64000`, then `4000`; each
+    rung remains fail-closed, and the generic arrangement walk is the final
+    fallback. This is the measured bridge to the Green's-theorem/conic
+    endgame described in the review: it preserves the same rigorous
+    second-order certificate while avoiding an unbounded rewrite at P7.
+
+    Finally, the row certifier no longer contains the whole adaptive walk as
+    one generated function. Ownership/corner resolution, axis choice, and the
+    weighted arrangement walk live in
+    `resolve_silhouette_owner`, `choose_arrangement_axis`, and
+    `resolve_pixel_arrangement`, with `P7PixelArrangement` as their explicit
+    result. Besides making the proof boundaries readable, this cuts the row
+    assembly function from roughly 128k to 36k instructions and leaves normal
+    branch-region headroom without weakening the layout check.
+
+    The thin-feature close exposed one further analytic case in the same
+    validity-predicate tier. An affine-in-q feature can have a leading
+    coefficient `A_f` whose sign is not global over the full declared camera
+    box even though `A_f` is affine (often constant) in `(u,v)` for a concrete
+    frame. The compiler now emits its predicate eliminant in that case. At
+    runtime each descriptor records the local sign of `A_f`, and the cell proof
+    requires the same strict sign at all four corners before using
+    `sign(A_f) (A_f S_p - A_p S_f)` or the forward-root witness. Because the
+    admitted `A_f` is affine in `(u,v)`, four equal corner signs prove that it
+    cannot cross zero inside the cell; a zero, mixed sign, or nonlinear
+    unsealed coefficient declines to the walk. Predicate siblings are recorded
+    as classified only after their representative's complete region proof or
+    arrangement-boundary proof succeeds. `check-pixels-thin-feature` is the
+    permanent runtime regression: it passes with the original 2^24 area ledger,
+    2^-12 minimum radius, and 262144-evaluation cap. Experimental deeper
+    ledgers, axis-reuse heuristics, and a repr-2-only depth extension did not
+    address the cause and were removed.
+
+    Predicate-event branches now emit metadata only (polynomial IDs,
+    orientations, curvature bounds, and sibling IDs) and feed one shared
+    eliminant evaluator. This prevents constant event IDs from cloning the
+    checked polynomial accessor at every branch. The largest field-ops fixture
+    falls from the 2.40 MiB rejected layout to about 1.79 MiB of executable
+    text, leaving normal headroom below the 2 MiB branch-region boundary.
+
+14. **The event-arrangement tier is the side-state extension of the group
+    walk (P7.10 ladder step 5), not a separate pass.** Three mechanisms
+    compose. *Partial roots:* a certified crossing whose feature-validity
+    predicate is mixed over the query box appends a corridor record with
+    the certified (localized) bracket — the validity boundary is a
+    silhouette event curve crossing the cell, and failing the collection
+    there made every silhouette-straddling cell ambiguous at every scale.
+    The smooth walk likewise corridors-izes active-feature ambiguity, with
+    an identity-only owner fallback when the owning feature (but not the
+    displayed identity) is mixed. *Bracket localization:* every accepted
+    certificate bisects toward its sign change until the interval tube
+    width, because sheet-scale brackets poison validity (evaluated over the
+    whole q-range) and fuse every root into one overlap group. *Side-state
+    selection:* the selector builds overlap groups over certified and
+    corridor members alike; a group with at least one certified crossing,
+    one shared identity, an unoccupied composite, and every possible first
+    toggle occupying resolves as a visible hit in every interleaving of
+    every corridor side state (the certified member guarantees a toggle
+    occurs; the proof margin is the tightest *certified* margin, since a
+    corridor's positional uncertainty already lives in the union span).
+    Groups still carrying corridors past these rules become integrable
+    event samples — never a pass-through, because a corridor's crossing
+    parity is unknown and the composite state behind it undefined.
+15. **Validity predicates evaluate in f32 (P7.10).** The raw fixed-point
+    grid's quantization noise after a degree-8 Horner walk is tens of raw
+    units — the same order as the geometric margins of subpixel features —
+    which turned measure-zero validity boundaries into wide undecidable
+    skins. The generated `feature_valid_filter` now resolves predicate
+    signs from f32 endpoint evaluations with three explicit soundness
+    terms: the uv box radius, a mean-value derivative bound spanning the q
+    bracket, and a relative rounding allowance far above the true f32
+    error.
+16. **The subpixel tier is an anisotropic priority walk (P7.10 ladder step
+    6).** Cells carry explicit unit weights; ambiguous cells split in two
+    along one axis. The axis comes from two probe tiers — half decidability
+    first (an axis-aligned boundary is walked in O(depth) splits), then
+    zeroed-radius attribution (a uniform strip splits only its productive
+    axis) — with a larger-axis fallback for oblique boundaries. The walk
+    pops the heaviest cell first so bulk regions decide before boundary
+    strips refine and the byte-driven early stop fires as soon as the
+    remaining strips cannot change the rounded byte, draining lightest-
+    first only when the 72-slot frontier nears its bound. The work budget
+    counts visibility evaluations (probes included) with a fixed 262144
+    ceiling, and exhaustion still reports code 42 carrying the walk state.
+17. **Worker error codes are a single-source table.** Every code with
+    defined semantics lives in `pixels::worker_errors` (name, class,
+    documentation); the guest-side classifier `__wrela_pixels_p7_worker_error_class`
+    is generated from it, the host decodes trace words with it, and a unit
+    test asserts every `failure_with` literal and every direct
+    `__wrela_pixels_p7_worker_error` literal in `render.wr` is either
+    registered or a deliberate internal-invariant code. `run_job` preflight
+    paths have a separate regression pin requiring invariant codes 5, 8, 9,
+    and 11 — the drift that produced the B1 misclassification can no longer
+    compile.
+18. **Named P7.1/P7.2 fixtures exist retroactively.** `boot-pixels-program-view`
+    pins checked sealed-table access and fail-closed indexing;
+    `boot-pixels-frame-input` pins exact validation errors, from-scratch
+    rendering without a prior snapshot, and snapshot determinism via digest
+    equality across identical frames. The conformance harness runs one
+    parallel golden pass over its case set (exact-name selection) and a
+    two-slot instrumented-run pool instead of fifteen serial invocations.
+19. **A clip boundary is a curve, and the coverage integrator takes it as
+    one.** The horizon band was never a numeric-noise problem. Measured on
+    `boot-pixels-renderer-unavailable`, every box along it resolves cleanly
+    at every scale down to radius 1e-7; the selector correctly reports an
+    *integrable event*, and the walk then burned its whole 262144-evaluation
+    budget only because no analytic integrator claimed the pixel. Two things
+    were missing. First, the scene's only silhouette is a
+    `LinearLeadingCoefficient`, which the integrator's `representation == 2`
+    gate excluded — and for a plane that representation is a *degeneracy
+    guard*, not a horizon: its polynomial is the constant plane offset,
+    whose zero set is empty (the eye would have to lie in the plane).
+    Second, the boundary that actually cuts those pixels is the **far clip**,
+    which carries no curve of its own. It is the level set of the owning
+    feature's ray polynomial at the sealed clip `q`, so
+    `__wrela_pixels_p7_event_polynomial` now emits that polynomial for
+    `ClipQ` events, `__wrela_pixels_p7_event_clip_q` seals the `q`, and the
+    uv² bounds are taken with `q` fixed at the clip plane rather than over
+    the whole q range (using the full range inflates the residual by
+    `q_near / q_clip` and stops the byte pinning). Three rules keep it
+    sound. A curve that provably misses the pixel bounds nothing and is
+    skipped, so a non-crossing curve can never overrule the boundary that
+    does cross. Where *every* occupancy-bearing event covering the pixel
+    reduces to a curve and every one of those provably misses it, occupancy
+    cannot change inside the pixel and the centre ray names the whole area —
+    this is what retires the rows just off the horizon, conservatively box
+    ambiguous but geometrically uniform. Where two curves cross one pixel
+    the occupied region is an intersection of half planes that no
+    single-curve area can express, so the presence of a second crossing drops
+    the integration back to the subpixel walk even if both individual curves
+    round to the same byte. Unlike a discriminant, neither a leading
+    coefficient nor a clip
+    level set has a sign convention for "occupied", so the side is resolved
+    from an occupancy sample at the corner furthest from the curve rather
+    than assumed. The result is exact: the far-clip crossing sits 6.25% down
+    pixel row 16 and the integrator returns byte 239 = round(0.9375 × 255),
+    with 0 above and 255 below.
+20. **A pixels acceptance golden must prove a green run, not merely lack the
+    word FAILED.** The original lint refused transcripts containing
+    `: FAILED`, which a build error, a VMM wall-cap timeout, or an empty
+    transcript does not contain — so `--update` recorded
+    `boot-pixels-renderer-unavailable`'s 30-second timeout *as its
+    expectation*, and every later verify would have ratified that as green.
+    The lint now parses a `N passed, 0 failed` summary, requires `N >= 1`, and
+    reports which of the two reasons applied. Checking for the absence of a
+    failure signature is not the same as checking for the presence of
+    success; only the latter is safe to bless automatically.
+21. **Compiler-reserved surface is fenced in sema.** Ordinary project modules
+    may neither define nor reference identifiers beginning `__wrela_` or
+    `RendererWorker`. The check runs on source tokens before specialization
+    and therefore closes both spelling-dispatched intrinsic hijacks and
+    shadowing of the globally injected Pixels surface. Toolchain stdlib,
+    generated modules, live-rtconfig re-checks, and repository-owned golden
+    fixtures are trusted compiler inputs; they do not weaken the rule for a
+    loaded user package.
+22. **Analytic coverage caches are event-scoped.** The projected-union tier
+    collects the pixel's relevant repr-2/repr-5 events once (declining beyond
+    eight), caches torus magnitude bounds per event, and reuses side occupancy
+    only when exactly one curve participates. This both removes the latent
+    two-torus cache alias and hoists the full tile-event scan out of the
+    refinement loop. The canonical-torus affine sample cache is narrower
+    still: it is enabled only for the one-event standalone-torus shape, every
+    stored sample carries its own evaluator error, and no sample can be replayed
+    for a different event or curve representation.
+23. **P7.14 scores concrete frame and run evidence without inventing point
+    claims.** Instrumented guests emit the complete 64x32 BGRA frame plus one
+    stable 128-byte certified-run record. Coverage-header word 3 now always
+    carries row `y`; word-14 bit 3 is set only after an instrumented guest
+    recheck proves that the run centre is a same-identity point hit whose q
+    overlaps the run tube; the independent host still demands full q
+    containment. Sampled normal components are claims only when
+    normal-model words 10..13 form an exact point enclosure. This prevents
+    deformation and composed-CSG runs
+    (which deliberately have no closed-form normal claim) from overloading the
+    row coordinate with root metadata. Record-zero selection ignores
+    coverage-only hits without that centre witness and preserves the latest
+    witnessed run deterministically. The independent decoder validates both
+    copies of the claim word before the scorer uses it; a selected background
+    run must provide a resolved semantic miss at its centre. Frame scoring pulls its
+    four probes inside each pixel so measure-zero shared edges do not become
+    sample ownership, but five misses establish background only when a full
+    pixel-ray-frustum interval excludes zero; enclosed or thin features between
+    probes therefore remain unclassified rather than becoming false misses.
+    The 16x16 alpha lattice is a bounded proximity control (±12 codes), not an
+    area proof. At terminal root cells, endpoint signs orient simple crossings
+    even when a nonsmooth derivative hull spans zero, and merging an adjacent
+    unoriented enclosure cannot erase an already proved orientation. Finally,
+    parameter-independent finite-repeat event bands partition the semantic ray
+    oracle into smooth open segments. Equal nonzero one-sided signs discard the
+    dependency-only false root at a repeat tie; an actual sign transition is
+    retained as a boundary. The permanent repeat probe-lattice regression
+    requires every centre/inset ray to resolve.
+24. **Review remediation (2026-08-10).** A read-only review of the milestone
+    found one latent soundness hole, one unmet acceptance criterion, and four
+    drift hazards. All are closed here.
+
+    *The projected-union tier could claim area it had not proved.* Its
+    inference is "the discriminant's sign is fixed over this cell, so this
+    member's occupancy is constant over it, so one sample decides the cell",
+    and both halves could fail. A sample reads `point_union_occupancy`, which
+    answers for the *whole* composite: in a multi-member union, a member whose
+    own boundary crosses the cell could answer it, and the tier would then
+    credit the full cell to a member that covers only part of it. Separately,
+    a fixed discriminant sign proves a constant root count on the whole ray
+    *line*, which says nothing about whether those roots fall between the near
+    and far planes. Neither could be reached by a permanent fixture — every
+    one of them has a single union member — so the tier shipped green.
+
+    The fix is structural. Sampled conclusions are now *deferred* until every
+    tracked member's sign over the cell is known: with none ambiguous the cell
+    is uniform and one reading decides it in both directions, and with one
+    ambiguous no reading can be attributed to a member, so the cell carries
+    its whole area as uncertainty instead. The prefilter additionally declines
+    any pixel covered by an occupancy-bearing event the tier does not track —
+    the `unclassified_boundary` rule its sibling `silhouette_coverage` already
+    had — with three exclusions: projected bounds carry zero coverage measure,
+    a finite repeat fold re-parameterizes the domain without bounding anything
+    its instances' own (tracked) silhouettes do not, and a clip plane is
+    admitted per pixel by proving its level set misses, reusing the
+    deviation-19 curve treatment
+    (`__wrela_pixels_p7_clip_curve_misses_cell`).
+
+    What is deliberately *not* deferred is the structural conclusion that a
+    strictly positive quadratic discriminant fills the cell. The distinction
+    matters and cost a fixture to get right: that conclusion is about one
+    member's own root count, and because the composite here is a pure union
+    and union occupancy is monotone in its members, a member hit throughout
+    the cell fills the cell whatever the others do. A *sample* carries no such
+    attribution — it answers for the whole composite — which is why the sample
+    path, and only the sample path, waits for the ambiguity verdict. The
+    standalone torus fast paths likewise keep their structural verdicts: their
+    preflight proves single-membership *and* window containment.
+    `check-pixels-torus-roots` stays green and got faster.
+
+    One gap in this tier is narrowed but not closed: a fixed discriminant sign
+    proves a root count on the ray *line*, and the sealed projected `q` span
+    cannot witness that those roots fall between the clip planes, because
+    `projection_bounds` intersects that span with the clip window before
+    sealing it — the answer is "touches both planes" for every feature in
+    every scene. What now stands in for it is the per-pixel clip-miss proof
+    above, which establishes that the in-window question has the same answer
+    across the whole pixel. Turning that into a positive witness wants the
+    sign of the clip polynomial the miss proof already computes and discards.
+
+    *P7.11 row proposals are decision-inert by construction, and that is now
+    recorded rather than implied.* The proposal computes its revalidation match
+    and telemetry but does not seed the attempted span width, because the
+    emitted partition is chosen by a halving retry ladder and the debug alpha
+    encodes a span-scoped `q` interval — so seeding would change frame bytes
+    and violate this task's own "identical bytes" acceptance condition. The two
+    are reconcilable only by making the debug image partition-independent,
+    which belongs with the P8/P9 rasterization contract that replaces it. What
+    *was* a defect is that the three required counters were not
+    distinguishable: `proposed` and `revalidated` were charged the same value,
+    so the path was unmeasurable. They now mean offered, matched, and newly
+    discovered, matching the Rust reference's `ProposalCounts`.
+
+    *The conformance frame scorer silently skipped what it could not prove.*
+    An all-miss pixel whose frustum interval straddled zero incremented no
+    counter and failed no check, and a single unsubdivided evaluation over the
+    whole sealed depth range straddles constantly: `check-pixels-close-depth`
+    scored 8 pixels out of 2048. The frustum proof now bisects its widest axis
+    under a fixed cell budget, and any pixel still unproven is reported as
+    `frame_skipped` so lost coverage is visible in the score line instead of
+    being indistinguishable from a pass.
+
+    *Three single-source repairs.* Event kinds and representations were
+    restated as inline literals in `render.wr` (`kind[1] == 3`, a hand-written
+    occupancy set), so a new occupancy-bearing kind added to the Rust
+    vocabulary would have silently unsoundened the "every boundary provably
+    misses, so the centre ray names the pixel" rule. `pixels::event_kinds` now
+    owns the classification with exhaustive matches, and
+    `__wrela_pixels_p7_event_class` is generated from it. The generated
+    intrinsic surface needed four hand-edited syncs and had drifted in all of
+    them; `pixels::surface` is now the one table the loader stub, both sema
+    binding lists, and the drift tests derive from — it retired two sema
+    bindings and five stub entries that named functions no generator emits.
+    Its sharpest test catches a stdlib module *calling* a generated intrinsic
+    it does not import: because the pixels prelude injects those names, such a
+    call binds silently and only misbehaves at runtime.
+
+    *The reserved-name fence.* Trust followed `CARGO_MANIFEST_DIR`, so a
+    relocated toolchain or a project vendoring its own `stdlib/` — both
+    supported by the loader — made the stdlib itself fail the fence. Trust now
+    follows the stdlib *layout*. Repository fixtures that legitimately name the
+    surface declare it with a `@wrela-compiler-internal` comment directive
+    instead of inheriting trust from `tests/golden/`, which is what makes the
+    fence testable at all: `err-pixels-reserved-name` is the permanent
+    rejection fixture, and it could not have existed while the whole directory
+    was trusted.
+
+    *What the strengthened scorer found, and what is now open.* Raising the
+    proven-background coverage immediately surfaced pixels on four fixtures
+    that the guest paints although the whole ray frustum is provably free of
+    the semantic surface. Measured, not inferred: for
+    `check-pixels-simultaneous-event` (22,11), `check-pixels-displace` (29,11),
+    `check-pixels-repeat` (19,14) and `check-pixels-close-depth` (29,14), a
+    dense lattice of roughly 125000 field samples across each pixel frustum
+    finds no sign change at all, agreeing with the interval proof.
+
+    Three of the four were a scorer artifact, now fixed. A zero-coverage event
+    pixel keeps its identity bytes in RGB while alpha is 0, and the scorer read
+    any non-zero RGB as painted; alpha is what decides whether anything is
+    displayed, so it decides this now. That cleared
+    `check-pixels-close-depth`, `check-pixels-repeat` and
+    `check-pixels-simultaneous-event` outright, and each of them now scores
+    every pixel of its frame with zero mismatches.
+
+    `check-pixels-displace` is real and open: 28 pixels carry a saturated
+    point hit where no surface exists — the same family as the five silent
+    correctness bugs the earlier fix wave uncovered, and consistent with that
+    fixture's history of the sealed displacement envelope driving decisions.
+    They are counted as `frame_phantom`, pinned in
+    `tests/pixels_truth/p7-visibility.txt`, and excluded from the pass
+    predicate, so the gate fails the moment the count grows while the cause is
+    diagnosed rather than papered over by a weakened oracle.
+
+    The diagnosis is narrowed to one tier by guest probes at the affected row
+    (`y = 11`, `x = 29..37`), and the next session should start from these
+    measurements rather than repeat them. The centre ray carries **no roots at
+    all** at every one of those pixels (`debug_probe`: `hit=0, roots=0`), so
+    the point path agrees with the oracle that nothing is there. The analytic
+    coverage integrator also behaves correctly: `debug_probe_coverage` returns
+    `definite=0` for `x = 29..34` — it declines — and `definite=1, byte=0` for
+    `x = 35..37`, which is why those three are background. Yet
+    `certify_pixel_row` emits, for all nine, an **event sample** (`hit=1,
+    event=1`) whose coverage is `255` on the declining pixels and `0` on the
+    integrated ones. So the phantom byte is neither a false root nor a wrong
+    integral: it is the subpixel arrangement tier resolving a declined pixel
+    into a saturated event sample. `select_visibility` returns event samples
+    carrying a *placeholder* coverage (254/255) that is not an integrated
+    area, and the suspect is that placeholder reaching the framebuffer when
+    the arrangement walk resolves no hit area of its own.
+
+    The byte's provenance is settled: `event_coverage` short-circuits
+    (`proof_method & 127 == 3 and composition_shape == 4`) and passes the
+    arrangement's own byte through, so 255 means the walk set
+    `selected_units == coverage_units` — it attributed the entire pixel to a
+    hit.
+
+    **Two consumer-side corrections were tried and both are refuted.** First,
+    requiring a terminal cell claiming a hit to agree with the *pixel-level*
+    seed changed nothing at all (`frame_phantom` stayed at exactly 28): that
+    seed is itself an event sample here, not a definite miss, so the guard
+    never fired. Second, moving the witness to the *cell's own* centre ray —
+    the correct witness, since the centre lies inside the cell — does fire,
+    and turns the fixture **red**: withholding those cells leaves the pixel
+    unable to pin a byte and it fails closed. That is the important result. It
+    means the contradiction is not a stray cell the walk could simply decline;
+    the box samples claim hits across enough of the pixel that refusing them
+    removes the walk's whole basis for an answer.
+
+    A third attempt went upstream, where that reasoning pointed: a
+    bounded-displacement feature's ray polynomial describes the *undisplaced*
+    primitive, so a sign change in it over a uv box predicts rather than
+    witnesses a crossing of the rendered surface. Downgrading those certified
+    crossings to corridors whenever the query box has nonzero radius (with a
+    generated per-feature `BoundedDisplace` predicate) also left
+    `frame_phantom` at exactly 28. So the hits are not certified crossings of
+    the displaced feature's base polynomial either.
+
+    That third attempt was then explained by dumping the root records
+    themselves, which is the measurement all three attempts should have
+    started from. Over the pixel box at `(29, 11)` and `(30, 11)` the
+    collector returns **exactly one record, and it is a corridor**
+    (`crossing = 0`, `method = 2`, `feature = 0`) — not a certified crossing.
+    So there was nothing for the downgrade to downgrade, and the phantom
+    coverage is produced by *corridor* handling rather than by any certified
+    root. (The feature's occurrence path is `[Primitive, BoundedDisplace]`, so
+    the displaced-feature predicate did match; the attempt was inert for lack
+    of certified crossings, not for lack of applying.)
+
+    The last piece: `__wrela_pixels_p7_object_composed_root_r0` seals mask
+    `1` for this renderer, so object 0 *is* a composed root and
+    `collect_roots_box` routes this feature through `isolate_smooth_object`,
+    never through `isolate_power_roots`. That is conclusively why the third
+    attempt was inert — its downgrade sat in the branch this scene does not
+    execute.
+
+    Taken together the four attempts characterise the defect, and it is not a
+    check that can be tightened. A single corridor member makes
+    `select_visibility` return `hit = true, event = true` via its
+    `group_has_corridor` branch, and the arrangement walk then has to turn a
+    pixel whose only evidence is one corridor into a coverage byte. Every
+    correction that refuses to manufacture that byte — withholding the cell
+    (attempt 2), or corridor-ising the crossings that feed it — makes the
+    pixel fail closed instead, because **no tier can currently produce a
+    correct byte here**. The bounded-displacement silhouette has no analytic
+    coverage treatment: deviation 13 records that `feature_normal` emits no
+    case for a displaced feature and that repr-4 has no closed form, and
+    `silhouette_coverage` accordingly drops it into the unclassified bucket.
+    The 28 pixels are that gap, papered over by the walk attributing full
+    coverage to a corridor.
+
+    A fifth attempt used the one rigorous repr-4 tool that already exists.
+    `deformation_silhouette_misses` merges two proofs; its *exterior* branch
+    (`D + 4aB < 0`) shows every ray of the cell passes strictly outside the
+    displaced surface, which is a background proof rather than a mere
+    no-crossing proof. Separating the branches and concluding coverage 0 when
+    every candidate feature is proven absent also left `frame_phantom` at 28 —
+    because these pixels sit in the near-silhouette band (the ray passes about
+    1.007 from a radius-1.0 sphere), which is exactly where the sealed
+    displacement envelope is too loose to prove absence. That bounds the
+    missing work precisely: the exterior test already handles pixels away from
+    the surface; what has no treatment is the band the silhouette actually
+    passes through.
+
+    **The tier is built, live, and removing phantom pixels: 28 -> 12.**
+    `deformation_sphere_miss_model` seals the amplitude `A`, the radius `r`,
+    the sine frequency and the phase's parameter slot alongside the existing
+    band; `__wrela_pixels_p7_interval_sin` in `render.wr` encloses a sine over
+    an interval (endpoints plus the `pi/2 + k pi` extrema inside the range,
+    padded outward); and `deformation_silhouette_misses` iterates the
+    localization — from the current band, take the `t` window where `|H| <= B`,
+    hull the ray's world `x` over it, evaluate the sine there, rebuild
+    `B = A_local (2r + A_local)`, and retry the exterior test, stopping when a
+    round fails to shrink. Every step is fail-safe: an unmet precondition or a
+    non-shrinking round returns the pre-existing verdict, so the worst case is
+    exactly today's behaviour, and the whole suite stays green with it in.
+
+    The step that made it work was recognising that the bound must be
+    *signed*. A surface point sits at radius `r + d`, so `H = d (2r + d)`,
+    increasing in `d`; the ray misses when its closest approach clears the
+    furthest the surface gets, which is `d_hi (2r + d_hi)`. The original band
+    uses `|d| <= A` and so discards the sign — and at exactly these pixels the
+    wave is near its *inward* extreme (measured: `sin ~= -1`, pulling the
+    surface to radius ~0.875 while the ray passes at 1.007). A magnitude bound
+    can never see that; the signed bound goes negative and the miss falls out
+    immediately. The same quantity bounds the window, since a ray can only
+    meet the surface where `H(t) <= d_hi (2r + d_hi)`.
+
+    Preconditions were confirmed by probe rather than assumed: this scene
+    seals `coordinate_x = ScalarOp::CoordX`, `phase_scalar = Param(0)`, and
+    `frequency = [2, 2]`, so the guard admits it and the loop runs.
+
+    The second half came from subdividing. A wide cell means a wide bilinear
+    coefficient model, a wide `H`, a wide `t` window and a sine range too broad
+    to localize anything, so the public entry point now splits the pixel and
+    requires *every* sub-cell to prove its own miss — sound because the
+    sub-cells cover the pixel, and unchanged in the failing case because an
+    unproven leaf still answers `false`. That took 22 down to 12.
+
+    Then the actual defect surfaced, and it was a sign. `sinusoidal_displace`
+    adds `d` to the *field*, so the surface solves `|p - c| - r + d = 0` and
+    sits at radius `r - d`: positive `d` pulls it **inward**. Therefore
+    `H = -d (2r - d)` is strictly *decreasing* in `d`, and the furthest out the
+    surface reaches over a window is at the window's **smallest** `d`. The
+    guest had localized from `sine[1]`, the upper end, on the reading that the
+    surface sits at `r + d`. That was wrong in both directions at once: it
+    discarded every case the localization exists to catch (where the wave runs
+    positive across the window, pulls the surface inside `r`, and lets a
+    grazing ray through), and on the opposite half it produced a band far below
+    the true supremum of `H` — an unsound proof. The two halves cancelled at
+    the symmetric extreme `sin in [-1, 1]`, which is exactly where it agrees
+    with the sealed `A (2r + A)`, so nothing downstream contradicted it.
+
+    Correcting the band to `-d_lo (2r - d_lo)` took `check-pixels-displace`
+    from **28 phantom pixels to 2**, with `frame_interior` still 2018/2018 and
+    zero edge violations. Two interval-endpoint errors on the same path were
+    corrected with it: `sup (D + 4 a B)` takes `a_hi` only when `B >= 0`, and
+    with the localized band now genuinely going negative the supremum moved to
+    `a_lo`; and `inf (-D / 4a)` divides by `a_lo` only while `D_hi > 0`,
+    switching to `a_hi` once the quotient turns positive.
+
+    With the mechanism finally correct, the two caps were re-measured, and the
+    earlier exhaustion readings turned out to be artifacts. The `visited` cap
+    was 340 while a full depth-4 sweep walks 341 nodes, so *every* depth
+    setting above 4 was truncated back to the same work — which is why "depth 7
+    changes nothing" looked like a result. With the cap raised, depth 5 still
+    proves nothing depth 4 does not, so depth 4 stands, and the cap is now 400
+    so the configured depth is actually reachable. Two further levers were
+    built, measured at exactly 2, and removed rather than kept as unreachable
+    code: localizing the f32 rounding slack from the cell's own coefficient
+    hulls, and localizing the tangency proof beside the exterior one. The
+    latter cannot help by construction — its sealed `(r + A)^2 G^2` term does
+    not localize and on this scene already exceeds what a grazing ray's
+    discriminant can clear, so wherever it could fire the exterior test fired
+    first.
+
+    A third construction was built for the straddle case specifically and also
+    proves nothing: subdividing the *window* rather than the cell — sixteen
+    segments, each with its own sine-derived band, each required to clear the
+    quadratic's lower bound there. It is sound (outside the window `H > B` by
+    the sealed bound, and every segment band is at most `B` since
+    `d -> -d (2r - d)` is decreasing and `d_lo >= -A`) but structurally cannot
+    fire: inside the window `H <= B` by construction, so a segment clears its
+    band only where the wave runs positive hard enough to drag that band below
+    the quadratic's floor, and near closest approach the floor is already at its
+    smallest. Removed rather than carried as an unreachable branch.
+
+    The last two pixels then fell to a directed probe and a ten-line veto,
+    and the mechanism they exposed is worth keeping. A probe of `(37, 13)`
+    with `__wrela_pixels_p7_debug_probe_row` showed sample flags 3 — `ok |
+    hit` with the **event bit clear**, coverage 255 — while its correctly
+    black neighbour `(36, 13)` showed flags 7 with coverage 0. The pixel was
+    painted by a *certified point hit*, not by the arrangement walk. Root
+    isolation certifies crossings of the sealed `predictor`, which is the
+    **undisplaced** primitive's ray equation (this plan's own derivation notes
+    its zero set is not the displaced silhouette), and at a grazing pixel the
+    base sphere is crossed while the real surface, pulled inward by the wave,
+    is not. That is why every absence-proof refinement above measured exactly
+    the same number: they were sharpening a proof the pixel never consulted.
+
+    The fix is a corroboration veto in `certify_pixel_row`. When a pixel's
+    visibility sample is a definitive point hit (`ok`, `hit`, no event), and a
+    bounded-displacement event covering the pixel *exterior*-proves the
+    displaced surface absent from the pixel frustum, the winning object cannot
+    be contributing occupancy — its features are removed from the candidate
+    list and visibility is re-selected from the remainder, which in a
+    single-object scene resolves to background. The distinction between the
+    miss proof's two halves is load-bearing and now explicit at the call
+    boundary (bit 31 of the event id, kept to one argument by the 8-argument
+    codegen limit): the exterior test proves no ray point lies on the surface
+    — an absence — while the transversal test proves only that no tangency
+    exists, and a surface with no silhouette in the pixel may still be
+    crossed. Accepting the transversal answer here would erase genuinely hit
+    pixels.
+
+    The veto fails closed through four guards, each defaulting to today's
+    sample: the winning object must be the one the sealed miss model speaks
+    for; that object must consist of exactly the modelled feature (sealed leaf
+    count 1 — the proof says nothing about other members of a composed
+    union); the sealed start-inside verdict must agree the ray begins outside
+    (a set bit contradicts the absence proof, and the veto stands down rather
+    than pick a winner between them); and the pixel must lie in the event's
+    sealed span, which is where a false predictor crossing can occur at all —
+    it requires the base surface met while the displaced one is not, which is
+    the silhouette band. Interior pixels cannot prove absence, because the
+    surface really is there, so their certified hits are untouched:
+    `frame_interior` stayed 2018/2018 with zero edge violations while
+    `frame_phantom` went to 0.
+
+    `check-pixels-displace` now scores `frame_phantom=0 frame_first=none`, and
+    the truth file pins that, so any reappearance fails the gate.
+
+    *The analytic tiers' pose condition is now a sealed fact, not a per-frame
+    gamble.* The renderer declaration takes an optional `camera_pose=`
+    argument (a comptime `Camera`, whose authored constructors are closed and
+    always produce the canonical `eye/forward/right/up` shape, so the sealed
+    value is exactly twelve floats). `__validate_frame` rejects any frame
+    whose camera differs, returning `ParameterOutOfRange`. A renderer that
+    pins its pose therefore either always satisfies the analytic tiers'
+    admission test or refuses the frame outright — the tier can no longer be
+    silently unavailable for one frame and present for the next, which was the
+    whole of the finding. `check-pixels-torus-roots` pins its pose and its
+    report line moves from `pose_conditional=4 camera_pinned=0` to
+    `pose_conditional=0 camera_pinned=1`.
+
+    The label is *optional* by construction: `OPTIONAL_RENDERER_LABELS` is
+    checked alongside the required set in both `sema::bodies` and
+    `pixels::config`, so every existing declaration compiles unchanged and
+    only a renderer that wants the guarantee pays for it. Generalizing the
+    analytic torus tier to arbitrary poses remains the alternative and is a
+    strictly larger piece of mathematics; pinning is the conservative half,
+    and it is the half that removes the invisible cliff.
+
+    *The disclosure half, retained.* The
+    standalone-torus tier and the point-sampled quartic preflight admit
+    themselves by comparing the runtime camera against the canonical pose for
+    exact f32 equality. Both are fail-closed — a scene that leaves the pose
+    loses the tier rather than producing a wrong byte — but it loses it *per
+    frame*, and nothing at build time said so. The compiler report now carries
+    `AnalyticTiers pose_conditional=N` per renderer, counting the tiers whose
+    availability depends on a runtime pose test, and every pixels report
+    golden pins it: the canonical torus scene reports 4, the plane 0. Turning
+    the condition into a *proof* rather than a disclosure needs the declared
+    camera bounds to pin an absolute pose, and `CameraBounds` deliberately
+    bounds inter-frame motion instead — so a sealed answer requires a new
+    field in the renderer declaration. That is a contract change, which §2.5
+    reserves, and it belongs with the P12 cost admission work that would
+    consume the answer.
+
 ## Task P7.1 — implement zero-allocation `FrameProgramView`
 
 **Requires:** the preceding milestone close gate.
@@ -8053,7 +8841,7 @@ Add `cargo xtask pixels-conformance` comparing:
 
 **Tests:**
 
-- Information-firewall test gives two scenes identical at any legacy lattice but different enclosed feature; sweep output differs correctly from structural data.
+- Structural-discovery control compares empty and enclosed-feature programs and requires their sweep outputs to differ from structural data. It makes no uncomputed claim about a legacy sample lattice.
 - Oracle unresolved is a conformance failure for flagship fixtures.
 - Accepted run/corridor failures are zero.
 - Conformance command is deterministic and score-only.
@@ -12451,6 +13239,7 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 |---|---|---:|---|
 | `check-pixels-plane` | projective cancellation; affine inverse depth; full-row regular run | P2 | one plane object/feature; exact q; no false event; final digest |
 | `check-pixels-hard-csg` | union/intersection/subtraction occupancy ordering | P3 | complete roots; exact first composite transition; identity |
+| `check-pixels-smooth-interior-root` | smooth root without a leaf-root seed | P7 | interior support-budget isolation finds `a=b=k/4`; no missed boundary |
 | `check-pixels-smooth-csg` | support-shell completeness; active smooth cluster | P3 | leaf support; unique root runs; normal/material continuity |
 | `check-pixels-repeat` | finite instances; wrap event; negative index ordering | P3 | no cross-wrap certificate; exact visible instance |
 | `check-pixels-displace` | bounded deformation/Taylor remainder | P3 | no unsafe sphere step; root tube/normal/output containment |
@@ -12458,6 +13247,7 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `check-pixels-thin-feature` | subpixel structural discovery | P3 | feature retained; analytic coverage; no false background |
 | `check-pixels-enclosed-feature` | sample-lattice information firewall | P3 | feature found from bound/support despite identical legacy samples |
 | `check-pixels-material-edge` | nondepth discontinuity | P3 | material event, same geometry q, exact side bytes |
+| `check-pixels-visibility-probe` | guest certificate evidence and oracle separation | P7 | guest hit/identity/q/normal/coverage are decoded and independently scored |
 | `check-pixels-transparent-tail` | ordered layers/bright suffix | P10 | no premature tail cut; exact transfer bytes |
 | `check-pixels-area-light` | deterministic soft shadow integration | P9 | no false-lit/false-shadowed; interval contains source integral |
 | `check-pixels-kinetic` | transport/event/rebuild equivalence | P11 | enabled/disabled byte/error equivalence |
@@ -12481,8 +13271,12 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `err-pixels-fixed-q` | representable hot state | P6 | `P017` |
 | `err-pixels-tone-table` | monotone byte proof | P9 | `P018` |
 | `err-pixels-cost` | full-sweep deadline admission | P12 | modeled range/headroom why-chain |
+| `err-pixels-reserved-name` | compiler-reserved surface fence | P7 | `name`, at the referencing token, for a user module spelling a generated intrinsic |
 | `boot-pixels-numeric` | Lean/Rust/Wrela scalar correspondence | P6 | exact vector digest |
 | `boot-pixels-plane` | full guest/VMM path | P8 | exact visible/raw tile/frame/replay digests |
+| `boot-pixels-plane-one-core` | single-worker execution twin | P7 | exact debug frame digest and certificate telemetry equal the four-worker build |
+| `boot-pixels-program-view` | checked sealed-table access | P7 | every out-of-range table/record/operand index fails closed |
+| `boot-pixels-frame-input` | frame validation and snapshot determinism | P7 | exact validation errors and byte-identical digests across identical frames |
 | `boot-pixels-quality` | complete AAA stack | P9 | selected frame and rolling sequence digests |
 | `boot-pixels-transparent` | transfer tree/tail | P10 | normative host model and guest digest |
 | `boot-pixels-gi` | probe init/update/interpolation | P10 | normative host model and guest digest |

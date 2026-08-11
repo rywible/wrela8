@@ -5600,7 +5600,9 @@ fn check_image_bracket_intrinsic(
                     arg.span,
                 ));
             };
-            if !crate::pixels::RENDERER_LABELS.contains(&label.as_str()) {
+            if !crate::pixels::RENDERER_LABELS.contains(&label.as_str())
+                && !crate::pixels::OPTIONAL_RENDERER_LABELS.contains(&label.as_str())
+            {
                 return Err(SemaError::at(
                     "pixels P008",
                     format!(
@@ -5686,10 +5688,17 @@ fn check_image_renderer_intrinsic(
             ));
         }
     }
-    if labels.len() != crate::pixels::RENDERER_LABELS.len() {
+    let optional_present = labels
+        .iter()
+        .filter(|label| crate::pixels::OPTIONAL_RENDERER_LABELS.contains(label))
+        .count();
+    if labels.len() != crate::pixels::RENDERER_LABELS.len() + optional_present {
         let extra = labels
             .iter()
-            .find(|label| !crate::pixels::RENDERER_LABELS.contains(label))
+            .find(|label| {
+                !crate::pixels::RENDERER_LABELS.contains(label)
+                    && !crate::pixels::OPTIONAL_RENDERER_LABELS.contains(label)
+            })
             .copied()
             .unwrap_or("<duplicate>");
         return Err(SemaError::at(

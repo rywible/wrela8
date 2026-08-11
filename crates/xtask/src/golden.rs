@@ -27,6 +27,15 @@ pub(crate) fn hex_dump(bytes: &[u8]) -> String {
     out
 }
 
+fn pixels_test_report_green(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim()
+            .strip_suffix(" passed, 0 failed")
+            .and_then(|count| count.parse::<usize>().ok())
+            .is_some_and(|count| count > 0)
+    })
+}
+
 pub(crate) fn golden_case_is_borrowed(case: &Path) -> Result<bool, String> {
     let Some(target) = golden_case_target(case)? else {
         return Ok(false);
@@ -211,9 +220,15 @@ pub(crate) enum BootSel {
 pub(crate) struct GoldenOpts {
     pub(crate) update: bool,
     pub(crate) filter: Option<String>,
+    /// Exact case-name selection. When set, a case is selected iff its name
+    /// is in this list (the substring `filter` still applies on top). Lets a
+    /// harness run one parallel golden pass over a fixed case set instead of
+    /// one serial `golden()` invocation per case.
+    pub(crate) cases: Option<Vec<String>>,
     pub(crate) boot: BootSel,
     pub(crate) jobs: usize,
     pub(crate) boot_jobs: usize,
+    pub(crate) pixels_telemetry: bool,
 }
 
 pub(crate) fn default_jobs() -> usize {
@@ -231,9 +246,11 @@ impl Default for GoldenOpts {
         Self {
             update: false,
             filter: None,
+            cases: None,
             boot: BootSel::All,
             jobs: default_jobs(),
             boot_jobs: DEFAULT_BOOT_JOBS,
+            pixels_telemetry: false,
         }
     }
 }
@@ -319,6 +336,7 @@ fn run_case(
     vmm_slots: Option<&Path>,
     update: bool,
     boot: BootSel,
+    pixels_telemetry: bool,
 ) -> Result<(usize, Vec<String>), String> {
     let mut cases = 0usize;
     let mut failures = Vec::new();
@@ -498,6 +516,9 @@ fn run_case(
                 if stage == "test-omit-dmb" {
                     cmd.arg("--omit-dmb");
                 }
+                if pixels_telemetry {
+                    cmd.arg("--pixels-telemetry");
+                }
                 cmd.arg("--vmm")
                     .arg(&vmm)
                     .output()
@@ -569,6 +590,41 @@ fn run_case(
                 ));
                 continue;
             }
+            // A Pixels acceptance fixture may never record a failing test as
+            // its expectation: `--update` would silently bless the failure
+            // and every later verify run would ratify it as a green golden.
+            // Deliberate-failure fixtures live outside these prefixes
+            // (boot-hello, check-tests-*), and rejection fixtures use `err-`.
+            if matches!(stage.as_str(), "test" | "test-omit-dmb") {
+                let case_name = case
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                let pixels_acceptance =
+                    case_name.starts_with("check-pixels-") || case_name.starts_with("boot-pixels-");
+                // A green run is the only acceptable expectation. Checking for
+                // a `FAILED` line alone is not enough: a build error, a VMM
+                // wall-cap timeout, or an empty transcript carries no `FAILED`
+                // at all, so `--update` would happily record the breakage and
+                // every later verify would ratify it as a green golden. Require
+                // the passing summary positively instead.
+                let reports_green = pixels_test_report_green(&actual);
+                let reports_failure = actual.lines().any(|line| line.contains(": FAILED"));
+                if pixels_acceptance && (reports_failure || !reports_green) {
+                    let reason = if reports_failure {
+                        "reports a failing test"
+                    } else {
+                        "did not complete a passing run (build error, timeout, or empty transcript)"
+                    };
+                    failures.push(format!(
+                        "{} [{stage}]: pixels acceptance fixture {reason}; \
+                         refusing to {} this transcript:\n{actual}",
+                        case.display(),
+                        if update { "record" } else { "accept" },
+                    ));
+                    continue;
+                }
+            }
             if update {
                 std::fs::write(&exp, &actual)
                     .map_err(|e| format!("write {}: {e}", exp.display()))?;
@@ -639,6 +695,7 @@ fn run_cases_parallel(
     update: bool,
     boot: BootSel,
     jobs: usize,
+    pixels_telemetry: bool,
 ) -> Result<(usize, Vec<String>), String> {
     if cases.is_empty() {
         return Ok((0, Vec::new()));
@@ -658,12 +715,20 @@ fn run_cases_parallel(
                     if i >= cases.len() {
                         return;
                     }
-                    match run_case(&cases[i], wrela, vmm, vmm_slots, update, boot) {
+                    match run_case(
+                        &cases[i],
+                        wrela,
+                        vmm,
+                        vmm_slots,
+                        update,
+                        boot,
+                        pixels_telemetry,
+                    ) {
                         Ok((n, f)) => results.lock().expect("results lock").push((i, n, f)),
                         Err(e) => {
                             let mut slot = hard_error.lock().expect("error lock");
                             if slot.is_none() {
-                                *slot = Some(e);
+                                *slot = Some(format!("{}: {e}", cases[i].display()));
                             }
                         }
                     }
@@ -708,6 +773,11 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
                 continue;
             }
         }
+        if let Some(cases) = &opts.cases {
+            if !cases.iter().any(|case| case == &name) {
+                continue;
+            }
+        }
         let (selected, selected_boot) = case_has_selected_stage(&case, opts.boot)?;
         if !selected {
             continue;
@@ -720,6 +790,18 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         }
     }
 
+    if let Some(cases) = &opts.cases {
+        let missing: Vec<&String> = cases
+            .iter()
+            .filter(|case| !selected_names.iter().any(|name| &name == case))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "golden: requested cases matched no selected expectation under tests/golden/: \
+                 {missing:?}"
+            ));
+        }
+    }
     if dump_cases.is_empty() && boot_cases.is_empty() {
         return Err(match &opts.filter {
             Some(f) => format!(
@@ -758,6 +840,7 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         opts.update,
         opts.boot,
         opts.jobs,
+        opts.pixels_telemetry,
     )?;
     let (n2, boot_failures) = run_cases_parallel(
         &boot_cases,
@@ -767,6 +850,7 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         opts.update,
         opts.boot,
         opts.jobs,
+        opts.pixels_telemetry,
     )?;
     if let Some(dir) = &vmm_slot_dir {
         std::fs::remove_dir_all(dir)
@@ -865,5 +949,14 @@ mod tests {
         assert!(stage_selected("test-omit-dmb", BootSel::Only));
         assert!(stage_selected("asm", BootSel::All));
         assert!(stage_selected("test", BootSel::All));
+    }
+
+    #[test]
+    fn pixels_green_report_requires_at_least_one_executed_test() {
+        assert!(pixels_test_report_green("ok\n1 passed, 0 failed\n"));
+        assert!(pixels_test_report_green("12 passed, 0 failed"));
+        assert!(!pixels_test_report_green("0 passed, 0 failed\n"));
+        assert!(!pixels_test_report_green("1 passed, 1 failed\n"));
+        assert!(!pixels_test_report_green("not passed, 0 failed\n"));
     }
 }

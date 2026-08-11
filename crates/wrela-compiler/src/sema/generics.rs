@@ -128,7 +128,17 @@ pub(crate) fn instantiate_enum_payload_types(
 
 fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
     match e {
-        Expr::Name(_, name) => subst.consts.get(name).cloned().unwrap_or_else(|| e.clone()),
+        Expr::Name(span, name) => subst
+            .consts
+            .get(name)
+            .cloned()
+            .or_else(|| {
+                subst
+                    .types
+                    .get(name)
+                    .and_then(|ty| type_as_call_arg_expr(ty, *span))
+            })
+            .unwrap_or_else(|| e.clone()),
         Expr::Field(base, span, name) => {
             Expr::Field(Box::new(subst_expr(base, subst)), *span, name.clone())
         }
@@ -218,6 +228,40 @@ fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
         | Expr::FStr(_)
         | Expr::Bool(_, _)
         | Expr::Unit(_) => e.clone(),
+    }
+}
+
+fn type_as_call_arg_expr(ty: &Type, span: Span) -> Option<Expr> {
+    match ty {
+        Type::Generic(name) => Some(Expr::Name(span, name.clone())),
+        Type::Named(name, args) => {
+            let base = Expr::Name(span, name.clone());
+            if args.is_empty() {
+                return Some(base);
+            }
+            let args = args
+                .iter()
+                .map(|argument| match argument {
+                    TypeArg::Type(ty) => type_as_call_arg_expr(ty, span),
+                    TypeArg::Const(expr) | TypeArg::Bound(expr) => Some(expr.clone()),
+                    TypeArg::Pool(name) => Some(Expr::Name(span, name.clone())),
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(Expr::Index(Box::new(base), span, args))
+        }
+        Type::Bool => Some(Expr::Name(span, "bool".to_string())),
+        Type::U8 => Some(Expr::Name(span, "u8".to_string())),
+        Type::U16 => Some(Expr::Name(span, "u16".to_string())),
+        Type::U32 => Some(Expr::Name(span, "u32".to_string())),
+        Type::U64 => Some(Expr::Name(span, "u64".to_string())),
+        Type::I8 => Some(Expr::Name(span, "i8".to_string())),
+        Type::I16 => Some(Expr::Name(span, "i16".to_string())),
+        Type::I32 => Some(Expr::Name(span, "i32".to_string())),
+        Type::I64 => Some(Expr::Name(span, "i64".to_string())),
+        Type::F32 => Some(Expr::Name(span, "f32".to_string())),
+        Type::F64 => Some(Expr::Name(span, "f64".to_string())),
+        Type::Char => Some(Expr::Name(span, "char".to_string())),
+        _ => None,
     }
 }
 
@@ -625,6 +669,242 @@ fn renderer_parameter_validation(
     Ok(statements)
 }
 
+fn renderer_snapshot_numeric(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::F32
+            | Type::F64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::Isize
+    )
+}
+
+fn write_renderer_snapshot_scalar(
+    output: &mut String,
+    source: &str,
+    path: &[usize],
+    component: Option<u8>,
+    keys: &mut BTreeSet<u64>,
+) -> Result<(), SemaError> {
+    let key = crate::pixels::params::parameter_path_key(path, component)
+        .map_err(|message| SemaError::at("pixels P7", message, Span::default()))?;
+    if !keys.insert(key) {
+        return Err(SemaError::at(
+            "pixels P7",
+            format!(
+                "renderer snapshot path-key collision for parameter path {path:?} component {component:?}"
+            ),
+            Span::default(),
+        ));
+    }
+    writeln!(
+        output,
+        "    slot_info = __wrela_pixels_p7_param_slot(self.renderer_index.to[usize](), {key})\n\
+         \x20   if slot_info[0] == 1:\n\
+         \x20       if slot_info[1] != used_count.to[u64]() or used_count >= 16:\n\
+         \x20           return FrameInputSnapshot.make_frame(params=values, param_count=65535, camera=frame.camera, lights=frame.lights, exposure=frame.exposure, environment=frame.environment, frame_index=frame.frame_index)\n\
+         \x20       values[used_count.to[usize]()] = {source}.to[f32]()\n\
+         \x20       used_count = used_count + 1"
+    )
+    .expect("String writes cannot fail");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_renderer_snapshot_values(
+    output: &mut String,
+    path: &str,
+    ty: &Type,
+    explicit_range: Option<crate::sema::attrs::NumericRange>,
+    field_path: &mut Vec<usize>,
+    keys: &mut BTreeSet<u64>,
+    depth: usize,
+    active: &mut BTreeSet<String>,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    if depth > MAX_GENERIC_DEPTH {
+        return Err(SemaError::at(
+            "pixels P7",
+            "renderer snapshot type nesting exceeds the generic depth ceiling".to_string(),
+            Span::default(),
+        ));
+    }
+    if explicit_range.is_some() && renderer_snapshot_numeric(ty) {
+        return write_renderer_snapshot_scalar(output, path, field_path, None, keys);
+    }
+    if explicit_range.is_some()
+        && let Some(components) = renderer_vector_components(ty, mctx)
+    {
+        for (component_index, component) in components.into_iter().enumerate() {
+            write_renderer_snapshot_scalar(
+                output,
+                &format!("{path}.{component}"),
+                field_path,
+                Some(
+                    u8::try_from(component_index)
+                        .expect("renderer vectors have at most four components"),
+                ),
+                keys,
+            )?;
+        }
+        return Ok(());
+    }
+    match ty {
+        Type::Array(element, length) => {
+            let Some(length) = bodies::literal_array_len(length) else {
+                return Err(SemaError::at(
+                    "pixels P7",
+                    "renderer snapshot array length is not an exact literal".to_string(),
+                    length.span(),
+                ));
+            };
+            for index in 0..length {
+                field_path.push(usize::try_from(index).map_err(|_| {
+                    SemaError::at(
+                        "pixels P7",
+                        "renderer snapshot array index exceeds usize".to_string(),
+                        Span::default(),
+                    )
+                })?);
+                write_renderer_snapshot_values(
+                    output,
+                    &format!("{path}[{index}]"),
+                    element,
+                    None,
+                    field_path,
+                    keys,
+                    depth + 1,
+                    active,
+                    mctx,
+                )?;
+                field_path.pop();
+            }
+        }
+        Type::Named(name, args) => {
+            if renderer_vector_components(ty, mctx).is_some() || mctx.enums.contains_key(name) {
+                return Ok(());
+            }
+            let key = types::render_type(ty);
+            if !active.insert(key.clone()) {
+                return Ok(());
+            }
+            let info = if args.is_empty() {
+                mctx.structs.get(name).cloned()
+            } else {
+                Some(instantiate_struct(mctx, name, args, Span::default())?)
+            };
+            if let Some(info) = info {
+                let mut field_index = 0_usize;
+                for (ast_member, decl_member) in info.members() {
+                    let (Member::Field(field), DeclMember::Field(decl_field)) =
+                        (ast_member, decl_member)
+                    else {
+                        continue;
+                    };
+                    let range = crate::sema::attrs::parse_field_contracts(
+                        field,
+                        &decl_field.ty,
+                        &mctx.const_values,
+                        renderer_vector_components(&decl_field.ty, mctx).is_some(),
+                    )?
+                    .range;
+                    field_path.push(field_index);
+                    write_renderer_snapshot_values(
+                        output,
+                        &format!("{path}.{}", field.name),
+                        &decl_field.ty,
+                        range,
+                        field_path,
+                        keys,
+                        depth + 1,
+                        active,
+                        mctx,
+                    )?;
+                    field_path.pop();
+                    field_index += 1;
+                }
+            }
+            active.remove(&key);
+        }
+        Type::Tuple(items) => {
+            for (index, item) in items.iter().enumerate() {
+                field_path.push(index);
+                write_renderer_snapshot_values(
+                    output,
+                    &format!("{path}.{index}"),
+                    item,
+                    None,
+                    field_path,
+                    keys,
+                    depth + 1,
+                    active,
+                    mctx,
+                )?;
+                field_path.pop();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn renderer_snapshot_body(parameter_type: &Type, mctx: &ModuleCtx) -> Result<Vec<Stmt>, SemaError> {
+    let mut body = String::from("    values: [f32; 16] = [0.0; 16]\n    used_count: u16 = 0\n");
+    write_renderer_snapshot_values(
+        &mut body,
+        "frame.params",
+        parameter_type,
+        None,
+        &mut Vec::new(),
+        &mut BTreeSet::new(),
+        0,
+        &mut BTreeSet::new(),
+        mctx,
+    )?;
+    writeln!(
+        body,
+        "    return FrameInputSnapshot.make_frame(params=values, param_count=used_count, camera=frame.camera, lights=frame.lights, exposure=frame.exposure, environment=frame.environment, frame_index=frame.frame_index)"
+    )
+    .expect("String writes cannot fail");
+    let source = format!("module __wrela_renderer_snapshot\n\nfn snapshot():\n{body}");
+    let tokens = crate::syntax::lexer::lex(&source).map_err(|error| {
+        SemaError::at(
+            "pixels P7",
+            format!(
+                "compiler-generated renderer snapshot did not lex: {}",
+                error.message
+            ),
+            Span::default(),
+        )
+    })?;
+    let module = crate::syntax::parser::parse(tokens).map_err(|error| {
+        SemaError::at(
+            "pixels P7",
+            format!(
+                "compiler-generated renderer snapshot did not parse: {}",
+                error.message
+            ),
+            Span::default(),
+        )
+    })?;
+    let Some(ast::Item::Fn(function)) = module.items.into_iter().next() else {
+        return Err(SemaError::at(
+            "pixels P7",
+            "compiler-generated renderer snapshot has no function body".to_string(),
+            Span::default(),
+        ));
+    };
+    Ok(function.body.unwrap_or_default())
+}
+
 fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedProgram, SemaError> {
     let mut program = crate::sema::typed::TypedProgram::default();
     for (name, ty) in &mctx.consts {
@@ -805,6 +1085,22 @@ fn resolve_call_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<TypeArg, SemaErro
         }
         Expr::Int(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Field(..) => {
             Ok(TypeArg::Const(e.clone()))
+        }
+        Expr::Index(base, _, args) => {
+            let Expr::Name(_, name) = base.as_ref() else {
+                return Err(unimplemented_at("this generic type argument is", e.span()));
+            };
+            if !mctx.structs.contains_key(name) && !mctx.enums.contains_key(name) {
+                return Err(SemaError::at(
+                    "type",
+                    format!("unknown generic type `{name}`"),
+                    e.span(),
+                ));
+            }
+            Ok(TypeArg::Type(Type::Named(
+                name.clone(),
+                resolve_call_targs(args, mctx)?,
+            )))
         }
         other => Err(unimplemented_at(
             "this generic argument shape is",
@@ -1055,15 +1351,59 @@ pub(crate) fn instantiate_struct(
                 declaration == "Renderer" && matches!(module.as_str(), "render" | "core.render")
             });
     if canonical_renderer && let [TypeArg::Type(parameter_type)] = args {
+        // The generated parameter validation and snapshot bodies are proof
+        // boundaries: a silently skipped splice would leave the stdlib stub
+        // in place — no `@range` validation and an all-zero snapshot — and
+        // every parameterized frame would render against proofs that do not
+        // apply. A missing target function is therefore a hard compiler
+        // error, not a no-op, so a stdlib rename cannot fail open.
         let validation = renderer_parameter_validation(parameter_type, mctx)?;
-        if !validation.is_empty()
-            && let Some(Member::Fn(validate)) = expanded
+        if !validation.is_empty() {
+            let Some(Member::Fn(validate)) = expanded
                 .iter_mut()
-                .find(|member| matches!(member, Member::Fn(function) if function.name == "__validate_and_unavailable"))
-            && let Some(body) = validate.body.as_mut()
-        {
+                .find(|member| matches!(member, Member::Fn(function) if function.name == "__validate_frame"))
+            else {
+                return Err(SemaError::at(
+                    "pixels P5",
+                    "canonical Renderer is missing `__validate_frame`: generated parameter \
+                     validation has no splice target"
+                        .to_string(),
+                    call_span,
+                ));
+            };
+            let Some(body) = validate.body.as_mut() else {
+                return Err(SemaError::at(
+                    "pixels P5",
+                    "canonical Renderer `__validate_frame` has no body to splice generated \
+                     parameter validation into"
+                        .to_string(),
+                    call_span,
+                ));
+            };
             body.splice(0..0, validation);
         }
+        let snapshot = renderer_snapshot_body(parameter_type, mctx)?;
+        let Some(Member::Fn(function)) = expanded.iter_mut().find(
+            |member| matches!(member, Member::Fn(function) if function.name == "__snapshot_frame"),
+        ) else {
+            return Err(SemaError::at(
+                "pixels P5",
+                "canonical Renderer is missing `__snapshot_frame`: the generated parameter \
+                 snapshot has no replacement target"
+                    .to_string(),
+                call_span,
+            ));
+        };
+        let Some(body) = function.body.as_mut() else {
+            return Err(SemaError::at(
+                "pixels P5",
+                "canonical Renderer `__snapshot_frame` has no body to replace with the \
+                 generated parameter snapshot"
+                    .to_string(),
+                call_span,
+            ));
+        };
+        *body = snapshot;
     }
     let decl = if orig.deferred_comptime_members.is_empty()
         && !orig

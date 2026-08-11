@@ -61,7 +61,7 @@ impl FixedDomain {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Iv32 {
     pub lo: i32,
     pub hi: i32,

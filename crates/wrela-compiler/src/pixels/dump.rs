@@ -1,6 +1,5 @@
 //! Stable textual dump boundaries for the Pixels compiler stages.
 
-use super::PlaneSkeleton;
 use super::config::{RendererConfig, RendererConfigs};
 use super::graph::{FieldKind, Primitive, TransformProgram};
 use super::material_graph::{MaterialKind, NormalModel};
@@ -2257,41 +2256,6 @@ fn dump_origin(kind: &str, id: &str, origin: &super::arena::NodeOrigin, out: &mu
     out.push('\n');
 }
 
-pub fn dump_skeleton_frame_program(skeleton: &PlaneSkeleton) -> String {
-    format!(
-        "PlaneSeedMetadata P-1 renderer={} digest={}\n  Header magic=WRELAP1\\0 bytes=80\n  WalkingSkeleton semantic_seed={} storage=generated-actor\n",
-        skeleton.renderer_index, skeleton.seed_metadata_digest, skeleton.semantic_digest
-    )
-}
-
-pub fn dump_skeleton_render_layout(skeleton: &PlaneSkeleton) -> String {
-    let renderer = crate::codegen::emit_pixels_plane_renderer(
-        &skeleton.seed_metadata,
-        &skeleton.semantic_seed,
-    );
-    let code_bytes = renderer.code.len() * 4;
-    let memory_bytes = wrela_machine::pixels::FRAME_BYTES
-        + wrela_machine::pixels::CONTROL_BYTES
-        + wrela_machine::pixels::QUEUE_CAPACITY as usize * wrela_machine::pixels::TILE_BYTES
-        + skeleton.seed_metadata.len();
-    format!(
-        "RenderLayout v1\n  Renderer index={}\n    PlaneSeedMetadata base={:#010x} size=80\n    GeneratedActor type=Renderer entry={} worker_count=0\n    Display ref={}\n    Mode width={} height={} refresh_hz={} shade_hz={}\n    Tile owner=renderer#0 range=[0,1)\n    Buffer base={:#010x} bytes={} format=BGRA8\n    Baseline code_bytes={} memory_bytes={} frame_cost_instructions={}\n",
-        skeleton.renderer_index,
-        wrela_machine::pixels::PLANE_SEED_METADATA_BASE,
-        crate::codegen::PIXELS_RENDERER_SYMBOL,
-        skeleton.display,
-        skeleton.width,
-        skeleton.height,
-        skeleton.refresh_hz,
-        skeleton.shade_hz,
-        wrela_machine::pixels::FRAMEBUFFER_BASE,
-        wrela_machine::pixels::FRAME_BYTES,
-        code_bytes,
-        memory_bytes,
-        renderer.code.len()
-    )
-}
-
 fn stable_exclusion_subject(subject: super::exclusions::ExclusionSubject) -> String {
     match subject {
         super::exclusions::ExclusionSubject::Candidate(feature) => {
@@ -2449,8 +2413,8 @@ pub fn dump_frame_program(
         renderer.generated.bootstrap_families.join(","),
     ));
     out.push_str(
-        "  Fallback renderer_unavailable=FrameContractMismatch presentation=false \
-         bounded_local_rebuild=false dense_frame=false\n",
+        "  Execution from_scratch_sweep=true presentation=false bounded_local_rebuild=true \
+         dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true\n",
     );
     Ok(out)
 }
@@ -2494,7 +2458,8 @@ pub fn dump_render_layout(
         "    Buffer front={:#x} back={:#x} bytes_each={}\n\
          \x20   Probe base={:#x} bytes={}\n\
          \x20   Telemetry offset={} production_bytes=0 instrumented_bytes={}\n\
-         \x20   Failure presentation=false error={}\n",
+         \x20   Failure presentation=false contract=explicit-certified-error \
+         execution={}\n",
         placement.framebuffer_base,
         framebuffer_back,
         framebuffer_half,
@@ -2502,7 +2467,7 @@ pub fn dump_render_layout(
         placement.probe_bytes,
         renderer.mutable_layout.telemetry.offset,
         renderer.mutable_layout.telemetry.bytes,
-        super::RENDERER_UNAVAILABLE_FALLBACK,
+        super::DEBUG_VISIBILITY_PATH,
     ));
     out
 }
@@ -2568,6 +2533,7 @@ mod tests {
                     y: 1.0,
                     z: 1.0,
                 },
+                camera_pose: None,
                 camera_max_motion: 0.0,
                 light_capacity: 0,
                 light_kinds: vec![],

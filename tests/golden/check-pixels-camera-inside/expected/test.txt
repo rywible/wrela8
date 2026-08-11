@@ -1,0 +1,15 @@
+p7 0000000000000178
+p7 0000000000000000
+p7 0000000000000078
+p7 503753414d504c45
+p7 0000000000ffffff
+p7 444f41c7e764c854
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
+test renders_first_exit_boundary: ok
+test reports_selected_curved_feature_normal: ok
+2 passed, 0 failed
+lane1 turns=3 run_one=6 messages=3
+lane1 hits=0:2,1:2,2:1

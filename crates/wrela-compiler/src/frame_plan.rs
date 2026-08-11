@@ -201,6 +201,19 @@ fn same_state_interference(a: &FlowLiveness, state: usize, left: Temp, right: Te
         if mentioned(left) && mentioned(right) {
             return true;
         }
+        // A definition writes its register whether or not the defined value is
+        // ever read again.  A dead def is still a write, so it destroys any
+        // value that has to survive this point: the def interferes with
+        // everything live out of it, not only with the values that are
+        // themselves live out of it *and* mentioned here.  Missing this let a
+        // dead `second = 0` initialiser take the register still holding
+        // `first` across a later suspend, so the await flush spilled the wrong
+        // word.
+        let def_over_live =
+            |def: Temp, other: Temp| p.defs.contains(&def) && p.live_out.contains(&other);
+        if def_over_live(left, right) || def_over_live(right, left) {
+            return true;
+        }
         let live = |set: &[Temp]| set.contains(&left) && set.contains(&right);
         live(&p.live_in) || live(&p.live_out)
     })
@@ -662,5 +675,69 @@ mod tests {
             input, output,
             "a general Flow operation may need its inputs after starting to define its output"
         );
+    }
+
+    #[test]
+    fn a_dead_definition_does_not_take_the_register_of_a_value_live_across_the_suspend() {
+        // t0 is written before the first await and read after the second one,
+        // so state s1 must still hold it when the s1 suspend flushes it.  t1 is
+        // a dead initialiser in s1 (s2 redefines it before any read), which is
+        // exactly the `second: u64 = 0` line of a two-await body.  A dead def
+        // is still a register write, so it must not be handed t0's register.
+        let await_to = |resume_state, result_temp| Transition::Await {
+            what: AwaitKind::ActorCall {
+                target_temp: Temp(4),
+                method_key: "A.f".into(),
+                arg_temps: vec![],
+                take_arg_temps: vec![],
+            },
+            resume_state,
+            result_temp,
+        };
+        let const_int = |dst, value| {
+            FlowInst::Mwir(crate::mwir::Inst::ConstInt {
+                dst,
+                ty: Type::U64,
+                value,
+            })
+        };
+        let copy = |dst, src| FlowInst::Mwir(crate::mwir::Inst::Copy { dst, src });
+        let f = FlowWirFn {
+            receiver: None,
+            params: Vec::new(),
+            ret: Type::U64,
+            frame: FrameLayout {
+                temp_types: vec![Type::U64; 9],
+                lineage_group_slot: Temp(7),
+                lineage_deadline_slot: Temp(8),
+            },
+            states: vec![
+                State {
+                    ops: vec![const_int(Temp(4), 0), const_int(Temp(0), 1)],
+                    transition: await_to(1, Temp(5)),
+                },
+                State {
+                    ops: vec![copy(Temp(2), Temp(0)), const_int(Temp(1), 0)],
+                    transition: await_to(2, Temp(6)),
+                },
+                State {
+                    ops: vec![const_int(Temp(1), 7), copy(Temp(3), Temp(0))],
+                    transition: Transition::Return(Some(Temp(3))),
+                },
+            ],
+        };
+        let analysis = flow_liveness::analyze(&f).expect("analysis");
+        let plan = plan_flow(&f, &analysis, &LayoutCtx::default()).expect("plan");
+        let live = plan.states[1].temp_regs[0].expect("the persistent value is cached in s1");
+        assert!(
+            plan.states[1].await_flushes.contains(&Temp(0)),
+            "s1 must flush the persistent value at its suspend"
+        );
+        assert_ne!(
+            plan.states[1].temp_regs[1],
+            Some(live),
+            "a dead def in s1 took x{live}, the register the s1 suspend flushes as t0"
+        );
+        validate(&f, &analysis, &plan).expect("validation");
     }
 }

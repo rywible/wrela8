@@ -1668,7 +1668,10 @@ mod typecheck_live {
         modules.insert(runtime_key.clone(), runtime_loaded.module);
         let mut paths = BTreeMap::new();
         paths.insert(gen_key.clone(), GENERATED_INPUT_PATH.to_string());
-        paths.insert(runtime_key.clone(), "runtime.wr".into());
+        paths.insert(
+            runtime_key.clone(),
+            runtime_loaded.file.display().to_string(),
+        );
         let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
         let runtime = programs
             .iter()
@@ -1743,7 +1746,7 @@ mod typecheck_live {
         modules.insert(runtime_key.clone(), runtime_loaded.module);
         let mut paths = BTreeMap::new();
         paths.insert(gen_key, GENERATED_INPUT_PATH.to_string());
-        paths.insert(runtime_key, "runtime.wr".into());
+        paths.insert(runtime_key, runtime_loaded.file.display().to_string());
         let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
         let image_rt = programs
             .iter()

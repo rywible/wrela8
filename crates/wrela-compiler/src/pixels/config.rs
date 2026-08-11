@@ -13,6 +13,16 @@ use crate::syntax::ast::Span;
 use super::params::ParameterContract;
 
 const LIGHT_KIND_NAMES: &[&str] = &["Disabled", "Point", "Directional", "Rectangle", "Disk"];
+pub(crate) const P7_MAX_RENDER_WORKERS: usize = 4;
+
+fn p7_worker_count(cores: usize) -> Result<u32, &'static str> {
+    if cores == 0 || cores > P7_MAX_RENDER_WORKERS {
+        return Err(
+            "renderer capacity `worker_count` must be in 1..=4 for the P7 coordinator group",
+        );
+    }
+    u32::try_from(cores).map_err(|_| "renderer capacity `worker_count` exceeds the u32 encoding")
+}
 
 pub(crate) fn light_kind_tag(kind: &str) -> Option<u64> {
     LIGHT_KIND_NAMES
@@ -109,6 +119,13 @@ pub struct RendererConfig {
     pub world_min: Vec3Config,
     pub world_max: Vec3Config,
     pub camera_max_motion: f32,
+    /// A sealed absolute camera pose, in the order
+    /// `eye, forward, right, up` (twelve f32). Present only when the
+    /// declaration pins one with `camera_pose=`, and enforced by frame
+    /// validation, which rejects any frame whose camera differs. That is what
+    /// turns the analytic coverage tiers' pose precondition from a per-frame
+    /// runtime test into a compile-time fact.
+    pub camera_pose: Option<[f32; 12]>,
     pub light_capacity: u32,
     pub light_kinds: Vec<String>,
     pub exposure: ScalarRangeConfig,
@@ -128,7 +145,9 @@ pub struct RendererConfigs {
 fn validate_labels(renderer: &RendererDecl) -> ConfigResult<()> {
     let mut found = BTreeSet::new();
     for argument in &renderer.args {
-        if !crate::pixels::RENDERER_LABELS.contains(&argument.label.as_str()) {
+        if !crate::pixels::RENDERER_LABELS.contains(&argument.label.as_str())
+            && !crate::pixels::OPTIONAL_RENDERER_LABELS.contains(&argument.label.as_str())
+        {
             return Err(coded(
                 "P008",
                 format!(
@@ -396,6 +415,46 @@ fn vec3(renderer: &RendererDecl, label: &str) -> ConfigResult<Vec3Config> {
         y: f32_value(&fields[1], label).map_err(|error| error.at(span))?,
         z: f32_value(&fields[2], label).map_err(|error| error.at(span))?,
     })
+}
+
+/// Parse an optional pinned camera pose. `Camera`'s authored constructors are
+/// closed and always produce the same canonical `eye/forward/right/up` shape,
+/// so a comptime `Camera` value is exactly twelve floats in that order.
+fn camera_pose(renderer: &RendererDecl) -> ConfigResult<Option<[f32; 12]>> {
+    let Some(argument) = renderer.args.iter().find(|arg| arg.label == "camera_pose") else {
+        return Ok(None);
+    };
+    let span = argument.span;
+    let fields = structure(renderer, "camera_pose", "Camera", 4)?;
+    let mut pose = [0.0_f32; 12];
+    for (index, field) in fields.iter().enumerate() {
+        let Value::Struct(components) = field else {
+            return Err(coded(
+                "P007",
+                "renderer bound `camera_pose` `Camera` members must be `Vec3` values".to_string(),
+            )
+            .at(span));
+        };
+        if components.len() != 3 {
+            return Err(coded(
+                "P007",
+                "renderer bound `camera_pose` `Camera` members must be `Vec3` values".to_string(),
+            )
+            .at(span));
+        }
+        for (axis, component) in components.iter().enumerate() {
+            pose[index * 3 + axis] =
+                f32_value(component, "camera_pose").map_err(|error| error.at(span))?;
+        }
+    }
+    if pose.iter().any(|value| !value.is_finite()) {
+        return Err(coded(
+            "P007",
+            "renderer bound `camera_pose` must be finite".to_string(),
+        )
+        .at(span));
+    }
+    Ok(Some(pose))
 }
 
 fn rgb(value: &Value, label: &str, span: Span) -> ConfigResult<[f32; 3]> {
@@ -771,7 +830,7 @@ fn finite_data(
 
 fn validate_capacity(
     renderer_count: usize,
-    cores: usize,
+    _cores: usize,
     actor_count: usize,
     driver_count: usize,
 ) -> ConfigResult<()> {
@@ -786,7 +845,7 @@ fn validate_capacity(
         ));
     }
     let generated_actor_count = renderer_count
-        .checked_mul(cores.checked_add(1).ok_or_else(|| {
+        .checked_mul(P7_MAX_RENDER_WORKERS.checked_add(1).ok_or_else(|| {
             coded(
                 "P015",
                 "renderer capacity `generated_actors` overflows machine-v1",
@@ -1038,6 +1097,25 @@ fn validate_renderers_inner(
             )
             .at(arg(renderer, "shade_hz")?.span));
         }
+        // Pixel indices are contiguous across row wraps, so the last pixel of
+        // one row and the first pixel of the next belong to different tiles —
+        // potentially different render workers. Framebuffer color bytes (4 per
+        // pixel) and write-once marker bytes (1 per pixel) are stored in shared
+        // u64 words updated by non-atomic read-modify-write; only a width
+        // divisible by 8 guarantees no word is ever shared between two
+        // workers' pixels. Reject the mode at seal time rather than admit a
+        // cross-worker data race.
+        if width % 8 != 0 {
+            return Err(coded(
+                "P010",
+                format!(
+                    "renderer display width {width} is not a multiple of 8: framebuffer color \
+                     and write-marker words would be shared between render workers across row \
+                     boundaries"
+                ),
+            )
+            .at(arg(renderer, "width")?.span));
+        }
         if (width, height, refresh_hz) != (display_width, display_height, display_refresh_hz) {
             return Err(coded(
                 "P010",
@@ -1114,13 +1192,8 @@ fn validate_renderers_inner(
         .map_err(|message| ConfigFailure::from_prefixed(message).at(renderer.span))?;
         configs.push(RendererConfig {
             declaration_index,
-            worker_count: u32::try_from(graph.cores).map_err(|_| {
-                coded(
-                    "P015",
-                    "renderer capacity `worker_count` exceeds the u32 encoding",
-                )
-                .at(renderer.span)
-            })?,
+            worker_count: p7_worker_count(graph.cores)
+                .map_err(|message| coded("P015", message).at(renderer.span))?,
             params_type: renderer.params_type.clone(),
             field,
             material,
@@ -1137,6 +1210,7 @@ fn validate_renderers_inner(
             world_min,
             world_max,
             camera_max_motion,
+            camera_pose: camera_pose(renderer)?,
             light_capacity,
             light_kinds,
             exposure,
@@ -1413,7 +1487,7 @@ mod tests {
                 .starts_with("P015:")
         );
         assert!(
-            validate_capacity(1, usize::MAX, 0, 0)
+            validate_capacity(1, 4, usize::MAX, 0)
                 .unwrap_err()
                 .starts_with("P015:")
         );
@@ -1468,6 +1542,16 @@ mod tests {
         assert!(
             render_source.contains(&declaration),
             "update the typed light-kind decoder deliberately when the stdlib enum changes"
+        );
+    }
+
+    #[test]
+    fn p7_renderer_worker_group_has_an_explicit_fail_closed_ceiling() {
+        assert_eq!(p7_worker_count(1), Ok(1));
+        assert_eq!(p7_worker_count(4), Ok(4));
+        assert_eq!(
+            p7_worker_count(5),
+            Err("renderer capacity `worker_count` must be in 1..=4 for the P7 coordinator group")
         );
     }
 }

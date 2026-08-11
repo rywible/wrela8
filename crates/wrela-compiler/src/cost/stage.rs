@@ -387,6 +387,15 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
     Ok(ShippedFront { checked, image })
 }
 
+/// Compile and return the sealed Pixels programs for source-level tools that
+/// need the semantic graph rather than linked machine code.
+pub fn load_pixels_programs(path: &Path) -> Result<crate::pixels::PixelsProgramSet, String> {
+    load_shipped_front(path)?
+        .image
+        .map(|image| image.pixels)
+        .ok_or_else(|| format!("{} does not seal an image", path.display()))
+}
+
 pub fn codegen_shipped_from(
     front: &ShippedFront,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {

@@ -1,5 +1,9 @@
 module examples.check_pixels_close_depth
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
 from core.field import (
     Field,
     Rgb,
@@ -10,20 +14,27 @@ from core.field import (
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
     LightConfig,
+    LightFrame,
     MaterialSample,
     ProbeConfig,
+    RenderFrame,
+    Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_frame_digest,
+    __wrela_pixels_p7_run_worker_with_proposals,
 )
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 6
-# production Pixels stage is not implemented; implemented in task P4.8
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -54,6 +65,88 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 fn pinned_scene_contract():
     assert FIXTURE_ID == 6, "fixture id must remain pinned"
     assert Q_FRAC_BITS == 8, "adversarial scene value must remain pinned"
+
+@test(runtime)
+async fn close_depth_uses_bounded_corridor(renderer: Actor[Renderer[SceneParams]]):
+    frame = RenderFrame[SceneParams](
+        params=SceneParams(phase=0.0),
+        camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+        lights=LightFrame.empty(),
+        exposure=0.0,
+        environment=Rgb(r=0.0, g=0.0, b=0.0),
+        frame_index=6,
+    )
+    result = await renderer.render(frame=take frame)
+    @discard(reason="the exact result assertion converts every render failure into test failure")
+    match result:
+        case .Ok(rendered):
+            __wrela_trace_p7_u64(rendered.certificate_runs)
+            __wrela_trace_p7_u64(rendered.event_corridors)
+            __wrela_trace_p7_u64(rendered.revalidated_proposals)
+            __wrela_trace_p7_u64(5780180186688408645)
+            __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+            if evidence[0] == 1:
+                __wrela_trace_p7_u64(4847371096046259761)
+                evidence_word: usize = 0
+                @budget(bound=16)
+                while evidence_word < 16:
+                    evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, evidence_word)
+                    assert evidence[0] == 1, "instrumented run evidence is complete"
+                    __wrela_trace_p7_u64(evidence[1])
+                    evidence_word = evidence_word + 1
+            __wrela_trace_p7_u64(4922225244575680596)
+            enabled0: u64 = 0
+            enabled1: u64 = 0
+            enabled2: u64 = 0
+            enabled3: u64 = 0
+            digest_word: usize = 0
+            @budget(bound=4)
+            while digest_word < 4:
+                packed: u64 = 0
+                digest_byte: usize = 8
+                @budget(bound=8)
+                while digest_byte > 0:
+                    digest_byte = digest_byte - 1
+                    packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
+                if digest_word == 0:
+                    enabled0 = packed
+                elif digest_word == 1:
+                    enabled1 = packed
+                elif digest_word == 2:
+                    enabled2 = packed
+                else:
+                    enabled3 = packed
+                __wrela_trace_p7_u64(packed)
+                digest_word = digest_word + 1
+            assert rendered.frame_index == 6, "close-depth frame renders from scratch"
+            assert rendered.event_corridors > 0, "close-depth ambiguity is charged to bounded corridors"
+            # P7.11: enabling proposals must not change displayed output. This
+            # scene has two overlapping sphere silhouettes, so consecutive rows
+            # partition differently -- unlike the plane, where every row
+            # partitions identically and the criterion is vacuous. The digest
+            # is compared against the enabled render rather than a pinned
+            # constant, so the assertion keeps its meaning if the scene moves.
+            disabled_count = __wrela_pixels_p7_run_worker_with_proposals(0, 0, false)
+            assert disabled_count == 2048, "disabled proposals preserve success and pixel count"
+            disabled_digest = __wrela_pixels_p7_debug_frame_digest(0)
+            assert disabled_digest[0] == 1, "disabled proposal frame is complete"
+            assert disabled_digest[1] == enabled0, "proposals preserve displayed bytes across a silhouette"
+            assert disabled_digest[2] == enabled1, "proposals preserve displayed bytes across a silhouette"
+            assert disabled_digest[3] == enabled2, "proposals preserve displayed bytes across a silhouette"
+            assert disabled_digest[4] == enabled3, "proposals preserve displayed bytes across a silhouette"
+            dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+            if dump_header[0] == 1:
+                __wrela_trace_p7_u64(7599824371187933777)
+                dump_index: u64 = 1
+                @budget(bound=65551)
+                while dump_index <= dump_header[1]:
+                    dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                    assert dump_value[0] == 1, "instrumented frame dump is complete"
+                    __wrela_trace_p7_u64(dump_value[1])
+                    dump_index = dump_index + 1
+        case .Err(_):
+            assert false, "bounded close-depth corridor resolves explicitly"
 
 @image
 pub fn build() -> Image:

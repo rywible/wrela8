@@ -89,13 +89,13 @@ Renderers count=1
     Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
       Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Quadric bounds=[-2.000061035156251,-2.000061035156251,-2.000061035156251]-[2.000061035156251,2.000061035156251,2.000061035156251] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(0), ScalarId(0)], radius: ScalarId(1) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=15 derivative_slots=15 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=2 active_sheets=2 event_generators=1 event_subdivisions=8 event_records=8 tile_row_runs=9 csg_events=2 transparent_layers=1 rebuild_queue=9 candidate_bytes=64 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=288 corridor_bytes=216 fixed_q_bytes=144 shading_bytes=576 transparency_bytes=288 per_worker_scratch_bytes=2024 all_worker_scratch_bytes=2024 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=225472 instrumented_state_bytes=225856
+    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=15 derivative_slots=15 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=2 active_sheets=2 event_generators=1 event_subdivisions=8 event_records=8 tile_row_runs=16 csg_events=2 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5376 all_worker_scratch_bytes=5376 telemetry_production_bytes=0 telemetry_instrumented_bytes=1136 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=229568 instrumented_state_bytes=230704
       CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
-      CapacityDerivation field=max_run_records_per_tile_row value=9 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run]
-      CapacityDerivation field=renderer_state_bytes value=225472 why=[header=256; coefficient_snapshots=8; frame_snapshots=144; frame_complexes=131072; scratch=2024 (2024 * 1 workers); output=16384; probes=0; page_alignment_padding=1664; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=225856 why=[production=225472; telemetry=384]
-    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=225472 instrumented_state_bytes=225856 dependency_schema=42521de5920e509cfa0fe5090bcab763e209d50158bfcbec5af828d5a3f3fded
+      CapacityDerivation field=max_run_records_per_tile_row value=16 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
+      CapacityDerivation field=renderer_state_bytes value=229568 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=131072; scratch=5376 (5376 * 1 workers); output=16384; probes=0; page_alignment_padding=1176; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=230704 why=[production=229568; telemetry=1136]
+    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=229568 instrumented_state_bytes=230704 dependency_schema=42521de5920e509cfa0fe5090bcab763e209d50158bfcbec5af828d5a3f3fded
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=const:2
@@ -499,14 +499,16 @@ Renderers count=1
     DerivativeCluster object=o0 leaf_signature=[f0@0] bundles=[d0] smooth_root=s9 scalar_derivative_sources=[s9] value_domain=[-2,6.678203582763672] first_world=[1,1,1] second_world=0 third_world=0 params=[p0:1] frame_delta=none frame_second_delta=none order=2 subdivision=2 world_delta=6.928414662258863 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
     ProjectedSpan feature=g0 normalized=[-1,1]x[-1,1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] q=[0.1294332242035767,2.2291390234062685] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
     Event id=e0 kind=silhouette participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly13:root=poly0 sides=negative=inactive:zero=ambiguous:positive=active
-    Event id=e1 kind=near-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
-    Event id=e2 kind=far-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
-    Event id=e3 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e1 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
     CompetitionSummary considered=0 emitted=0 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=1 suppressed_material_only=0
     ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
     ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
+    ExclusionProof id=proof2 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=10.000000000000002 feature q=[0.1294332242035767,2.2291390234062685] separation=7.731798476593732]
+    ExclusionProof id=proof3 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1294332242035767,2.2291390234062685] separation=0.08255822420357667]
     X x0 event:projected-bound-enter:g0:-:0 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof0 []
     X x1 event:projected-bound-exit:g0:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof1 []
+    X x2 event:near-clip:g0:-:0 domain0 q-ranges-disjoint [7.731798476593731,7.731798476593733] proof2 []
+    X x3 event:far-clip:g0:-:0 domain0 q-ranges-disjoint [0.08255822420357666,0.08255822420357668] proof3 []
     Index name=tile_features cells=8 ids=8
       Cell id=0 offset=0 count=1 values=[0]
       Cell id=1 offset=1 count=1 values=[0]
@@ -516,15 +518,15 @@ Renderers count=1
       Cell id=5 offset=5 count=1 values=[0]
       Cell id=6 offset=6 count=1 values=[0]
       Cell id=7 offset=7 count=1 values=[0]
-    Index name=tile_events cells=8 ids=32
-      Cell id=0 offset=0 count=4 values=[0,1,2,3]
-      Cell id=1 offset=4 count=4 values=[0,1,2,3]
-      Cell id=2 offset=8 count=4 values=[0,1,2,3]
-      Cell id=3 offset=12 count=4 values=[0,1,2,3]
-      Cell id=4 offset=16 count=4 values=[0,1,2,3]
-      Cell id=5 offset=20 count=4 values=[0,1,2,3]
-      Cell id=6 offset=24 count=4 values=[0,1,2,3]
-      Cell id=7 offset=28 count=4 values=[0,1,2,3]
+    Index name=tile_events cells=8 ids=16
+      Cell id=0 offset=0 count=2 values=[0,1]
+      Cell id=1 offset=2 count=2 values=[0,1]
+      Cell id=2 offset=4 count=2 values=[0,1]
+      Cell id=3 offset=6 count=2 values=[0,1]
+      Cell id=4 offset=8 count=2 values=[0,1]
+      Cell id=5 offset=10 count=2 values=[0,1]
+      Cell id=6 offset=12 count=2 values=[0,1]
+      Cell id=7 offset=14 count=2 values=[0,1]
     Index name=tile_competitions cells=8 ids=0
       Cell id=0 offset=0 count=0 values=[]
       Cell id=1 offset=0 count=0 values=[]
@@ -556,11 +558,11 @@ Renderers count=1
       Cell id=6 offset=0 count=0 values=[]
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
-    DirectIndexes feature_derivatives=[d0] material_programs=[0:m0] bytes=520
-    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=2 active_sheets_per_row=2 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=7 root_stack_nodes=8 event_stack_nodes=8 runs_per_row=8 corridors_per_row=7 max_index_slice=4 polynomial_programs=14 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=321 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=1128 refined_all_worker_scratch_bytes=1128 final_per_worker_scratch_bytes=2136 final_all_worker_scratch_bytes=2136 final_state_bytes=225472 final_instrumented_state_bytes=225856
+    DirectIndexes feature_derivatives=[d0] material_programs=[0:m0] bytes=456
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=2 active_sheets_per_row=2 event_generators=2 competition_pairs_per_tile=0 row_event_intervals=3 root_stack_nodes=8 event_stack_nodes=8 runs_per_row=16 corridors_per_row=16 max_index_slice=2 polynomial_programs=14 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=321 derivative_bundles=1 derivative_clusters=1 index_bytes=456 refined_per_worker_scratch_bytes=4576 refined_all_worker_scratch_bytes=4576 final_per_worker_scratch_bytes=6368 final_all_worker_scratch_bytes=6368 final_state_bytes=229568 final_instrumented_state_bytes=230704
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
-      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=225472 why=[P4-refined six-class scratch=1128 per worker; retained fixed-q/shading/transparency scratch=1008 per worker; workers=1]
+      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=229568 why=[P4-refined six-class scratch=4576 per worker; retained fixed-q/shading/transparency scratch=1792 per worker; workers=1]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=2 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
-      ProjectiveCapacityDerivation field=p4_row_event_intervals value=7 why=[4 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
-      ProjectiveCapacityDerivation field=p4_index_bytes value=520 why=[completed offset/count cells plus sorted contiguous ID tables]
+      ProjectiveCapacityDerivation field=p4_row_event_intervals value=3 why=[2 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
+      ProjectiveCapacityDerivation field=p4_index_bytes value=456 why=[completed offset/count cells plus sorted contiguous ID tables]
 Analysis status=verified-projective

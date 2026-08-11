@@ -55,7 +55,7 @@ machine only needs to be what the stdlib drivers speak.
   image load base, per-core stacks, device shared-memory windows, and the
   framebuffer region at fixed addresses.
 - Within the sealed image, the actor runtime-tables section (`rtdata`)
-  begins at a fixed packing base **`RTDATA_BASE = IMAGE_BASE + 256 KiB`**
+  begins at a fixed packing base **`RTDATA_BASE = IMAGE_BASE + 2 MiB`**
   (`0x4054_0000`). `entry` / `code` / `rodata` / `abort` / `checkpoint`
   pack below that base; layout steers the cursor there rather than
   bump-allocating after code. A build whose packed sections would overrun

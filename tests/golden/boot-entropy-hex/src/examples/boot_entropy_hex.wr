@@ -1,5 +1,8 @@
 module examples.boot_entropy_hex
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
 
 from core.runtime import __wrela_trace_u64
 

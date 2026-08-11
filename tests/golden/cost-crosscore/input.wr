@@ -1,5 +1,8 @@
 module input
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
 
 from core.runtime import __wrela_rt_xreply
 from core.__image_runtime import __wrela_ring_capacity, __wrela_ring_dst_core

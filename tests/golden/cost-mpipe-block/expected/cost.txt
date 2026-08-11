@@ -2,40 +2,40 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=347 schedule_cycles=347 footprint_cycles=0 total_proxy_cycles=347
-  Scope scope=closure executable_words=273 executable_code_bytes=1092 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=48 async_frame_total_bytes=0
-  Workload name=flat proxy_cycles=347
-  Owner name=app proxy_cycles=347
+  Rank rank_cycles=365 schedule_cycles=365 footprint_cycles=0 total_proxy_cycles=365
+  Scope scope=closure executable_words=291 executable_code_bytes=1164 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=48 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=365
+  Owner name=app proxy_cycles=365
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
   Fn key=alu_chain owner=app frame_bytes=0 proxy_cycles=9
     Term rule=alu count=16
     Term rule=branch count=1
     Term rule=mov_wide count=5
-  Fn key=checked_mul owner=app frame_bytes=0 proxy_cycles=100
+  Fn key=checked_mul owner=app frame_bytes=0 proxy_cycles=106
     Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=29
+    Term rule=alu count=35
     Term rule=branch count=7
     Term rule=mov_wide count=11
     Term rule=mul count=6
     Term rule=mul_high count=6
     Term rule=store count=12
-  Fn key=div_chain owner=app frame_bytes=0 proxy_cycles=135
+  Fn key=div_chain owner=app frame_bytes=0 proxy_cycles=141
     Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=29
+    Term rule=alu count=35
     Term rule=branch count=7
     Term rule=mov_wide count=11
     Term rule=store count=12
     Term rule=udiv count=6
-  Fn key=sdiv_chain owner=app frame_bytes=0 proxy_cycles=93
+  Fn key=sdiv_chain owner=app frame_bytes=0 proxy_cycles=99
     Term rule=Mem level=buffered count=12
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=26
+    Term rule=alu count=32
     Term rule=branch count=10
     Term rule=mov_wide count=14
     Term rule=sdiv count=3

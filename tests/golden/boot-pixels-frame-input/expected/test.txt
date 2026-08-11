@@ -1,0 +1,8 @@
+test pinned_scene_contract: ok
+p7 7768d1ca36cc6383
+p7 7768d1ca36cc6383
+p7 0000000000895440
+test frame_input_validation_is_exact: ok
+2 passed, 0 failed
+lane1 turns=13 run_one=27 messages=13
+lane1 hits=0:6,1:4,2:6,3:7,4:2

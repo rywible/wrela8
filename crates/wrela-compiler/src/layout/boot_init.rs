@@ -373,14 +373,16 @@ fn one_boot_init_call(
 
     let name = render_type(decl_type);
     let space = HandleSpace::from_graph(graph);
-    let generic_renderer_init =
-        [("Renderer[", "Renderer")]
-            .into_iter()
-            .find_map(|(prefix, generic)| {
-                name.strip_prefix(prefix)
-                    .filter(|rest| rest.ends_with(']'))
-                    .and_then(|_| inits.get(generic))
-            });
+    let generic_renderer_init = [
+        ("Renderer[", "Renderer"),
+        ("RendererWorker[", "RendererWorker"),
+    ]
+    .into_iter()
+    .find_map(|(prefix, generic)| {
+        name.strip_prefix(prefix)
+            .filter(|rest| rest.ends_with(']'))
+            .and_then(|_| inits.get(generic))
+    });
     let exact_init = inits.get(&name);
     let Some(init) = exact_init.or(generic_renderer_init) else {
         check_field_wired_args(kind, &name, decl_args, space)?;
@@ -603,11 +605,12 @@ fn one_boot_init_call(
                         "internal error: generated RendererWorkers contains a non-handle value",
                     )
                 })?;
-            if words.len() != wrela_machine::CORE_SLOTS {
+            let expected = crate::pixels::config::P7_MAX_RENDER_WORKERS;
+            if words.len() != expected {
                 return Err(LayoutError::new(format!(
                     "internal error: generated RendererWorkers has {} handles, expected {}",
                     words.len(),
-                    wrela_machine::CORE_SLOTS
+                    expected
                 )));
             }
             args.push(BootInitArg::WordArray(words));
@@ -630,6 +633,42 @@ fn one_boot_init_call(
                     "internal error: generated RendererFrameBounds has {} values, expected {}",
                     words.len(),
                     crate::pixels::glue::RENDERER_FRAME_BOUNDS_WORDS,
+                )));
+            }
+            args.push(BootInitArg::WordArray(words));
+            continue;
+        }
+        if matches!(&p.ty, Type::Named(name, args) if name == "RendererPlacementState" && args.is_empty())
+            && let Value::Struct(values) = &a.value
+        {
+            let mut words = Vec::with_capacity(crate::pixels::glue::RENDERER_PLACEMENT_WORDS);
+            for value in values {
+                match value {
+                    Value::Struct(fields) => {
+                        for field in fields {
+                            words.push(boot_init_arg_word(field, space).ok_or_else(|| {
+                                LayoutError::new(
+                                    "internal error: generated RendererPlacementState job \
+                                     contains a non-scalar value",
+                                )
+                            })?);
+                        }
+                    }
+                    value => {
+                        words.push(boot_init_arg_word(value, space).ok_or_else(|| {
+                            LayoutError::new(
+                                "internal error: generated RendererPlacementState contains a \
+                                 non-scalar value",
+                            )
+                        })?);
+                    }
+                }
+            }
+            if words.len() != crate::pixels::glue::RENDERER_PLACEMENT_WORDS {
+                return Err(LayoutError::new(format!(
+                    "internal error: generated RendererPlacementState has {} values, expected {}",
+                    words.len(),
+                    crate::pixels::glue::RENDERER_PLACEMENT_WORDS,
                 )));
             }
             args.push(BootInitArg::WordArray(words));
@@ -756,7 +795,9 @@ impl RuntimeWiring {
                 let keys = methods
                     .iter()
                     .map(|m| {
-                        let owner = if name.starts_with("Renderer[") {
+                        let owner = if name.starts_with("Renderer[")
+                            || name.starts_with("RendererWorker[")
+                        {
                             format!("struct:{name}")
                         } else {
                             name.clone()

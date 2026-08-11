@@ -1,6 +1,127 @@
 module render_program
 
+from core.__image_pixels import __wrela_pixels_program_digest_byte, __wrela_pixels_program_header, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_validate, __wrela_pixels_tile_feature, __wrela_pixels_tile_feature_count
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
+
+pub enum ProgramViewError:
+    ProgramIndex
+    InvalidHeader
+    InvalidRecord
+
+pub struct FrameProgramHeader:
+    pub renderer_index: u16
+    pub total_bytes: u32
+    pub table_count: u16
+    pub numeric_revision: u32
+    pub formal_revision: u32
+
+pub struct ProgramRecord:
+    pub stable_id: u32
+    pub tag: u16
+    pub flags: u16
+    pub operand_count: u16
+
+pub struct FeatureId:
+    pub value: u32
+
+pub struct TileId:
+    pub value: u32
+
+pub struct FeatureIdSlice:
+    renderer: usize
+    tile: u32
+    count: u32
+
+    pub fn length(read self) -> u32:
+        return self.count
+
+    pub fn get(read self, ordinal: u32) -> Result[FeatureId, ProgramViewError]:
+        if ordinal >= self.count:
+            return Err(ProgramViewError.ProgramIndex)
+        words = __wrela_pixels_tile_feature(self.renderer, self.tile, ordinal)
+        if words[0] != 1:
+            return Err(ProgramViewError.InvalidRecord)
+        return Ok(FeatureId(value=words[1].to[u32]()))
+
+pub struct CoeffSnapshot:
+    values: [f32; 16]
+    count: u16
+
+    pub fn zero() -> CoeffSnapshot:
+        return CoeffSnapshot(values=[0.0; 16], count=0)
+
+    pub fn packed(values: [f32; 16], count: u16) -> Result[CoeffSnapshot, ProgramViewError]:
+        if count > 16:
+            return Err(ProgramViewError.ProgramIndex)
+        return Ok(CoeffSnapshot(values=values, count=count))
+
+pub struct FrameProgramView:
+    renderer: usize
+
+    pub fn initialize(renderer: usize) -> Result[FrameProgramView, ProgramViewError]:
+        if not __wrela_pixels_program_validate(renderer):
+            return Err(ProgramViewError.InvalidHeader)
+        return Ok(FrameProgramView(renderer=renderer))
+
+    pub fn header(read self) -> FrameProgramHeader:
+        words = __wrela_pixels_program_header(self.renderer)
+        return FrameProgramHeader(
+            renderer_index=words[0].to[u16](),
+            total_bytes=words[1].to[u32](),
+            table_count=words[2].to[u16](),
+            numeric_revision=words[3].to[u32](),
+            formal_revision=words[4].to[u32](),
+        )
+
+    pub fn debug_digest(read self) -> [u8; 32]:
+        digest: [u8; 32] = [0; 32]
+        byte: usize = 0
+        @budget(bound=32)
+        while byte < 32:
+            digest[byte] = __wrela_pixels_program_digest_byte(self.renderer, byte)
+            byte = byte + 1
+        return digest
+
+    fn record(read self, table: u16, id: u32) -> Result[ProgramRecord, ProgramViewError]:
+        words = __wrela_pixels_program_record(self.renderer, table, id)
+        if words[0] != 1:
+            return Err(ProgramViewError.ProgramIndex)
+        return Ok(ProgramRecord(
+            stable_id=words[1].to[u32](),
+            tag=words[2].to[u16](),
+            flags=words[3].to[u16](),
+            operand_count=words[4].to[u16](),
+        ))
+
+    pub fn feature(read self, id: u32) -> Result[ProgramRecord, ProgramViewError]:
+        return self.record(table=4, id=id)
+
+    pub fn tile_features(read self, tile: TileId) -> Result[FeatureIdSlice, ProgramViewError]:
+        count = __wrela_pixels_tile_feature_count(self.renderer, tile.value)
+        if count == 4294967295:
+            return Err(ProgramViewError.ProgramIndex)
+        return Ok(FeatureIdSlice(
+            renderer=self.renderer,
+            tile=tile.value,
+            count=count,
+        ))
+
+    pub fn event(read self, id: u32) -> Result[ProgramRecord, ProgramViewError]:
+        return self.record(table=7, id=id)
+
+    pub fn operand(read self, table: u16, id: u32, ordinal: u16) -> Result[u64, ProgramViewError]:
+        words = __wrela_pixels_program_operand(self.renderer, table, id, ordinal)
+        if words[0] != 1:
+            return Err(ProgramViewError.ProgramIndex)
+        return Ok(words[1])
+
+    pub fn coeff(read self, id: u32, read snapshot: CoeffSnapshot) -> Result[f32, ProgramViewError]:
+        if id >= snapshot.count.to[u32]():
+            return Err(ProgramViewError.ProgramIndex)
+        return Ok(snapshot.values[id.to[usize]()])
+
+pub fn open_frame_program(renderer: usize) -> Result[FrameProgramView, ProgramViewError]:
+    return FrameProgramView.initialize(renderer=renderer)
 
 # Stable guest-side scalar views shared by generated core.__image_pixels.
 # The generated module supplies exact array extents and @placed roots for the

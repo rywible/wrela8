@@ -17,7 +17,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -1821,6 +1821,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut vmm_arg: Option<String> = None;
     let mut omit_dmb = false;
     let mut block_count = false;
+    let mut pixels_telemetry = false;
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut _ghz = wrela_compiler::cost::profile_ghz();
     let mut i = 0;
@@ -1838,6 +1839,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
             omit_dmb = true;
         } else if args[i] == "--block-count" {
             block_count = true;
+        } else if args[i] == "--pixels-telemetry" {
+            pixels_telemetry = true;
         } else if args[i] == "--no-bounds-elide" {
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
             return ExitCode::FAILURE;
@@ -2001,7 +2004,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             .as_ref()
             .map(|checked| &checked.renderer_configs),
         pixels_programs.as_ref(),
-        true,
+        // `--pixels-telemetry` selects the instrumented renderer layout; a
+        // plain test run gets the production layout so goldens pin the
+        // uninstrumented image and telemetry can never leak into them.
+        pixels_telemetry,
         &runtime_tests,
         &async_tests,
         false,
@@ -2181,24 +2187,37 @@ fn test_cmd(args: &[String]) -> ExitCode {
 
     let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
     let t_lines: Vec<&str> = transcript.lines().collect();
+    let protocol_lines: Vec<&str> = t_lines
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("p7 "))
+        .collect();
+    let observations_well_formed = t_lines.iter().all(|line| {
+        !line.starts_with("p7 ")
+            || line
+                .strip_prefix("p7 ")
+                .is_some_and(|value| value.len() == 16 && u64::from_str_radix(value, 16).is_ok())
+    });
     let trailing_ok = |lines: &[&str]| {
         lines.iter().all(|l| {
             l.starts_with("lane1 ") || l.starts_with("lane2 ") || l.starts_with("display ")
         })
     };
-    let boot_failed = t_lines.len() >= 2
-        && t_lines[0].starts_with("FAILED ")
-        && parse_summary_line(t_lines[1]).is_some()
-        && trailing_ok(&t_lines[2..]);
-    let summary_idx = if boot_failed {
+    let boot_failed = protocol_lines.len() >= 2
+        && protocol_lines[0].starts_with("FAILED ")
+        && parse_summary_line(protocol_lines[1]).is_some()
+        && trailing_ok(&protocol_lines[2..]);
+    let summary_idx = if !observations_well_formed {
+        None
+    } else if boot_failed {
         Some(1usize)
-    } else if t_lines.len() >= runtime_tests.len() + 1
-        && t_lines
+    } else if protocol_lines.len() >= runtime_tests.len() + 1
+        && protocol_lines
             .iter()
             .zip(runtime_tests.iter())
             .all(|(line, name)| line.starts_with(&format!("test {name}: ")))
-        && parse_summary_line(t_lines[runtime_tests.len()]).is_some()
-        && trailing_ok(&t_lines[runtime_tests.len() + 1..])
+        && parse_summary_line(protocol_lines[runtime_tests.len()]).is_some()
+        && trailing_ok(&protocol_lines[runtime_tests.len() + 1..])
     {
         Some(runtime_tests.len())
     } else {
@@ -2214,7 +2233,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
         ));
         return ExitCode::FAILURE;
     };
-    let Some((runtime_passed, runtime_failed)) = parse_summary_line(t_lines[summary_i]) else {
+    let Some((runtime_passed, runtime_failed)) = parse_summary_line(protocol_lines[summary_i])
+    else {
         for l in &comptime_lines {
             println!("{l}");
         }
@@ -2228,13 +2248,16 @@ fn test_cmd(args: &[String]) -> ExitCode {
     for l in &comptime_lines {
         println!("{l}");
     }
-    for l in &t_lines[..summary_i] {
-        println!("{l}");
+    for line in &t_lines {
+        if *line == protocol_lines[summary_i] || trailing_ok(&[*line]) {
+            continue;
+        }
+        println!("{line}");
     }
     let passed = comptime_passed + runtime_passed;
     let failed = comptime_failed + runtime_failed;
     println!("{passed} passed, {failed} failed");
-    for l in &t_lines[summary_i + 1..] {
+    for l in &protocol_lines[summary_i + 1..] {
         println!("{l}");
     }
     if failed > 0 {

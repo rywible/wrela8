@@ -5,62 +5,57 @@ Renderers count=1
       World min=[-4,-4,-4] max=[4,4,4]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
       Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
-    Scalar id=s0 dependency=constant kind=ConstF32 value=-1 bits=0xbf800000
-    Scalar id=s1 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Param id=p0 path=SceneParams.phase indexes=[0] component=scalar ty=f32 range=[-2,2]
+      Rate max_delta=0.25 max_second_delta=0.0625
+    Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s1 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
     Scalar id=s2 dependency=coordinate kind=Coord axis=x
     Scalar id=s3 dependency=coordinate kind=Coord axis=y
     Scalar id=s4 dependency=coordinate kind=Coord axis=z
-    Scalar id=s5 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s0,s1,s1]
-    Scalar id=s6 dependency=coordinate kind=Add a=s5 b=s1
-    Scalar id=s7 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
-    Scalar id=s8 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s7,s1,s1]
-    Scalar id=s9 dependency=coordinate kind=Add a=s8 b=s1
-    Scalar id=s10 dependency=coordinate kind=Min a=s9 b=s6
-    Scalar id=s11 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
-    Scalar id=s12 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
-    Scalar id=s13 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
-    Scalar id=s14 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
-    Scalar id=s15 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
-    Field id=f0 scalar=s6 kind=Plane normal=[s0,s1,s1] offset=s1
-    Field id=f1 scalar=s6 kind=Mark child=f0 object=examples.check_pixels_material_edge::MaterialId::Accent material=examples.check_pixels_material_edge::MaterialId::Accent
-    Field id=f2 scalar=s9 kind=Plane normal=[s7,s1,s1] offset=s1
-    Field id=f3 scalar=s9 kind=Mark child=f2 object=examples.check_pixels_material_edge::MaterialId::Ground material=examples.check_pixels_material_edge::MaterialId::Ground
-    Field id=f4 scalar=s10 kind=HardUnion a=f1 b=f3
-    Material id=m0 kind=Sample base_color=[s7,s11,s12] opacity=s7 emissive=[s1,s1,s1] roughness=s11 metallic=s1 specular=s13 ior=s14 normal=geometric pattern=none
-    Material id=m1 kind=Sample base_color=[s12,s11,s13] opacity=s7 emissive=[s1,s1,s1] roughness=s15 metallic=s1 specular=s13 ior=s14 normal=geometric pattern=none
+    Scalar id=s5 dependency=coordinate kind=Dot3 a=[s2,s3,s4] b=[s0,s0,s1]
+    Scalar id=s6 dependency=coordinate kind=Add a=s5 b=s0
+    Scalar id=s7 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
+    Scalar id=s8 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s9 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s10 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s11 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Scalar id=s12 dependency=surface kind=SurfacePosition component=0
+    Scalar id=s13 dependency=parameter kind=Param param=p0
+    Scalar id=s14 dependency=parameter+surface kind=Compare op=Ge a=s12 b=s13
+    Field id=f0 scalar=s6 kind=Plane normal=[s0,s0,s1] offset=s0
+    Field id=f1 scalar=s6 kind=Mark child=f0 object=examples.check_pixels_material_edge::MaterialId::Ground material=examples.check_pixels_material_edge::MaterialId::Ground
+    Material id=m0 kind=Sample base_color=[s1,s7,s8] opacity=s1 emissive=[s0,s0,s0] roughness=s7 metallic=s0 specular=s9 ior=s10 normal=geometric pattern=none
+    Material id=m1 kind=Sample base_color=[s8,s7,s9] opacity=s1 emissive=[s0,s0,s0] roughness=s11 metallic=s0 specular=s9 ior=s10 normal=geometric pattern=none
     Material id=m2 kind=IdentityTable enum=examples.check_pixels_material_edge::MaterialId cases=[Accent=m0,Ground=m1]
-    Identity kind=material enum=examples.check_pixels_material_edge::MaterialId variant=Accent
+    Material id=m3 kind=MaterialSelect predicate=s14 a=m0 b=m2
     Identity kind=material enum=examples.check_pixels_material_edge::MaterialId variant=Ground
-    Identity kind=object enum=examples.check_pixels_material_edge::MaterialId variant=Accent
     Identity kind=object enum=examples.check_pixels_material_edge::MaterialId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.check_pixels_material_edge:47:34@bytes=991..992 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_material_edge:46:40@bytes=878..881 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:46:22@bytes=860..861,examples.check_pixels_material_edge:46:47@bytes=885..888,examples.check_pixels_material_edge:46:60@bytes=898..901,examples.check_pixels_material_edge:47:23@bytes=980..981,examples.check_pixels_material_edge:47:42@bytes=999..1002,examples.check_pixels_material_edge:47:49@bytes=1006..1009,examples.check_pixels_material_edge:47:62@bytes=1019..1022,examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:52:50@bytes=1260..1263,examples.check_pixels_material_edge:52:57@bytes=1267..1270,examples.check_pixels_material_edge:52:64@bytes=1274..1277,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
+    DischargedObligation kind=material-event predicate=s14
+    Origin kind=scalar id=s0 primary=examples.check_pixels_material_edge:55:33@bytes=1212..1215 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:22@bytes=1201..1202,examples.check_pixels_material_edge:55:40@bytes=1219..1222,examples.check_pixels_material_edge:55:60@bytes=1239..1242,examples.check_pixels_material_edge:62:37@bytes=1549..1550,examples.check_pixels_material_edge:67:45@bytes=1726..1727]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_material_edge:55:47@bytes=1226..1229 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:22@bytes=1201..1202,examples.check_pixels_material_edge:62:37@bytes=1549..1550,examples.check_pixels_material_edge:67:45@bytes=1726..1727,examples.check_pixels_material_edge:67:58@bytes=1739..1742]
     Origin kind=scalar id=s2 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
     Origin kind=scalar id=s3 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
     Origin kind=scalar id=s4 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
-    Origin kind=scalar id=s5 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s6 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s7 primary=examples.check_pixels_material_edge:46:33@bytes=871..874 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:46:22@bytes=860..861,examples.check_pixels_material_edge:47:23@bytes=980..981,examples.check_pixels_material_edge:47:35@bytes=992..995,examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:58@bytes=1520..1523]
-    Origin kind=scalar id=s8 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s9 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_material_edge:48:17@bytes=1095..1096 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_material_edge:55:67@bytes=1411..1415 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:65@bytes=1527..1531,examples.check_pixels_material_edge:57:91@bytes=1553..1557]
-    Origin kind=scalar id=s12 primary=examples.check_pixels_material_edge:55:58@bytes=1402..1407 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508,examples.check_pixels_material_edge:57:73@bytes=1535..1540]
-    Origin kind=scalar id=s13 primary=examples.check_pixels_material_edge:52:80@bytes=1290..1293 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:52:37@bytes=1247..1248,examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:55:75@bytes=1419..1422,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
-    Origin kind=scalar id=s14 primary=examples.check_pixels_material_edge:52:37@bytes=1247..1248 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390,examples.check_pixels_material_edge:57:45@bytes=1507..1508]
-    Origin kind=scalar id=s15 primary=examples.check_pixels_material_edge:55:91@bytes=1435..1439 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:55:45@bytes=1389..1390]
-    Origin kind=field id=f0 primary=examples.check_pixels_material_edge:47:23@bytes=980..981 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.check_pixels_material_edge:47:17@bytes=974..975 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=field id=f2 primary=examples.check_pixels_material_edge:46:22@bytes=860..861 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=field id=f3 primary=examples.check_pixels_material_edge:46:16@bytes=854..855 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=field id=f4 primary=examples.check_pixels_material_edge:48:17@bytes=1095..1096 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_material_edge:57:45@bytes=1507..1508 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=material id=m1 primary=examples.check_pixels_material_edge:55:45@bytes=1389..1390 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=material id=m2 primary=examples.check_pixels_material_edge:53:5@bytes=1299..1304 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Roots field=f4 material=m2
-    SymbolicQuota steps=55/1000000 nodes=33/250000 unrolled_statements=0/250000 aggregate_elements=15/250000 call_depth=1/128
+    Origin kind=scalar id=s5 primary=examples.check_pixels_material_edge:55:22@bytes=1201..1202 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_material_edge:55:22@bytes=1201..1202 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_material_edge:62:59@bytes=1571..1575 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:62:37@bytes=1549..1550,examples.check_pixels_material_edge:67:45@bytes=1726..1727,examples.check_pixels_material_edge:67:65@bytes=1746..1750,examples.check_pixels_material_edge:67:91@bytes=1772..1776]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_material_edge:62:50@bytes=1562..1567 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:62:37@bytes=1549..1550,examples.check_pixels_material_edge:67:45@bytes=1726..1727,examples.check_pixels_material_edge:67:73@bytes=1754..1759]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_material_edge:62:67@bytes=1579..1582 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:62:37@bytes=1549..1550,examples.check_pixels_material_edge:67:45@bytes=1726..1727]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_material_edge:62:37@bytes=1549..1550 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:67:45@bytes=1726..1727]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_material_edge:62:83@bytes=1595..1599 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:62:37@bytes=1549..1550]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s13 primary=examples.check_pixels_material_edge:60:27@bytes=1459..1461 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_material_edge:60:27@bytes=1459..1461 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_material_edge:55:22@bytes=1201..1202 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_material_edge:55:16@bytes=1195..1196 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_material_edge:67:45@bytes=1726..1727 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m1 primary=examples.check_pixels_material_edge:62:37@bytes=1549..1550 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m2 primary=examples.check_pixels_material_edge:63:5@bytes=1605..1610 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m3 primary=examples.check_pixels_material_edge:60:5@bytes=1437..1439 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Roots field=f1 material=m3
+    SymbolicQuota steps=62/1000000 nodes=28/250000 unrolled_statements=0/250000 aggregate_elements=15/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.check_pixels_material_edge::world material_key=examples.check_pixels_material_edge::shade
-    ParameterLayout slots=0 packed_bytes=0 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+    ParameterLayout slots=1 packed_bytes=4 dependency_schema=27cc8be3923be0e14d023593232f89eba034e8597777f072a612ca37f8817255
       FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
         FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
         FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
@@ -75,194 +70,137 @@ Renderers count=1
         FrameInput path=sealed.probe_version use=Probe type=U32 count=1 offset=0 runtime=false
         FrameInput path=sealed.output_mode use=Post type=U64 count=1 offset=0 runtime=false
         FrameInput path=sealed.frame_phase use=Post type=U64 count=1 offset=0 runtime=false
-    ScalarProof id=s0 value=[-1,-1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s1 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+      Slot id=p0 path=[0] component=scalar type=F32 range=[-2,2] rate=0.25,0.0625 immutable=false uses=[Material] offset=0
+    ScalarProof id=s0 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s1 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s2 value=[-4,4] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
     ScalarProof id=s3 value=[-4,4] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
     ScalarProof id=s4 value=[-4,4] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
-    ScalarProof id=s5 value=[-4,4] value_rule=dot3-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
-    ScalarProof id=s6 value=[-4,4] value_rule=add-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
-    ScalarProof id=s7 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s8 value=[-4,4] value_rule=dot3-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
-    ScalarProof id=s9 value=[-4,4] value_rule=add-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
-    ScalarProof id=s10 value=[-4,4] value_rule=min-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-hard-branch-max
-    ScalarProof id=s11 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s12 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s13 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s14 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s15 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s5 value=[-4,4] value_rule=dot3-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
+    ScalarProof id=s6 value=[-4,4] value_rule=add-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s7 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s8 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s9 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s10 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s11 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s12 value=[-4,4] value_rule=surface-position world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
+    ScalarProof id=s13 value=[-2,2] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s14 value=[0,1] value_rule=compare world_derivative=[1,0,0] gradient_norm=1 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
+      ParameterDerivative param=p0 upper=1
     WorldBound field=f0 bounds=[-4,-4,-4]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
     WorldBound field=f1 bounds=[-4,-4,-4]-[4,4,4] rule=identity-mark contributors=[f0] pruned=none
-    WorldBound field=f2 bounds=[-4,-4,-4]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
-    WorldBound field=f3 bounds=[-4,-4,-4]-[4,4,4] rule=identity-mark contributors=[f2] pruned=none
-    WorldBound field=f4 bounds=[-4,-4,-4]-[4,4,4] rule=hard-union contributors=[left=Some(Aabb64 { min: [-4.0, -4.0, -4.0], max: [4.0, 4.0, 4.0] }),right=Some(Aabb64 { min: [-4.0, -4.0, -4.0], max: [4.0, 4.0, 4.0] })] pruned=none
     Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
     Support field=f1 max=[0,0] leaves=f0@0>f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
-    Support field=f2 max=[0,0] leaves=f2@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f2]
-    Support field=f3 max=[0,0] leaves=f2@0>f3@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f2]
-    Support field=f4 max=[0,0] leaves=f0@0>f1@0>f4@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f2@0>f3@0>f4@1:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
-    IdentitySet id=0 pairs=[examples.check_pixels_material_edge::MaterialId::Accent=>examples.check_pixels_material_edge::MaterialId::Accent]
-    IdentitySet id=1 pairs=[examples.check_pixels_material_edge::MaterialId::Ground=>examples.check_pixels_material_edge::MaterialId::Ground]
+    IdentitySet id=0 pairs=[examples.check_pixels_material_edge::MaterialId::Ground=>examples.check_pixels_material_edge::MaterialId::Ground]
     SmoothObject id=o0 root=f0 scalar=s6 bounds=[-4,-4,-4]-[4,4,4] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
-    SmoothObject id=o1 root=f2 scalar=s9 bounds=[-4,-4,-4]-[4,4,4] leaves=[f2@0] support=[0,0] identity_set=1 repeats=[]
-    Csg constant=none instructions=[Push(ObjectId(0)),Push(ObjectId(1)),Or] max_stack=2
-      Influence object=o0 false=constant:None:stack:1:instructions:[Push(ObjectId(1))]:digest:b5cebe34bc8aed3a286358306b0ad3fb6604b5c624f8cce4ab4b2c42d58f558d true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
-      Influence object=o1 false=constant:None:stack:1:instructions:[Push(ObjectId(0))]:digest:b5fb4bff2a27e2c561771901ff137437ea672f295c31113740033f5a1008b2a7 true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+    Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
+      Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-4,-4,-4]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    Feature id=g1 template=1 object=o1 primitive=f2 path=[f2@0] kind=Plane bounds=[-4,-4,-4]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=1 semantic_root=f2
-    Capacities workers=1 objects=2 feature_templates=2 feature_slots=2 repeated_instances=0 scalar_slots=16 derivative_slots=16 parameter_slots=0 csg_stack=2 projected_row=2 projected_tile=2 row_start_roots=2 active_sheets=2 event_generators=2 event_subdivisions=4 event_records=8 tile_row_runs=9 csg_events=2 transparent_layers=1 rebuild_queue=9 candidate_bytes=128 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=288 corridor_bytes=216 fixed_q_bytes=144 shading_bytes=576 transparency_bytes=288 per_worker_scratch_bytes=2088 all_worker_scratch_bytes=2088 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=256 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=225600 instrumented_state_bytes=225984
-      CapacityDerivation field=feature_count value=2 why=[2 maximal smooth objects; 2 immutable fused primitive feature templates; 2 total feature slots after instantiating those templates across 2 objects; 0 repeat template records]
-      CapacityDerivation field=max_projected_features_per_row value=2 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
-      CapacityDerivation field=max_run_records_per_tile_row value=9 why=[2 generators; 2 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run]
-      CapacityDerivation field=renderer_state_bytes value=225600 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=2088 (2088 * 1 workers); output=16384; probes=0; page_alignment_padding=1608; kinetic=256; tile_descriptors=65536; tile_ownership=8192; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=225984 why=[production=225600; telemetry=384]
-    StructuralReport coefficient_bytes=0 objects=2 features=2 production_state_bytes=225600 instrumented_state_bytes=225984 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+    MaterialEvent predicate=s14 kind=ScalarThreshold crossings=1 owners=[o0] features=[g0] source=examples.check_pixels_material_edge:60:27
+    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=15 derivative_slots=15 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=2 event_subdivisions=4 event_records=8 tile_row_runs=16 csg_events=1 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=256 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5280 all_worker_scratch_bytes=5280 telemetry_production_bytes=0 telemetry_instrumented_bytes=1136 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=229568 instrumented_state_bytes=230704
+      CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
+      CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
+      CapacityDerivation field=max_run_records_per_tile_row value=16 why=[2 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 1 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
+      CapacityDerivation field=renderer_state_bytes value=229568 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=131072; scratch=5280 (5280 * 1 workers); output=16384; probes=0; page_alignment_padding=1272; kinetic=128; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=230704 why=[production=229568; telemetry=1136]
+    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=229568 instrumented_state_bytes=230704 dependency_schema=27cc8be3923be0e14d023593232f89eba034e8597777f072a612ca37f8817255
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=scalar:s0
     Coefficient id=c1 op=scalar:s1
-    Coefficient id=c2 op=scalar:s7
-    Coefficient id=c3 op=camera:eye:0
-    Coefficient id=c4 op=camera:eye:1
-    Coefficient id=c5 op=camera:eye:2
-    Coefficient id=c6 op=camera:forward:0
-    Coefficient id=c7 op=camera:forward:1
-    Coefficient id=c8 op=camera:forward:2
-    Coefficient id=c9 op=camera:right:0
-    Coefficient id=c10 op=camera:right:1
-    Coefficient id=c11 op=camera:right:2
-    Coefficient id=c12 op=camera:up:0
-    Coefficient id=c13 op=camera:up:1
-    Coefficient id=c14 op=camera:up:2
-    Coefficient id=c15 op=camera:eye_rate:0
-    Coefficient id=c16 op=camera:eye_rate:1
-    Coefficient id=c17 op=camera:eye_rate:2
-    Coefficient id=c18 op=camera:forward_rate:0
-    Coefficient id=c19 op=camera:forward_rate:1
-    Coefficient id=c20 op=camera:forward_rate:2
-    Coefficient id=c21 op=camera:right_rate:0
-    Coefficient id=c22 op=camera:right_rate:1
-    Coefficient id=c23 op=camera:right_rate:2
-    Coefficient id=c24 op=camera:up_rate:0
-    Coefficient id=c25 op=camera:up_rate:1
-    Coefficient id=c26 op=camera:up_rate:2
+    Coefficient id=c2 op=camera:eye:0
+    Coefficient id=c3 op=camera:eye:1
+    Coefficient id=c4 op=camera:eye:2
+    Coefficient id=c5 op=camera:forward:0
+    Coefficient id=c6 op=camera:forward:1
+    Coefficient id=c7 op=camera:forward:2
+    Coefficient id=c8 op=camera:right:0
+    Coefficient id=c9 op=camera:right:1
+    Coefficient id=c10 op=camera:right:2
+    Coefficient id=c11 op=camera:up:0
+    Coefficient id=c12 op=camera:up:1
+    Coefficient id=c13 op=camera:up:2
+    Coefficient id=c14 op=camera:eye_rate:0
+    Coefficient id=c15 op=camera:eye_rate:1
+    Coefficient id=c16 op=camera:eye_rate:2
+    Coefficient id=c17 op=camera:forward_rate:0
+    Coefficient id=c18 op=camera:forward_rate:1
+    Coefficient id=c19 op=camera:forward_rate:2
+    Coefficient id=c20 op=camera:right_rate:0
+    Coefficient id=c21 op=camera:right_rate:1
+    Coefficient id=c22 op=camera:right_rate:2
+    Coefficient id=c23 op=camera:up_rate:0
+    Coefficient id=c24 op=camera:up_rate:1
+    Coefficient id=c25 op=camera:up_rate:2
+    Coefficient id=c26 op=mul:c0:c2
     Coefficient id=c27 op=mul:c0:c3
-    Coefficient id=c28 op=mul:c0:c6
-    Coefficient id=c29 op=mul:c0:c9
-    Coefficient id=c30 op=mul:c0:c12
-    Coefficient id=c31 op=mul:c0:c15
-    Coefficient id=c32 op=mul:c0:c18
-    Coefficient id=c33 op=mul:c0:c21
-    Coefficient id=c34 op=mul:c0:c24
-    Coefficient id=c35 op=mul:c1:c4
-    Coefficient id=c36 op=mul:c1:c5
-    Coefficient id=c37 op=mul:c1:c7
-    Coefficient id=c38 op=mul:c1:c8
-    Coefficient id=c39 op=mul:c1:c10
-    Coefficient id=c40 op=mul:c1:c11
-    Coefficient id=c41 op=mul:c1:c13
-    Coefficient id=c42 op=mul:c1:c14
-    Coefficient id=c43 op=mul:c1:c16
-    Coefficient id=c44 op=mul:c1:c17
-    Coefficient id=c45 op=mul:c1:c19
-    Coefficient id=c46 op=mul:c1:c20
-    Coefficient id=c47 op=mul:c1:c22
-    Coefficient id=c48 op=mul:c1:c23
+    Coefficient id=c28 op=mul:c0:c5
+    Coefficient id=c29 op=mul:c0:c6
+    Coefficient id=c30 op=mul:c0:c8
+    Coefficient id=c31 op=mul:c0:c9
+    Coefficient id=c32 op=mul:c0:c11
+    Coefficient id=c33 op=mul:c0:c12
+    Coefficient id=c34 op=mul:c0:c14
+    Coefficient id=c35 op=mul:c0:c15
+    Coefficient id=c36 op=mul:c0:c17
+    Coefficient id=c37 op=mul:c0:c18
+    Coefficient id=c38 op=mul:c0:c20
+    Coefficient id=c39 op=mul:c0:c21
+    Coefficient id=c40 op=mul:c0:c23
+    Coefficient id=c41 op=mul:c0:c24
+    Coefficient id=c42 op=mul:c1:c4
+    Coefficient id=c43 op=mul:c1:c7
+    Coefficient id=c44 op=mul:c1:c10
+    Coefficient id=c45 op=mul:c1:c13
+    Coefficient id=c46 op=mul:c1:c16
+    Coefficient id=c47 op=mul:c1:c19
+    Coefficient id=c48 op=mul:c1:c22
     Coefficient id=c49 op=mul:c1:c25
-    Coefficient id=c50 op=mul:c1:c26
-    Coefficient id=c51 op=mul:c2:c3
-    Coefficient id=c52 op=mul:c2:c6
-    Coefficient id=c53 op=mul:c2:c9
-    Coefficient id=c54 op=mul:c2:c12
-    Coefficient id=c55 op=mul:c2:c15
-    Coefficient id=c56 op=mul:c2:c18
-    Coefficient id=c57 op=mul:c2:c21
-    Coefficient id=c58 op=mul:c2:c24
-    Coefficient id=c59 op=add:c1:c27
-    Coefficient id=c60 op=add:c1:c35
-    Coefficient id=c61 op=add:c28:c37
-    Coefficient id=c62 op=add:c29:c39
-    Coefficient id=c63 op=add:c30:c41
-    Coefficient id=c64 op=add:c31:c43
-    Coefficient id=c65 op=add:c32:c45
-    Coefficient id=c66 op=add:c33:c47
-    Coefficient id=c67 op=add:c34:c49
-    Coefficient id=c68 op=add:c37:c38
-    Coefficient id=c69 op=add:c39:c40
-    Coefficient id=c70 op=add:c41:c42
-    Coefficient id=c71 op=add:c43:c44
-    Coefficient id=c72 op=add:c45:c46
-    Coefficient id=c73 op=add:c47:c48
-    Coefficient id=c74 op=add:c49:c50
-    Coefficient id=c75 op=add:c35:c59
-    Coefficient id=c76 op=add:c36:c60
-    Coefficient id=c77 op=add:c38:c61
-    Coefficient id=c78 op=add:c40:c62
-    Coefficient id=c79 op=add:c42:c63
-    Coefficient id=c80 op=add:c44:c64
-    Coefficient id=c81 op=add:c46:c65
-    Coefficient id=c82 op=add:c48:c66
-    Coefficient id=c83 op=add:c50:c67
-    Coefficient id=c84 op=add:c52:c68
-    Coefficient id=c85 op=add:c53:c69
-    Coefficient id=c86 op=add:c54:c70
-    Coefficient id=c87 op=add:c55:c71
-    Coefficient id=c88 op=add:c56:c72
-    Coefficient id=c89 op=add:c57:c73
-    Coefficient id=c90 op=add:c58:c74
-    Coefficient id=c91 op=add:c36:c75
-    Coefficient id=c92 op=add:c51:c76
-    Coefficient id=c93 op=neg:c77
-    Coefficient id=c94 op=neg:c78
-    Coefficient id=c95 op=neg:c79
-    Coefficient id=c96 op=neg:c84
-    Coefficient id=c97 op=neg:c85
-    Coefficient id=c98 op=neg:c86
+    Coefficient id=c50 op=add:c0:c26
+    Coefficient id=c51 op=add:c28:c29
+    Coefficient id=c52 op=add:c30:c31
+    Coefficient id=c53 op=add:c32:c33
+    Coefficient id=c54 op=add:c34:c35
+    Coefficient id=c55 op=add:c36:c37
+    Coefficient id=c56 op=add:c38:c39
+    Coefficient id=c57 op=add:c40:c41
+    Coefficient id=c58 op=add:c27:c50
+    Coefficient id=c59 op=add:c43:c51
+    Coefficient id=c60 op=add:c44:c52
+    Coefficient id=c61 op=add:c45:c53
+    Coefficient id=c62 op=add:c46:c54
+    Coefficient id=c63 op=add:c47:c55
+    Coefficient id=c64 op=add:c48:c56
+    Coefficient id=c65 op=add:c49:c57
+    Coefficient id=c66 op=add:c42:c58
+    Coefficient id=c67 op=neg:c59
+    Coefficient id=c68 op=neg:c60
+    Coefficient id=c69 op=neg:c61
     Polynomial id=poly0 degrees=u1v1q1x0t0 terms=4 detail=exact
-      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c91
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c78
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c79
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c77
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c66
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c60
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c61
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c59
     Polynomial id=poly1 degrees=u1v1q0x0t0 terms=3 detail=exact
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c94
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c95
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c93
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c68
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c69
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c67
     Polynomial id=poly2 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c91
-    Polynomial id=poly3 degrees=u1v1q1x0t0 terms=4 detail=exact
-      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c92
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c85
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c86
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c84
-    Polynomial id=poly4 degrees=u1v1q0x0t0 terms=3 detail=exact
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c97
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c98
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c96
-    Polynomial id=poly5 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c92
-    Polynomial id=poly6 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c78
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c66
+    Polynomial id=poly3 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c60
+    Polynomial id=poly4 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c61
+    Polynomial id=poly5 degrees=u0v0q0x0t0 terms=0 detail=exact
+    Polynomial id=poly6 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c62
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c64
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c65
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c63
     Polynomial id=poly7 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c79
-    Polynomial id=poly8 degrees=u0v0q0x0t0 terms=0 detail=exact
-    Polynomial id=poly9 degrees=u1v1q1x0t0 terms=4 detail=exact
-      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c80
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c82
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c83
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c81
-    Polynomial id=poly10 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c85
-    Polynomial id=poly11 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c86
-    Polynomial id=poly12 degrees=u1v1q1x0t0 terms=4 detail=exact
-      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c87
-      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c89
-      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c90
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c88
-    Polynomial id=poly13 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c91
-    Polynomial id=poly14 degrees=u0v0q0x0t0 terms=1 detail=exact
-      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c92
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c66
+    Rational id=rat0 numerator=poly1 denominator=poly2 domain=domain0 proof=coefficient:c66:enclosure=[-4.600000000000002,-4.099999999999997]:sign=negative
     CompositionPlan id=cp0 kind=specialized source_degree_u=1 source_degree_q=1 source_degree_x=0 q_hat_degree=2 composed_degree=2 source_terms=4 temporaries=8 coefficient_order=[0,1,2,3]
       CompositionStep source_term=0 u_power=0 q_power=1 lifted_power_offset=2 coefficient_order=0
       CompositionStep source_term=1 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=1
@@ -270,52 +208,22 @@ Renderers count=1
       CompositionStep source_term=3 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=3
       CorrectionFace id=0 sign=-1 output_order=[0,1,2] steps=composition-steps:4
       CorrectionFace id=1 sign=1 output_order=[0,1,2] steps=composition-steps:4
-    ProjectiveFeature id=g0 root=poly0 rational=- q_degree=1 seed=generic-isolated-root isolation=certified-bernstein:depth=64:ambiguity_depth=12:preserve_all_positive_q_roots=true composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
-    ProjectiveFeature id=g1 root=poly3 rational=- q_degree=1 seed=generic-isolated-root isolation=certified-bernstein:depth=64:ambiguity_depth=12:preserve_all_positive_q_roots=true composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
-    DerivativeBundle id=d0 feature=g0 g=poly0 first=[poly6,poly7,poly2] second=[poly8,poly8,poly8,poly8,poly8,poly8] third=[poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8] g_t=poly9 g_tt=none params=[]
-    DerivativeBundle id=d1 feature=g1 g=poly3 first=[poly10,poly11,poly5] second=[poly8,poly8,poly8,poly8,poly8,poly8] third=[poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8] g_t=poly12 g_tt=none params=[]
-    DerivativeCluster object=o0 leaf_signature=[f0@0] bundles=[d0] smooth_root=s6 scalar_derivative_sources=[s6] value_domain=[-4,4] first_world=[1,0,0] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=13.856406460551026 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
-    DerivativeCluster object=o1 leaf_signature=[f2@0] bundles=[d1] smooth_root=s9 scalar_derivative_sources=[s9] value_domain=[-4,4] first_world=[1,0,0] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=13.856406460551026 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
+    ProjectiveFeature id=g0 root=poly0 rational=rat0 q_degree=1 seed=affine:coefficient:c66:enclosure=[-4.600000000000002,-4.099999999999997]:sign=negative isolation=affine composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
+    DerivativeBundle id=d0 feature=g0 g=poly0 first=[poly3,poly4,poly2] second=[poly5,poly5,poly5,poly5,poly5,poly5] third=[poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5,poly5] g_t=poly6 g_tt=none params=[]
+    DerivativeCluster object=o0 leaf_signature=[f0@0] bundles=[d0] smooth_root=s6 scalar_derivative_sources=[s6] value_domain=[-4,4] first_world=[0,0,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=13.856406460551026 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
     ProjectedSpan feature=g0 normalized=[-1,1]x[-1,1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] q=[0.007812499999999999,10.000000000000002] rule=unbounded-plane-full-screen outside_margin=- halos=event:1:filter:1
-    ProjectedSpan feature=g1 normalized=[-1,1]x[-1,1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] q=[0.007812499999999999,10.000000000000002] rule=unbounded-plane-full-screen outside_margin=- halos=event:1:filter:1
-    Event id=e0 kind=silhouette participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=linear-leading-coefficient:predicate=poly13:root=poly0 sides=negative=recompute-root-set:zero=recompute-root-set:positive=recompute-root-set
-    Event id=e1 kind=near-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
-    Event id=e2 kind=far-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
-    Event id=e3 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
-    Event id=e4 kind=silhouette participants=[feature:g1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=linear-leading-coefficient:predicate=poly14:root=poly3 sides=negative=recompute-root-set:zero=recompute-root-set:positive=recompute-root-set
-    Event id=e5 kind=near-clip participants=[feature:g1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
-    Event id=e6 kind=far-clip participants=[feature:g1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
-    Event id=e7 kind=fixed-point-reset-only participants=[feature:g1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
-    Event id=e8 kind=depth-swap participants=[feature:g0,feature:g1] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=2 subdivision=2 representation=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8]:b_third=[poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8,poly8]:x_domain=[-4.000000000000001,4.000000000000001]:q_domain=[0.007812499999999999,10.000000000000002]:fallback_difference=[-9.992187500000004,9.992187500000004]:fallback_remainder=9.992187500000005:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
-    CompetitionPair id=pair0 a=g0 b=g1 event=e8 pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] q_overlap=[0.007812499999999999,10.000000000000002]
-    CompetitionSummary considered=1 emitted=1 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=2 suppressed_material_only=0
+    Event id=e0 kind=near-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e1 kind=far-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e2 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e3 kind=material-boundary participants=[feature:g0,material-event:0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=1 subdivision=2 representation=material-difference:left=s12:right=s13:compare=ge:derivatives=sources=[s12,s13]:first=[1,0,0]:second=0:third=0:params=[p0:1]:frame_delta=0.25:frame_second=0.0625:order=2:world_delta=13.856406460551026:remainder=0 sides=negative=material-right:zero=material-left:positive=material-left
+    CompetitionSummary considered=0 emitted=0 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=1 suppressed_material_only=1
     ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
     ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
-    ExclusionProof id=proof2 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
-    ExclusionProof id=proof3 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
+    ExclusionProof id=proof2 payload=bernstein:box=[]:polynomial=poly0:coefficient_root=c66:degrees=[]:coefficient_order=[]:conversion_radius=1.11022302462516862e-16:tree=[0:0:-:negative:4.099999999999997]:sign=negative:minimum_margin=4.099999999999997
     X x0 event:projected-bound-enter:g0:-:0 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof0 []
-    X x1 event:projected-bound-enter:g1:-:0 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof1 []
-    X x2 event:projected-bound-exit:g0:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof2 []
-    X x3 event:projected-bound-exit:g1:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof3 []
-    Index name=tile_features cells=8 ids=16
-      Cell id=0 offset=0 count=2 values=[0,1]
-      Cell id=1 offset=2 count=2 values=[0,1]
-      Cell id=2 offset=4 count=2 values=[0,1]
-      Cell id=3 offset=6 count=2 values=[0,1]
-      Cell id=4 offset=8 count=2 values=[0,1]
-      Cell id=5 offset=10 count=2 values=[0,1]
-      Cell id=6 offset=12 count=2 values=[0,1]
-      Cell id=7 offset=14 count=2 values=[0,1]
-    Index name=tile_events cells=8 ids=72
-      Cell id=0 offset=0 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=1 offset=9 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=2 offset=18 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=3 offset=27 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=4 offset=36 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=5 offset=45 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=6 offset=54 count=9 values=[0,1,2,3,4,5,6,7,8]
-      Cell id=7 offset=63 count=9 values=[0,1,2,3,4,5,6,7,8]
-    Index name=tile_competitions cells=8 ids=8
+    X x1 event:projected-bound-exit:g0:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof1 []
+    X x2 event:silhouette:g0:-:0 domain0 global-parameter-box-strict-sign [4.099999999999996,4.099999999999998] proof2 []
+    Index name=tile_features cells=8 ids=8
       Cell id=0 offset=0 count=1 values=[0]
       Cell id=1 offset=1 count=1 values=[0]
       Cell id=2 offset=2 count=1 values=[0]
@@ -324,6 +232,24 @@ Renderers count=1
       Cell id=5 offset=5 count=1 values=[0]
       Cell id=6 offset=6 count=1 values=[0]
       Cell id=7 offset=7 count=1 values=[0]
+    Index name=tile_events cells=8 ids=32
+      Cell id=0 offset=0 count=4 values=[0,1,2,3]
+      Cell id=1 offset=4 count=4 values=[0,1,2,3]
+      Cell id=2 offset=8 count=4 values=[0,1,2,3]
+      Cell id=3 offset=12 count=4 values=[0,1,2,3]
+      Cell id=4 offset=16 count=4 values=[0,1,2,3]
+      Cell id=5 offset=20 count=4 values=[0,1,2,3]
+      Cell id=6 offset=24 count=4 values=[0,1,2,3]
+      Cell id=7 offset=28 count=4 values=[0,1,2,3]
+    Index name=tile_competitions cells=8 ids=0
+      Cell id=0 offset=0 count=0 values=[]
+      Cell id=1 offset=0 count=0 values=[]
+      Cell id=2 offset=0 count=0 values=[]
+      Cell id=3 offset=0 count=0 values=[]
+      Cell id=4 offset=0 count=0 values=[]
+      Cell id=5 offset=0 count=0 values=[]
+      Cell id=6 offset=0 count=0 values=[]
+      Cell id=7 offset=0 count=0 values=[]
     Index name=row_block_repeats cells=2 ids=0
       Cell id=0 offset=0 count=0 values=[]
       Cell id=1 offset=0 count=0 values=[]
@@ -346,12 +272,11 @@ Renderers count=1
       Cell id=6 offset=0 count=0 values=[]
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
-    ObjectFeatureIndex object=o1 first=g1 count=1
-    DirectIndexes feature_derivatives=[d0,d1] material_programs=[0:m2,1:m2] bytes=768
-    ProjectiveCapacities candidate_features_per_tile=2 row_start_roots=2 active_sheets_per_row=2 event_generators=9 competition_pairs_per_tile=1 row_event_intervals=10 root_stack_nodes=8 event_stack_nodes=8 runs_per_row=11 corridors_per_row=10 max_index_slice=9 polynomial_programs=15 rational_programs=0 polynomial_terms_per_program=4 coefficient_nodes=99 derivative_bundles=2 derivative_clusters=2 index_bytes=768 refined_per_worker_scratch_bytes=1360 refined_all_worker_scratch_bytes=1360 final_per_worker_scratch_bytes=2368 final_all_worker_scratch_bytes=2368 final_state_bytes=225600 final_instrumented_state_bytes=225984
-      ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=2 why=[exact endpoint/cell sweep gives row overlap 2 within P3 ceiling 2 and tile overlap 2 within P3 ceiling 2]
-      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=225600 why=[P4-refined six-class scratch=1360 per worker; retained fixed-q/shading/transparency scratch=1008 per worker; workers=1]
-      ProjectiveCapacityDerivation field=p4_row_start_roots value=2 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
-      ProjectiveCapacityDerivation field=p4_row_event_intervals value=10 why=[9 completed local generators; 1 competition pairs survive; 2^2 leaves per isolated root]
-      ProjectiveCapacityDerivation field=p4_index_bytes value=768 why=[completed offset/count cells plus sorted contiguous ID tables]
+    DirectIndexes feature_derivatives=[d0] material_programs=[0:m3] bytes=520
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=4 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=16 corridors_per_row=16 max_index_slice=4 polynomial_programs=8 rational_programs=1 polynomial_terms_per_program=4 coefficient_nodes=70 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=4160 refined_all_worker_scratch_bytes=4160 final_per_worker_scratch_bytes=5952 final_all_worker_scratch_bytes=5952 final_state_bytes=229568 final_instrumented_state_bytes=230704
+      ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
+      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=229568 why=[P4-refined six-class scratch=4160 per worker; retained fixed-q/shading/transparency scratch=1792 per worker; workers=1]
+      ProjectiveCapacityDerivation field=p4_row_start_roots value=1 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
+      ProjectiveCapacityDerivation field=p4_row_event_intervals value=4 why=[4 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
+      ProjectiveCapacityDerivation field=p4_index_bytes value=520 why=[completed offset/count cells plus sorted contiguous ID tables]
 Analysis status=verified-projective

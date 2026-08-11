@@ -40,40 +40,42 @@ Program
     0037: f900012a  str x10, [x9, #0]
     0038: f9401fea  ldr x10, [sp, #56]
     0039: f900052a  str x10, [x9, #8]
-    0040: 14000020  b #128
+    0040: 14000022  b #136
     0041: d280008a  movz x10, #0x4
     0042: eb0a009f  cmp x4, x10
-    0043: 54000203  b.cc #64
+    0043: 54000243  b.cc #72
     0044: aa0403ea  mov x10, x4
     0045: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0046: 10000009  adr x9, rodata+0x0
-    0047: f90003e9  str x9, [sp]  ; prefix.base
-    0048: d28000c9  movz x9, #0x6
-    0049: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0050: 10000009  adr x9, rodata+0x6
-    0051: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0052: d2800329  movz x9, #0x19
-    0053: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0054: 910003e0  add x0, sp, #0  ; *prefix
-    0055: aa0a03e1  mov x1, x10
-    0056: d2800002  movz x2, #0x0
-    0057: 910043e3  add x3, sp, #16  ; *suffix
-    0058: 94000000  bl <__wrela_abort_val>
-    0059: 910003eb  add x11, sp, #0
-    0060: d280010c  movz x12, #0x8
-    0061: 9b0c7c8d  mul x13, x4, x12
-    0062: 8b0d016b  add x11, x11, x13
-    0063: f9400165  ldr x5, [x11, #0]
-    0064: d2800009  movz x9, #0x0
-    0065: f90023e9  str x9, [sp, #64]
-    0066: f90027e5  str x5, [sp, #72]
-    0067: f9402be9  ldr x9, [sp, #80]
-    0068: f94023ea  ldr x10, [sp, #64]
-    0069: f900012a  str x10, [x9, #0]
-    0070: f94027ea  ldr x10, [sp, #72]
-    0071: f900052a  str x10, [x9, #8]
-    0072: 910183ff  add sp, sp, #96
-    0073: d65f03c0  ret
+    0046: 90000009  adrp x9, rodata+0x0
+    0047: 91000129  add x9, x9, rodata+0x0
+    0048: f90003e9  str x9, [sp]  ; prefix.base
+    0049: d28000c9  movz x9, #0x6
+    0050: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0051: 90000009  adrp x9, rodata+0x6
+    0052: 91000129  add x9, x9, rodata+0x6
+    0053: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0054: d2800329  movz x9, #0x19
+    0055: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0056: 910003e0  add x0, sp, #0  ; *prefix
+    0057: aa0a03e1  mov x1, x10
+    0058: d2800002  movz x2, #0x0
+    0059: 910043e3  add x3, sp, #16  ; *suffix
+    0060: 94000000  bl <__wrela_abort_val>
+    0061: 910003eb  add x11, sp, #0
+    0062: d280010c  movz x12, #0x8
+    0063: 9b0c7c8d  mul x13, x4, x12
+    0064: 8b0d016b  add x11, x11, x13
+    0065: f9400165  ldr x5, [x11, #0]
+    0066: d2800009  movz x9, #0x0
+    0067: f90023e9  str x9, [sp, #64]
+    0068: f90027e5  str x5, [sp, #72]
+    0069: f9402be9  ldr x9, [sp, #80]
+    0070: f94023ea  ldr x10, [sp, #64]
+    0071: f900012a  str x10, [x9, #0]
+    0072: f94027ea  ldr x10, [sp, #72]
+    0073: f900052a  str x10, [x9, #8]
+    0074: 910183ff  add sp, sp, #96
+    0075: d65f03c0  ret
   Rodata
     0: offset=0x0 index\x20
     1: offset=0x6  out of bounds (length 4)

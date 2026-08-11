@@ -1,6 +1,7 @@
 # Permanent Pixels correctness fixtures, in §11 matrix order.
 check-pixels-plane
 check-pixels-hard-csg
+check-pixels-smooth-interior-root
 check-pixels-smooth-csg
 check-pixels-repeat
 check-pixels-displace
@@ -8,6 +9,7 @@ check-pixels-close-depth
 check-pixels-thin-feature
 check-pixels-enclosed-feature
 check-pixels-material-edge
+check-pixels-visibility-probe
 check-pixels-transparent-tail
 check-pixels-area-light
 check-pixels-kinetic
@@ -31,8 +33,12 @@ err-pixels-projective-zero
 err-pixels-fixed-q
 err-pixels-tone-table
 err-pixels-cost
+err-pixels-reserved-name
 boot-pixels-numeric
 boot-pixels-plane
+boot-pixels-plane-one-core
+boot-pixels-program-view
+boot-pixels-frame-input
 boot-pixels-quality
 boot-pixels-transparent
 boot-pixels-gi

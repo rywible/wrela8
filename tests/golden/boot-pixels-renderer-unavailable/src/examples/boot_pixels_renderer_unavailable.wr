@@ -1,5 +1,9 @@
 module examples.boot_pixels_renderer_unavailable
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
+from core.runtime import __wrela_trace_p7_u64
 from core.field import Field, Rgb, Vec3, mark, plane
 from core.render import (
     AoConfig,
@@ -39,13 +43,29 @@ fn classify_error(take error: RenderError) -> u64:
         case .NonFiniteInput(_):
             return 6
         case .FrameContractMismatch(path):
-            if path.is_renderer_unavailable():
-                return 1
             if path.component == 4:
                 return 7
             if path.component == 5:
                 return 8
             return 2
+        case .InternalInvariant(invariant):
+            __wrela_trace_p7_u64(invariant.kind.to[u64]())
+            return 3
+        case .RootIsolationExhausted(tile):
+            __wrela_trace_p7_u64(4294967296 + tile.value.to[u64]())
+            return 3
+        case .EventIsolationExhausted(tile):
+            __wrela_trace_p7_u64(8589934592 + tile.value.to[u64]())
+            return 3
+        case .CertificateExhausted(tile):
+            __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+            return 3
+        case .CapacityExceeded(capacity):
+            __wrela_trace_p7_u64(17179869184 + capacity.kind.to[u64]())
+            return 3
+        case .FixedPointRangeExceeded(tile):
+            __wrela_trace_p7_u64(21474836480 + tile.value.to[u64]())
+            return 3
         case _:
             return 3
 
@@ -119,8 +139,10 @@ struct RenderProbe:
                 return 0
             case .Err(call_error):
                 match call_error:
-                    case .Op(render_error):
-                        return classify_error(take render_error)
+                    case .Op(failure):
+                        if failure.params.phase != phase:
+                            return 9
+                        return classify_error(take failure.error)
                     case _:
                         return 4
 
@@ -132,8 +154,10 @@ struct RenderProbe:
                 return 0
             case .Err(call_error):
                 match call_error:
-                    case .Op(render_error):
-                        return classify_error(take render_error)
+                    case .Op(failure):
+                        if failure.params.phase != 0.0:
+                            return 9
+                        return classify_error(take failure.error)
                     case _:
                         return 4
 
@@ -145,8 +169,10 @@ struct RenderProbe:
                 return 0
             case .Err(call_error):
                 match call_error:
-                    case .Op(render_error):
-                        return classify_error(take render_error)
+                    case .Op(failure):
+                        if failure.params.phase != 0.0:
+                            return 9
+                        return classify_error(take failure.error)
                     case _:
                         return 4
 
@@ -154,6 +180,10 @@ struct RenderProbe:
 struct ValidationProbe:
     probe: Actor[RenderProbe]
     zero: f32
+    # In-range phase for the valid renders. Exactly zero would put the plane
+    # through the camera eye — a degenerate configuration whose byte-exact
+    # coverage needs subpixel refinement beyond the test wall cap.
+    valid_phase: f32
     out_of_range: f32
     below_range: f32
     nonfinite: f32
@@ -164,6 +194,7 @@ struct ValidationProbe:
         mut self,
         probe: Actor[RenderProbe],
         zero: f32,
+        valid_phase: f32,
         out_of_range: f32,
         below_range: f32,
         nonfinite: f32,
@@ -172,6 +203,7 @@ struct ValidationProbe:
     ):
         self.probe = probe
         self.zero = zero
+        self.valid_phase = valid_phase
         self.out_of_range = out_of_range
         self.below_range = below_range
         self.nonfinite = nonfinite
@@ -250,15 +282,15 @@ struct ValidationProbe:
                     return code
             case .Err(_):
                 return 4
-        valid = await self.probe.run(phase=self.zero, exposure=self.zero)
+        valid = await self.probe.run(phase=self.valid_phase, exposure=self.zero)
         @discard(reason="the validation probe maps child admission failure to code 4")
         match valid:
             case .Ok(code):
-                if code != 1:
+                if code != 0:
                     return code
             case .Err(_):
                 return 4
-        retry = await self.probe.run(phase=self.zero, exposure=self.zero)
+        retry = await self.probe.run(phase=self.valid_phase, exposure=self.zero)
         @discard(reason="the validation probe maps child admission failure to code 4")
         match retry:
             case .Ok(code):
@@ -267,12 +299,12 @@ struct ValidationProbe:
                 return 4
 
 @test(runtime)
-async fn renderer_is_deterministically_unavailable(probe: Actor[ValidationProbe]):
+async fn renderer_returns_deterministic_debug_frame(probe: Actor[ValidationProbe]):
     result = await probe.run()
     @discard(reason="the assertion below makes a rejected probe call fail the test")
     match result:
         case .Ok(code):
-            assert code == 1, "RendererUnavailable is retryable without state or presentation"
+            assert code == 0, "valid frames succeed deterministically without kinetic state"
         case .Err(_):
             assert false, "renderer probe call must be admitted"
 
@@ -319,6 +351,7 @@ pub fn build() -> Image:
     )
     one: f32 = 1.0
     zero: f32 = 0.0
+    valid_phase: f32 = 0.5
     out_of_range: f32 = 3.0
     below_range: f32 = -3.0
     nonfinite: f32 = one / zero
@@ -336,6 +369,7 @@ pub fn build() -> Image:
         core=0,
         probe=renderer_probe,
         zero=zero,
+        valid_phase=valid_phase,
         out_of_range=out_of_range,
         below_range=below_range,
         nonfinite=nonfinite,

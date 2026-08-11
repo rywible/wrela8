@@ -125,10 +125,48 @@ fn first_difference(left: &[u8], right: &[u8]) -> String {
     )
 }
 
+fn case_uses_compiler_reserved_names(path: &Path) -> Result<bool, String> {
+    let mut entries = std::fs::read_dir(path)
+        .map_err(|error| format!("pixels-repro: read {}: {error}", path.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("pixels-repro: read {}: {error}", path.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let source = entry.path();
+        if source.is_dir() {
+            if case_uses_compiler_reserved_names(&source)? {
+                return Ok(true);
+            }
+            continue;
+        }
+        if source.extension().and_then(|extension| extension.to_str()) != Some("wr") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&source)
+            .map_err(|error| format!("pixels-repro: read {}: {error}", source.display()))?;
+        let tokens = wrela_compiler::syntax::lexer::lex(&text).map_err(|error| {
+            format!(
+                "pixels-repro: lex {} at {}:{}: {}",
+                source.display(),
+                error.line,
+                error.col,
+                error.message
+            )
+        })?;
+        if tokens.iter().any(|token| {
+            token.kind == wrela_compiler::syntax::lexer::TokenKind::Ident
+                && wrela_compiler::sema::is_compiler_reserved_source_name(&token.text)
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn accepted_renderer_cases(smoke: bool) -> Result<Vec<(String, PathBuf)>, String> {
     let golden = crate::root().join("tests/golden");
     let names: Vec<String> = if smoke {
-        ["check-pixels-plane", "check-pixels-smooth-csg"]
+        ["check-pixels-plane", "check-pixels-two-renderers"]
             .into_iter()
             .map(str::to_string)
             .collect()
@@ -142,13 +180,22 @@ fn accepted_renderer_cases(smoke: bool) -> Result<Vec<(String, PathBuf)>, String
             })
             .collect()
     };
-    let cases = names
-        .into_iter()
-        .map(|name| {
-            let source = golden.join(&name);
-            Ok((name, source))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let mut cases = Vec::new();
+    for name in names {
+        let source = golden.join(&name);
+        if case_uses_compiler_reserved_names(&source)? {
+            if smoke {
+                return Err(format!(
+                    "pixels-repro: smoke fixture {name} uses compiler-reserved instrumentation"
+                ));
+            }
+            println!(
+                "pixels-repro: skip {name}: compiler-reserved instrumentation is not relocatable"
+            );
+            continue;
+        }
+        cases.push((name, source));
+    }
     if cases.is_empty() {
         return Err("pixels-repro: discovered no accepted renderer fixtures".to_string());
     }
@@ -156,6 +203,11 @@ fn accepted_renderer_cases(smoke: bool) -> Result<Vec<(String, PathBuf)>, String
 }
 
 fn reproduce_cases(smoke: bool) -> Result<(), String> {
+    // Reproduction compares the production artifacts emitted by the golden
+    // lane. Compile copied fixtures under the same release optimization set;
+    // debug-only renderer code growth is not part of the artifact contract
+    // and can exceed the sealed pre-rtdata address range.
+    let _mode = crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let scratch = crate::root().join("target/pixels-repro");
     if scratch.exists() {
         std::fs::remove_dir_all(&scratch)
@@ -169,8 +221,10 @@ fn reproduce_cases(smoke: bool) -> Result<(), String> {
         for (name, source) in accepted_renderer_cases(smoke)? {
             let first_target = fresh_case(&source, &scratch.join(format!("{name}-a")))?;
             let second_target = fresh_case(&source, &scratch.join(format!("{name}-b")))?;
-            let first = produce_artifacts(&first_target)?;
-            let second = produce_artifacts(&second_target)?;
+            let first = produce_artifacts(&first_target)
+                .map_err(|error| format!("pixels-repro: {name} copy a: {error}"))?;
+            let second = produce_artifacts(&second_target)
+                .map_err(|error| format!("pixels-repro: {name} copy b: {error}"))?;
             if first.len() != second.len() {
                 return Err(format!(
                     "pixels-repro: {name} renderer count differs across fresh directories: {} vs {}",
@@ -237,4 +291,26 @@ pub(crate) fn pixels_repro() -> Result<(), String> {
 
 pub(crate) fn pixels_repro_smoke() -> Result<(), String> {
     reproduce_cases(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relocation_filter_distinguishes_user_surface_from_instrumented_fixtures() {
+        let golden = crate::root().join("tests/golden");
+        assert!(
+            !case_uses_compiler_reserved_names(&golden.join("check-pixels-plane"))
+                .expect("scan plane fixture")
+        );
+        assert!(
+            !case_uses_compiler_reserved_names(&golden.join("check-pixels-two-renderers"))
+                .expect("scan two-renderer fixture")
+        );
+        assert!(
+            case_uses_compiler_reserved_names(&golden.join("check-pixels-smooth-csg"))
+                .expect("scan instrumented fixture")
+        );
+    }
 }

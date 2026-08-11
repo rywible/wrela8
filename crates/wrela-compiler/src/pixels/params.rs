@@ -86,6 +86,30 @@ pub struct ParamSlot {
     pub packed_offset: u32,
 }
 
+/// Stable identity shared by the verified parameter layout and generated
+/// generic snapshot code. This is not an address or source-layout offset.
+pub(crate) fn parameter_path_key(path: &[usize], component: Option<u8>) -> Result<u64, String> {
+    let mut key = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in u64::try_from(path.len())
+        .map_err(|_| "renderer snapshot parameter path is too long".to_string())?
+        .to_le_bytes()
+    {
+        key = (key ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    }
+    for index in path {
+        for byte in u64::try_from(*index)
+            .map_err(|_| "renderer snapshot parameter path index exceeds u64".to_string())?
+            .to_le_bytes()
+        {
+            key = (key ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    for byte in u64::from(component.map_or(u32::MAX, u32::from)).to_le_bytes() {
+        key = (key ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    }
+    Ok(key)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DependencyDigestSchema {
     pub fields: Vec<&'static str>,
@@ -1429,6 +1453,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            camera_pose: None,
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),

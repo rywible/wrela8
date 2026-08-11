@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 0000000000000094
+p7 000000000000006e
+p7 00000000000000a4
+p7 503753414d504c45
+p7 000000000000ffff
+p7 444f41c7e764c854
+p7 184e4d6560b7e0e3
+p7 8b048185ac324463
+p7 4e3d49fa4e504d82
+p7 e31b1311d3dd1b79
+test enclosed_feature_is_found_structurally: ok
+2 passed, 0 failed
+lane1 turns=2 run_one=4 messages=2
+lane1 hits=0:2,1:1

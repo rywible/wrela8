@@ -1,28 +1,40 @@
 module examples.check_pixels_camera_inside
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
 from core.field import (
     Field,
     Rgb,
     Vec3,
+    length3,
     mark,
     sphere,
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
     LightConfig,
+    LightFrame,
     MaterialSample,
     ProbeConfig,
+    RenderFrame,
+    RenderError,
+    Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_probe,
 )
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 13
-# production Pixels stage is not implemented; implemented in task P7.5
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -40,17 +52,133 @@ enum MaterialId:
 
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    enclosure = sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=2.0)
+    enclosure = sphere(p, Vec3(x=0.0, y=0.0, z=-4.0), radius=2.0)
     return mark(enclosure, object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
     return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
 
-@test(runtime)
+@actor
+struct CameraInsideProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    fn __frame(read self) -> RenderFrame[SceneParams]:
+        return RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=13,
+        )
+
+    pub async fn run(mut self) -> u32:
+        frame = self.__frame()
+        rendered = await self.renderer.render(frame=take frame)
+        @discard(reason="the probe maps renderer call failure to false")
+        match rendered:
+            case .Err(call_error):
+                match call_error:
+                    case .Op(failure):
+                        match failure.error:
+                            case .RootIsolationExhausted(_):
+                                return 1
+                            case .EventIsolationExhausted(_):
+                                return 2
+                            case .CertificateExhausted(_):
+                                return 3
+                            case .CapacityExceeded(_):
+                                return 4
+                            case .FixedPointRangeExceeded(_):
+                                return 5
+                            case .InternalInvariant(_):
+                                return 6
+                            case _:
+                                return 7
+                    case _:
+                        return 8
+            case .Ok(value):
+                __wrela_trace_p7_u64(value.certificate_runs)
+                __wrela_trace_p7_u64(value.event_corridors)
+                __wrela_trace_p7_u64(value.revalidated_proposals)
+                __wrela_trace_p7_u64(5780180186688408645)
+                __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+                evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+                if evidence[0] == 1:
+                    __wrela_trace_p7_u64(4847371096046259761)
+                    evidence_word: usize = 0
+                    @budget(bound=16)
+                    while evidence_word < 16:
+                        evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, evidence_word)
+                        assert evidence[0] == 1, "instrumented run evidence is complete"
+                        __wrela_trace_p7_u64(evidence[1])
+                        evidence_word = evidence_word + 1
+                __wrela_trace_p7_u64(4922225244575680596)
+                digest_word: usize = 0
+                @budget(bound=4)
+                while digest_word < 4:
+                    packed: u64 = 0
+                    digest_byte: usize = 8
+                    @budget(bound=8)
+                    while digest_byte > 0:
+                        digest_byte = digest_byte - 1
+                        packed = packed * 256 + value.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
+                    __wrela_trace_p7_u64(packed)
+                    digest_word = digest_word + 1
+                dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+                if dump_header[0] == 1:
+                    __wrela_trace_p7_u64(7599824371187933777)
+                    dump_index: u64 = 1
+                    @budget(bound=65551)
+                    while dump_index <= dump_header[1]:
+                        dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                        assert dump_value[0] == 1, "instrumented frame dump is complete"
+                        __wrela_trace_p7_u64(dump_value[1])
+                        dump_index = dump_index + 1
+                return 0
+
 fn pinned_scene_contract():
     assert FIXTURE_ID == 13, "fixture id must remain pinned"
     assert CAMERA_X_RAW == 0, "adversarial scene value must remain pinned"
+
+@test(runtime)
+async fn renders_first_exit_boundary(probe: Actor[CameraInsideProbe]):
+    pinned_scene_contract()
+    rendered = await probe.run()
+    @discard(reason="the assertion below converts admission failure into a test failure")
+    match rendered:
+        case .Err(_):
+            assert false, "camera-inside probe must be admitted"
+        case .Ok(status):
+            assert status != 1, "camera-inside root isolation succeeds"
+            assert status != 2, "camera-inside event isolation succeeds"
+            assert status != 3, "camera-inside visibility certificate succeeds"
+            assert status != 4, "camera-inside workspace capacity suffices"
+            assert status != 5, "camera-inside fixed-q range suffices"
+            assert status != 6, "camera-inside runtime invariants hold"
+            assert status != 8, "camera-inside renderer actor call succeeds"
+            assert status == 0, "camera-inside frame returns a deterministic debug frame"
+
+@test(runtime)
+fn reports_selected_curved_feature_normal():
+    params: [f32; 16] = [0.0; 16]
+    camera: [f32; 12] = [
+        0.0, 0.0, -4.35,
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+    ]
+    visibility = __wrela_pixels_p7_debug_probe(0, 6, 32, 16, params, camera)
+    assert visibility[0] == 1, "curved feature probe certifies"
+    assert visibility[1] == 1, "curved feature probe hits the exit boundary"
+    assert visibility[10] == 1, "curved feature carries a generated normal"
+    assert visibility[11] > -100000 and visibility[11] < 100000, "sphere normal x is outward"
+    assert visibility[12] > -100000 and visibility[12] < 100000, "sphere normal y is outward"
+    assert visibility[13] > 900000, "sphere exit normal points forward"
 
 @image
 pub fn build() -> Image:
@@ -82,5 +210,6 @@ pub fn build() -> Image:
         probes=ProbeConfig.fixed(enabled=false),
         initialization_deadline_ms=10,
     )
+    probe = img.actor(CameraInsideProbe, renderer=renderer, mailbox=1)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

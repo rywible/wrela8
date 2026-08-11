@@ -133,7 +133,7 @@ pub(crate) fn classify_target(key: &str, placement: &PlacementTable) -> Result<A
 }
 
 fn core_or_shared(type_name: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
-    if type_name == "RendererWorker" {
+    if type_name.starts_with("RendererWorker") {
         return Ok(AttrTarget::Shared);
     }
     match core_of_type(placement, type_name)? {

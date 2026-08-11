@@ -14,58 +14,61 @@ Program
     0011: f94007e1  ldr x1, [sp, #8]
     0012: d2800022  movz x2, #0x1
     0013: 8a020064  and x4, x3, x2
-    0014: b40001a4  cbz x4, #52
+    0014: b40001c4  cbz x4, #56
     0015: 9b017c20  mul x0, x1, x1
     0016: 9bc17c2c  umulh x12, x1, x1
     0017: eb1f019f  cmp x12, xzr
-    0018: 54000100  b.eq #32
+    0018: 54000120  b.eq #36
     0019: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0020: 10000009  adr x9, rodata+0x0
-    0021: f90003e9  str x9, [sp]  ; Bytes.base
-    0022: d2800349  movz x9, #0x1a
-    0023: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0024: 910003e0  add x0, sp, #0  ; *Bytes
-    0025: 94000000  bl <__wrela_abort>
-    0026: 14000025  b #148
-    0027: f94003e9  ldr x9, [sp, #0]
-    0028: aa0903e1  mov x1, x9
-    0029: d2800022  movz x2, #0x1
-    0030: eb02003f  cmp x1, x2
-    0031: 9a9f17e3  cset x3, eq
-    0032: f94007e1  ldr x1, [sp, #8]
-    0033: d2800022  movz x2, #0x1
-    0034: 8a020064  and x4, x3, x2
-    0035: b40001a4  cbz x4, #52
-    0036: 9b017c20  mul x0, x1, x1
-    0037: 9bc17c2c  umulh x12, x1, x1
-    0038: eb1f019f  cmp x12, xzr
-    0039: 54000100  b.eq #32
-    0040: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0041: 10000009  adr x9, rodata+0x0
-    0042: f90003e9  str x9, [sp]  ; Bytes.base
-    0043: d2800349  movz x9, #0x1a
-    0044: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0045: 910003e0  add x0, sp, #0  ; *Bytes
-    0046: 94000000  bl <__wrela_abort>
-    0047: 14000010  b #64
-    0048: f94003e9  ldr x9, [sp, #0]
-    0049: aa0903e1  mov x1, x9
-    0050: d2800042  movz x2, #0x2
-    0051: eb02003f  cmp x1, x2
-    0052: 9a9f17e3  cset x3, eq
-    0053: b4000063  cbz x3, #12
-    0054: d2800000  movz x0, #0x0
-    0055: 14000008  b #32
-    0056: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0057: 10000009  adr x9, rodata+0x1a
-    0058: f90003e9  str x9, [sp]  ; Bytes.base
-    0059: d2800b49  movz x9, #0x5a
-    0060: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0061: 910003e0  add x0, sp, #0  ; *Bytes
-    0062: 94000000  bl <__wrela_abort>
-    0063: f9400bfe  ldr lr, [sp, #16]
-    0064: 910083ff  add sp, sp, #32
-    0065: d65f03c0  ret
+    0020: 90000009  adrp x9, rodata+0x0
+    0021: 91000129  add x9, x9, rodata+0x0
+    0022: f90003e9  str x9, [sp]  ; Bytes.base
+    0023: d2800349  movz x9, #0x1a
+    0024: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0025: 910003e0  add x0, sp, #0  ; *Bytes
+    0026: 94000000  bl <__wrela_abort>
+    0027: 14000027  b #156
+    0028: f94003e9  ldr x9, [sp, #0]
+    0029: aa0903e1  mov x1, x9
+    0030: d2800022  movz x2, #0x1
+    0031: eb02003f  cmp x1, x2
+    0032: 9a9f17e3  cset x3, eq
+    0033: f94007e1  ldr x1, [sp, #8]
+    0034: d2800022  movz x2, #0x1
+    0035: 8a020064  and x4, x3, x2
+    0036: b40001c4  cbz x4, #56
+    0037: 9b017c20  mul x0, x1, x1
+    0038: 9bc17c2c  umulh x12, x1, x1
+    0039: eb1f019f  cmp x12, xzr
+    0040: 54000120  b.eq #36
+    0041: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0042: 90000009  adrp x9, rodata+0x0
+    0043: 91000129  add x9, x9, rodata+0x0
+    0044: f90003e9  str x9, [sp]  ; Bytes.base
+    0045: d2800349  movz x9, #0x1a
+    0046: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0047: 910003e0  add x0, sp, #0  ; *Bytes
+    0048: 94000000  bl <__wrela_abort>
+    0049: 14000011  b #68
+    0050: f94003e9  ldr x9, [sp, #0]
+    0051: aa0903e1  mov x1, x9
+    0052: d2800042  movz x2, #0x2
+    0053: eb02003f  cmp x1, x2
+    0054: 9a9f17e3  cset x3, eq
+    0055: b4000063  cbz x3, #12
+    0056: d2800000  movz x0, #0x0
+    0057: 14000009  b #36
+    0058: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0059: 90000009  adrp x9, rodata+0x1a
+    0060: 91000129  add x9, x9, rodata+0x1a
+    0061: f90003e9  str x9, [sp]  ; Bytes.base
+    0062: d2800b49  movz x9, #0x5a
+    0063: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0064: 910003e0  add x0, sp, #0  ; *Bytes
+    0065: 94000000  bl <__wrela_abort>
+    0066: f9400bfe  ldr lr, [sp, #16]
+    0067: 910083ff  add sp, sp, #32
+    0068: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `*`
     1: offset=0x1a assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)

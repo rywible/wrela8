@@ -470,8 +470,6 @@ pub struct CodegenProgram {
     pub origin_spans: Vec<BlockSpan>,
 }
 
-pub const PIXELS_RENDERER_SYMBOL: &str = "__wrela_pixels_render";
-
 /// Emit the P-1 scalar renderer as ordinary guest AArch64.
 ///
 /// The renderer installs its P-1 compatibility seed metadata, shades the fixed
@@ -479,7 +477,9 @@ pub const PIXELS_RENDERER_SYMBOL: &str = "__wrela_pixels_render";
 /// actor, publishes the one-tile display queue, and finally rings the display
 /// doorbell. Keeping this as an explicit, auditable emitter makes the walking
 /// skeleton travel through the real image/link/VMM path.
-pub fn emit_pixels_plane_renderer(seed_metadata: &[u8; 80], semantic_seed: &[u8; 32]) -> CodegenFn {
+#[cfg(test)]
+#[allow(dead_code)]
+fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8; 32]) -> CodegenFn {
     use wrela_machine::pixels;
 
     fn renderer_load_u64(code: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -679,92 +679,6 @@ pub fn emit_pixels_plane_renderer(seed_metadata: &[u8; 80], semantic_seed: &[u8;
     }
 }
 
-/// Install the P-1 renderer and invoke it from the image's real boot path.
-///
-/// The hook is spliced into `__wrela_rt_boot_init` immediately before its
-/// shared return. Ordinary images are untouched: they neither carry a Pixels
-/// symbol nor pay for a dormant runtime branch.
-pub fn install_pixels_plane_renderer(
-    program: &mut CodegenProgram,
-    seed_metadata: &[u8; 80],
-    semantic_seed: &[u8; 32],
-) -> Result<(), String> {
-    let boot = program.fns.get_mut("__wrela_rt_boot_init").ok_or_else(|| {
-        "pixels: live image did not codegen the runtime boot initializer".to_string()
-    })?;
-    let final_ret = boot
-        .code
-        .pop()
-        .ok_or_else(|| "pixels: runtime boot initializer emitted no code".to_string())?;
-    if final_ret.word != encode::enc_ret(X_LR) {
-        return Err(
-            "pixels: runtime boot initializer has no canonical shared return epilogue".to_string(),
-        );
-    }
-
-    boot.code.push(EmittedWord::new(
-        encode::enc_sub_imm(X_SP, X_SP, 16, true),
-        "sub sp, sp, #16  ; pixels hook frame".to_string(),
-        CostRule::Alu,
-        Some(X_SP),
-        &[X_SP],
-    ));
-    boot.code.push(
-        EmittedWord::new(
-            encode::enc_str_x_imm(X_LR, X_SP, 0),
-            "str lr, [sp]  ; save pixels hook return".to_string(),
-            CostRule::Store,
-            None,
-            &[X_LR, X_SP],
-        )
-        .with_mem(MemRef::stack(0)),
-    );
-    let call_word = boot.code.len();
-    boot.code.push(EmittedWord::new(
-        encode::enc_bl(0),
-        format!("bl <{PIXELS_RENDERER_SYMBOL}>"),
-        CostRule::Call,
-        Some(0),
-        &[],
-    ));
-    boot.relocs.push(Reloc::Call {
-        word: call_word,
-        key: PIXELS_RENDERER_SYMBOL.to_string(),
-    });
-    boot.code.push(
-        EmittedWord::new(
-            encode::enc_ldr_x_imm(X_LR, X_SP, 0),
-            "ldr lr, [sp]  ; restore pixels hook return".to_string(),
-            CostRule::Load,
-            Some(X_LR),
-            &[X_SP],
-        )
-        .with_mem(MemRef::stack(0)),
-    );
-    boot.code.push(EmittedWord::new(
-        encode::enc_add_imm(X_SP, X_SP, 16, true),
-        "add sp, sp, #16  ; free pixels hook frame".to_string(),
-        CostRule::Alu,
-        Some(X_SP),
-        &[X_SP],
-    ));
-    boot.code.push(final_ret);
-
-    if program
-        .fns
-        .insert(
-            PIXELS_RENDERER_SYMBOL.to_string(),
-            emit_pixels_plane_renderer(seed_metadata, semantic_seed),
-        )
-        .is_some()
-    {
-        return Err(format!(
-            "pixels: compiler-owned symbol `{PIXELS_RENDERER_SYMBOL}` was already present"
-        ));
-    }
-    Ok(())
-}
-
 struct RodataPool {
     entries: Vec<Vec<u8>>,
     index: BTreeMap<Vec<u8>, usize>,
@@ -924,6 +838,7 @@ pub const FRAME_SP_ALIGN_BYTES: u64 = 16;
 pub const FRAME_SLOT_BYTES: u64 = 8;
 
 const FRAME_X_IMMEDIATE_MAX_BYTES: usize = 4095 * FRAME_SLOT_BYTES as usize;
+const FRAME_MAX_BYTES: usize = 256 * 1024;
 
 // Below eight L1D lines the LR spill removal is monotone in the rank model;
 // larger symbolic frames can change residency enough that deleting an
@@ -1008,11 +923,11 @@ fn build_frame(
     }
     let frameless = offset == 0;
     let size = round_up_16(offset);
-    if size + slot_bias > FRAME_X_IMMEDIATE_MAX_BYTES {
+    if size + slot_bias > FRAME_MAX_BYTES {
         return Err(CodegenError::unimplemented(&format!(
-            "{size}-byte frames; the current limit is {} bytes (the scaled 64-bit load/store \
-             imm12 range, less this fn's own {slot_bias}-byte slot bias)",
-            FRAME_X_IMMEDIATE_MAX_BYTES - slot_bias,
+            "{size}-byte frames; the current compiler frame limit is {} bytes (less this fn's \
+             own {slot_bias}-byte slot bias)",
+            FRAME_MAX_BYTES - slot_bias,
         )));
     }
     Ok(Frame {
@@ -1478,15 +1393,24 @@ impl<'a> FnCtx<'a> {
             self.note_resident_misuse("load_slot", off);
             return;
         }
-        let off = (off + self.slot_bias) as u16;
+        let off = off + self.slot_bias;
         let base = self.slot_base;
-        let mem = self.mem_ref(base, off as u64);
+        let (address, immediate, mem) = if off <= FRAME_X_IMMEDIATE_MAX_BYTES {
+            (base, off as u16, self.mem_ref(base, off as u64))
+        } else {
+            self.materialize_slot_address(X_F, off - self.slot_bias);
+            (X_F, 0, self.mem_ref(X_F, 0))
+        };
         self.push_mem(
-            encode::enc_ldr_x_imm(reg, base, off),
-            format!("ldr {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
+            encode::enc_ldr_x_imm(reg, address, immediate),
+            format!(
+                "ldr {}, [{}, #{immediate}]",
+                reg_name(reg),
+                reg_name(address)
+            ),
             CostRule::Load,
             Some(reg),
-            &[base],
+            &[address],
             Some(mem),
         );
     }
@@ -1520,15 +1444,25 @@ impl<'a> FnCtx<'a> {
             self.note_resident_misuse("store_slot", off);
             return;
         }
-        let off = (off + self.slot_bias) as u16;
+        let off = off + self.slot_bias;
         let base = self.slot_base;
-        let mem = self.mem_ref(base, off as u64);
+        let address_scratch = if reg == X_F { X_E } else { X_F };
+        let (address, immediate, mem) = if off <= FRAME_X_IMMEDIATE_MAX_BYTES {
+            (base, off as u16, self.mem_ref(base, off as u64))
+        } else {
+            self.materialize_slot_address(address_scratch, off - self.slot_bias);
+            (address_scratch, 0, self.mem_ref(address_scratch, 0))
+        };
         self.push_mem(
-            encode::enc_str_x_imm(reg, base, off),
-            format!("str {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
+            encode::enc_str_x_imm(reg, address, immediate),
+            format!(
+                "str {}, [{}, #{immediate}]",
+                reg_name(reg),
+                reg_name(address)
+            ),
             CostRule::Store,
             None,
-            &[reg, base],
+            &[reg, address],
             Some(mem),
         );
     }
@@ -1586,6 +1520,10 @@ impl<'a> FnCtx<'a> {
             self.note_resident_misuse("addr_of_slot", off);
             return;
         }
+        self.materialize_slot_address(reg, off);
+    }
+
+    fn materialize_slot_address(&mut self, reg: u8, off: usize) {
         let off = off + self.slot_bias;
         let base = self.slot_base;
         let mut remaining = off;
@@ -4296,9 +4234,57 @@ fn emit_arith_wrapping(
     dst: Temp,
 ) -> Result<(), CodegenError> {
     if is_float(ty) {
-        return Err(CodegenError::unimplemented(
-            "floating-point arithmetic (ArithWrapping doubles as float `+ - * / %`)",
-        ));
+        let double = matches!(strip_wrappers(ty), Type::F64);
+        let suffix = if double { 'd' } else { 's' };
+        let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+        let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+        ctx.push(
+            encode::enc_fmov_from_gpr(0, x_a, double),
+            format!("fmov {suffix}0, {}", reg_name(x_a)),
+            CostRule::Alu,
+            None,
+            &[x_a],
+        );
+        ctx.push(
+            encode::enc_fmov_from_gpr(1, x_b, double),
+            format!("fmov {suffix}1, {}", reg_name(x_b)),
+            CostRule::Alu,
+            None,
+            &[x_b],
+        );
+        let (word, mnemonic) = match op {
+            BinOp::Add => (encode::enc_fadd(2, 0, 1, double), "fadd"),
+            BinOp::Sub => (encode::enc_fsub(2, 0, 1, double), "fsub"),
+            BinOp::Mul => (encode::enc_fmul(2, 0, 1, double), "fmul"),
+            BinOp::Div => (encode::enc_fdiv(2, 0, 1, double), "fdiv"),
+            BinOp::Rem => {
+                return Err(CodegenError::unimplemented("floating-point remainder"));
+            }
+            other => {
+                return Err(CodegenError::internal(format!(
+                    "floating `ArithWrapping` with op `{}`",
+                    other.as_str()
+                )));
+            }
+        };
+        ctx.push(
+            word,
+            format!("{mnemonic} {suffix}2, {suffix}0, {suffix}1"),
+            CostRule::Alu,
+            None,
+            &[],
+        );
+        let dst_off = ctx.frame.off(dst);
+        let x_c = ctx.def_reg(X_C, dst_off);
+        ctx.push(
+            encode::enc_fmov_to_gpr(x_c, 2, double),
+            format!("fmov {}, {suffix}2", reg_name(x_c)),
+            CostRule::Alu,
+            Some(x_c),
+            &[],
+        );
+        ctx.store_slot(x_c, dst_off);
+        return Ok(());
     }
     let (bits, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`ArithWrapping` on non-integer {ty:?}")))?;
@@ -4577,10 +4563,176 @@ fn emit_convert(
     abort: &str,
 ) -> Result<(), CodegenError> {
     let src_ty = f.temp_types[src.0].clone();
-    if is_float(target_ty) || is_float(&src_ty) {
-        return Err(CodegenError::unimplemented(
-            "floating-point `.to[T]()` conversion",
-        ));
+    if is_float(target_ty) && !is_float(&src_ty) {
+        let (sbits, ssigned) = int_shape(&src_ty)
+            .ok_or_else(|| CodegenError::internal(format!("`Convert` source {src_ty:?}")))?;
+        let double = matches!(strip_wrappers(target_ty), Type::F64);
+        let wide = sbits == 64;
+        let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
+        ctx.push(
+            encode::enc_int_to_float(0, x_a, ssigned, double, wide),
+            format!(
+                "{}cvtf {}0, {}{}",
+                if ssigned { 's' } else { 'u' },
+                if double { 'd' } else { 's' },
+                if wide { 'x' } else { 'w' },
+                x_a
+            ),
+            CostRule::Alu,
+            None,
+            &[x_a],
+        );
+        let dst_off = ctx.frame.off(dst);
+        let x_c = ctx.def_reg(X_C, dst_off);
+        ctx.push(
+            encode::enc_fmov_to_gpr(x_c, 0, double),
+            format!(
+                "fmov {}{}, {}0",
+                if double { 'x' } else { 'w' },
+                x_c,
+                if double { 'd' } else { 's' }
+            ),
+            CostRule::Alu,
+            Some(x_c),
+            &[],
+        );
+        ctx.store_slot(x_c, dst_off);
+        return Ok(());
+    }
+    if !is_float(target_ty) && is_float(&src_ty) {
+        let (tbits, tsigned) = int_shape(target_ty)
+            .ok_or_else(|| CodegenError::internal(format!("`Convert` target {target_ty:?}")))?;
+        let double = matches!(strip_wrappers(&src_ty), Type::F64);
+        let wide = tbits == 64;
+        let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
+        ctx.push(
+            encode::enc_fmov_from_gpr(0, x_a, double),
+            format!(
+                "fmov {}0, {}{}",
+                if double { 'd' } else { 's' },
+                if double { 'x' } else { 'w' },
+                x_a
+            ),
+            CostRule::Alu,
+            None,
+            &[x_a],
+        );
+        let exponent = i32::try_from(tbits).expect("integer widths fit i32");
+        let magnitude = if tsigned {
+            2_f64.powi(exponent - 1)
+        } else {
+            2_f64.powi(exponent)
+        };
+        for (bound, pass, label) in [
+            (if tsigned { -magnitude } else { 0.0 }, Cond::Ge, "lower"),
+            (magnitude, Cond::Lt, "upper"),
+        ] {
+            let bits = if double {
+                bound.to_bits()
+            } else {
+                u64::from((bound as f32).to_bits())
+            };
+            ctx.load_imm(X_D, bits as i64);
+            ctx.push(
+                encode::enc_fmov_from_gpr(1, X_D, double),
+                format!(
+                    "fmov {}1, {}{}  ; conversion {label} bound",
+                    if double { 'd' } else { 's' },
+                    if double { 'x' } else { 'w' },
+                    X_D
+                ),
+                CostRule::Alu,
+                None,
+                &[X_D],
+            );
+            ctx.push_flags(
+                encode::enc_fcmp(0, 1, double),
+                format!(
+                    "fcmp {}0, {}1",
+                    if double { 'd' } else { 's' },
+                    if double { 'd' } else { 's' }
+                ),
+                CostRule::Alu,
+                None,
+                &[],
+                FlagEffect::Write,
+            );
+            let skip = ctx.emit_skip(SkipKind::Cond(pass));
+            ctx.abort_fixed(abort);
+            ctx.patch_skip(skip, SkipKind::Cond(pass));
+        }
+        let dst_off = ctx.frame.off(dst);
+        let x_c = ctx.def_reg(X_C, dst_off);
+        ctx.push(
+            encode::enc_float_to_int(x_c, 0, tsigned, double, wide),
+            format!(
+                "fcvtz{} {}{}, {}0",
+                if tsigned { 's' } else { 'u' },
+                if wide { 'x' } else { 'w' },
+                x_c,
+                if double { 'd' } else { 's' }
+            ),
+            CostRule::Alu,
+            Some(x_c),
+            &[],
+        );
+        ctx.narrow_to_width(x_c, tbits, tsigned);
+        ctx.store_slot(x_c, dst_off);
+        return Ok(());
+    }
+    if is_float(target_ty) && is_float(&src_ty) {
+        let target_double = matches!(strip_wrappers(target_ty), Type::F64);
+        let source_double = matches!(strip_wrappers(&src_ty), Type::F64);
+        let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
+        let dst_off = ctx.frame.off(dst);
+        let x_c = ctx.def_reg(X_C, dst_off);
+        if target_double == source_double {
+            ctx.push(
+                encode::enc_mov_reg(x_c, x_a, true),
+                format!("mov {}, {}", reg_name(x_c), reg_name(x_a)),
+                CostRule::Alu,
+                Some(x_c),
+                &[x_a],
+            );
+        } else {
+            ctx.push(
+                encode::enc_fmov_from_gpr(0, x_a, source_double),
+                format!(
+                    "fmov {}0, {}{}",
+                    if source_double { 'd' } else { 's' },
+                    if source_double { 'x' } else { 'w' },
+                    x_a
+                ),
+                CostRule::Alu,
+                None,
+                &[x_a],
+            );
+            ctx.push(
+                encode::enc_fcvt(1, 0, target_double),
+                format!(
+                    "fcvt {}1, {}0",
+                    if target_double { 'd' } else { 's' },
+                    if source_double { 'd' } else { 's' }
+                ),
+                CostRule::Alu,
+                None,
+                &[],
+            );
+            ctx.push(
+                encode::enc_fmov_to_gpr(x_c, 1, target_double),
+                format!(
+                    "fmov {}{}, {}1",
+                    if target_double { 'x' } else { 'w' },
+                    x_c,
+                    if target_double { 'd' } else { 's' }
+                ),
+                CostRule::Alu,
+                Some(x_c),
+                &[],
+            );
+        }
+        ctx.store_slot(x_c, dst_off);
+        return Ok(());
     }
     let (tbits, tsigned) = int_shape(target_ty)
         .ok_or_else(|| CodegenError::internal(format!("`Convert` target {target_ty:?}")))?;
@@ -6726,6 +6878,7 @@ fn emit_group_start(
     group_temp: Temp,
     callee_key: &str,
     arg_temps: &[Temp],
+    f: &MwirFn,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
     fn_key: &str,
@@ -6738,7 +6891,7 @@ fn emit_group_start(
     })?;
     if arg_temps.len() > 2 {
         return Err(CodegenError::unimplemented(
-            "more than 2 scalar `g.start` args (item C's own hand-assembled mailbox-slot floor)",
+            "more than 2 `g.start` args (the group-child turn ABI carries x0/x1 only)",
         ));
     }
 
@@ -6889,7 +7042,11 @@ fn emit_group_start(
     );
 
     for (i, t) in arg_temps.iter().enumerate() {
-        ctx.load_slot(i as u8, ctx.frame.off(*t));
+        if is_aggregate(&f.temp_types[t.0]) {
+            ctx.addr_of_slot(i as u8, ctx.frame.off(*t));
+        } else {
+            ctx.load_slot(i as u8, ctx.frame.off(*t));
+        }
     }
     let arg_srcs: Vec<u8> = (0..arg_temps.len()).map(|i| i as u8).collect();
     ctx.bl_symbolic_call(callee_key, &arg_srcs);
@@ -7181,7 +7338,7 @@ fn emit_flow_op(
             group_temp,
             callee_key,
             arg_temps,
-        } => emit_group_start(*group_temp, callee_key, arg_temps, ctx, gctx, fn_key),
+        } => emit_group_start(*group_temp, callee_key, arg_temps, f, ctx, gctx, fn_key),
         FlowInst::GroupClose { group_temp, .. } => emit_group_close(*group_temp, ctx, gctx),
     }
 }
@@ -10296,7 +10453,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_over_the_scaled_x_load_store_range_fails_closed() {
+    fn a_frame_over_the_scaled_x_load_store_range_is_addressable() {
         let f = MwirFn {
             receiver: None,
             params: vec![],
@@ -10308,32 +10465,26 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true).is_err());
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
+            .expect("large slots use a materialized address");
+        assert!(frame.size > FRAME_X_IMMEDIATE_MAX_BYTES);
     }
 
     #[test]
-    fn an_async_frame_is_bounded_by_the_scaled_x_range_less_the_slot_bias() {
+    fn frame_limit_accounts_for_the_slot_bias() {
         let f = MwirFn {
             receiver: None,
             params: vec![],
             ret: Type::Unit,
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
-                Box::new(ast::Expr::Int(ast::Span::default(), "4087".to_string())),
+                Box::new(ast::Expr::Int(ast::Span::default(), "32760".to_string())),
             )],
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
 
-        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("legal for a sync frame");
-        assert_eq!(sync.size, 32704);
-
         let bias = TURN_RECORD_SIZE as usize;
-        assert!(
-            sync.size + bias > FRAME_X_IMMEDIATE_MAX_BYTES,
-            "this fixture must straddle the boundary to be a regression lock"
-        );
         let Err(err) = build_frame(
             &f,
             &layout,
@@ -10346,8 +10497,7 @@ mod tests {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
-            err.message
-                .contains(&(FRAME_X_IMMEDIATE_MAX_BYTES - bias).to_string()),
+            err.message.contains(&(FRAME_MAX_BYTES - bias).to_string()),
             "the diagnostic names the biased ceiling: {}",
             err.message
         );
@@ -10355,7 +10505,7 @@ mod tests {
         let smaller = MwirFn {
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
-                Box::new(ast::Expr::Int(ast::Span::default(), "4079".to_string())),
+                Box::new(ast::Expr::Int(ast::Span::default(), "32751".to_string())),
             )],
             ..f
         };
@@ -10368,8 +10518,8 @@ mod tests {
             &regalloc::Assignment::none(64),
             true,
         )
-        .expect("fits under the scaled load/store range with the bias");
-        assert!(ok.size + bias <= FRAME_X_IMMEDIATE_MAX_BYTES);
+        .expect("fits under the compiler frame limit with the bias");
+        assert!(ok.size + bias <= FRAME_MAX_BYTES);
     }
 
     #[test]
@@ -10925,6 +11075,62 @@ pub fn r(a: u64, b: u64) -> u64:
     }
 
     #[test]
+    fn group_child_aggregate_arguments_use_their_frame_address() {
+        let source = r#"module examples.codegen_group_aggregate
+
+struct Job:
+    first: u64
+    second: u64
+
+async fn child(job: Job) -> u64:
+    return job.first + job.second
+
+async fn parent() -> u64:
+    job = Job(first=20, second=22)
+    total: u64 = 0
+    with group(capacity=1) as workers:
+        workers.start(child, job=job)
+        results = await workers.join_all()
+        for result in results:
+            @discard(reason="the test result loop handles both variants")
+            match result:
+                case .Ok(value):
+                    total = value
+                case .Err(_):
+                    pass
+    return total
+"#;
+        let tokens = lexer::lex(source).expect("test source must lex");
+        let module = parser::parse(tokens).expect("test source must parse");
+        let typed = sema::check_typed(&module, "<test>").expect("test source must check");
+        let mwir_program = crate::lower::lower_program(&typed).expect("test source must lower");
+        let flow = crate::flowwir_lower::lower_program(&typed).expect("async source must lower");
+        let layout = mwir::build_layout_ctx(&module, &Default::default())
+            .expect("test source must build a layout ctx");
+        let program =
+            codegen_program_with_async(&mwir_program, &flow, &layout, &BTreeMap::new(), 1, &[])
+                .expect("aggregate group child must emit");
+        let parent = &program.fns["parent"].code;
+        let call = parent
+            .iter()
+            .position(|word| word.text == "bl <child>")
+            .expect("group child call must be present");
+        assert!(
+            parent[..call]
+                .iter()
+                .rev()
+                .take(8)
+                .any(|word| word.text.starts_with("add x0, x28, #")),
+            "aggregate group child argument must be passed by frame address:\n{}",
+            parent
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
     fn sync_frame_load_store_tagged_stack() {
         let (mwir_program, layout) = compile(
             "module examples.codegen_memref_stack\n\npub fn answer() -> u64:\n    return 42\n",
@@ -11077,11 +11283,17 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn adr_addressing_is_off_under_dev() {
+        // `AdrAddressing` is parked (the P7 image-base move put DRAM pages
+        // beyond ADR reach), so the pass stays off in every mode until the
+        // opt is unparked; the guard below keeps the machinery testable.
         crate::opts::apply_mode(crate::opts::CompileMode::Dev);
         assert!(!adr_addressing());
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        assert!(!adr_addressing());
+        set_adr_addressing(true);
         assert!(adr_addressing());
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        assert!(!adr_addressing());
     }
 
     #[test]

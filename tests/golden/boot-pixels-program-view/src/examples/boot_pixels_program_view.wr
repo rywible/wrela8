@@ -1,0 +1,154 @@
+module examples.boot_pixels_program_view
+
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+    RendererDigestState,
+    __wrela_pixels_p7_digest_result,
+    __wrela_pixels_p7_program_digest_byte,
+    __wrela_pixels_p7_program_validate,
+)
+from core.__image_pixels import (
+    __wrela_pixels_program_operand,
+    __wrela_pixels_program_record,
+    __wrela_pixels_tile_feature,
+    __wrela_pixels_tile_feature_count,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 71
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 71, "fixture id must remain pinned"
+# P7.1: the sealed frame program is readable through checked accessors and
+# every out-of-range index fails closed.
+
+struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    phase: f32
+
+enum MaterialId:
+    Ground
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    ground = plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=params.phase)
+    return mark(ground, object=MaterialId.Ground, material=MaterialId.Ground)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+@test(runtime)
+fn program_view_reads_sealed_records():
+    # Header/table validation runs the sealed checks once.
+    assert __wrela_pixels_p7_program_validate(0), "sealed program validates"
+    # Digest bytes are stable, readable values.
+    digest_word: u64 = 0
+    byte_index: usize = 0
+    @budget(bound=8)
+    while byte_index < 8:
+        digest_word = digest_word | (
+            __wrela_pixels_p7_program_digest_byte(0, byte_index).to[u64]()
+            << (byte_index * 8).to[u64]()
+        )
+        byte_index = byte_index + 1
+    __wrela_trace_p7_u64(digest_word)
+    # A representative feature record: table 4, first tile-listed feature.
+    count = __wrela_pixels_tile_feature_count(0, 0)
+    assert count != 4294967295, "tile feature listing is readable"
+    __wrela_trace_p7_u64(count.to[u64]())
+    if count > 0:
+        feature = __wrela_pixels_tile_feature(0, 0, 0)
+        assert feature[0] == 1, "tile-listed feature is readable"
+        record = __wrela_pixels_program_record(0, 4, feature[1].to[u32]())
+        assert record[0] == 1, "feature record is readable"
+        owner = __wrela_pixels_program_operand(0, 4, feature[1].to[u32](), 0)
+        identity = __wrela_pixels_program_operand(0, 4, feature[1].to[u32](), 3)
+        assert owner[0] == 1 and identity[0] == 1, "feature operands are readable"
+        __wrela_trace_p7_u64(
+            feature[1]
+            | (owner[1] << 16)
+            | (identity[1] << 32)
+        )
+    # Checked indexes: everything past the sealed capacity fails closed
+    # instead of reading arbitrary bytes.
+    beyond_record = __wrela_pixels_program_record(0, 4, 4294967294)
+    assert beyond_record[0] == 0, "out-of-range record index fails closed"
+    beyond_operand = __wrela_pixels_program_operand(0, 4, 4294967294, 0)
+    assert beyond_operand[0] == 0, "out-of-range operand index fails closed"
+    beyond_tile = __wrela_pixels_tile_feature(0, 0, 4294967294)
+    assert beyond_tile[0] == 0, "out-of-range tile ordinal fails closed"
+    bad_table = __wrela_pixels_program_record(0, 255, 0)
+    assert bad_table[0] == 0, "unknown table id fails closed"
+
+@test(runtime)
+fn worker_error_fold_is_start_order_deterministic():
+    # `join_all` returns results in start order, and this fold keeps the
+    # first failing worker in that order — so the frame's reported error
+    # identity cannot depend on which worker happened to finish first.
+    state = RendererDigestState(ok=true, digest=0, error=0, tile=0)
+    ok_word: u64 = 123
+    error_a: u64 = 9223372036854775808 | (42.to[u64]() << 32) | 7
+    error_b: u64 = 9223372036854775808 | (44.to[u64]() << 32) | 9
+    ok_result: Result[u64, CallError[never]] = Ok(ok_word)
+    result_a: Result[u64, CallError[never]] = Ok(error_a)
+    result_b: Result[u64, CallError[never]] = Ok(error_b)
+    state = __wrela_pixels_p7_digest_result(state, take ok_result)
+    state = __wrela_pixels_p7_digest_result(state, take result_a)
+    state = __wrela_pixels_p7_digest_result(state, take result_b)
+    assert not state.ok, "a failing worker fails the frame"
+    assert state.error == 42, "the first-started failing worker owns the error"
+    assert state.tile == 7, "the first-started failing worker owns the tile"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-program-view", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

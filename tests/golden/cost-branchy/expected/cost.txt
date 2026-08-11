@@ -2,21 +2,21 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=48 schedule_cycles=48 footprint_cycles=0 total_proxy_cycles=48
-  Scope scope=closure executable_words=69 executable_code_bytes=276 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=0 async_frame_total_bytes=0
-  Workload name=flat proxy_cycles=48
-  Owner name=app proxy_cycles=48
+  Rank rank_cycles=50 schedule_cycles=50 footprint_cycles=0 total_proxy_cycles=50
+  Scope scope=closure executable_words=71 executable_code_bytes=284 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=0 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=50
+  Owner name=app proxy_cycles=50
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
   Fn key=classify owner=app frame_bytes=0 proxy_cycles=27
     Term rule=alu count=11
     Term rule=branch count=11
     Term rule=mov_wide count=11
-  Fn key=countdown owner=app frame_bytes=0 proxy_cycles=21
+  Fn key=countdown owner=app frame_bytes=0 proxy_cycles=23
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
-    Term rule=alu count=14
+    Term rule=alu count=16
     Term rule=branch count=6
     Term rule=mov_wide count=8
     Term rule=store count=4

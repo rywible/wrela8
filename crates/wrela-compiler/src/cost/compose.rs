@@ -745,8 +745,9 @@ Worker.report=2
         assert!(attach.bridge.is_none());
         assert!(attach.measured_footprint.is_empty());
         assert!(attach.block_frequencies.is_empty());
-        assert_eq!(report.total_proxy_cycles, 48, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 48);
+        // Re-measured 2026-08-07 with `AdrAddressing` parked.
+        assert_eq!(report.total_proxy_cycles, 50, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 50);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 

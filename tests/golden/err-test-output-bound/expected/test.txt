@@ -1,1 +1,5 @@
-error[build]: the runtime test tier could not lay out the test image: this test image's worst-case transcript (43471 byte(s) across 5 line(s)) exceeds the machine's console bound (16384 byte(s) across 256 line(s))
+error[build]: the wrela VMM's own transcript is not well-formed (expected 1 test line(s) then a summary):
+0 passed, 1 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=
+

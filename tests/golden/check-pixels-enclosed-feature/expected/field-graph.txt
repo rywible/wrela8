@@ -30,29 +30,29 @@ Renderers count=1
     Material id=m0 kind=Sample base_color=[s15,s0,s16] opacity=s2 emissive=[s1,s1,s1] roughness=s0 metallic=s1 specular=s0 ior=s17 normal=geometric pattern=none
     Identity kind=material enum=examples.check_pixels_enclosed_feature::MaterialId variant=Ground
     Identity kind=object enum=examples.check_pixels_enclosed_feature::MaterialId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.check_pixels_enclosed_feature:45:30@bytes=860..863 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:46:30@bytes=921..924,examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191,examples.check_pixels_enclosed_feature:51:56@bytes=1211..1214,examples.check_pixels_enclosed_feature:51:80@bytes=1235..1238]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_enclosed_feature:45:37@bytes=867..870 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:45:19@bytes=849..850,examples.check_pixels_enclosed_feature:45:44@bytes=874..877,examples.check_pixels_enclosed_feature:46:19@bytes=910..911,examples.check_pixels_enclosed_feature:46:37@bytes=928..931,examples.check_pixels_enclosed_feature:46:44@bytes=935..938,examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191]
-    Origin kind=scalar id=s2 primary=examples.check_pixels_enclosed_feature:45:57@bytes=887..890 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:45:19@bytes=849..850,examples.check_pixels_enclosed_feature:46:19@bytes=910..911,examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191]
+    Origin kind=scalar id=s0 primary=examples.check_pixels_enclosed_feature:55:30@bytes=1212..1215 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:56:30@bytes=1273..1276,examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543,examples.check_pixels_enclosed_feature:61:56@bytes=1563..1566,examples.check_pixels_enclosed_feature:61:80@bytes=1587..1590]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_enclosed_feature:55:37@bytes=1219..1222 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202,examples.check_pixels_enclosed_feature:55:44@bytes=1226..1229,examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263,examples.check_pixels_enclosed_feature:56:37@bytes=1280..1283,examples.check_pixels_enclosed_feature:56:44@bytes=1287..1290,examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_enclosed_feature:55:57@bytes=1239..1242 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202,examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263,examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543]
     Origin kind=scalar id=s3 primary=examples.check_pixels_enclosed_feature:0:0@bytes=0..0
-    Origin kind=scalar id=s4 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:46:19@bytes=910..911]
+    Origin kind=scalar id=s4 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263]
     Origin kind=scalar id=s5 primary=examples.check_pixels_enclosed_feature:0:0@bytes=0..0
-    Origin kind=scalar id=s6 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:46:19@bytes=910..911]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263]
     Origin kind=scalar id=s7 primary=examples.check_pixels_enclosed_feature:0:0@bytes=0..0
-    Origin kind=scalar id=s8 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:46:19@bytes=910..911]
-    Origin kind=scalar id=s9 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:46:19@bytes=910..911]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_enclosed_feature:46:57@bytes=948..958 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=scalar id=s12 primary=examples.check_pixels_enclosed_feature:46:19@bytes=910..911 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=scalar id=s13 primary=examples.check_pixels_enclosed_feature:47:25@bytes=984..985 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=scalar id=s14 primary=examples.check_pixels_enclosed_feature:47:25@bytes=984..985 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=scalar id=s15 primary=examples.check_pixels_enclosed_feature:51:48@bytes=1203..1207 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191]
-    Origin kind=scalar id=s16 primary=examples.check_pixels_enclosed_feature:51:63@bytes=1218..1222 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191]
-    Origin kind=scalar id=s17 primary=examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.check_pixels_enclosed_feature:45:19@bytes=849..850 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.check_pixels_enclosed_feature:46:19@bytes=910..911 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=field id=f2 primary=examples.check_pixels_enclosed_feature:47:25@bytes=984..985 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=field id=f3 primary=examples.check_pixels_enclosed_feature:47:16@bytes=975..976 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_enclosed_feature:51:35@bytes=1190..1191 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_enclosed_feature:56:57@bytes=1300..1310 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_enclosed_feature:57:25@bytes=1336..1337 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_enclosed_feature:57:25@bytes=1336..1337 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_enclosed_feature:61:48@bytes=1555..1559 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543]
+    Origin kind=scalar id=s16 primary=examples.check_pixels_enclosed_feature:61:63@bytes=1570..1574 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0] merged=[examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_enclosed_feature:55:19@bytes=1201..1202 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_enclosed_feature:56:19@bytes=1262..1263 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=field id=f2 primary=examples.check_pixels_enclosed_feature:57:25@bytes=1336..1337 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.check_pixels_enclosed_feature:57:16@bytes=1327..1328 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_enclosed_feature:61:35@bytes=1542..1543 expansion=[examples.check_pixels_enclosed_feature:0:0@bytes=0..0]
     Roots field=f3 material=m0
     SymbolicQuota steps=30/1000000 nodes=31/250000 unrolled_statements=0/250000 aggregate_elements=9/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.check_pixels_enclosed_feature::world material_key=examples.check_pixels_enclosed_feature::shade
@@ -105,13 +105,13 @@ Renderers count=1
       Influence object=o1 false=constant:None:stack:1:instructions:[Push(ObjectId(0))]:digest:b5fb4bff2a27e2c561771901ff137437ea672f295c31113740033f5a1008b2a7 true=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Quadric bounds=[-0.5000610351562502,-1.0000610351562504,-1.0000610351562504]-[1.5000610351562504,1.0000610351562504,1.0000610351562504] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(1), ScalarId(1)], radius: ScalarId(2) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
     Feature id=g1 template=1 object=o1 primitive=f1 path=[f1@0] kind=Quadric bounds=[0.49603271484374983,-0.003967285156250002,-0.003967285156250002]-[0.5039672851562503,0.003967285156250002,0.003967285156250002] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(1), ScalarId(1)], radius: ScalarId(11) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f1
-    Capacities workers=1 objects=2 feature_templates=2 feature_slots=2 repeated_instances=0 scalar_slots=18 derivative_slots=18 parameter_slots=0 csg_stack=2 projected_row=2 projected_tile=2 row_start_roots=4 active_sheets=4 event_generators=2 event_subdivisions=8 event_records=16 tile_row_runs=17 csg_events=4 transparent_layers=1 rebuild_queue=17 candidate_bytes=128 root_bytes=128 sheet_bytes=256 event_bytes=512 run_bytes=544 corridor_bytes=408 fixed_q_bytes=272 shading_bytes=1088 transparency_bytes=544 per_worker_scratch_bytes=3880 all_worker_scratch_bytes=3880 telemetry_production_bytes=0 telemetry_instrumented_bytes=384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=256 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=144 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=229696 instrumented_state_bytes=230080
+    Capacities workers=1 objects=2 feature_templates=2 feature_slots=2 repeated_instances=0 scalar_slots=18 derivative_slots=18 parameter_slots=0 csg_stack=2 projected_row=2 projected_tile=2 row_start_roots=4 active_sheets=4 event_generators=2 event_subdivisions=8 event_records=16 tile_row_runs=17 csg_events=4 transparent_layers=1 rebuild_queue=17 candidate_bytes=128 root_bytes=128 sheet_bytes=256 event_bytes=512 run_bytes=2176 corridor_bytes=1088 fixed_q_bytes=272 shading_bytes=1088 transparency_bytes=544 per_worker_scratch_bytes=6192 all_worker_scratch_bytes=6192 telemetry_production_bytes=0 telemetry_instrumented_bytes=1136 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=256 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=65536 tile_ownership_bytes=8192 failure_record_bytes=64 production_state_bytes=229696 instrumented_state_bytes=230832
       CapacityDerivation field=feature_count value=2 why=[2 maximal smooth objects; 2 immutable fused primitive feature templates; 2 total feature slots after instantiating those templates across 2 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=2 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
-      CapacityDerivation field=max_run_records_per_tile_row value=17 why=[2 generators; 2 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run]
-      CapacityDerivation field=renderer_state_bytes value=229696 why=[header=256; coefficient_snapshots=0; frame_snapshots=144; frame_complexes=131072; scratch=3880 (3880 * 1 workers); output=16384; probes=0; page_alignment_padding=3912; kinetic=256; tile_descriptors=65536; tile_ownership=8192; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=230080 why=[production=229696; telemetry=384]
-    StructuralReport coefficient_bytes=0 objects=2 features=2 production_state_bytes=229696 instrumented_state_bytes=230080 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+      CapacityDerivation field=max_run_records_per_tile_row value=17 why=[2 generators; 2 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
+      CapacityDerivation field=renderer_state_bytes value=229696 why=[header=256; coefficient_snapshots=0; frame_snapshots=1376; frame_complexes=131072; scratch=6192 (6192 * 1 workers); output=16384; probes=0; page_alignment_padding=368; kinetic=256; tile_descriptors=65536; tile_ownership=8192; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=230832 why=[production=229696; telemetry=1136]
+    StructuralReport coefficient_bytes=0 objects=2 features=2 production_state_bytes=229696 instrumented_state_bytes=230832 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=const:2
@@ -524,18 +524,22 @@ Renderers count=1
     Event id=e0 kind=projected-bound-enter participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=4 sides=negative=inactive:zero=ambiguous:positive=active
     Event id=e1 kind=projected-bound-exit participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=64 sides=negative=active:zero=ambiguous:positive=inactive
     Event id=e2 kind=silhouette participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly15:root=poly0 sides=negative=inactive:zero=ambiguous:positive=active
-    Event id=e3 kind=near-clip participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
-    Event id=e4 kind=far-clip participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
-    Event id=e5 kind=fixed-point-reset-only participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
-    Event id=e6 kind=projected-bound-enter participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=24 sides=negative=inactive:zero=ambiguous:positive=active
-    Event id=e7 kind=projected-bound-exit participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=46 sides=negative=active:zero=ambiguous:positive=inactive
-    Event id=e8 kind=silhouette participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly16:root=poly1 sides=negative=inactive:zero=ambiguous:positive=active
-    Event id=e9 kind=near-clip participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
-    Event id=e10 kind=far-clip participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
-    Event id=e11 kind=fixed-point-reset-only participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
-    Event id=e12 kind=depth-swap participants=[feature:g0,feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11]:b_third=[poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11]:x_domain=[-1.3750000000000002,1.3750000000000002]:q_domain=[0.20592433968734078,0.35473319256054947]:fallback_difference=[-0.19727002687977888,0.4295192980886077]:fallback_remainder=0.4295192980886078:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
-    CompetitionPair id=pair0 a=g0 b=g1 event=e12 pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] q_overlap=[0.20592433968734078,0.35473319256054947]
+    Event id=e3 kind=fixed-point-reset-only participants=[feature:g0] pixels=[4,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e4 kind=projected-bound-enter participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=24 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e5 kind=projected-bound-exit participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=46 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e6 kind=silhouette participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly16:root=poly1 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e7 kind=fixed-point-reset-only participants=[feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e8 kind=depth-swap participants=[feature:g0,feature:g1] pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] params=[] roots=8 subdivision=2 representation=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11]:b_third=[poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11,poly11]:x_domain=[-1.3750000000000002,1.3750000000000002]:q_domain=[0.20592433968734078,0.35473319256054947]:fallback_difference=[-0.19727002687977888,0.4295192980886077]:fallback_remainder=0.4295192980886078:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    CompetitionPair id=pair0 a=g0 b=g1 event=e8 pixels=[24,46]x[4,28] tiles=[1,3]x[0,2] q_overlap=[0.20592433968734078,0.35473319256054947]
     CompetitionSummary considered=1 emitted=1 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=2 suppressed_material_only=0
+    ExclusionProof id=proof0 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=10.000000000000002 feature q=[0.15746316568077062,0.6354436377759485] separation=9.325493862224052]
+    ExclusionProof id=proof1 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=10.000000000000002 feature q=[0.20592433968734078,0.35473319256054947] separation=9.60620430743945]
+    ExclusionProof id=proof2 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.15746316568077062,0.6354436377759485] separation=0.1105881656807706]
+    ExclusionProof id=proof3 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.20592433968734078,0.35473319256054947] separation=0.15904933968734072]
+    X x0 event:near-clip:g0:-:0 domain0 q-ranges-disjoint [9.32549386222405,9.325493862224054] proof0 []
+    X x1 event:near-clip:g1:-:0 domain0 q-ranges-disjoint [9.606204307439448,9.606204307439452] proof1 []
+    X x2 event:far-clip:g0:-:0 domain0 q-ranges-disjoint [0.11058816568077058,0.11058816568077061] proof2 []
+    X x3 event:far-clip:g1:-:0 domain0 q-ranges-disjoint [0.1590493396873407,0.15904933968734075] proof3 []
     Index name=tile_features cells=8 ids=12
       Cell id=0 offset=0 count=1 values=[0]
       Cell id=1 offset=1 count=2 values=[0,1]
@@ -545,15 +549,15 @@ Renderers count=1
       Cell id=5 offset=7 count=2 values=[0,1]
       Cell id=6 offset=9 count=2 values=[0,1]
       Cell id=7 offset=11 count=1 values=[0]
-    Index name=tile_events cells=8 ids=76
-      Cell id=0 offset=0 count=6 values=[0,1,2,3,4,5]
-      Cell id=1 offset=6 count=13 values=[0,1,2,3,4,5,6,7,8,9,10,11,12]
-      Cell id=2 offset=19 count=13 values=[0,1,2,3,4,5,6,7,8,9,10,11,12]
-      Cell id=3 offset=32 count=6 values=[0,1,2,3,4,5]
-      Cell id=4 offset=38 count=6 values=[0,1,2,3,4,5]
-      Cell id=5 offset=44 count=13 values=[0,1,2,3,4,5,6,7,8,9,10,11,12]
-      Cell id=6 offset=57 count=13 values=[0,1,2,3,4,5,6,7,8,9,10,11,12]
-      Cell id=7 offset=70 count=6 values=[0,1,2,3,4,5]
+    Index name=tile_events cells=8 ids=52
+      Cell id=0 offset=0 count=4 values=[0,1,2,3]
+      Cell id=1 offset=4 count=9 values=[0,1,2,3,4,5,6,7,8]
+      Cell id=2 offset=13 count=9 values=[0,1,2,3,4,5,6,7,8]
+      Cell id=3 offset=22 count=4 values=[0,1,2,3]
+      Cell id=4 offset=26 count=4 values=[0,1,2,3]
+      Cell id=5 offset=30 count=9 values=[0,1,2,3,4,5,6,7,8]
+      Cell id=6 offset=39 count=9 values=[0,1,2,3,4,5,6,7,8]
+      Cell id=7 offset=48 count=4 values=[0,1,2,3]
     Index name=tile_competitions cells=8 ids=4
       Cell id=0 offset=0 count=0 values=[]
       Cell id=1 offset=0 count=1 values=[0]
@@ -586,11 +590,11 @@ Renderers count=1
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
     ObjectFeatureIndex object=o1 first=g1 count=1
-    DirectIndexes feature_derivatives=[d0,d1] material_programs=[0:m0] bytes=744
-    ProjectiveCapacities candidate_features_per_tile=2 row_start_roots=4 active_sheets_per_row=4 event_generators=13 competition_pairs_per_tile=1 row_event_intervals=26 root_stack_nodes=16 event_stack_nodes=32 runs_per_row=27 corridors_per_row=26 max_index_slice=13 polynomial_programs=17 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=304 derivative_bundles=2 derivative_clusters=2 index_bytes=744 refined_per_worker_scratch_bytes=3408 refined_all_worker_scratch_bytes=3408 final_per_worker_scratch_bytes=5312 final_all_worker_scratch_bytes=5312 final_state_bytes=229696 final_instrumented_state_bytes=230080
+    DirectIndexes feature_derivatives=[d0,d1] material_programs=[0:m0] bytes=648
+    ProjectiveCapacities candidate_features_per_tile=2 row_start_roots=4 active_sheets_per_row=4 event_generators=9 competition_pairs_per_tile=1 row_event_intervals=18 root_stack_nodes=16 event_stack_nodes=32 runs_per_row=19 corridors_per_row=18 max_index_slice=9 polynomial_programs=17 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=304 derivative_bundles=2 derivative_clusters=2 index_bytes=648 refined_per_worker_scratch_bytes=6808 refined_all_worker_scratch_bytes=6808 final_per_worker_scratch_bytes=8712 final_all_worker_scratch_bytes=8712 final_state_bytes=233792 final_instrumented_state_bytes=234928
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=2 why=[exact endpoint/cell sweep gives row overlap 2 within P3 ceiling 2 and tile overlap 2 within P3 ceiling 2]
-      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=229696 why=[P4-refined six-class scratch=3408 per worker; retained fixed-q/shading/transparency scratch=1904 per worker; workers=1]
+      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=233792 why=[P4-refined six-class scratch=6808 per worker; retained fixed-q/shading/transparency scratch=1904 per worker; workers=1]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=4 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
-      ProjectiveCapacityDerivation field=p4_row_event_intervals value=26 why=[13 completed local generators; 1 competition pairs survive; 2^2 leaves per isolated root]
-      ProjectiveCapacityDerivation field=p4_index_bytes value=744 why=[completed offset/count cells plus sorted contiguous ID tables]
+      ProjectiveCapacityDerivation field=p4_row_event_intervals value=18 why=[9 completed local generators; 1 competition pairs survive; 2^2 leaves per isolated root]
+      ProjectiveCapacityDerivation field=p4_index_bytes value=648 why=[completed offset/count cells plus sorted contiguous ID tables]
 Analysis status=verified-projective

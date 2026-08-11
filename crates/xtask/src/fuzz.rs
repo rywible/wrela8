@@ -3201,6 +3201,10 @@ pub(crate) fn fuzz_report_smoke() -> Result<(), String> {
 }
 
 pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
+    // Golden Pixels images are compiled in release mode. Keep the source-fuzz
+    // lane on that same production path so debug-only code growth cannot
+    // consume the sealed pre-rtdata address range before mutation starts.
+    let _mode = crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let source_scratch = root().join("target/fuzz-pixels-source");
     if source_scratch.exists() {
         std::fs::remove_dir_all(&source_scratch)
@@ -3218,6 +3222,7 @@ pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     let mut source_accepted = 0_u64;
     let mut source_rejected = 0_u64;
+    let mut first_source_rejection = None;
     let source_result = (|| {
         for iteration in 0..source_iters {
             let seed_name = source_seeds[usize::try_from(iteration).unwrap() % source_seeds.len()];
@@ -3244,15 +3249,28 @@ pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
                     ));
                 }
                 Ok(Ok((_, Some(_)))) => source_accepted += 1,
-                Ok(Ok((_, None))) | Ok(Err(_)) => source_rejected += 1,
+                Ok(Ok((report, None))) => {
+                    source_rejected += 1;
+                    first_source_rejection.get_or_insert_with(|| {
+                        report
+                            .lines()
+                            .next()
+                            .unwrap_or("empty diagnostic")
+                            .to_string()
+                    });
+                }
+                Ok(Err(error)) => {
+                    source_rejected += 1;
+                    first_source_rejection.get_or_insert(error);
+                }
             }
         }
         if source_accepted == 0 {
-            return Err(
+            return Err(format!(
                 "fuzz pixels: randomized source lane accepted no input; valid mutation anchor \
-                 or compiler path drifted"
-                    .to_string(),
-            );
+                     or compiler path drifted; first rejection: {}",
+                first_source_rejection.as_deref().unwrap_or("none recorded")
+            ));
         }
         Ok(())
     })();
@@ -3333,7 +3351,11 @@ pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
 
 fn mutate_pixels_source(source: &str, iteration: u64, rng: &mut Rng) -> Result<Vec<u8>, String> {
     if iteration == 0 {
-        let mutated = source.replacen("offset=0.0", "offset=0.125", 1);
+        let mutated = source.replacen(
+            "name=\"check-pixels-plane\"",
+            "name=\"check-pixels-plank\"",
+            1,
+        );
         if mutated == source {
             return Err("fuzz pixels: valid source mutation anchor disappeared".to_string());
         }

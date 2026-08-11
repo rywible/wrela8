@@ -1,0 +1,9 @@
+test pinned_scene_contract: ok
+p7 31133a463206399a
+p7 0000000000000001
+p7 0000000000000000
+test program_view_reads_sealed_records: ok
+test worker_error_fold_is_start_order_deterministic: ok
+3 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

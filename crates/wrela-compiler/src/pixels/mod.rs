@@ -1,13 +1,11 @@
 //! Pixels compiler subsystem.
 //!
-//! The P2 symbolic compiler owns field/material acceptance and dumps. The
-//! isolated P-1 plane skeleton remains only for the already-reviewed
-//! frame-program/render-layout and generated-actor compatibility fixture.
+//! Compile-time structural programs, sealed runtime data, and certified
+//! visibility support for renderer images.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::eval::image::{ImageDeclRef, ImageGraph};
-use crate::eval::value::Value;
+use crate::eval::image::ImageGraph;
 use crate::sema::typed::{
     TypedCallArg, TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn,
     TypedForIter, TypedProgram, TypedStmt, TypedStmtKind,
@@ -57,10 +55,12 @@ pub mod report;
 pub mod scalar;
 pub mod state;
 pub mod support;
+pub mod surface;
 pub mod symbolic;
 pub mod test_vectors;
 pub mod verify;
 pub mod version;
+pub mod worker_errors;
 pub mod world_bounds;
 
 pub use dump::{
@@ -68,7 +68,7 @@ pub use dump::{
     dump_symbolic_graphs, dump_uncompiled_configs, dump_zero_renderers,
 };
 
-pub(crate) const RENDERER_UNAVAILABLE_FALLBACK: &str = "FrameContractMismatch(RendererUnavailable)";
+pub(crate) const DEBUG_VISIBILITY_PATH: &str = "certified-from-scratch";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PixelsProgramSet {
@@ -81,6 +81,7 @@ pub struct PixelsProgramSet {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledRenderer {
     pub config: config::RendererConfig,
+    pub symbolic: symbolic::SymbolicGraph,
     pub structural: verify::VerifiedStructuralProgram,
     pub projective: verify::VerifiedProjectiveProgram,
     pub program: program::VerifiedFrameProgram,
@@ -386,6 +387,7 @@ pub fn compile_all(
                     let generated = glue::generate(renderer_index, config, &verified)?;
                     Ok(CompiledRenderer {
                         config: config.clone(),
+                        symbolic: graph.clone(),
                         structural: structural.clone(),
                         projective: projective.clone(),
                         program: verified,
@@ -418,18 +420,6 @@ pub fn compile_all(
     })
 }
 
-pub fn is_walking_skeleton(module: &str, graph: &ImageGraph) -> bool {
-    module == "examples.boot_pixels_walking_skeleton"
-        && graph.name.as_ref().is_some_and(|name| {
-            matches!(
-                &name.value,
-                Value::Str(bytes) if bytes.as_slice() == b"boot-pixels-walking-skeleton"
-            )
-        })
-}
-
-pub const PLANE_SEED_METADATA_BYTES: usize = 80;
-pub const PLANE_SEED_METADATA_MAGIC: &[u8; 8] = b"WRELAP1\0";
 pub const RENDERER_LABELS: &[&str] = &[
     "field",
     "material",
@@ -453,24 +443,18 @@ pub const RENDERER_LABELS: &[&str] = &[
     "initialization_deadline_ms",
 ];
 
-pub(crate) const FIELD_OPERATIONS: &[&str] = crate::sema::intrinsics::PIXELS_FIELD_SURFACE;
+/// Renderer labels that may be omitted. Everything in `RENDERER_LABELS` is
+/// required; these are additions that must not break existing declarations.
+///
+/// `camera_pose` pins the frame camera to one exact pose. Declaring it turns
+/// the analytic coverage tiers' admission from a per-frame runtime test into
+/// a sealed fact: `validate_frame` rejects any frame whose camera differs, so
+/// a renderer that declares it either always has those tiers or fails the
+/// frame outright, and the compile-time cost model no longer has to reason
+/// about a cliff it cannot see.
+pub const OPTIONAL_RENDERER_LABELS: &[&str] = &["camera_pose"];
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlaneSkeleton {
-    pub renderer_index: usize,
-    pub field: String,
-    pub material: String,
-    pub material_type: String,
-    pub display: String,
-    pub width: u32,
-    pub height: u32,
-    pub refresh_hz: u32,
-    pub shade_hz: u32,
-    pub seed_metadata: [u8; PLANE_SEED_METADATA_BYTES],
-    pub seed_metadata_digest: String,
-    pub semantic_digest: String,
-    pub semantic_seed: [u8; 32],
-}
+pub(crate) const FIELD_OPERATIONS: &[&str] = crate::sema::intrinsics::PIXELS_FIELD_SURFACE;
 
 pub(crate) fn call_base(spelling: &str) -> &str {
     spelling
@@ -1353,170 +1337,6 @@ pub(crate) fn validate_material_identity(
     Ok(expected)
 }
 
-fn digest_bytes(hex: &str) -> Vec<u8> {
-    hex.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-        .collect()
-}
-
-fn encode_plane_seed_metadata(renderer_index: usize) -> Result<([u8; 80], String), String> {
-    let renderer_index = u16::try_from(renderer_index)
-        .map_err(|_| "pixels: renderer index exceeds u16".to_string())?;
-    let mut bytes = [0u8; PLANE_SEED_METADATA_BYTES];
-    bytes[0..8].copy_from_slice(PLANE_SEED_METADATA_MAGIC);
-    bytes[8..10].copy_from_slice(&1u16.to_le_bytes());
-    bytes[10..12].copy_from_slice(&(PLANE_SEED_METADATA_BYTES as u16).to_le_bytes());
-    bytes[16..20].copy_from_slice(&(PLANE_SEED_METADATA_BYTES as u32).to_le_bytes());
-    bytes[20..22].copy_from_slice(&renderer_index.to_le_bytes());
-    bytes[24..28].copy_from_slice(&1u32.to_le_bytes()); // numeric revision
-    bytes[28..32].copy_from_slice(&1u32.to_le_bytes()); // formal revision
-    // This P-1-only seed metadata is deliberately not a FrameProgram v1
-    // envelope. The production encoder exclusively owns WRELAPX.
-    let digest = wrela_machine::sha256::sha256_hex(&bytes);
-    bytes[48..80].copy_from_slice(&digest_bytes(&digest));
-    Ok((bytes, digest))
-}
-
-fn walking_skeleton_seed(
-    seed_metadata: &[u8; PLANE_SEED_METADATA_BYTES],
-    semantic_digest: &str,
-) -> [u8; 32] {
-    // Preserve the reviewed P-1 displayed-frame digest without emitting the
-    // malformed P-1 envelope. Before P0, the walking skeleton mixed its
-    // semantic prefix into v1 table-count/reserved bytes and then used that
-    // envelope's digest as its pixel seed. Preserve that historical seed
-    // without presenting the stored compatibility metadata as FrameProgram.
-    let mut seed_input = *seed_metadata;
-    seed_input[0..8].copy_from_slice(b"WRELAPX\0");
-    seed_input[12..16].copy_from_slice(&1u32.to_le_bytes());
-    seed_input[32..48].copy_from_slice(&digest_bytes(semantic_digest)[..16]);
-    seed_input[48..80].fill(0);
-    digest_bytes(&wrela_machine::sha256::sha256_hex(&seed_input))
-        .try_into()
-        .expect("SHA-256 hex decodes to 32 bytes")
-}
-
-pub fn compile_plane_skeleton(
-    owner: &TypedProgram,
-    programs: &BTreeMap<String, TypedProgram>,
-    graph: &ImageGraph,
-    configs: &crate::pixels::config::RendererConfigs,
-) -> Result<PlaneSkeleton, String> {
-    let [_renderer] = graph.renderers.as_slice() else {
-        return Err(format!(
-            "pixels: plane skeleton requires exactly one renderer, found {}",
-            graph.renderers.len()
-        ));
-    };
-    let [config] = configs.renderers.as_slice() else {
-        return Err(format!(
-            "pixels::config: plane skeleton requires exactly one validated renderer config, found {}",
-            configs.renderers.len()
-        ));
-    };
-    let field = config.field.clone();
-    let material = config.material.clone();
-    let display = ImageDeclRef::Driver(config.display_index).render();
-    let field_fn = root_function(owner, programs, &field)?;
-    let material_fn = root_function(owner, programs, &material)?;
-    let expected_material = material_type(programs, &material_fn.module, &material_fn.function)
-        .ok_or_else(|| "pixels: material root lacks `SurfaceContext[M]`".to_string())?;
-    let expected_material = nominal_type(programs, &material_fn.module, expected_material)?;
-    let mut analysis = SceneAnalysis::new(programs);
-    analysis.visit_function(field_fn, true)?;
-    analysis.visit_function(material_fn, false)?;
-    let mut nominal_materials: Vec<NominalType> = Vec::new();
-    for material in &analysis.mark_types {
-        if !nominal_materials
-            .iter()
-            .any(|prior| prior.key == material.key)
-        {
-            nominal_materials.push(material.clone());
-        }
-    }
-    if nominal_materials.is_empty() {
-        return Err(
-            "pixels: renderer `@field` must reach at least one `mark(..., material=M.*)`"
-                .to_string(),
-        );
-    }
-    if nominal_materials.len() != 1 {
-        return Err(format!(
-            "pixels: `@field` reaches more than one nominal material type: {}",
-            nominal_materials
-                .iter()
-                .map(|material| material.key.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if nominal_materials[0].key != expected_material.key {
-        return Err(format!(
-            "pixels: renderer material mismatch: field marks use `{}`, `SurfaceContext` uses `{}`",
-            nominal_materials[0].key, expected_material.key
-        ));
-    }
-    let structural_operations: Vec<&str> = analysis
-        .field_operations
-        .iter()
-        .map(String::as_str)
-        .filter(|operation| *operation != "translate")
-        .collect();
-    if structural_operations != ["plane"] {
-        return Err(format!(
-            "pixels: P-1 plane skeleton accepts exactly one marked `plane`; found [{}]",
-            analysis.field_operations.join(", ")
-        ));
-    }
-    if analysis.mark_types.len() != 1 {
-        return Err(format!(
-            "pixels: P-1 plane skeleton requires exactly one `mark`, found {}",
-            analysis.mark_types.len()
-        ));
-    }
-    let width = config.width;
-    let height = config.height;
-    if width != wrela_machine::pixels::WIDTH || height != wrela_machine::pixels::HEIGHT {
-        return Err(format!(
-            "pixels: P-1 plane skeleton extent must be {}x{}, found {width}x{height}",
-            wrela_machine::pixels::WIDTH,
-            wrela_machine::pixels::HEIGHT
-        ));
-    }
-    let refresh_hz = config.refresh_hz;
-    let shade_hz = config.shade_hz;
-    if refresh_hz != wrela_machine::pixels::REFRESH_HZ
-        || shade_hz != wrela_machine::pixels::REFRESH_HZ
-    {
-        return Err(format!(
-            "pixels: P-1 plane skeleton rate must be {0}/{0} Hz, found {refresh_hz}/{shade_hz}",
-            wrela_machine::pixels::REFRESH_HZ
-        ));
-    }
-    let mut semantic_program = TypedProgram::default();
-    semantic_program.fns = analysis.functions;
-    let semantic_text = crate::sema::typed::dump(&semantic_program);
-    let semantic_digest = wrela_machine::sha256::sha256_hex(semantic_text.as_bytes());
-    let (seed_metadata, seed_metadata_digest) = encode_plane_seed_metadata(0)?;
-    let semantic_seed = walking_skeleton_seed(&seed_metadata, &semantic_digest);
-    Ok(PlaneSkeleton {
-        renderer_index: 0,
-        field,
-        material,
-        material_type: types::render_type(&expected_material.ty),
-        display,
-        width,
-        height,
-        refresh_hz,
-        shade_hz,
-        seed_metadata,
-        seed_metadata_digest,
-        semantic_digest,
-        semantic_seed,
-    })
-}
-
 pub fn smooth_min(a: f64, b: f64, k: f64) -> f64 {
     if a <= b - k {
         a
@@ -1573,52 +1393,6 @@ mod tests {
                 .iter()
                 .zip(contract)
                 .any(|(claimed, derived)| *claimed < derived)
-        );
-    }
-
-    #[test]
-    fn plane_seed_metadata_is_distinct_and_explicitly_eighty_bytes() {
-        let (bytes, digest) = encode_plane_seed_metadata(0).unwrap();
-        assert_eq!(bytes.len(), 80);
-        assert_eq!(&bytes[0..8], PLANE_SEED_METADATA_MAGIC);
-        assert_ne!(&bytes[0..8], b"WRELAPX\0");
-        assert_eq!(u16::from_le_bytes(bytes[8..10].try_into().unwrap()), 1);
-        assert_eq!(u16::from_le_bytes(bytes[10..12].try_into().unwrap()), 80);
-        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 0);
-        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 80);
-        assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()), 0);
-        assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 0);
-        assert_eq!(u16::from_le_bytes(bytes[32..34].try_into().unwrap()), 0);
-        assert_eq!(&bytes[34..48], &[0; 14]);
-        assert_eq!(digest.len(), 64);
-        assert_eq!(&bytes[48..80], digest_bytes(&digest));
-    }
-
-    #[test]
-    fn semantic_source_digest_changes_generated_pixels_not_seed_metadata() {
-        let semantic_a = wrela_machine::sha256::sha256_hex(b"plane material blue");
-        let semantic_b = wrela_machine::sha256::sha256_hex(b"plane material red");
-        let (header_a, digest_a) = encode_plane_seed_metadata(0).unwrap();
-        let (header_b, digest_b) = encode_plane_seed_metadata(0).unwrap();
-        let seed_a = walking_skeleton_seed(&header_a, &semantic_a);
-        let seed_b = walking_skeleton_seed(&header_b, &semantic_b);
-        assert_eq!(digest_a, digest_b);
-        assert_eq!(header_a, header_b);
-
-        let code_a = crate::codegen::emit_pixels_plane_renderer(&header_a, &seed_a);
-        let code_b = crate::codegen::emit_pixels_plane_renderer(&header_b, &seed_b);
-        let words_a: Vec<u32> = code_a.code.iter().map(|word| word.word).collect();
-        let words_b: Vec<u32> = code_b.code.iter().map(|word| word.word).collect();
-        assert_ne!(words_a, words_b);
-    }
-
-    #[test]
-    fn walking_skeleton_keeps_the_reviewed_p1_pixel_seed() {
-        let semantic = "4339211ebc497254b70372e4bcf9501407d9ff588427661aa93d101d047c4583";
-        let (header, _) = encode_plane_seed_metadata(0).unwrap();
-        assert_eq!(
-            walking_skeleton_seed(&header, semantic).as_slice(),
-            digest_bytes("e778817fd997a1eb45c0a463f792569fd0534004153b18dfec13691a923048b4")
         );
     }
 

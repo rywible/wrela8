@@ -371,6 +371,78 @@ pub fn enc_sdiv(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
     data_proc_2(sf, rm, 0b000011, rn, rd)
 }
 
+pub fn enc_fmov_from_gpr(fd: u8, rn: u8, double: bool) -> u32 {
+    (if double { 0x9e67_0000 } else { 0x1e27_0000 }) | (reg(rn) << 5) | reg(fd)
+}
+
+pub fn enc_fmov_to_gpr(rd: u8, fn_: u8, double: bool) -> u32 {
+    (if double { 0x9e66_0000 } else { 0x1e26_0000 }) | (reg(fn_) << 5) | reg(rd)
+}
+
+fn fp_data_2(base32: u32, fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
+    (if double { base32 | 0x0040_0000 } else { base32 })
+        | (reg(fm) << 16)
+        | (reg(fn_) << 5)
+        | reg(fd)
+}
+
+pub fn enc_fadd(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
+    fp_data_2(0x1e20_2800, fd, fn_, fm, double)
+}
+
+pub fn enc_fsub(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
+    fp_data_2(0x1e20_3800, fd, fn_, fm, double)
+}
+
+pub fn enc_fmul(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
+    fp_data_2(0x1e20_0800, fd, fn_, fm, double)
+}
+
+pub fn enc_fdiv(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
+    fp_data_2(0x1e20_1800, fd, fn_, fm, double)
+}
+
+pub fn enc_fcmp(fn_: u8, fm: u8, double: bool) -> u32 {
+    (if double { 0x1e60_2000 } else { 0x1e20_2000 }) | (reg(fm) << 16) | (reg(fn_) << 5)
+}
+
+pub fn enc_fcvt(fd: u8, fn_: u8, destination_double: bool) -> u32 {
+    (if destination_double {
+        0x1e22_c000
+    } else {
+        0x1e62_4000
+    }) | (reg(fn_) << 5)
+        | reg(fd)
+}
+
+pub fn enc_int_to_float(fd: u8, rn: u8, signed: bool, double: bool, wide: bool) -> u32 {
+    let base = match (signed, double, wide) {
+        (true, false, false) => 0x1e22_0000,
+        (false, false, false) => 0x1e23_0000,
+        (true, true, true) => 0x9e62_0000,
+        (false, true, true) => 0x9e63_0000,
+        (true, false, true) => 0x9e22_0000,
+        (false, false, true) => 0x9e23_0000,
+        (true, true, false) => 0x1e62_0000,
+        (false, true, false) => 0x1e63_0000,
+    };
+    base | (reg(rn) << 5) | reg(fd)
+}
+
+pub fn enc_float_to_int(rd: u8, fn_: u8, signed: bool, double: bool, wide: bool) -> u32 {
+    let base = match (signed, double, wide) {
+        (true, false, false) => 0x1e38_0000,
+        (false, false, false) => 0x1e39_0000,
+        (true, true, true) => 0x9e78_0000,
+        (false, true, true) => 0x9e79_0000,
+        (true, false, true) => 0x9e38_0000,
+        (false, false, true) => 0x9e39_0000,
+        (true, true, false) => 0x1e78_0000,
+        (false, true, false) => 0x1e79_0000,
+    };
+    base | (reg(fn_) << 5) | reg(rd)
+}
+
 pub fn enc_lsl_reg(rd: u8, rn: u8, rm: u8, sf: bool) -> u32 {
     data_proc_2(sf, rm, 0b001000, rn, rd)
 }
@@ -753,6 +825,26 @@ mod tests {
         assert_eq!(enc_sub_reg(0, 1, 2, true), 0xcb020020);
         assert_eq!(enc_mov_reg(0, 1, true), 0xaa0103e0);
         assert_eq!(enc_mov_reg(0, 1, false), 0x2a0103e0);
+    }
+
+    #[test]
+    fn scalar_floating_arithmetic_and_conversions_match_assembler_bits() {
+        assert_eq!(enc_fmov_from_gpr(0, 0, false), 0x1e27_0000);
+        assert_eq!(enc_fmov_to_gpr(1, 1, false), 0x1e26_0021);
+        assert_eq!(enc_fmov_from_gpr(2, 2, true), 0x9e67_0042);
+        assert_eq!(enc_fmov_to_gpr(3, 3, true), 0x9e66_0063);
+        assert_eq!(enc_fadd(4, 5, 6, false), 0x1e26_28a4);
+        assert_eq!(enc_fsub(7, 8, 9, false), 0x1e29_3907);
+        assert_eq!(enc_fmul(10, 11, 12, true), 0x1e6c_096a);
+        assert_eq!(enc_fdiv(13, 14, 15, true), 0x1e6f_19cd);
+        assert_eq!(enc_fcmp(0, 1, false), 0x1e21_2000);
+        assert_eq!(enc_fcmp(2, 3, true), 0x1e63_2040);
+        assert_eq!(enc_fcvt(4, 5, false), 0x1e62_40a4);
+        assert_eq!(enc_fcvt(6, 7, true), 0x1e22_c0e6);
+        assert_eq!(enc_int_to_float(0, 0, true, false, false), 0x1e22_0000);
+        assert_eq!(enc_int_to_float(3, 3, false, true, true), 0x9e63_0063);
+        assert_eq!(enc_float_to_int(4, 4, true, false, false), 0x1e38_0084);
+        assert_eq!(enc_float_to_int(7, 7, false, true, true), 0x9e79_00e7);
     }
 
     #[test]

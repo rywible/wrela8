@@ -1,0 +1,74 @@
+module render_certificate
+
+from core.render_interval import (
+    FixedDomain,
+    Iv32,
+    interval_add,
+    interval_ceil_div,
+    interval_floor_div,
+    interval_mul,
+    interval_narrow,
+    interval_sub,
+    interval_valid,
+)
+
+pub fn certify_quadratic_discriminant(
+    read power: [Iv32; 9],
+    domain: FixedDomain,
+) -> [i64; 3]:
+    match interval_mul(power[1], power[1], domain):
+        case .Value(bb):
+            match interval_add(power[2], power[2], domain):
+                case .Value(two_a):
+                    match interval_add(two_a, two_a, domain):
+                        case .Value(four_a):
+                            match interval_mul(four_a, power[0], domain):
+                                case .Value(four_ac):
+                                    match interval_sub(bb, four_ac, domain):
+                                        case .Value(discriminant):
+                                            return [
+                                                1,
+                                                discriminant.lower().to[i64](),
+                                                discriminant.upper().to[i64](),
+                                            ]
+                                        case _:
+                                            return [0; 3]
+                                case _:
+                                    return [0; 3]
+                        case _:
+                            return [0; 3]
+                case _:
+                    return [0; 3]
+        case _:
+            return [0; 3]
+
+# Canonical stable payload for the interval monotone-tube root certificate:
+# [accepted, method-tag, minimum strict margin].
+pub fn certify_monotone_root(lower: Iv32, upper: Iv32, derivative: Iv32) -> [i64; 3]:
+    face_margin: i64 = 0
+    if lower.upper() < 0 and upper.lower() > 0:
+        face_margin = -lower.upper().to[i64]()
+        if upper.lower().to[i64]() < face_margin:
+            face_margin = upper.lower().to[i64]()
+    elif lower.lower() > 0 and upper.upper() < 0:
+        face_margin = lower.lower().to[i64]()
+        negative_upper = -upper.upper().to[i64]()
+        if negative_upper < face_margin:
+            face_margin = negative_upper
+    else:
+        return [0; 3]
+    derivative_margin: i64 = 0
+    if derivative.lower() > 0:
+        derivative_margin = derivative.lower().to[i64]()
+    elif derivative.upper() < 0:
+        derivative_margin = -derivative.upper().to[i64]()
+    if derivative_margin <= 0:
+        return [0; 3]
+    if face_margin <= 0:
+        return [0; 3]
+    margin = derivative_margin
+    if face_margin < margin:
+        margin = face_margin
+    if margin > 2147483647:
+        margin = 2147483647
+    return [1, 1, margin]

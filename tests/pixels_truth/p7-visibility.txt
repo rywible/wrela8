@@ -1,0 +1,25 @@
+GuestVisibilityExecution version=1 cases=14 telemetry=aa04cd425e7c2b23a8d7c5af52a473f4310d61378bb89b22524e4362a44a1d5e status=pass
+PixelsConformance version=1 mode=score-only
+case=guest-boot-pixels-plane runs=128 corridors=0 proposals=120 alpha=ff,ff,ff oracle=ff,ff,ff run_evidence=pass frame_interior=2048/2048 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=0 frame_phantom=0 frame_first=none status=pass
+case=guest-boot-pixels-plane-one-core runs=128 corridors=0 proposals=120 alpha=ff,ff,ff oracle=ff,ff,ff run_evidence=pass frame_interior=2048/2048 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=0 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-camera-inside runs=376 corridors=0 proposals=120 alpha=ff,ff,ff oracle=ff,ff,ff run_evidence=pass frame_interior=2048/2048 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=0 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-close-depth runs=136 corridors=24 proposals=180 alpha=ff,ff,00 oracle=ff,ff,00 run_evidence=pass frame_interior=2036/2036 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=0 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-displace runs=146 corridors=138 proposals=120 alpha=ff,ff,00 oracle=ff,ff,00 run_evidence=pass frame_interior=2018/2018 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=6 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-enclosed-feature runs=148 corridors=110 proposals=164 alpha=ff,ff,00 oracle=ff,ff,00 run_evidence=pass frame_interior=2020/2020 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=4 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-hard-csg runs=158 corridors=156 proposals=584 alpha=f3,ff,ff oracle=f4,ff,ff run_evidence=pass frame_interior=1990/1990 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=8 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-material-edge runs=1984 corridors=64 proposals=120 alpha=ff,ff,ff oracle=ff,ff,ff run_evidence=pass frame_interior=2048/2048 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=0 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-repeat runs=152 corridors=96 proposals=412 alpha=ff,ff,ca oracle=ff,ff,ca run_evidence=pass frame_interior=1960/1960 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=40 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-simultaneous-event runs=138 corridors=200 proposals=240 alpha=f3,f3,00 oracle=f4,f4,00 run_evidence=pass frame_interior=1996/1996 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=8 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-smooth-csg runs=152 corridors=204 proposals=240 alpha=ff,ff,00 oracle=ff,ff,00 run_evidence=pass frame_interior=1990/1990 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=22 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-tangent runs=150 corridors=110 proposals=120 alpha=00,00,00 oracle=00,00,00 run_evidence=pass frame_interior=2020/2020 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=6 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-thin-feature runs=158 corridors=20 proposals=440 alpha=05,05,00 oracle=00,00,00 run_evidence=pass frame_interior=2028/2028 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=20 frame_phantom=0 frame_first=none status=pass
+case=guest-check-pixels-torus-roots runs=8 corridors=2040 proposals=120 alpha=ff,ff,ff oracle=ff,ff,ff run_evidence=pass frame_interior=1964/1964 frame_edge_violations=0 frame_ambiguous=0 frame_unresolved=0 frame_skipped=16 frame_phantom=0 frame_first=none status=pass
+case=guest-worker-invariance status=pass
+case=guest-plane-frame bytes=8192 digest=46d2505958464383cb9bf1cad9ce31b3371b7b9bdf834942f6ca7bd04e4b79f9 status=pass
+case=guest-plane-probe hit=true identity=0 q=[0.227363586,0.232246399] normal=[0.000000,0.000000,1.000000] coverage=255 status=pass
+case=plane hit=true identity=1 q=[1.999023,2.000977] oracle=[1.999756,2.000244] status=pass
+case=sphere-outside hit=true identity=7 q=[0.999023,1.000977] oracle=[0.999756,1.000244] status=pass
+case=camera-inside hit=true identity=7 q=[2.999023,3.000977] oracle=[2.999756,3.000244] status=pass
+case=enclosed-structural-control structural_outputs_differ=true status=pass
+case=event-cover corridor=[7, 10) simultaneous_ids=2 coverage=0.3764705882352941 status=pass
+summary cases=22 failures=0 unresolved=0 pre_summary_digest=abd63ddf458d372bbd6ad6d63a60e18a425e8fe5d556c7c8ed5e12b78fd4e543

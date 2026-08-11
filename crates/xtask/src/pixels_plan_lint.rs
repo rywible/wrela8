@@ -380,9 +380,9 @@ fn matrix_fixture_names(text: &str) -> Result<Vec<String>, String> {
             names.push(name.to_string());
         }
     }
-    if names.len() != 38 {
+    if names.len() != 44 {
         return Err(format!(
-            "pixels plan lint: §11 contains {} permanent fixtures, expected 38",
+            "pixels plan lint: §11 contains {} permanent fixtures, expected 44",
             names.len()
         ));
     }
@@ -513,6 +513,7 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "err-pixels-cost" => &["width=1920", "height=1080", "initialization_deadline_ms=1"],
         "boot-pixels-numeric" => &["interval_add(", "byte_singleton(", "VECTOR_COUNT"],
         "boot-pixels-plane" => &["plane(", "WIDTH", "HEIGHT"],
+        "boot-pixels-plane-one-core" => &["plane(", "WIDTH", "HEIGHT", "cores=1"],
         "boot-pixels-quality" => &[
             "round_box(",
             "sinusoidal_displace(",
@@ -682,6 +683,28 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
             ));
         };
         let fixture_source = fixture_wrela_sources(&path)?;
+        // Instrumented conformance dumps are optional in production source,
+        // but when a fixture carries the dump hook it must be reachable. A
+        // direct return immediately before the hook silently produced a green
+        // production transcript while making the expensive instrumented lane
+        // fail only after all guest boots had completed.
+        let dump_hook = "dump_header = __wrela_pixels_p7_debug_frame_dump_word";
+        let mut search_from = 0usize;
+        while let Some(relative) = fixture_source[search_from..].find(dump_hook) {
+            let offset = search_from + relative;
+            let previous = fixture_source[..offset]
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim_start();
+            if previous.starts_with("return ") {
+                return Err(format!(
+                    "pixels plan lint: {directory_name} returns before its instrumented frame dump"
+                ));
+            }
+            search_from = offset + dump_hook.len();
+        }
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;
         let scene_requirements: &[&str] = if directory_name == "boot-pixels-numeric" {
@@ -843,7 +866,7 @@ pub(crate) fn pixels_plan_lint() -> Result<(), String> {
     let repo = root();
     let text = std::fs::read_to_string(repo.join(PLAN)).map_err(|e| format!("read {PLAN}: {e}"))?;
     lint_text(&text, &repo)?;
-    println!("pixels-plan-lint: 154 tasks, canonical contracts, and 38 fixtures match");
+    println!("pixels-plan-lint: 154 tasks, canonical contracts, and 43 fixtures match");
     Ok(())
 }
 

@@ -1,0 +1,142 @@
+module examples.check_pixels_smooth_interior_root
+
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
+from core.runtime import __wrela_trace_p7_u64
+from core.field import Field, Rgb, Vec3, mark, plane, smooth_union
+from core.render import (
+    AoConfig,
+    CameraBounds,
+    LightConfig,
+    MaterialSample,
+    ProbeConfig,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+    __wrela_pixels_p7_debug_probe_at_u,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 40
+
+fn smooth_min(a: f64, b: f64, k: f64) -> f64:
+    if a <= b - k:
+        return a
+    if b <= a - k:
+        return b
+    h = 0.5 + 0.5 * (b - a) / k
+    return b + (a - b) * h - k * h * (1.0 - h)
+
+pub struct SceneParams:
+    @range(min=-1.0, max=1.0)
+    phase: f32
+
+enum MaterialId:
+    Surface
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    left = plane(p, Vec3(x=0.25, y=0.0, z=1.0), offset=1.35)
+    right = plane(p, Vec3(x=-0.25, y=0.0, z=1.0), offset=1.35)
+    return mark(
+        smooth_union(left, right, k=0.25),
+        object=MaterialId.Surface,
+        material=MaterialId.Surface,
+    )
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+    )
+
+@test
+fn interior_root_formula():
+    k: f64 = 4.0
+    a = k / 4.0
+    b = k / 4.0
+    assert a != 0.0, "left leaf is not a root"
+    assert b != 0.0, "right leaf is not a root"
+    assert smooth_min(a, b, k) == 0.0, "the composed smooth object has an interior root"
+
+@test
+fn saturated_branch():
+    a: f64 = -3.25
+    assert smooth_min(a, 2.0, 0.5) == a, "saturated branch returns the selected leaf"
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 40, "fixture id must remain pinned"
+
+@test(runtime)
+fn renderer_finds_composed_root_without_leaf_zero():
+    params: [f32; 16] = [0.0; 16]
+    camera: [f32; 12] = [
+        0.0, 0.0, -4.35,
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+    ]
+    probe = __wrela_pixels_p7_debug_probe_at_u(
+        0,
+        0,
+        0,
+        8,
+        8,
+        0.0,
+        params,
+        camera,
+    )
+    __wrela_trace_p7_u64(probe[7].to[u64]())
+    __wrela_trace_p7_u64(probe[8].to[u64]())
+    __wrela_trace_p7_u64(probe[1].to[u64]())
+    __wrela_trace_p7_u64(probe[5].to[u64]())
+    __wrela_trace_p7_u64(probe[6].to[u64]())
+    __wrela_trace_p7_u64(probe[9].to[u64]())
+    assert probe[0] == 1, "composed scalar root is certified"
+    assert probe[8] == 2, "both nonzero leaf predictors remain structural candidates"
+    assert probe[7] == 1, "the composed object contributes its interior root"
+    assert probe[1] == 1, "the composed root is visible"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-pixels-smooth-interior-root", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(
+        Display,
+        device=display_device,
+        width=16,
+        height=16,
+        refresh_hz=60,
+    )
+    _ = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=16,
+        height=16,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

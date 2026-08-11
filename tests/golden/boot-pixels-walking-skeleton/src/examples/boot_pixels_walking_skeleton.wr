@@ -13,6 +13,7 @@ from core.render import (
     SurfaceContext,
     ToneCurve,
 )
+from core.render_program import FrameProgramView, ProgramViewError, TileId
 from drivers.display import Display, DisplayDevice
 
 struct SceneParams:
@@ -42,8 +43,53 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
     )
 
 @test(runtime)
-fn plane_frame():
-    assert true, "generated renderer presented during boot"
+fn frame_program_view_reads_sealed_records():
+    opened = FrameProgramView.initialize(renderer=0)
+    match opened:
+        case .Err(_):
+            assert false, "generated frame program header must validate"
+        case .Ok(view):
+            header = view.header()
+            assert header.renderer_index == 0, "sealed renderer index"
+            assert header.table_count == 17, "sealed table count"
+            feature = view.feature(id=0)
+            match feature:
+                case .Err(_):
+                    assert false, "feature zero is present"
+                case .Ok(record):
+                    assert record.stable_id == 0, "stable feature id"
+            features = view.tile_features(tile=TileId(value=0))
+            match features:
+                case .Err(_):
+                    assert false, "first tile is present"
+                case .Ok(slice):
+                    assert slice.length() == 1, "plane overlaps the first tile"
+                    first = slice.get(ordinal=0)
+                    match first:
+                        case .Err(_):
+                            assert false, "first tile feature is present"
+                        case .Ok(feature_id):
+                            assert feature_id.value == 0, "first tile feature id"
+                    past_end = slice.get(ordinal=1)
+                    match past_end:
+                        case .Err(error):
+                            match error:
+                                case .ProgramIndex:
+                                    pass
+                                case _:
+                                    assert false, "out-of-range access has the exact invariant"
+                        case .Ok(_):
+                            assert false, "out-of-range tile feature cannot be read"
+            invalid_tile = view.tile_features(tile=TileId(value=4294967295))
+            match invalid_tile:
+                case .Err(error):
+                    match error:
+                        case .ProgramIndex:
+                            pass
+                        case _:
+                            assert false, "invalid tile uses the exact invariant"
+                case .Ok(_):
+                    assert false, "invalid tile cannot become an empty slice"
 
 @image
 pub fn build() -> Image:

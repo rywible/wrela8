@@ -9,6 +9,9 @@ ImageGraph v0
     Arg label=width value=64
     Arg label=height value=32
     Arg label=refresh_hz value=60
+  Actor index=0 type=TangentSweepProbe
+    Arg label=renderer value=renderer#0
+    Arg label=mailbox value=1
   Renderer index=0 params=SceneParams actor=Renderer[SceneParams]
     Arg label=field value=world
     Arg label=material value=shade

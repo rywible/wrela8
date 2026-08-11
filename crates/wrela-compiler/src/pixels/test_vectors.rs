@@ -1606,6 +1606,7 @@ from core.render_interval import FixedDomain, FixedDomainOutcome, Iv32, NumericO
 from core.render_program import BernsteinOutcome3, BernsteinSplit9Outcome, BernsteinSplitOutcome3, Polynomial9, Polynomial9Outcome, QuadraticRangeOutcome, QuadraticRangeWideOutcome, SparseTerm, bernstein_average, bernstein_compose, bernstein_from_power9, bernstein_lerp_ratio, bernstein_sign, bernstein_subdivide, bernstein_subdivide9, polynomial_compose9, polynomial_derivative9, polynomial_horner9, polynomial_multiply9, polynomial_sparse, polynomial_sparse32, polynomial_taylor, program_binomial, program_ceil_div, program_floor_div, program_gcd, quadratic_range, quadratic_range2, quadratic_range_wide
 from core.render_events import RootIsolationConfig, RootOutcome8, RootSet8, root_bracket_step, root_count, root_is_identically_zero, root_isolate8, root_isolate_program8, root_isolate_taylor8
 from core.render_sweep import CertificateRequest, CertifiedRunOutcome, CsgBitsOutcome, CsgEvaluateOutcome, CsgInfluenceOutcome, CsgTransitionOutcome, OrderedRoot, OrderedRootSet64, OrderedRootSetOutcome, OrderedSlackOutcome, RootCertificateOutcome, bernstein_certificate, bernstein_certificate_subdivided, bernstein_face_margin3, certify_run, csg_boundary_influences64, csg_evaluate64, csg_first_transition64, csg_oriented_toggle64, csg_transition, kinetic_slack, krawczyk_certificate, monotone_certificate, q_adjacent_slack3, q_adjacent_slack64, q_feature_before, q_order, q_sort3, q_sort64, q_storage_before, run_certificate, strict_margin
+from core.render_certificate import certify_monotone_root
 from core.render_raster import QRunScalar, QSetup, QStep, fixed_q_nearer, fixed_q_quantize_integer, fixed_q_recurrence_fits, fixed_q_select_integer_domain, fixed_q_setup, fixed_q_step
 from core.render_coverage import CoverageOutcome, coverage_color_error, coverage_line_twice_area, coverage_quadratic, coverage_quadratic_graph, coverage_quadratic_split, coverage_quadratic_strip
 from core.render_material import CenteredMoments, Iv3Outcome, MaterialPredicateOutcome, MomentOutcome, NormalCone, NormalConeOutcome, NormalRawRange, material_affine, material_affine_moments, material_affine_vector, material_footprint, material_quadratic_moments, material_residual, normal_bound, normal_cone, normal_cone_dot, normal_dot, normal_floor_sqrt, normal_norm_squared, normal_raw_add, normal_raw_dot, normal_raw_norm_squared, normal_raw_product, normal_raw_square, normal_safe, normal_vector
@@ -2803,8 +2804,8 @@ mod tests {
             (0, fold_small(&[0, 1, 2, 4, 0, 0])),
             (1, fold_small(&[0, 2, 2, 4, 0, 0])),
             (2, fold_small(&[0, 3, 2, 4, 0, 0])),
-            (3, fold_small(&[1, 0, 2, 4, 0, 0])),
-            (4, fold_small(&[1, 1, 2, 4, 0, 0])),
+            (3, fold_small(&[1, 0, 2, 2, 0, 0])),
+            (4, fold_small(&[1, 1, 2, 2, 0, 0])),
             (5, fold_small(&[2, 0, 1, 0, 2, 0])),
         ] {
             assert_eq!(

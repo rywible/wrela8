@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 000000000000009e
+p7 000000000000009c
+p7 0000000000000248
+p7 503753414d504c45
+p7 0000000000fffff3
+p7 444f41c7e764c854
+p7 7d46368eb1f4d757
+p7 d786b267705d7adb
+p7 194aeafd87333638
+p7 df151f75c61a8689
+test hard_csg_sweeps_composite_occupancy: ok
+2 passed, 0 failed
+lane1 turns=3 run_one=6 messages=3
+lane1 hits=0:2,1:2,2:1

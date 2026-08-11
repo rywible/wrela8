@@ -418,9 +418,9 @@ TURNS_BASE,
 )
 
 
-const QUEUE_SIZE: u64 = 256
-const DESC_WORD_COUNT: usize = 512
-const DATA_SIZE: usize = 16384
+const QUEUE_SIZE: u64 = 4096
+const DESC_WORD_COUNT: usize = 8192
+const DATA_SIZE: usize = 131072
 
 
 @layout(runtime, endian=little)
@@ -465,23 +465,39 @@ struct PendingPage:
     @offset(0x0) words: [u64; CORE_SLOTS]
     @offset(0x800) idle: [u64; CORE_SLOTS]
 
-@placed(0x40007000)
+@placed(0x4003c000)
 static PENDING: PendingPage
 
+# The ring is split into separate placed statics because the descriptor
+# table now spans 64 KiB and static field offsets past the immediate
+# addressing range are not encodable; the machine-contract offsets are
+# unchanged (avail at RING_BASE + 0x10000, doorbell at RING_BASE + 0x1a008).
 @layout(runtime, endian=little)
-struct ConsoleRingPage:
-    @offset(0x0) desc_words: [u64; DESC_WORD_COUNT]
-    @offset(0x1000) avail_flags_idx: u32
-    @offset(0x1a08) doorbell: u64
+struct ConsoleRingDescPage:
+    desc_words: [u64; DESC_WORD_COUNT]
 
 @placed(0x40001000)
-static CONSOLE_RING: ConsoleRingPage
+static CONSOLE_RING_DESC: ConsoleRingDescPage
+
+@layout(runtime, endian=little)
+struct ConsoleRingAvailPage:
+    avail_flags_idx: u32
+
+@placed(0x40011000)
+static CONSOLE_RING_AVAIL: ConsoleRingAvailPage
+
+@layout(runtime, endian=little)
+struct ConsoleRingDoorbellPage:
+    doorbell: u64
+
+@placed(0x4001b008)
+static CONSOLE_RING_DOORBELL: ConsoleRingDoorbellPage
 
 @layout(runtime, endian=little)
 struct ConsoleDataPage:
     bytes: [u8; DATA_SIZE]
 
-@placed(0x40003000)
+@placed(0x4001c000)
 static CONSOLE_DATA: ConsoleDataPage
 
 pub fn __wrela_runtime_probe():
@@ -500,12 +516,12 @@ pub fn __wrela_line_commit() -> u64:
     len = data_bump -% line_start
     data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
     wi = (desc_bump *% 2).to[usize]()
-    CONSOLE_RING.desc_words[wi] = data_addr
-    CONSOLE_RING.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
+    CONSOLE_RING_DESC.desc_words[wi] = data_addr
+    CONSOLE_RING_DESC.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
     new_idx = desc_bump +% 1
-    CONSOLE_RING.avail_flags_idx = (new_idx *% 65536).to[u32]()
+    CONSOLE_RING_AVAIL.avail_flags_idx = (new_idx *% 65536).to[u32]()
     MACHINE_INFO.ring_desc_bump = new_idx
-    CONSOLE_RING.doorbell = 1
+    CONSOLE_RING_DOORBELL.doorbell = 1
     return 0
 
 
@@ -876,12 +892,72 @@ pub fn __wrela_trace_u64(value: u64):
     len = data_bump -% line_start
     data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
     wi = (desc_bump *% 2).to[usize]()
-    CONSOLE_RING.desc_words[wi] = data_addr
-    CONSOLE_RING.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
+    CONSOLE_RING_DESC.desc_words[wi] = data_addr
+    CONSOLE_RING_DESC.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
     new_idx = desc_bump +% 1
-    CONSOLE_RING.avail_flags_idx = (new_idx *% 65536).to[u32]()
+    CONSOLE_RING_AVAIL.avail_flags_idx = (new_idx *% 65536).to[u32]()
     MACHINE_INFO.ring_desc_bump = new_idx
-    CONSOLE_RING.doorbell = 1
+    CONSOLE_RING_DOORBELL.doorbell = 1
+    return
+
+pub fn __wrela_trace_p7_u64(value: u64):
+    pending_start = MACHINE_INFO.line_start
+    pending_end = MACHINE_INFO.ring_data_bump
+    pending_len = pending_end -% pending_start
+    if pending_end < pending_start or pending_len > 1024:
+        return
+    line: [u8; 20] = [0; 20]
+    line[0] = 112
+    line[1] = 55
+    line[2] = 32
+    digit: usize = 0
+    @budget(bound=16)
+    while digit < 16:
+        shift = (15 - digit) * 4
+        nibble = (value >> shift.to[u64]()) & 15
+        octet = (48 +% nibble).to[u8]()
+        if nibble >= 10:
+            octet = (87 +% nibble).to[u8]()
+        line[3 + digit] = octet
+        digit = digit +% 1
+    pos: usize = 19
+    line[pos] = 10
+    pos = pos +% 1
+    MACHINE_INFO.line_start = MACHINE_INFO.ring_data_bump
+    bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
+    end: usize = bump +% pos
+    if end < bump or end > DATA_SIZE:
+        return
+    i: usize = 0
+    @budget(bound=24)
+    while i < pos:
+        CONSOLE_DATA.bytes[bump +% i] = line[i]
+        i = i +% 1
+    MACHINE_INFO.ring_data_bump = end.to[u64]()
+    desc_bump = MACHINE_INFO.ring_desc_bump
+    if desc_bump >= QUEUE_SIZE:
+        return
+    line_start = MACHINE_INFO.line_start
+    data_bump = MACHINE_INFO.ring_data_bump
+    len = data_bump -% line_start
+    data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
+    wi = (desc_bump *% 2).to[usize]()
+    CONSOLE_RING_DESC.desc_words[wi] = data_addr
+    CONSOLE_RING_DESC.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
+    new_idx = desc_bump +% 1
+    CONSOLE_RING_AVAIL.avail_flags_idx = (new_idx *% 65536).to[u32]()
+    MACHINE_INFO.ring_desc_bump = new_idx
+    restored_end = end +% pending_len.to[usize]()
+    if restored_end < end or restored_end > DATA_SIZE:
+        return
+    pending: usize = 0
+    @budget(bound=1024)
+    while pending < pending_len.to[usize]():
+        CONSOLE_DATA.bytes[end +% pending] = CONSOLE_DATA.bytes[pending_start.to[usize]() +% pending]
+        pending = pending +% 1
+    MACHINE_INFO.line_start = end.to[u64]()
+    MACHINE_INFO.ring_data_bump = restored_end.to[u64]()
+    CONSOLE_RING_DOORBELL.doorbell = 1
     return
 
 pub fn __wrela_console_append_line_buf(len: usize) -> u64:

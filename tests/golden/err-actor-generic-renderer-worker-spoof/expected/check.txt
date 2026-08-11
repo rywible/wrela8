@@ -1,1 +1,1 @@
-error[actor]: `Actor[RendererWorker[0]]` names a generic instantiation; an actor handle to a generic struct is not implemented (M6 scope) at 13:5
+error[actor]: `Actor[RendererWorker[0]]` names a generic instantiation; an actor handle to a generic struct is not implemented (M6 scope) at 16:5

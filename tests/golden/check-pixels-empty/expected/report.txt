@@ -10,14 +10,14 @@ ImageReport v0
   Name value=pixels-empty
   Target value=Target.wrela_machine_v1
   OnFailure index=0 policy=Failure.Halt
-  Section name=pages base=0x40000000 size=28672
+  Section name=pages base=0x40000000 size=245760
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
-  Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=0
-  Section name=abort base=0x40500050 size=120
-  Section name=checkpoint base=0x405000c8 size=4
-  Entry base=0x40500000
+  Section name=entry base=0x40600000 size=80
+  Section name=code base=0x40600050 size=0
+  Section name=abort base=0x40600050 size=120
+  Section name=checkpoint base=0x406000c8 size=4
+  Entry base=0x40600000
   Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=27 rank_cycles=27 schedule_cycles=27 footprint_cycles=0 executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 rodata_bytes=0 image_bytes=204 sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4
     Workload name=flat proxy_cycles=27
     Owner name=app proxy_cycles=27

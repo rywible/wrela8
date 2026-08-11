@@ -2128,11 +2128,47 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             let raw = value::parse_int_literal(text)
                 .ok_or_else(|| FlowError::internal("invalid integer literal text"))?;
             let dst = b.fresh(e.ty.clone());
-            b.emit_mwir(Inst::ConstInt {
-                dst,
-                ty: e.ty.clone(),
-                value: raw,
-            });
+            match &e.ty {
+                Type::F32 => b.emit_mwir(Inst::ConstFloat {
+                    dst,
+                    ty: Type::F32,
+                    bits: u64::from((raw as f32).to_bits()),
+                }),
+                Type::F64 => b.emit_mwir(Inst::ConstFloat {
+                    dst,
+                    ty: Type::F64,
+                    bits: (raw as f64).to_bits(),
+                }),
+                _ => b.emit_mwir(Inst::ConstInt {
+                    dst,
+                    ty: e.ty.clone(),
+                    value: raw,
+                }),
+            };
+            Ok(dst)
+        }
+        TypedExprKind::Float(text) => {
+            let value: f64 = text
+                .parse()
+                .map_err(|_| FlowError::internal("invalid float literal text"))?;
+            let dst = b.fresh(e.ty.clone());
+            match &e.ty {
+                Type::F32 => b.emit_mwir(Inst::ConstFloat {
+                    dst,
+                    ty: Type::F32,
+                    bits: u64::from((value as f32).to_bits()),
+                }),
+                Type::F64 => b.emit_mwir(Inst::ConstFloat {
+                    dst,
+                    ty: Type::F64,
+                    bits: value.to_bits(),
+                }),
+                _ => {
+                    return Err(FlowError::internal(
+                        "floating literal has a non-floating type",
+                    ));
+                }
+            };
             Ok(dst)
         }
         TypedExprKind::Bool(v) => {
@@ -2205,6 +2241,28 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             let t = lower_expr_flat(inner, b, env)?;
             collapse_reserve_permit_if_needed(&e.ty, t, b)
         }
+        TypedExprKind::ToScalar(inner) => {
+            let src = lower_expr_flat(inner, b, env)?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::Convert {
+                dst,
+                ty: e.ty.clone(),
+                src,
+                abort: mwir::convert_abort_message(&e.ty),
+            });
+            Ok(dst)
+        }
+        TypedExprKind::Neg(inner) => {
+            let src = lower_expr_flat(inner, b, env)?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::Neg {
+                dst,
+                ty: e.ty.clone(),
+                src,
+                abort: mwir::neg_abort_message(),
+            });
+            Ok(dst)
+        }
         TypedExprKind::Const(name) => {
             let v = crate::eval::interp::eval_const(b.prog, name).map_err(|err| {
                 FlowError::internal(format!(
@@ -2231,7 +2289,45 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             callee,
             receiver,
             args,
-        } => lower_flow_call(callee, receiver, args, &e.ty, b, env),
+        } => {
+            if receiver.is_none()
+                && callee.spelling().as_str() == "__wrela_pixels_f64_bits_to_f32"
+                && args.len() == 1
+            {
+                let value = args[0]
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| FlowError::internal("P7 f64 bitcast argument is missing"))?;
+                let src = lower_expr_flat(value, b, env)?;
+                let as_f64 = b.fresh(Type::F64);
+                b.emit_mwir(Inst::Copy { dst: as_f64, src });
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Convert {
+                    dst,
+                    ty: Type::F32,
+                    src: as_f64,
+                    abort: mwir::convert_abort_message(&Type::F32),
+                });
+                Ok(dst)
+            } else if receiver.is_none()
+                && matches!(
+                    callee.spelling().as_str(),
+                    "__wrela_pixels_f32_to_bits" | "__wrela_pixels_f32_from_bits"
+                )
+                && args.len() == 1
+            {
+                let value = args[0]
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| FlowError::internal("P7 f32 bitcast argument is missing"))?;
+                let src = lower_expr_flat(value, b, env)?;
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Copy { dst, src });
+                Ok(dst)
+            } else {
+                lower_flow_call(callee, receiver, args, &e.ty, b, env)
+            }
+        }
         TypedExprKind::StructLiteral { name, fields } => {
             let Type::Named(sname, targs) = &e.ty else {
                 return Err(FlowError::internal("struct literal type is not `Named`"));
@@ -2739,6 +2835,17 @@ fn lower_binary_flat(
     let rv = lower_expr_flat(r, b, env)?;
     let ty = l.ty.clone();
     match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul if matches!(ty, Type::F32 | Type::F64) => {
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::ArithWrapping {
+                dst,
+                op,
+                ty,
+                lhs: lv,
+                rhs: rv,
+            });
+            Ok(dst)
+        }
         BinOp::Add | BinOp::Sub | BinOp::Mul => {
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::ArithChecked {
@@ -2748,6 +2855,17 @@ fn lower_binary_flat(
                 lhs: lv,
                 rhs: rv,
                 abort: mwir::abort_message(op),
+            });
+            Ok(dst)
+        }
+        BinOp::Div if matches!(ty, Type::F32 | Type::F64) => {
+            let dst = b.fresh(e.ty.clone());
+            b.emit_mwir(Inst::ArithWrapping {
+                dst,
+                op,
+                ty,
+                lhs: lv,
+                rhs: rv,
             });
             Ok(dst)
         }

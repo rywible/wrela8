@@ -36,7 +36,6 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::BoundsElide,
     OptId::FlowStateRegs,
     OptId::NarrowImm,
-    OptId::AdrAddressing,
     OptId::BfxNarrow,
     OptId::MaskCheck,
     OptId::WideImmForms,
@@ -47,7 +46,12 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::TailCalls,
 ];
 
-pub const PARKED_OPTS: &[OptId] = &[OptId::Inline, OptId::Sroa, OptId::FrameColor];
+pub const PARKED_OPTS: &[OptId] = &[
+    OptId::Inline,
+    OptId::Sroa,
+    OptId::FrameColor,
+    OptId::AdrAddressing,
+];
 
 thread_local! {
     static ACTIVE_OPTS: std::cell::RefCell<Vec<OptId>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -256,7 +260,6 @@ mod tests {
                 OptId::BoundsElide,
                 OptId::FlowStateRegs,
                 OptId::NarrowImm,
-                OptId::AdrAddressing,
                 OptId::BfxNarrow,
                 OptId::MaskCheck,
                 OptId::WideImmForms,

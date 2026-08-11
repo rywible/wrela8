@@ -608,7 +608,9 @@ mod tests {
 
     #[test]
     fn the_measured_hot_text_footprint_before_and_after() {
-        const BEFORE_HOT_TEXT_BYTES: u64 = 2432;
+        // Re-measured 2026-08-07 with `AdrAddressing` parked (the P7
+        // image-base move put DRAM pages beyond ADR reach).
+        const BEFORE_HOT_TEXT_BYTES: u64 = 2368;
 
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
@@ -814,7 +816,8 @@ mod tests {
         );
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
-            (1756, 1756, 0, 0)
+            // Re-measured 2026-08-07 with `AdrAddressing` parked.
+            (1805, 1805, 0, 0)
         );
         assert_eq!(summary.fns_moved, 0);
         assert_eq!(
@@ -1028,7 +1031,9 @@ mod tests {
                 flat[1].1.fetched_text_bytes,
                 flat[1].1.l1i_bytes
             ),
-            (46_656, 26_624, 65_536),
+            // Release column re-measured 2026-08-07 with `AdrAddressing`
+            // parked; headroom against the L1I stays positive on both sides.
+            (46_656, 27_200, 65_536),
             "the compositor's flat hot text, dev and release, against the L1I. Item M's \
              ~17 KB-of-headroom figure is the **dev** column; release has 37 KB of \
              headroom, so the L1I overflow term is zero on both sides and the only \

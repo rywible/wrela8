@@ -30,9 +30,13 @@ pub mod layout {
         dram_end() - ((n_cores - core) as u64) * CORE_STACK_SIZE
     }
 
-    pub const IMAGE_BASE: u64 = 0x4050_0000;
+    /// The image starts on an AArch64 branch-reach region boundary. P7's
+    /// generated visibility evaluator is large enough that an unaligned base
+    /// could straddle a 2 MiB region even while remaining within its reserved
+    /// text window.
+    pub const IMAGE_BASE: u64 = 0x4060_0000;
 
-    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x4_0000;
+    pub const RTDATA_BASE: u64 = IMAGE_BASE + 0x40_0000;
 
     pub const RTDATA_SIZE_MAX: u64 = 256 << 10;
 
@@ -96,10 +100,14 @@ pub mod machine_info {
 pub mod console {
     use super::layout::DRAM_BASE;
 
-    pub const QUEUE_SIZE: u64 = 256;
+    // Sized for instrumented conformance runs: a full debug-framebuffer dump
+    // of a 64x32 frame is ~1100 transcript lines (~22 KiB), far past the old
+    // 256-descriptor/16 KiB console. The console stays an append-only bump
+    // channel; only its capacity grew.
+    pub const QUEUE_SIZE: u64 = 4096;
 
     pub const RING_BASE: u64 = DRAM_BASE + 0x1000;
-    pub const RING_SIZE: u64 = 2 * 0x1000;
+    pub const RING_SIZE: u64 = 0x1B000;
 
     pub const DESC_TABLE_OFFSET: u64 = 0;
     pub const DESC_ENTRY_SIZE: u64 = 16;
@@ -117,13 +125,13 @@ pub mod console {
     pub const RING_USED_BYTES: u64 = DOORBELL_OFFSET + DOORBELL_SIZE;
 
     pub const DATA_BASE: u64 = RING_BASE + RING_SIZE;
-    pub const DATA_SIZE: u64 = 4 * 0x1000;
+    pub const DATA_SIZE: u64 = 0x20000;
 }
 
 pub mod pending {
     use super::layout::DRAM_BASE;
 
-    pub const BASE: u64 = DRAM_BASE + 0x7000;
+    pub const BASE: u64 = DRAM_BASE + 0x3C000;
     pub const SIZE: u64 = 0x1000;
 
     pub const WORD_SIZE: u64 = 8;
@@ -372,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn rtdata_base_is_the_128kib_packing_window() {
-        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x4_0000);
-        assert_eq!(layout::RTDATA_BASE, 0x4054_0000);
+    fn rtdata_base_is_the_4mib_packing_window() {
+        assert_eq!(layout::RTDATA_BASE, layout::IMAGE_BASE + 0x40_0000);
+        assert_eq!(layout::RTDATA_BASE, 0x40a0_0000);
         assert!(layout::RTDATA_BASE - layout::IMAGE_BASE > 0xea34);
         assert_eq!(layout::RTDATA_SIZE_MAX, 256 << 10);
         assert!(

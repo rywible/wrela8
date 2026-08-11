@@ -193,7 +193,7 @@ mod tests {
         );
         assert_eq!(
             encode_enc_site_count(),
-            428,
+            439,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

@@ -223,7 +223,12 @@ pub fn sin_scalar(angle: f32) -> f32:
     two_pi: f32 = 6.283185307179586
     pi: f32 = 3.141592653589793
     half_pi: f32 = 1.5707963267948966
-    x = angle % two_pi
+    # All accepted Pixels call sites have compiler-sealed finite argument
+    # bounds. Express truncating remainder through the scalar conversion ABI
+    # so the guest does not depend on a target-specific floating remainder
+    # instruction.
+    turns = (angle / two_pi).to[i64]()
+    x = angle - turns.to[f32]() * two_pi
     if x > pi:
         x = x - two_pi
     if x < -pi:

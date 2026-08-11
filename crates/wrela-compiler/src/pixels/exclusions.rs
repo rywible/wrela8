@@ -931,6 +931,48 @@ pub fn compile(
                     vec![proof],
                 )?
             }
+            (
+                None,
+                Some(OmissionHint::ClipQOutsideFeatureQSpan {
+                    clip_q,
+                    feature_q,
+                    margin,
+                }),
+            ) => {
+                let feature = entry.subject.feature.ok_or_else(|| {
+                    format!(
+                        "pixels::exclusions: clip-q omission {:?} has no feature",
+                        entry.subject
+                    )
+                })?;
+                let span = spans
+                    .get(feature.index())
+                    .filter(|span| span.feature == feature)
+                    .ok_or_else(|| {
+                        format!("pixels::exclusions: clip-q omission names missing {feature}")
+                    })?;
+                if span.q != *feature_q {
+                    return Err(format!(
+                        "pixels::exclusions: clip-q omission for {feature} does not name the sealed projected q span"
+                    ));
+                }
+                if *clip_q >= feature_q.lo && *clip_q <= feature_q.hi {
+                    return Err(format!(
+                        "pixels::exclusions: clip-q omission for {feature} names a clip q inside the sealed span"
+                    ));
+                }
+                builder.record(
+                    ExclusionSubject::Event(entry.subject),
+                    ExclusionReason::QRangesDisjoint,
+                    *margin,
+                    "positive-q-range-gap",
+                    vec![format!(
+                        "clip q={clip_q} feature q=[{},{}] separation={margin}",
+                        feature_q.lo, feature_q.hi,
+                    )],
+                    Vec::new(),
+                )?
+            }
             (None, Some(OmissionHint::GlobalStrictSign { kind, proof })) => {
                 let reason = match kind {
                     super::events::PredicateOmissionKind::FeatureValidity => {

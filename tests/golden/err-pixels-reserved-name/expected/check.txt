@@ -1,0 +1,1 @@
+error[name]: `__wrela_pixels_f32_to_bits` is in a compiler-reserved namespace and cannot be defined or referenced by user modules at 42:12

@@ -286,25 +286,6 @@ pub(crate) fn merge_actor_pub_methods(
             }],
         );
     }
-    for actor in layout_ctx
-        .structs
-        .keys()
-        .filter(|name| name.as_str() == "RendererWorker")
-    {
-        out.insert(
-            actor.clone(),
-            vec![ActorMethodShape {
-                name: "run_job".to_string(),
-                is_async: true,
-                reply_is_aggregate: false,
-                param_sizes: vec![8],
-                param_types: vec![crate::sema::types::Type::U64],
-                ret: crate::sema::types::Type::U64,
-                is_task: false,
-                is_handoff: false,
-            }],
-        );
-    }
     Ok(out)
 }
 
@@ -669,7 +650,7 @@ pub fn compute_runtime_tables(
         .actors
         .iter()
         .map(|actor| crate::sema::types::render_type(&actor.actor_type))
-        .any(|actor| actor.starts_with("Renderer[") || actor == "RendererWorker")
+        .any(|actor| actor.starts_with("Renderer[") || actor.starts_with("RendererWorker"))
     {
         crate::rtconfig::renderer_placeholder_reservation_bytes(n_turns, turn_stride, group_slot)
     } else {

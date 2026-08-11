@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 000000000000009e
+p7 0000000000000014
+p7 00000000000001b8
+p7 503753414d504c45
+p7 0000000000000505
+p7 444f41c7e764c854
+p7 43e09cda865645a3
+p7 59b386d96f62754b
+p7 a45f2aeb6252178e
+p7 47335cd4a20182f9
+test thin_feature_is_not_sample_culled: ok
+2 passed, 0 failed
+lane1 turns=2 run_one=4 messages=2
+lane1 hits=0:2,1:1

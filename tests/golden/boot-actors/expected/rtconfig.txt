@@ -6,7 +6,7 @@ pub const N_CORES: usize = 1
 pub const CORE_SLOTS: usize = 32
 pub const MACHINE_INFO_BASE: usize = 1073741824
 pub const CONSOLE_RING_BASE: usize = 1073745920
-pub const CONSOLE_DATA_BASE: usize = 1073754112
+pub const CONSOLE_DATA_BASE: usize = 1073856512
 pub const N_TURNS: usize = 3
 pub const N_TURNS_LEN: usize = 3
 pub const N_ACTORS: usize = 2
@@ -31,7 +31,7 @@ pub const METHOD_CALL_POOL_COUNT: usize = 128
 pub const BLOCK_POOL_COUNT: usize = 3072
 pub const BLOCK_BOUND_PRINT_PAIRS: usize = 128
 pub const N_METHODS: usize = 5
-pub const TURNS_BASE: usize = 1079246848
+pub const TURNS_BASE: usize = 1084227584
 pub const N_INIT_SLOTS: usize = 2
 pub const INIT_SPAN_POOL_COUNT: usize = 8
 pub const N_BOOT_CALLS: usize = 0
@@ -84,21 +84,21 @@ struct SchedCore:
 struct RuntimeTables:
     turns: [TurnArea; N_TURNS_LEN]
 
-@placed(0x40540000)
+@placed(0x40a00000)
 pub static RT: RuntimeTables
 
 @layout(runtime, endian=little)
 struct SchedStripe:
     cores: [SchedCore; N_CORES]
 
-@placed(0x40540d80)
+@placed(0x40a00d80)
 pub static SCHED: SchedStripe
 
 @layout(runtime, endian=little)
 struct GroupArena:
     slots: [GroupSlot; GROUP_SLOTS]
 
-@placed(0x4057f778)
+@placed(0x40a3f778)
 pub static GROUPS: GroupArena
 
 @layout(runtime, endian=little)
@@ -113,7 +113,7 @@ pub const RING_STRIDE_WORDS: usize = 1
 struct RingsCtl:
     edges: [RingCtl; N_RINGS_LEN]
 
-@placed(0x4057ffe0)
+@placed(0x40a3ffe0)
 pub static RINGS_CTL: RingsCtl
 
 pub const RINGS_DATA_WORDS: usize = 1
@@ -121,7 +121,7 @@ pub const RINGS_DATA_WORDS: usize = 1
 struct RingsData:
     words: [u64; RINGS_DATA_WORDS]
 
-@placed(0x4057fff8)
+@placed(0x40a3fff8)
 pub static RINGS_DATA: RingsData
 
 @layout(runtime, endian=little)
@@ -135,10 +135,10 @@ pub const MB0_WORDS: usize = 24
 struct Mb0Data:
     words: [u64; MB0_WORDS]
 
-@placed(0x40540c08)
+@placed(0x40a00c08)
 pub static MB0_DATA: Mb0Data
 
-@placed(0x40540cc8)
+@placed(0x40a00cc8)
 pub static MB0_CTL: MbCtl
 
 pub const MB1_WORDS: usize = 16
@@ -146,10 +146,10 @@ pub const MB1_WORDS: usize = 16
 struct Mb1Data:
     words: [u64; MB1_WORDS]
 
-@placed(0x40540ce8)
+@placed(0x40a00ce8)
 pub static MB1_DATA: Mb1Data
 
-@placed(0x40540d68)
+@placed(0x40a00d68)
 pub static MB1_CTL: MbCtl
 
 pub const MB2_WORDS: usize = 1
@@ -157,10 +157,10 @@ pub const MB2_WORDS: usize = 1
 struct Mb2Data:
     words: [u64; MB2_WORDS]
 
-@placed(0x4057f858)
+@placed(0x40a3f858)
 pub static MB2_DATA: Mb2Data
 
-@placed(0x4057f878)
+@placed(0x40a3f878)
 pub static MB2_CTL: MbCtl
 
 pub const MB3_WORDS: usize = 1
@@ -168,10 +168,10 @@ pub const MB3_WORDS: usize = 1
 struct Mb3Data:
     words: [u64; MB3_WORDS]
 
-@placed(0x4057f898)
+@placed(0x40a3f898)
 pub static MB3_DATA: Mb3Data
 
-@placed(0x4057f8b8)
+@placed(0x40a3f8b8)
 pub static MB3_CTL: MbCtl
 
 pub const MB4_WORDS: usize = 1
@@ -179,10 +179,10 @@ pub const MB4_WORDS: usize = 1
 struct Mb4Data:
     words: [u64; MB4_WORDS]
 
-@placed(0x4057f8d8)
+@placed(0x40a3f8d8)
 pub static MB4_DATA: Mb4Data
 
-@placed(0x4057f8f8)
+@placed(0x40a3f8f8)
 pub static MB4_CTL: MbCtl
 
 pub const MB5_WORDS: usize = 1
@@ -190,10 +190,10 @@ pub const MB5_WORDS: usize = 1
 struct Mb5Data:
     words: [u64; MB5_WORDS]
 
-@placed(0x4057f918)
+@placed(0x40a3f918)
 pub static MB5_DATA: Mb5Data
 
-@placed(0x4057f938)
+@placed(0x40a3f938)
 pub static MB5_CTL: MbCtl
 
 pub const MB6_WORDS: usize = 1
@@ -201,10 +201,10 @@ pub const MB6_WORDS: usize = 1
 struct Mb6Data:
     words: [u64; MB6_WORDS]
 
-@placed(0x4057f958)
+@placed(0x40a3f958)
 pub static MB6_DATA: Mb6Data
 
-@placed(0x4057f978)
+@placed(0x40a3f978)
 pub static MB6_CTL: MbCtl
 
 pub const MB7_WORDS: usize = 1
@@ -212,10 +212,10 @@ pub const MB7_WORDS: usize = 1
 struct Mb7Data:
     words: [u64; MB7_WORDS]
 
-@placed(0x4057f998)
+@placed(0x40a3f998)
 pub static MB7_DATA: Mb7Data
 
-@placed(0x4057f9b8)
+@placed(0x40a3f9b8)
 pub static MB7_CTL: MbCtl
 
 pub const MB8_WORDS: usize = 1
@@ -223,10 +223,10 @@ pub const MB8_WORDS: usize = 1
 struct Mb8Data:
     words: [u64; MB8_WORDS]
 
-@placed(0x4057f9d8)
+@placed(0x40a3f9d8)
 pub static MB8_DATA: Mb8Data
 
-@placed(0x4057f9f8)
+@placed(0x40a3f9f8)
 pub static MB8_CTL: MbCtl
 
 pub const MB9_WORDS: usize = 1
@@ -234,10 +234,10 @@ pub const MB9_WORDS: usize = 1
 struct Mb9Data:
     words: [u64; MB9_WORDS]
 
-@placed(0x4057fa18)
+@placed(0x40a3fa18)
 pub static MB9_DATA: Mb9Data
 
-@placed(0x4057fa38)
+@placed(0x40a3fa38)
 pub static MB9_CTL: MbCtl
 
 pub const MB10_WORDS: usize = 1
@@ -245,10 +245,10 @@ pub const MB10_WORDS: usize = 1
 struct Mb10Data:
     words: [u64; MB10_WORDS]
 
-@placed(0x4057fa58)
+@placed(0x40a3fa58)
 pub static MB10_DATA: Mb10Data
 
-@placed(0x4057fa78)
+@placed(0x40a3fa78)
 pub static MB10_CTL: MbCtl
 
 pub const MB11_WORDS: usize = 1
@@ -256,10 +256,10 @@ pub const MB11_WORDS: usize = 1
 struct Mb11Data:
     words: [u64; MB11_WORDS]
 
-@placed(0x4057fa98)
+@placed(0x40a3fa98)
 pub static MB11_DATA: Mb11Data
 
-@placed(0x4057fab8)
+@placed(0x40a3fab8)
 pub static MB11_CTL: MbCtl
 
 pub const MB12_WORDS: usize = 1
@@ -267,10 +267,10 @@ pub const MB12_WORDS: usize = 1
 struct Mb12Data:
     words: [u64; MB12_WORDS]
 
-@placed(0x4057fad8)
+@placed(0x40a3fad8)
 pub static MB12_DATA: Mb12Data
 
-@placed(0x4057faf8)
+@placed(0x40a3faf8)
 pub static MB12_CTL: MbCtl
 
 pub const MB13_WORDS: usize = 1
@@ -278,10 +278,10 @@ pub const MB13_WORDS: usize = 1
 struct Mb13Data:
     words: [u64; MB13_WORDS]
 
-@placed(0x4057fb18)
+@placed(0x40a3fb18)
 pub static MB13_DATA: Mb13Data
 
-@placed(0x4057fb38)
+@placed(0x40a3fb38)
 pub static MB13_CTL: MbCtl
 
 pub const MB14_WORDS: usize = 1
@@ -289,10 +289,10 @@ pub const MB14_WORDS: usize = 1
 struct Mb14Data:
     words: [u64; MB14_WORDS]
 
-@placed(0x4057fb58)
+@placed(0x40a3fb58)
 pub static MB14_DATA: Mb14Data
 
-@placed(0x4057fb78)
+@placed(0x40a3fb78)
 pub static MB14_CTL: MbCtl
 
 pub const MB15_WORDS: usize = 1
@@ -300,10 +300,10 @@ pub const MB15_WORDS: usize = 1
 struct Mb15Data:
     words: [u64; MB15_WORDS]
 
-@placed(0x4057fb98)
+@placed(0x40a3fb98)
 pub static MB15_DATA: Mb15Data
 
-@placed(0x4057fbb8)
+@placed(0x40a3fbb8)
 pub static MB15_CTL: MbCtl
 
 pub const MB16_WORDS: usize = 1
@@ -311,10 +311,10 @@ pub const MB16_WORDS: usize = 1
 struct Mb16Data:
     words: [u64; MB16_WORDS]
 
-@placed(0x4057fbd8)
+@placed(0x40a3fbd8)
 pub static MB16_DATA: Mb16Data
 
-@placed(0x4057fbf8)
+@placed(0x40a3fbf8)
 pub static MB16_CTL: MbCtl
 
 pub const MB17_WORDS: usize = 1
@@ -322,10 +322,10 @@ pub const MB17_WORDS: usize = 1
 struct Mb17Data:
     words: [u64; MB17_WORDS]
 
-@placed(0x4057fc18)
+@placed(0x40a3fc18)
 pub static MB17_DATA: Mb17Data
 
-@placed(0x4057fc38)
+@placed(0x40a3fc38)
 pub static MB17_CTL: MbCtl
 
 pub const MB18_WORDS: usize = 1
@@ -333,10 +333,10 @@ pub const MB18_WORDS: usize = 1
 struct Mb18Data:
     words: [u64; MB18_WORDS]
 
-@placed(0x4057fc58)
+@placed(0x40a3fc58)
 pub static MB18_DATA: Mb18Data
 
-@placed(0x4057fc78)
+@placed(0x40a3fc78)
 pub static MB18_CTL: MbCtl
 
 pub const MB19_WORDS: usize = 1
@@ -344,10 +344,10 @@ pub const MB19_WORDS: usize = 1
 struct Mb19Data:
     words: [u64; MB19_WORDS]
 
-@placed(0x4057fc98)
+@placed(0x40a3fc98)
 pub static MB19_DATA: Mb19Data
 
-@placed(0x4057fcb8)
+@placed(0x40a3fcb8)
 pub static MB19_CTL: MbCtl
 
 pub const MB20_WORDS: usize = 1
@@ -355,10 +355,10 @@ pub const MB20_WORDS: usize = 1
 struct Mb20Data:
     words: [u64; MB20_WORDS]
 
-@placed(0x4057fcd8)
+@placed(0x40a3fcd8)
 pub static MB20_DATA: Mb20Data
 
-@placed(0x4057fcf8)
+@placed(0x40a3fcf8)
 pub static MB20_CTL: MbCtl
 
 pub const MB21_WORDS: usize = 1
@@ -366,10 +366,10 @@ pub const MB21_WORDS: usize = 1
 struct Mb21Data:
     words: [u64; MB21_WORDS]
 
-@placed(0x4057fd18)
+@placed(0x40a3fd18)
 pub static MB21_DATA: Mb21Data
 
-@placed(0x4057fd38)
+@placed(0x40a3fd38)
 pub static MB21_CTL: MbCtl
 
 pub const MB22_WORDS: usize = 1
@@ -377,10 +377,10 @@ pub const MB22_WORDS: usize = 1
 struct Mb22Data:
     words: [u64; MB22_WORDS]
 
-@placed(0x4057fd58)
+@placed(0x40a3fd58)
 pub static MB22_DATA: Mb22Data
 
-@placed(0x4057fd78)
+@placed(0x40a3fd78)
 pub static MB22_CTL: MbCtl
 
 pub const MB23_WORDS: usize = 1
@@ -388,10 +388,10 @@ pub const MB23_WORDS: usize = 1
 struct Mb23Data:
     words: [u64; MB23_WORDS]
 
-@placed(0x4057fd98)
+@placed(0x40a3fd98)
 pub static MB23_DATA: Mb23Data
 
-@placed(0x4057fdb8)
+@placed(0x40a3fdb8)
 pub static MB23_CTL: MbCtl
 
 pub const MB24_WORDS: usize = 1
@@ -399,10 +399,10 @@ pub const MB24_WORDS: usize = 1
 struct Mb24Data:
     words: [u64; MB24_WORDS]
 
-@placed(0x4057fdd8)
+@placed(0x40a3fdd8)
 pub static MB24_DATA: Mb24Data
 
-@placed(0x4057fdf8)
+@placed(0x40a3fdf8)
 pub static MB24_CTL: MbCtl
 
 pub const MB25_WORDS: usize = 1
@@ -410,10 +410,10 @@ pub const MB25_WORDS: usize = 1
 struct Mb25Data:
     words: [u64; MB25_WORDS]
 
-@placed(0x4057fe18)
+@placed(0x40a3fe18)
 pub static MB25_DATA: Mb25Data
 
-@placed(0x4057fe38)
+@placed(0x40a3fe38)
 pub static MB25_CTL: MbCtl
 
 pub const MB26_WORDS: usize = 1
@@ -421,10 +421,10 @@ pub const MB26_WORDS: usize = 1
 struct Mb26Data:
     words: [u64; MB26_WORDS]
 
-@placed(0x4057fe58)
+@placed(0x40a3fe58)
 pub static MB26_DATA: Mb26Data
 
-@placed(0x4057fe78)
+@placed(0x40a3fe78)
 pub static MB26_CTL: MbCtl
 
 pub const MB27_WORDS: usize = 1
@@ -432,10 +432,10 @@ pub const MB27_WORDS: usize = 1
 struct Mb27Data:
     words: [u64; MB27_WORDS]
 
-@placed(0x4057fe98)
+@placed(0x40a3fe98)
 pub static MB27_DATA: Mb27Data
 
-@placed(0x4057feb8)
+@placed(0x40a3feb8)
 pub static MB27_CTL: MbCtl
 
 pub const MB28_WORDS: usize = 1
@@ -443,10 +443,10 @@ pub const MB28_WORDS: usize = 1
 struct Mb28Data:
     words: [u64; MB28_WORDS]
 
-@placed(0x4057fed8)
+@placed(0x40a3fed8)
 pub static MB28_DATA: Mb28Data
 
-@placed(0x4057fef8)
+@placed(0x40a3fef8)
 pub static MB28_CTL: MbCtl
 
 pub const MB29_WORDS: usize = 1
@@ -454,10 +454,10 @@ pub const MB29_WORDS: usize = 1
 struct Mb29Data:
     words: [u64; MB29_WORDS]
 
-@placed(0x4057ff18)
+@placed(0x40a3ff18)
 pub static MB29_DATA: Mb29Data
 
-@placed(0x4057ff38)
+@placed(0x40a3ff38)
 pub static MB29_CTL: MbCtl
 
 pub const MB30_WORDS: usize = 1
@@ -465,10 +465,10 @@ pub const MB30_WORDS: usize = 1
 struct Mb30Data:
     words: [u64; MB30_WORDS]
 
-@placed(0x4057ff58)
+@placed(0x40a3ff58)
 pub static MB30_DATA: Mb30Data
 
-@placed(0x4057ff78)
+@placed(0x40a3ff78)
 pub static MB30_CTL: MbCtl
 
 pub const MB31_WORDS: usize = 1
@@ -476,10 +476,10 @@ pub const MB31_WORDS: usize = 1
 struct Mb31Data:
     words: [u64; MB31_WORDS]
 
-@placed(0x4057ff98)
+@placed(0x40a3ff98)
 pub static MB31_DATA: Mb31Data
 
-@placed(0x4057ffb8)
+@placed(0x40a3ffb8)
 pub static MB31_CTL: MbCtl
 
 pub fn __resume_0() -> u64:
@@ -1062,63 +1062,63 @@ pub fn __wake_call_7():
 struct InitSpan0Words:
     words: [u64; 1]
 
-@placed(0x40540c00)
+@placed(0x40a00c00)
 pub static INIT_SPAN0: InitSpan0Words
 
 @layout(runtime, endian=little)
 struct InitSpan1Words:
     words: [u64; 1]
 
-@placed(0x40540ce0)
+@placed(0x40a00ce0)
 pub static INIT_SPAN1: InitSpan1Words
 
 @layout(runtime, endian=little)
 struct InitSpan2Words:
     words: [u64; 1]
 
-@placed(0x4057f748)
+@placed(0x40a3f748)
 pub static INIT_SPAN2: InitSpan2Words
 
 @layout(runtime, endian=little)
 struct InitSpan3Words:
     words: [u64; 1]
 
-@placed(0x4057f750)
+@placed(0x40a3f750)
 pub static INIT_SPAN3: InitSpan3Words
 
 @layout(runtime, endian=little)
 struct InitSpan4Words:
     words: [u64; 1]
 
-@placed(0x4057f758)
+@placed(0x40a3f758)
 pub static INIT_SPAN4: InitSpan4Words
 
 @layout(runtime, endian=little)
 struct InitSpan5Words:
     words: [u64; 1]
 
-@placed(0x4057f760)
+@placed(0x40a3f760)
 pub static INIT_SPAN5: InitSpan5Words
 
 @layout(runtime, endian=little)
 struct InitSpan6Words:
     words: [u64; 1]
 
-@placed(0x4057f768)
+@placed(0x40a3f768)
 pub static INIT_SPAN6: InitSpan6Words
 
 @layout(runtime, endian=little)
 struct InitSpan7Words:
     words: [u64; 1]
 
-@placed(0x4057f770)
+@placed(0x40a3f770)
 pub static INIT_SPAN7: InitSpan7Words
 
 @layout(runtime, endian=little)
 struct WakeTables:
     wake_pending: [u64; N_WAKE_DRAINS_LEN]
 
-@placed(0x4057ffd8)
+@placed(0x40a3ffd8)
 pub static WAKE: WakeTables
 
 pub fn __wrela_select_count(core: usize) -> usize:
@@ -1238,9 +1238,9 @@ pub fn __wrela_mb_core(root: usize) -> usize:
 pub fn __wrela_mb_state(root: usize) -> usize:
     match root:
         case 0:
-            return 1079249920
+            return 1084230656
         case 1:
-            return 1079250144
+            return 1084230880
         case _:
             return 0
 

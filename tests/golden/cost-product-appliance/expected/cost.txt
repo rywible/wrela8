@@ -1901,4 +1901,4 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=1
     Term rule=mov_wide count=1
     Term rule=store count=1
-  Scope scope=linked-image executable_words=13533 executable_code_bytes=54132 fetched_text_bytes=54208 image_bytes=295416 rodata_bytes=560 sync_frame_max_bytes=1328 async_frame_total_bytes=0
+  Scope scope=linked-image executable_words=13533 executable_code_bytes=54132 fetched_text_bytes=54208 image_bytes=4227576 rodata_bytes=562 sync_frame_max_bytes=1328 async_frame_total_bytes=0

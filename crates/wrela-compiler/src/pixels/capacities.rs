@@ -9,15 +9,23 @@ use super::material::MaterialEvent;
 use super::material_graph::MaterialKind;
 use super::objects::ObjectPartition;
 use super::params::ParameterLayout;
+use super::projection_bounds::TILE_WIDTH_V1;
 use super::repeat::RepeatTemplate;
 use super::symbolic::SymbolicGraph;
 
 pub(crate) const CANDIDATE_RECORD_BYTES_V1: u64 = 64;
 pub(crate) const ROOT_RECORD_BYTES_V1: u64 = 32;
+pub(crate) const ROOT_CELL_BYTES_V1: u64 = 16;
 pub(crate) const SHEET_RECORD_BYTES_V1: u64 = 64;
 pub(crate) const EVENT_RECORD_BYTES_V1: u64 = 32;
-pub(crate) const RUN_RECORD_BYTES_V1: u64 = 32;
-pub(crate) const CORRIDOR_RECORD_BYTES_V1: u64 = 24;
+pub(crate) const EVENT_CELL_BYTES_V1: u64 = 16;
+// P7 run records retain the complete transport/recheck evidence named by the
+// milestone contract: q jet/error, order/root slack, normal cone, event
+// ownership, proof owner/method, and visible sheet metadata. Corridors keep
+// the common header plus side/coverage/arrangement evidence.
+pub(crate) const RUN_RECORD_BYTES_V1: u64 = 128;
+pub(crate) const CORRIDOR_RECORD_BYTES_V1: u64 = 64;
+pub(crate) const REBUILD_CELL_BYTES_V1: u64 = 24;
 pub(crate) const FIXED_Q_RECORD_BYTES_V1: u64 = 16;
 pub(crate) const SHADING_RECORD_BYTES_V1: u64 = 64;
 pub(crate) const TRANSPARENCY_LAYER_BYTES_V1: u64 = 32;
@@ -27,6 +35,8 @@ pub(crate) const FRAME_COMPLEX_PIXEL_BYTES_V1: u64 = 32;
 pub(crate) const TILE_DESCRIPTOR_BYTES_V1: u64 = 32;
 pub(crate) const TILE_OWNERSHIP_BYTES_V1: u64 = 4;
 pub(crate) const FAILURE_RECORD_BYTES_V1: u64 = 64;
+pub(crate) const WORKSPACE_HEADER_BYTES_V1: u64 = 64;
+pub(crate) const P7_CANONICAL_FRAME_SNAPSHOT_BYTES: u64 = 688;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelsCeilings {
@@ -49,7 +59,10 @@ impl PixelsCeilings {
         objects: 1024,
         features: 2048,
         repeated_instances: 1024,
-        parameter_slots: 4096,
+        // P7 snapshots are copied into actor job records. 256 f32 slots keep
+        // every generated ownership/recovery frame within the sealed AArch64
+        // scaled-offset addressing envelope.
+        parameter_slots: 16,
         csg_stack: 256,
         event_records: 1_048_576,
         run_records_per_tile_row: 1_048_576,
@@ -125,9 +138,7 @@ pub enum RebuildReasonV1 {
 }
 
 fn telemetry_counter_count_v1() -> u64 {
-    CertificateProofMethodV1::Count as u64
-        + CertificateExpiryCauseV1::Count as u64
-        + RebuildReasonV1::Count as u64
+    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,6 +219,20 @@ pub struct ProjectiveCapacities {
     pub derivative_bundles: u32,
     pub derivative_clusters: u32,
     pub index_bytes: u64,
+    pub workspace_header_bytes: u64,
+    pub candidate_bytes: u64,
+    pub root_records_bytes: u64,
+    pub roots_tmp_bytes: u64,
+    pub root_stack_bytes: u64,
+    pub sheet_bytes: u64,
+    pub event_records_bytes: u64,
+    pub event_stack_bytes: u64,
+    pub run_bytes: u64,
+    pub rebuild_bytes: u64,
+    pub corridor_bytes: u64,
+    pub fixed_q_bytes: u64,
+    pub shading_bytes: u64,
+    pub transparency_bytes: u64,
     pub per_worker_scratch_bytes: u64,
     pub all_worker_scratch_bytes: u64,
     pub final_per_worker_scratch_bytes: u64,
@@ -215,6 +240,42 @@ pub struct ProjectiveCapacities {
     pub total_renderer_state_bytes: u64,
     pub total_renderer_state_bytes_instrumented: u64,
     pub derivations: Vec<CapacityDerivation>,
+}
+
+impl ProjectiveCapacities {
+    pub(crate) fn worker_workspace_regions(&self) -> Result<Vec<(&'static str, u64, u64)>, String> {
+        let fields = [
+            ("HEADER", self.workspace_header_bytes),
+            ("ACTIVE_FEATURES", self.candidate_bytes),
+            ("ROOTS", self.root_records_bytes),
+            ("ROOTS_TMP", self.roots_tmp_bytes),
+            ("ROOT_STACK", self.root_stack_bytes),
+            ("ACTIVE_SHEETS", self.sheet_bytes),
+            ("EVENTS", self.event_records_bytes),
+            ("EVENT_STACK", self.event_stack_bytes),
+            ("RUNS", self.run_bytes),
+            ("REBUILD", self.rebuild_bytes),
+            ("CORRIDORS", self.corridor_bytes),
+            ("FIXED_Q", self.fixed_q_bytes),
+            ("SHADING", self.shading_bytes),
+            ("TRANSPARENCY", self.transparency_bytes),
+        ];
+        let mut cursor = 0_u64;
+        let mut regions = Vec::with_capacity(fields.len());
+        for (name, bytes) in fields {
+            regions.push((name, cursor, bytes));
+            cursor = cursor
+                .checked_add(bytes)
+                .ok_or_else(|| format!("P025: worker `{name}` region end overflow"))?;
+        }
+        if cursor != self.final_per_worker_scratch_bytes {
+            return Err(format!(
+                "P025: worker workspace fields cover {cursor} bytes, expected {}",
+                self.final_per_worker_scratch_bytes
+            ));
+        }
+        Ok(regions)
+    }
 }
 
 fn verify_immutable_index_bytes(index_bytes: u64) -> Result<(), String> {
@@ -432,20 +493,24 @@ pub fn derive_projective(
         .into_iter()
         .max()
         .unwrap_or(0);
-    let runs_per_row_u64 = row_event_intervals_u64
+    let event_runs_per_row_u64 = row_event_intervals_u64
         .checked_add(1)
         .ok_or_else(|| "P015: P4 run count overflow".to_string())?;
+    let runs_per_row_u64 = event_runs_per_row_u64.max(u64::from(TILE_WIDTH_V1));
     ceiling(
         "run_records_per_tile_row",
         runs_per_row_u64,
         ceilings.run_records_per_tile_row.into(),
-        &[format!(
-            "{row_event_intervals} completed event intervals plus one terminal run"
-        )],
+        &[
+            format!("{row_event_intervals} completed event intervals plus one terminal run"),
+            format!(
+                "{TILE_WIDTH_V1} terminal pixel-cell records for the bounded P7 rebuild ladder"
+            ),
+        ],
     )?;
     let runs_per_row = u32::try_from(runs_per_row_u64)
         .map_err(|_| "P015: P4 run count exceeds u32".to_string())?;
-    let corridors_per_row = row_event_intervals;
+    let corridors_per_row = row_event_intervals.max(TILE_WIDTH_V1);
     let max_index_slice = [
         &indexes.tile_features,
         &indexes.tile_events,
@@ -476,33 +541,54 @@ pub fn derive_projective(
         CANDIDATE_RECORD_BYTES_V1,
         "p4_candidate_bytes",
     )?;
-    let root_bytes = mul(
+    let root_records_bytes = mul(
         u64::from(root_stack_nodes),
         ROOT_RECORD_BYTES_V1,
-        "p4_root_bytes",
+        "p7_root_records_bytes",
+    )?;
+    let roots_tmp_bytes = root_records_bytes;
+    let root_stack_bytes = mul(
+        u64::from(root_stack_nodes),
+        ROOT_CELL_BYTES_V1,
+        "p7_root_stack_bytes",
     )?;
     let sheet_bytes = mul(
         u64::from(active_sheets_per_row),
         SHEET_RECORD_BYTES_V1,
         "p4_sheet_bytes",
     )?;
-    let event_bytes = mul(
-        u64::from(event_stack_nodes),
+    let event_records_bytes = mul(
+        u64::from(row_event_intervals),
         EVENT_RECORD_BYTES_V1,
-        "p4_event_bytes",
+        "p7_event_records_bytes",
+    )?;
+    let event_stack_bytes = mul(
+        u64::from(event_stack_nodes),
+        EVENT_CELL_BYTES_V1,
+        "p7_event_stack_bytes",
     )?;
     let run_bytes = mul(u64::from(runs_per_row), RUN_RECORD_BYTES_V1, "p4_run_bytes")?;
+    let rebuild_bytes = mul(
+        u64::from(structural.max_local_rebuild_queue),
+        REBUILD_CELL_BYTES_V1,
+        "p7_rebuild_bytes",
+    )?;
     let corridor_bytes = mul(
         u64::from(corridors_per_row),
         CORRIDOR_RECORD_BYTES_V1,
         "p4_corridor_bytes",
     )?;
     let per_worker_scratch_bytes = [
+        WORKSPACE_HEADER_BYTES_V1,
         candidate_bytes,
-        root_bytes,
+        root_records_bytes,
+        roots_tmp_bytes,
+        root_stack_bytes,
         sheet_bytes,
-        event_bytes,
+        event_records_bytes,
+        event_stack_bytes,
         run_bytes,
+        rebuild_bytes,
         corridor_bytes,
     ]
     .into_iter()
@@ -565,6 +651,20 @@ pub fn derive_projective(
         derivative_bundles,
         derivative_clusters,
         index_bytes: indexes.bytes,
+        workspace_header_bytes: WORKSPACE_HEADER_BYTES_V1,
+        candidate_bytes,
+        root_records_bytes,
+        roots_tmp_bytes,
+        root_stack_bytes,
+        sheet_bytes,
+        event_records_bytes,
+        event_stack_bytes,
+        run_bytes,
+        rebuild_bytes,
+        corridor_bytes,
+        fixed_q_bytes: structural.fixed_q_bytes,
+        shading_bytes: structural.shading_bytes,
+        transparency_bytes: structural.transparency_bytes,
         per_worker_scratch_bytes,
         all_worker_scratch_bytes,
         final_per_worker_scratch_bytes,
@@ -878,7 +978,8 @@ pub fn derive(
     )?;
     let max_event_records = u32::try_from(max_event_records_u64)
         .map_err(|_| "P015: event record count exceeds u32".to_string())?;
-    let max_run_records_u64 = add(max_event_records_u64, 1, "run_records_per_tile_row")?;
+    let event_run_records_u64 = add(max_event_records_u64, 1, "run_records_per_tile_row")?;
+    let max_run_records_u64 = event_run_records_u64.max(u64::from(TILE_WIDTH_V1));
     ceiling(
         "run_records_per_tile_row",
         max_run_records_u64,
@@ -888,6 +989,9 @@ pub fn derive(
             format!(
                 "{max_event_subdivisions} subdivisions = {maximum_roots_per_generator} roots * 2^{} fixed dyadic isolation depth",
                 ceilings.event_isolation_depth
+            ),
+            format!(
+                "{TILE_WIDTH_V1} terminal pixel-cell records for the bounded P7 rebuild ladder"
             ),
         ],
     )?;
@@ -965,9 +1069,14 @@ pub fn derive(
         "all_worker_scratch_bytes",
     )?;
     let telemetry_bytes_production = 0;
-    let telemetry_bytes_instrumented = mul(
+    let telemetry_bytes_per_worker = mul(
         telemetry_counter_count_v1(),
         8,
+        "telemetry_bytes_per_worker",
+    )?;
+    let telemetry_bytes_instrumented = mul(
+        telemetry_bytes_per_worker,
+        u64::from(config.worker_count),
         "telemetry_bytes_instrumented",
     )?;
     let pixel_count = mul(
@@ -993,8 +1102,14 @@ pub fn derive(
         2,
         "coefficient_snapshot_bytes",
     )?;
+    // P7 workers receive a padding-free canonical copy of every frame-owned
+    // input: 16 parameters, 12 camera components, 8 * (kind + 15 scalar
+    // light components), exposure, environment, frame index, and validity.
+    // Keep current/previous storage even when a particular later stage does
+    // not consume every field; visibility correctness must not depend on
+    // source struct layout or coordinator turn-frame lifetime.
     let frame_dependency_snapshot_bytes = mul(
-        u64::from(params.frame_dependencies.runtime_bytes),
+        u64::from(params.frame_dependencies.runtime_bytes).max(P7_CANONICAL_FRAME_SNAPSHOT_BYTES),
         2,
         "frame_dependency_snapshot_bytes",
     )?;
@@ -1115,7 +1230,9 @@ pub fn derive(
                     "{max_event_subdivisions} subdivisions each ({maximum_roots_per_generator} roots * 2^{} dyadic depth)",
                     ceilings.event_isolation_depth
                 ),
-                "one terminal run".to_string(),
+                format!(
+                    "one terminal run, with a floor of {TILE_WIDTH_V1} terminal pixel-cell records"
+                ),
             ],
         },
         CapacityDerivation {
@@ -1240,11 +1357,9 @@ mod tests {
     fn telemetry_bytes_come_from_schema_counts() {
         assert_eq!(
             telemetry_counter_count_v1(),
-            CertificateProofMethodV1::Count as u64
-                + CertificateExpiryCauseV1::Count as u64
-                + RebuildReasonV1::Count as u64
+            crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1
         );
-        assert_eq!(telemetry_counter_count_v1() * 8, 384);
+        assert_eq!(telemetry_counter_count_v1() * 8, 1136);
     }
 
     #[test]

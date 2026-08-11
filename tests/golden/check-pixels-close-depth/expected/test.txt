@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 0000000000000088
+p7 0000000000000018
+p7 00000000000000b4
+p7 503753414d504c45
+p7 000000000000ffff
+p7 444f41c7e764c854
+p7 648692b2f4430fdf
+p7 80a5d2cc2cf8dbd3
+p7 66c5d5671c7f5d58
+p7 98e21ca4d98f1149
+test close_depth_uses_bounded_corridor: ok
+2 passed, 0 failed
+lane1 turns=2 run_one=4 messages=2
+lane1 hits=0:2,1:1

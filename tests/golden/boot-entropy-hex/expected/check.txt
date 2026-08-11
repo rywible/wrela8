@@ -26,15 +26,19 @@ Module path=runtime
   Struct PendingPage data
     field words: [u64; CORE_SLOTS]
     field idle: [u64; CORE_SLOTS]
-  Static PENDING: PendingPage placed=0x40007000
-  Struct ConsoleRingPage data
+  Static PENDING: PendingPage placed=0x4003c000
+  Struct ConsoleRingDescPage data
     field desc_words: [u64; DESC_WORD_COUNT]
+  Static CONSOLE_RING_DESC: ConsoleRingDescPage placed=0x40001000
+  Struct ConsoleRingAvailPage data
     field avail_flags_idx: u32
+  Static CONSOLE_RING_AVAIL: ConsoleRingAvailPage placed=0x40011000
+  Struct ConsoleRingDoorbellPage data
     field doorbell: u64
-  Static CONSOLE_RING: ConsoleRingPage placed=0x40001000
+  Static CONSOLE_RING_DOORBELL: ConsoleRingDoorbellPage placed=0x4001b008
   Struct ConsoleDataPage data
     field bytes: [u8; DATA_SIZE]
-  Static CONSOLE_DATA: ConsoleDataPage placed=0x40003000
+  Static CONSOLE_DATA: ConsoleDataPage placed=0x4001c000
   Fn __wrela_runtime_probe() -> unit
   Fn __wrela_line_begin() -> unit
   Fn __wrela_line_commit() -> u64
@@ -70,6 +74,7 @@ Module path=runtime
   Fn copy_line_buf_range(bump: read usize, n: read usize) -> unit
   Fn copy_bytes_range(src: read Bytes, bump: read usize, n: read usize) -> unit
   Fn __wrela_trace_u64(value: read u64) -> unit
+  Fn __wrela_trace_p7_u64(value: read u64) -> unit
   Fn __wrela_console_append_line_buf(len: read usize) -> u64
   Fn __wrela_console_append_bytes(src: read Bytes, len: read usize) -> u64
   Fn __wrela_abort_tail() -> unit

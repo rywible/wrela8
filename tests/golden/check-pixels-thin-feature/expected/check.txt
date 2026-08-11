@@ -1,3 +1,84 @@
+Module path=__image_pixels
+  Const N_RENDERERS: usize
+  Const N_RENDER_WORKERS: usize
+  Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
+  Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
+  Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
+  Fn __wrela_pixels_program_digest_byte(renderer: read usize, byte: read usize) -> u8
+  Fn __wrela_pixels_tile_feature_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_feature(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_tile_event_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_event(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
+  Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
+  Fn __wrela_pixels_p7_abs(value: read f32) -> f32
+  Fn __wrela_pixels_p7_power(value: read f32, exponent: read u64) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_coefficient(renderer: read usize, target: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_polynomial_base(renderer: read usize) -> u32
+  Fn __wrela_pixels_p7_feature_polynomial(renderer: read usize, feature: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_feature_polynomial_uv_bounds(renderer: read usize, feature: read u32) -> [f32; 20]
+  Fn __wrela_pixels_p7_event_polynomial(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_torus_event_magnitudes(renderer: read usize, event: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 65]
+  Fn __wrela_pixels_p7_standard_torus_coefficients(renderer: read usize, event: read u32, camera: read [f32; 12]) -> [f32; 57]
+  Fn __wrela_pixels_p7_standard_interval_mul(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p7_standard_torus_cell_positive_hit(u: read f32, v: read f32, ru: read f32, rv: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_standard_torus_feature(renderer: read usize, feature: read u32) -> bool
+  Fn __wrela_pixels_p7_standard_torus_pixel_bounds(coefficients: read [f32; 57], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 8]
+  Fn __wrela_pixels_p7_standard_torus_value(coefficients: read [f32; 57], u: read f32, v: read f32) -> [f32; 3]
+  Fn __wrela_pixels_p7_standard_torus_discriminant(coefficients: read [f32; 57], pixel_bounds: read [f32; 8], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 5]
+  Fn __wrela_pixels_p7_standard_torus_positive_hit(u: read f32, v: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_polynomial_uv2_bounds(renderer: read usize, event: read u32, u: read f32, v: read f32, ru: read f32, rv: read f32, magnitudes: read [f32; 65]) -> [f32; 4]
+  Fn __wrela_pixels_p7_event_clip_q(renderer: read usize, event: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_event_predicate_curve(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 20]
+  Fn __wrela_pixels_p7_deformation_miss_model(renderer: read usize, event: read u32) -> [f32; 21]
+  Fn __wrela_pixels_p7_pinned_camera(renderer: read usize) -> [f32; 13]
+  Fn __wrela_pixels_p7_projected_union_mode(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
+  Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
+  Fn __wrela_pixels_p7_material_event_coverage(renderer: read usize, x: read u32, y: read u32, q: read f32, hit: read bool, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 3]
+  Fn __wrela_pixels_p7_feature_valid(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_feature_valid_filter(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], exponent: read i32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_q_span(renderer: read usize, feature: read u32) -> [f32; 3]
+  Fn __wrela_pixels_p7_feature_world_bounds(renderer: read usize, feature: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p7_object_composed_root(renderer: read usize, object: read u32) -> bool
+  Fn __wrela_pixels_p7_object_support(renderer: read usize, object: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_object_q_tube(renderer: read usize, object: read u32, uv: read [f32; 4], q_lo: read f32, q_hi: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 7]
+  Fn __wrela_pixels_p7_initial_inside(renderer: read usize, u: read f32, v: read f32, q_near: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [u64; 2]
+  Fn __wrela_pixels_p7_polynomial_at_q(polynomial: read [f32; 11], q: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p7_param_slot(renderer: read usize, path_key: read u64) -> [u64; 2]
+  Fn __wrela_pixels_p7_numeric_config(renderer: read usize) -> [i64; 14]
+  Fn __wrela_pixels_p7_csg_occupancy(renderer: read usize, inside_bits: read u64) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_class(representation: read u64, kind: read u64) -> u64
+  Fn __wrela_pixels_p7_worker_error_class(error: read u8) -> u8
+  Fn __wrela_pixels_p7_csg_influence(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_frame_snapshot_store(renderer: read usize, params: read [f32; 16], param_count: read u16, camera: read [f32; 12], light_kinds: read [u64; 8], light_scalars: read [f32; 120], post: read [f32; 4], frame_index: read u64) -> bool
+  Fn __wrela_pixels_p7_frame_snapshot_params(renderer: read usize) -> [f32; 16]
+  Fn __wrela_pixels_p7_frame_snapshot_camera(renderer: read usize) -> [f32; 12]
+  Fn __wrela_pixels_p7_frame_snapshot_light_kinds(renderer: read usize) -> [u64; 8]
+  Fn __wrela_pixels_p7_frame_snapshot_light_scalars(renderer: read usize) -> [f32; 120]
+  Fn __wrela_pixels_p7_frame_snapshot_post(renderer: read usize) -> [f32; 4]
+  Fn __wrela_pixels_p7_frame_snapshot_meta(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p7_worker_assignment(renderer: read usize, worker: read u32) -> [u64; 7]
+  Fn __wrela_pixels_p7_framebuffer_reset(renderer: read usize) -> bool
+  Fn __wrela_pixels_p7_framebuffer_write(renderer: read usize, pixel: read u32, r: read u8, g: read u8, b: read u8, a: read u8) -> bool
+  Fn __wrela_pixels_p7_framebuffer_byte(renderer: read usize, byte: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_framebuffer_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p7_framebuffer_alpha_samples(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_framebuffer_pixel_written(renderer: read usize, pixel: read u32) -> bool
+  Fn __wrela_pixels_p7_workspace_reset(renderer: read usize, worker: read u32, generation: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_charge(renderer: read usize, worker: read u32, slot: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_counter(renderer: read usize, worker: read u32, slot: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_coverage(renderer: read usize, worker: read u32, corridor: read bool, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_store_certified_run(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8], model: read [i64; 8], normal: read [i64; 6], slacks: read [i64; 2], sample_meta: read i64) -> bool
+  Fn __wrela_pixels_p7_workspace_load_certified_run_word(renderer: read usize, worker: read u32, record: read u32, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_root(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_workspace_store_root_tmp(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root_tmp(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_telemetry_reset(renderer: read usize, worker: read u32) -> bool
+  Fn __wrela_pixels_p7_telemetry_charge(renderer: read usize, worker: read u32, counter: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_telemetry_counter(renderer: read usize, worker: read u32, counter: read usize) -> [u64; 2]
 Module path=field
   Struct Vec2 data
     pub field x: f32
@@ -64,10 +145,10 @@ Module path=field
   Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
 Module path=render
   Fn __wrela_pixels_p5_finite(value: read f32) -> bool
+  Fn __wrela_pixels_p7_program_validate(renderer: read usize) -> bool
+  Fn __wrela_pixels_p7_program_digest_byte(renderer: read usize, byte: read usize) -> u8
   Struct RenderPath data
     pub field component: u32
-    fn renderer_unavailable() -> RenderPath
-    fn is_renderer_unavailable(read self) -> bool
   Struct TileId data
     pub field value: u32
   Struct RenderCapacity data
@@ -115,6 +196,9 @@ Module path=render
     field lights: [Light; 8]
     fn empty() -> LightFrame
     fn fixed(lights: read [Light; 8]) -> LightFrame
+    fn snapshot_kinds(read self) -> [u64; 8]
+    fn snapshot_scalars(read self) -> [f32; 120]
+    fn from_snapshot(kinds: read [u64; 8], values: read [f32; 120]) -> LightFrame
   Struct ScalarRange data
     pub field min: f32
     pub field max: f32
@@ -186,48 +270,244 @@ Module path=render
     pub field displayed_digest: [u8; 32]
     pub field rebuilt_tiles: u32
     pub field reused_tiles: u32
-  Struct RendererWorker resource
-    field renderer_index: u32
-    field frameprog_base: usize
-    field workspace_base: usize
-    field workspace_bytes: usize
+    pub field certificate_runs: u64
+    pub field event_corridors: u64
+    pub field revalidated_proposals: u64
+    pub field certificate_telemetry_digest: [u64; 4]
+  Struct RenderFailure[P] data
+    pub field params: P
+    pub field error: RenderError
+  Struct FrameInputSnapshot data
+    field params: [f32; 16]
+    field param_count: u16
+    field camera: [f32; 12]
+    field lights: LightFrame
+    field exposure: f32
+    field environment: Rgb
+    field frame_index: u64
+    fn zero() -> FrameInputSnapshot
+    fn from_packed(params: read [f32; 16], param_count: read u16, camera: read [f32; 12], frame_index: read u64) -> FrameInputSnapshot
+    fn make(params: read [f32; 16], param_count: read u16, camera: read Camera, frame_index: read u64) -> FrameInputSnapshot
+    fn make_frame(params: read [f32; 16], param_count: read u16, camera: read Camera, lights: read LightFrame, exposure: read f32, environment: read Rgb, frame_index: read u64) -> FrameInputSnapshot
+    fn post_values(read self) -> [f32; 4]
+  Struct RendererWorkerAssignment data
+    field word: u64
+  Struct RendererWorkerJob data
+    field renderer_index: usize
+    field worker_index: u32
     field tiles_start: u32
     field tiles_end: u32
-    init(mut self, renderer_index: read u32, frameprog_base: read usize, workspace_base: read usize, workspace_bytes: read usize, tiles_start: read u32, tiles_end: read u32) -> unit
-    async fn run_job(mut self, job: read u64) -> u64
+  Struct P7VisibilitySample data
+    field ok: bool
+    field error: u8
+    field hit: bool
+    field event: bool
+    field object: u32
+    field identity: u32
+    field q_lo: i32
+    field q_hi: i32
+    field root_count: u32
+    field proof_method: u8
+    field composition_shape: u8
+    field proof_margin: i32
+    field coverage: u8
+    fn debug_values(read self) -> [i64; 12]
+    fn is_certified(read self) -> bool
+    fn failure() -> P7VisibilitySample
+    fn failure_with(error: read u8) -> P7VisibilitySample
+    fn background() -> P7VisibilitySample
+    fn event_pixel(read self) -> bool
+  Struct P7PixelArrangement data
+    pub field ok: bool
+    pub field error: u8
+    pub field sample: P7VisibilitySample
+    pub field model: [i32; 8]
+    fn failure(error: read u8) -> P7PixelArrangement
+    fn success(sample: read P7VisibilitySample) -> P7PixelArrangement
+  Fn __wrela_pixels_p7_interval_from_f32(value: read f32, exponent: read i32) -> [i64; 3]
+  Fn __wrela_pixels_p7_raw_to_f32(raw: read i32, exponent: read i32) -> f32
+  Struct P7WalkTarget data
+    field object: u32
+    field identity: u32
+    field feature: u32
+    field q_lo: i32
+    field q_hi: i32
+    field support_lo: i32
+    field support_hi: i32
+    field degree: u8
+  Fn __wrela_pixels_p7_isolate_power_roots(roots: read P7RootList, capacity: read u32, power: read [Iv32; 9], derivative_power: read [Iv32; 9], target: read P7WalkTarget, context: read P7RootContext) -> P7RootList
+  Fn __wrela_pixels_p7_verify_analytic_front(power: read [Iv32; 9], degree: read u8, proposal: read f32, exponent: read i32, q_lo: read i32, q_hi: read i32, domain: read FixedDomain) -> [i64; 4]
+  Fn __wrela_pixels_p7_analytic_front(polynomial: read [f32; 11], power: read [Iv32; 9], degree: read u8, exponent: read i32, q_lo: read i32, q_hi: read i32, domain: read FixedDomain) -> [i64; 4]
+  Struct P7RowCandidates data
+    field ok: bool
+    field error: u8
+    field ids: [u32; 256]
+    field count: u16
+    fn debug_count(read self) -> u16
+  Fn __wrela_pixels_p7_row_candidates(renderer: read usize, tile: read u32, y: read u32, snapshot: read FrameInputSnapshot) -> P7RowCandidates
+  Struct P7RootList data
+    field ok: bool
+    field error: u8
+    field renderer: usize
+    field worker: u32
+    field temporary: bool
+    field count: u32
+    field initial_inside: u64
+    fn debug_count(read self) -> u32
+  Struct P7StoredRoot data
+    field ok: bool
+    field lo: i32
+    field hi: i32
+    field object: u32
+    field identity: u32
+    field feature: u32
+    field crossing: bool
+    field method: u8
+    field margin: i32
+    fn failure() -> P7StoredRoot
+  Fn __wrela_pixels_p7_load_root(roots: read P7RootList, index: read u32) -> P7StoredRoot
+  Fn __wrela_pixels_p7_store_root(roots: read P7RootList, index: read u32, root: read P7StoredRoot) -> bool
+  Fn __wrela_pixels_p7_append_root(roots: read P7RootList, capacity: read u32, root: read P7StoredRoot) -> P7RootList
+  Struct P7BoolResult data
+    field ok: bool
+    field value: bool
+  Fn __wrela_pixels_p7_csg_evaluate(renderer: read usize, inside_bits: read u64) -> P7BoolResult
+  Fn __wrela_pixels_p7_support_q_span(renderer: read usize, feature: read u32, filter: read [f32; 4], global_q_lo: read i32, global_q_hi: read i32, exponent: read i32, snapshot: read FrameInputSnapshot) -> [i64; 3]
+  Struct P7RootContext data
+    field renderer: usize
+    field u: f32
+    field v: f32
+    field ru: f32
+    field rv: f32
+    field exponent: i32
+    field depth_cap: u8
+    field candidates: P7RowCandidates
+    field snapshot: FrameInputSnapshot
+  Fn __wrela_pixels_p7_smooth_object_q_span(context: read P7RootContext, object_id: read u32, global_q_lo: read i32, global_q_hi: read i32) -> [i64; 3]
+  Fn __wrela_pixels_p7_active_object_feature(context: read P7RootContext, object_id: read u32, q_lo: read i32, q_hi: read i32) -> [i64; 3]
+  Fn __wrela_pixels_p7_object_identity_span(context: read P7RootContext, object_id: read u32) -> [i64; 3]
+  Fn __wrela_pixels_p7_isolate_smooth_object(roots: read P7RootList, context: read P7RootContext, object_id: read u32, q_lo: read i32, q_hi: read i32, capacity: read u32) -> P7RootList
+  Fn __wrela_pixels_p7_collect_roots_box(renderer: read usize, worker: read u32, x0: read u32, x1: read u32, y: read u32, filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7RootList
+  Fn __wrela_pixels_p7_collect_roots(renderer: read usize, worker: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7RootList
+  Fn __wrela_pixels_p7_select_visibility(renderer: read usize, roots: read P7RootList) -> P7VisibilitySample
+  Fn __wrela_pixels_p7_structural_corridor_pixel(renderer: read usize, tile: read u32, x: read u32, y: read u32) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_pixel_span(renderer: read usize, event_id: read u32, x: read u32, y: read u32) -> [i64; 4]
+  Fn __wrela_pixels_p7_event_polynomial_at_q(polynomial: read [f32; 11], q: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p7_quartic_discriminant(polynomial: read [f32; 11]) -> [f32; 11]
+  Fn __wrela_pixels_p7_clip_curve_misses_cell(renderer: read usize, event_id: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, snapshot: read FrameInputSnapshot) -> bool
+  Fn __wrela_pixels_p7_point_union_occupancy(renderer: read usize, worker: read u32, x: read u32, y: read u32, u: read f32, v: read f32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 3]
+  Fn __wrela_pixels_p7_event_owner(renderer: read usize, event_id: read u32) -> i64
+  Fn __wrela_pixels_p7_union_silhouette_coverage_at_slack(renderer: read usize, worker_tile: read u64, x: read u32, y: read u32, candidates: read P7RowCandidates, center_sample: read P7VisibilitySample, snapshot: read FrameInputSnapshot, torus_slack: read u64) -> [i64; 4]
+  Fn __wrela_pixels_p7_union_silhouette_coverage(renderer: read usize, worker: read u32, tile: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, center_sample: read P7VisibilitySample, snapshot: read FrameInputSnapshot) -> [i64; 4]
+  Fn __wrela_pixels_p7_interval_sin(lo: read f32, hi: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p7_deformation_silhouette_misses(renderer: read usize, event: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_deformation_misses_cell(renderer: read usize, event: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_half_plane_byte(a: read i32, b: read i32, c: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_half_plane_units(a: read i32, b: read i32, c: read i32) -> [i64; 3]
+  Fn __wrela_pixels_p7_predicate_curve_cell(renderer: read usize, event_id: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, snapshot: read FrameInputSnapshot) -> [f32; 8]
+  Fn __wrela_pixels_p7_predicate_region_coverage(renderer: read usize, worker: read u32, tile: read u32, pixel: read u32, event_id: read u32, cell_uv: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 2]
+  Fn __wrela_pixels_p7_predicate_region_area(count: read i32, curve_base: read [f32; 8], curve_a: read [f32; 8], curve_b: read [f32; 8], curve_residual: read [f32; 8]) -> [i64; 2]
+  Fn __wrela_pixels_p7_arrangement_boundary_crosses(renderer: read usize, event_id: read u32, kind: read u8, curve_q: read f32, cell_uv: read [f32; 4], snapshot: read FrameInputSnapshot) -> [i64; 2]
+  Struct P7ArrangementSet data
+    field count: u8
+    field event_ids: [u32; 8]
+    field event_kinds: [u8; 8]
+    field event_qs: [f32; 8]
+    field cell_uv: [f32; 4]
+  Fn __wrela_pixels_p7_combined_arrangement_coverage(renderer: read usize, worker: read u32, tile: read u32, pixel: read u32, arrangement: read P7ArrangementSet, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 2]
+  Fn __wrela_pixels_p7_silhouette_coverage(renderer: read usize, worker: read u32, tile: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, center_sample: read P7VisibilitySample, snapshot: read FrameInputSnapshot) -> [i64; 4]
+  Fn __wrela_pixels_p7_event_coverage(renderer: read usize, tile: read u32, x: read u32, y: read u32, sample: read P7VisibilitySample, snapshot: read FrameInputSnapshot) -> [i64; 3]
+  Fn __wrela_pixels_p7_pixel_visibility_from_candidates(renderer: read usize, worker: read u32, tile: read u32, span: read u32, y: read u32, filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7VisibilitySample
+  Fn __wrela_pixels_p7_density_bin(count: read u32) -> usize
+  Fn __wrela_pixels_p7_run_length_bin(length: read u32) -> usize
+  Fn __wrela_pixels_p7_charge_run_telemetry(renderer: read usize, worker: read u32, sample: read P7VisibilitySample, length: read u32) -> unit
+  Fn __wrela_pixels_p7_revalidated_proposal_count(previous: read P7RowCandidates, current: read P7RowCandidates) -> u16
+  Fn __wrela_pixels_p7_row_candidates_with_proposal(previous: read P7RowCandidates, current: read P7RowCandidates, enabled: read bool) -> P7RowCandidates
+  Fn __wrela_pixels_p7_run_worker_with_proposals(renderer_index: read usize, worker_index: read usize, proposals_enabled: read bool) -> u64
+  Struct RendererWorker0 resource
+    init(mut self) -> unit
+    fn run_job(read self, word: read u64) -> u64
+  Struct RendererWorker1 resource
+    init(mut self) -> unit
+    fn run_job(read self, word: read u64) -> u64
+  Struct RendererWorker2 resource
+    init(mut self) -> unit
+    fn run_job(read self, word: read u64) -> u64
+  Struct RendererWorker3 resource
+    init(mut self) -> unit
+    fn run_job(read self, word: read u64) -> u64
+  Struct P7CertifiedRow data
+    field ok: bool
+    field error: u8
+    field x0: u16
+    field x1: u16
+    field samples: [P7VisibilitySample; 16]
+    field starts: [u16; 16]
+    field ends: [u16; 16]
+    field count: u8
+    field run_count: u8
+    field corridor_count: u8
+    field root_count: u32
+    field modeled: bool
+    field model: [i32; 8]
+    fn failure() -> P7CertifiedRow
+    fn failure_with(error: read u8) -> P7CertifiedRow
+  Struct P7RowCertificationContext data
+    field renderer: usize
+    field worker: u32
+    field tile: u32
+    field y: u32
+    field x0: u32
+    field x1: u32
+    field proposal: P7CertifiedRow
+    field proposals_enabled: bool
+  Fn __wrela_pixels_p7_proposal_matches(proposal: read P7CertifiedRow, certified: read P7CertifiedRow) -> bool
+  Fn __wrela_pixels_p7_resolve_silhouette_owner(renderer: read usize, worker_tile: read u64, xy: read u64, pixel_filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, initial: read P7VisibilitySample, curve: read [i64; 4]) -> P7VisibilitySample
+  Fn __wrela_pixels_p7_choose_arrangement_axis(renderer: read usize, worker_tile: read u64, xy: read u64, cell: read [f32; 4], minimum: read [f32; 2], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 3]
+  Fn __wrela_pixels_p7_resolve_pixel_arrangement(renderer: read usize, worker_tile: read u64, xy: read u64, pixel_filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, initial: read P7VisibilitySample, integrated_coverage: read i64) -> P7PixelArrangement
+  Fn __wrela_pixels_p7_certify_pixel_row(renderer: read usize, worker: read u32, tile: read u32, y: read u32, x0: read u32, x1: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7CertifiedRow
+  Fn __wrela_pixels_p7_try_certify_regular_row(renderer: read usize, worker: read u32, tile: read u32, y: read u32, x0: read u32, x1: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7CertifiedRow
+  Fn __wrela_pixels_p7_certify_row(context: read P7RowCertificationContext, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7CertifiedRow
+  Fn __wrela_pixels_p7_worker_error(error: read u8, tile: read u32) -> u64
+  Fn __wrela_pixels_p7_worker_error_code(value: read u64) -> u8
+  Fn __wrela_pixels_p7_worker_error_tile(value: read u64) -> u32
+  Fn __wrela_pixels_p7_run_job(job: read RendererWorkerJob, proposals_enabled: read bool) -> u64
+  Fn __wrela_pixels_p7_debug_probe(renderer: read usize, tile: read u32, x: read u32, y: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 15]
+  Fn __wrela_pixels_p7_debug_probe_at_u(renderer: read usize, worker: read u32, tile: read u32, x: read u32, y: read u32, u: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 10]
+  Fn __wrela_pixels_p7_debug_probe_cell(renderer: read usize, tile: read u32, x: read u32, y: read u32, filter: read [f32; 4], index: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
+  Fn __wrela_pixels_p7_debug_probe_coverage(renderer: read usize, tile: read u32, x: read u32, y: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
+  Fn __wrela_pixels_p7_debug_probe_silhouette(renderer: read usize, tile: read u32, x: read u32, y: read u32, which: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
+  Fn __wrela_pixels_p7_debug_probe_clip(renderer: read usize, x: read u32, y: read u32, feature: read u32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
+  Fn __wrela_pixels_p7_debug_probe_row(renderer: read usize, tile: read u32, x: read u32, y: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 8]
+  Fn __wrela_pixels_p7_debug_probe_validity(renderer: read usize, feature: read u32, filter: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
+  Fn __wrela_pixels_p7_debug_frame_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p7_debug_alpha_samples(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_debug_certified_run_word(renderer: read usize, worker: read u32, record: read u32, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_debug_frame_dump_word(renderer: read usize, index: read u64) -> [u64; 2]
+  Fn __wrela_pixels_p7_job_value(result: take Result[u64, CallError[never]]) -> u64
+  AsyncFn pixels_p7_worker_job_4_0(worker: read Actor[RendererWorker0], word: read u64) -> u64
+  AsyncFn pixels_p7_worker_job_4_1(worker: read Actor[RendererWorker1], word: read u64) -> u64
+  AsyncFn pixels_p7_worker_job_4_2(worker: read Actor[RendererWorker2], word: read u64) -> u64
+  AsyncFn pixels_p7_worker_job_4_3(worker: read Actor[RendererWorker3], word: read u64) -> u64
   Struct RendererWorkers data
-    field worker_0: Actor[RendererWorker]
-    field worker_1: Actor[RendererWorker]
-    field worker_2: Actor[RendererWorker]
-    field worker_3: Actor[RendererWorker]
-    field worker_4: Actor[RendererWorker]
-    field worker_5: Actor[RendererWorker]
-    field worker_6: Actor[RendererWorker]
-    field worker_7: Actor[RendererWorker]
-    field worker_8: Actor[RendererWorker]
-    field worker_9: Actor[RendererWorker]
-    field worker_10: Actor[RendererWorker]
-    field worker_11: Actor[RendererWorker]
-    field worker_12: Actor[RendererWorker]
-    field worker_13: Actor[RendererWorker]
-    field worker_14: Actor[RendererWorker]
-    field worker_15: Actor[RendererWorker]
-    field worker_16: Actor[RendererWorker]
-    field worker_17: Actor[RendererWorker]
-    field worker_18: Actor[RendererWorker]
-    field worker_19: Actor[RendererWorker]
-    field worker_20: Actor[RendererWorker]
-    field worker_21: Actor[RendererWorker]
-    field worker_22: Actor[RendererWorker]
-    field worker_23: Actor[RendererWorker]
-    field worker_24: Actor[RendererWorker]
-    field worker_25: Actor[RendererWorker]
-    field worker_26: Actor[RendererWorker]
-    field worker_27: Actor[RendererWorker]
-    field worker_28: Actor[RendererWorker]
-    field worker_29: Actor[RendererWorker]
-    field worker_30: Actor[RendererWorker]
-    field worker_31: Actor[RendererWorker]
+    field worker_0: Actor[RendererWorker0]
+    field worker_1: Actor[RendererWorker1]
+    field worker_2: Actor[RendererWorker2]
+    field worker_3: Actor[RendererWorker3]
+  Struct RendererPlacementState data
+    field frameprog_base: usize
+    field state_base: usize
+    field state_bytes: usize
+    field worker_assignment_0: RendererWorkerAssignment
+    field worker_assignment_1: RendererWorkerAssignment
+    field worker_assignment_2: RendererWorkerAssignment
+    field worker_assignment_3: RendererWorkerAssignment
+  Struct RendererDigestState data
+    pub field ok: bool
+    pub field digest: u64
+    pub field error: u8
+    pub field tile: u32
+  Fn __wrela_pixels_p7_digest_result(state: read RendererDigestState, result: take Result[u64, CallError[never]]) -> RendererDigestState
   Struct RendererFrameBounds data
     field exposure_min: f32
     field exposure_max: f32
@@ -279,44 +559,21 @@ Module path=render
     field frameprog_base: usize
     field state_base: usize
     field state_bytes: usize
+    field worker_assignment_0: RendererWorkerAssignment
+    field worker_assignment_1: RendererWorkerAssignment
+    field worker_assignment_2: RendererWorkerAssignment
+    field worker_assignment_3: RendererWorkerAssignment
     field bounds: RendererFrameBounds
-    init(mut self, workers: read RendererWorkers, worker_count: read u32, display: read usize, renderer_index: read u32, frameprog_base: read usize, state_base: read usize, state_bytes: read usize, bounds: read RendererFrameBounds) -> unit
+    field program_valid: bool
+    init(mut self, workers: read RendererWorkers, worker_count: read u32, display: read usize, renderer_index: read u32, placement: read RendererPlacementState, bounds: read RendererFrameBounds) -> unit
     fn __validate_fixed_frame(read self, frame: read RenderFrame[P]) -> Result[unit, RenderError]
-    fn __validate_and_unavailable(read self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
-    fn __unavailable(read self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
-    async fn __bootstrap_worker_path_0(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_1(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_2(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_3(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_4(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_5(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_6(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_7(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_8(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_9(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_10(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_11(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_12(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_13(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_14(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_15(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_16(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_17(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_18(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_19(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_20(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_21(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_22(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_23(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_24(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_25(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_26(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_27(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_28(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_29(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_30(mut self) -> Result[u64, CallError[never]]
-    async fn __bootstrap_worker_path_31(mut self) -> Result[u64, CallError[never]]
-    async fn render(mut self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderError]
+    fn __validate_frame(read self, frame: read RenderFrame[P]) -> Result[unit, RenderError]
+    fn __snapshot_frame(read self, frame: read RenderFrame[P]) -> FrameInputSnapshot
+    fn __construct_debug_frame(read self, frame: take RenderFrame[P], worker_digest: read u64, renderer_index_value: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
+    fn __render_error(read self, frame: take RenderFrame[P], error: take RenderError) -> Result[RenderedFrame[P], RenderFailure[P]]
+    fn __internal_error(read self, frame: take RenderFrame[P], kind: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
+    fn __worker_error(read self, frame: take RenderFrame[P], error: read u8, tile: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
+    async fn render(mut self, frame: take RenderFrame[P]) -> Result[RenderedFrame[P], RenderFailure[P]]
   Fn __wrela_pixels_bootstrap_dispatch(table: read u32, tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_scalar(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_field(tag: read u32) -> Result[u32, RenderError]
@@ -328,7 +585,20 @@ Module path=render
   Fn __wrela_pixels_bootstrap_csg(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_fixed_domain(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_camera_light_post(tag: read u32) -> Result[u32, RenderError]
-  Fn __wrela_pixels_present_placeholder() -> Result[unit, RenderError]
+  Fn __wrela_pixels_debug_visibility_ready() -> Result[unit, RenderError]
+Module path=render_certificate
+  Fn certify_quadratic_discriminant(power: read [Iv32; 9], domain: read FixedDomain) -> [i64; 3]
+  Fn certify_monotone_root(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> [i64; 3]
+Module path=render_coverage
+  Enum CoverageOutcome data
+    variant Value(Iv32)
+    variant Error
+  Fn coverage_line_twice_area(a: read i32, b: read i32, c: read i32) -> CoverageOutcome
+  Fn coverage_quadratic(chord: read Iv32, strip: read i32) -> Iv32
+  Fn coverage_quadratic_strip(a: read i32, b: read i32, c: read i32, strip: read i32) -> CoverageOutcome
+  Fn coverage_quadratic_split(c: read i32, b: read i32, a: read i32) -> Iv32
+  Fn coverage_quadratic_graph(c: read i32, b: read i32, a: read i32, strip: read i32, foreground_below: read bool, owner_lower_or_left: read bool) -> CoverageOutcome
+  Fn coverage_color_error(coverage: read Iv32, contrast: read Iv32, domain: read FixedDomain) -> NumericOutcome
 Module path=render_interval
   Struct FixedDomain data
     field exponent: i32
@@ -373,6 +643,305 @@ Module path=render_interval
   Fn interval_affine(input: read Iv32, scale: read Iv32, bias: read Iv32, domain: read FixedDomain) -> NumericOutcome
   Fn interval_convert(value: read Iv32, source: read FixedDomain, destination: read FixedDomain) -> NumericOutcome
   Fn interval_from_f32_bits(bits: read u32, radius_raw: read u32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_program
+  Enum ProgramViewError data
+    variant ProgramIndex
+    variant InvalidHeader
+    variant InvalidRecord
+  Struct FrameProgramHeader data
+    pub field renderer_index: u16
+    pub field total_bytes: u32
+    pub field table_count: u16
+    pub field numeric_revision: u32
+    pub field formal_revision: u32
+  Struct ProgramRecord data
+    pub field stable_id: u32
+    pub field tag: u16
+    pub field flags: u16
+    pub field operand_count: u16
+  Struct FeatureId data
+    pub field value: u32
+  Struct TileId data
+    pub field value: u32
+  Struct FeatureIdSlice data
+    field renderer: usize
+    field tile: u32
+    field count: u32
+    fn length(read self) -> u32
+    fn get(read self, ordinal: read u32) -> Result[FeatureId, ProgramViewError]
+  Struct CoeffSnapshot data
+    field values: [f32; 16]
+    field count: u16
+    fn zero() -> CoeffSnapshot
+    fn packed(values: read [f32; 16], count: read u16) -> Result[CoeffSnapshot, ProgramViewError]
+  Struct FrameProgramView data
+    field renderer: usize
+    fn initialize(renderer: read usize) -> Result[FrameProgramView, ProgramViewError]
+    fn header(read self) -> FrameProgramHeader
+    fn debug_digest(read self) -> [u8; 32]
+    fn record(read self, table: read u16, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn feature(read self, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn tile_features(read self, tile: read TileId) -> Result[FeatureIdSlice, ProgramViewError]
+    fn event(read self, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn operand(read self, table: read u16, id: read u32, ordinal: read u16) -> Result[u64, ProgramViewError]
+    fn coeff(read self, id: read u32, snapshot: read CoeffSnapshot) -> Result[f32, ProgramViewError]
+  Fn open_frame_program(renderer: read usize) -> Result[FrameProgramView, ProgramViewError]
+  Struct FrameProgramHeaderV1 data
+    field magic: [u8; 8]
+    field version: u16
+    field header_bytes: u16
+    field flags: u32
+    field total_bytes: u32
+    field renderer_index: u16
+    field reserved0: u16
+    field numeric_revision: u32
+    field formal_revision: u32
+    field table_count: u16
+    field reserved1: [u8; 14]
+    field digest: [u8; 32]
+  Struct FrameProgramTableV1 data
+    field kind: u16
+    field record_bytes: u16
+    field count: u32
+    field offset: u32
+    field byte_len: u32
+  Struct FrameProgramRecordV1 data
+    field stable_id: u32
+    field tag: u16
+    field flags: u16
+    field operand_offset: u32
+    field operand_count: u16
+    field reserved: u16
+  Struct FrameProgramImmediateV1 data
+    field owner_kind: u16
+    field reserved0: u16
+    field owner_id: u32
+    field ordinal: u32
+    field reserved1: u32
+    field value: u64
+  Fn program_floor_div(value: read i64, scale: read i64) -> i64
+  Fn program_ceil_div(value: read i64, scale: read i64) -> i64
+  Enum BernsteinOutcome3 data
+    variant Value([Iv32; 3])
+    variant Error
+  Enum BernsteinSplitOutcome3 data
+    variant Value([Iv32; 6])
+    variant Error
+  Struct Polynomial9 data
+    field coefficients: [Iv32; 9]
+    field degree: u8
+    fn coefficient(read self, index: read usize) -> Iv32
+    fn degree_value(read self) -> u8
+  Struct BernsteinSplit9 data
+    field left: [Iv32; 9]
+    field right: [Iv32; 9]
+    field degree: u8
+    fn left_coefficient(read self, index: read usize) -> Iv32
+    fn right_coefficient(read self, index: read usize) -> Iv32
+  Enum Polynomial9Outcome data
+    variant Value(Polynomial9)
+    variant Error
+  Enum BernsteinSplit9Outcome data
+    variant Value(BernsteinSplit9)
+    variant Error
+  Struct SparseTerm data
+    field coefficient: Iv32
+    field powers: [u8; 4]
+    fn make(coefficient: read Iv32, powers: read [u8; 4]) -> SparseTerm
+  Fn polynomial_horner9(coefficients: read [Iv32; 9], degree: read u8, x: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_derivative9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_multiply9(left: read Polynomial9, right: read Polynomial9, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_compose9(outer_coefficients: read [Iv32; 9], outer_degree: read u8, candidate_coefficients: read [Iv32; 9], candidate_degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_sparse32(terms: read [SparseTerm; 32], count: read u8, variables: read [Iv32; 4], domain: read FixedDomain) -> NumericOutcome
+  Fn program_binomial(n: read i32, k: read i32) -> i64
+  Fn program_gcd(a: read i64, b: read i64) -> i64
+  Fn bernstein_from_power9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn bernstein_subdivide9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> BernsteinSplit9Outcome
+  Fn bernstein_compose(a0: read i32, a1: read i32, a2: read i32, domain: read FixedDomain) -> BernsteinOutcome3
+  Fn bernstein_sign(coefficients: read [Iv32; 3]) -> i32
+  Fn bernstein_average(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_lerp_ratio(a: read Iv32, b: read Iv32, numerator: read i64, denominator: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_subdivide(coefficients: read [Iv32; 3], domain: read FixedDomain) -> BernsteinSplitOutcome3
+  Enum QuadraticRangeOutcome data
+    variant Value([i32; 2])
+    variant Error
+  Enum QuadraticRangeWideOutcome data
+    variant Value([i64; 2])
+    variant Error
+  Fn quadratic_range_wide(c: read i64, b: read i64, a: read i64) -> QuadraticRangeWideOutcome
+  Fn quadratic_range(c: read i32, b: read i32, a: read i32) -> QuadraticRangeOutcome
+  Fn quadratic_range2(c: read i32, bu: read i32, bv: read i32, buu: read i32, buv: read i32, bvv: read i32) -> QuadraticRangeOutcome
+  Fn polynomial_sparse(c0: read i32, c1: read i32, u: read i32, t: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_taylor(c0: read i32, c1: read i32, x: read i32, remainder_radius: read i32, domain: read FixedDomain) -> NumericOutcome
+Module path=runtime
+  Const QUEUE_SIZE: u64
+  Const DESC_WORD_COUNT: usize
+  Const DATA_SIZE: usize
+  Struct MachineInfoPage data
+    field next_deadline: u64
+    field exit_code: u64
+    field test_passed: u64
+    field test_failed: u64
+    field ring_data_bump: u64
+    field ring_desc_bump: u64
+    field line_start: u64
+    field core_marks: [u64; CORE_SLOTS]
+    field vector0_observed: u64
+    field abort_latch: u64
+    field test_next: u64
+  Static MACHINE_INFO: MachineInfoPage placed=0x40000000
+  Struct ClockMmio data
+    field now_ns: u64
+  Static CLOCK: ClockMmio placed=0x8000000
+  Struct ParkMmio data
+    field word: u64
+  Static PARK: ParkMmio placed=0x8002000
+  Static EXIT: ParkMmio placed=0x8001000
+  Static RELEASE: ParkMmio placed=0x8003000
+  Struct PendingPage data
+    field words: [u64; CORE_SLOTS]
+    field idle: [u64; CORE_SLOTS]
+  Static PENDING: PendingPage placed=0x4003c000
+  Struct ConsoleRingDescPage data
+    field desc_words: [u64; DESC_WORD_COUNT]
+  Static CONSOLE_RING_DESC: ConsoleRingDescPage placed=0x40001000
+  Struct ConsoleRingAvailPage data
+    field avail_flags_idx: u32
+  Static CONSOLE_RING_AVAIL: ConsoleRingAvailPage placed=0x40011000
+  Struct ConsoleRingDoorbellPage data
+    field doorbell: u64
+  Static CONSOLE_RING_DOORBELL: ConsoleRingDoorbellPage placed=0x4001b008
+  Struct ConsoleDataPage data
+    field bytes: [u8; DATA_SIZE]
+  Static CONSOLE_DATA: ConsoleDataPage placed=0x4001c000
+  Fn __wrela_runtime_probe() -> unit
+  Fn __wrela_line_begin() -> unit
+  Fn __wrela_line_commit() -> u64
+  Const LINE_BUF_SIZE: usize
+  Struct TestLineBuf data
+    field bytes: [u8; LINE_BUF_SIZE]
+  Static TEST_LINE_BUF: TestLineBuf placed=0x40000218
+  Const LANE1_METHOD_HITS_LEN: usize
+  Struct Lane1Stripe data
+    field turns: [u64; N_CORES]
+    field run_one_hits: [u64; N_CORES]
+    field messages: [u64; N_CORES]
+    field method_hits: [u64; LANE1_METHOD_HITS_LEN]
+  Static LANE1: Lane1Stripe placed=0x4000e900
+  Fn __wrela_lane1_method_flat(root: read usize, method: read usize) -> usize
+  Fn __wrela_lane1_record_method(core: read usize, root: read usize, method: read usize) -> unit
+  Fn __wrela_lane1_append_u64(value: read u64) -> u64
+  Fn __wrela_lane1_sum_turns() -> u64
+  Fn __wrela_lane1_sum_run_one() -> u64
+  Fn __wrela_lane1_sum_messages() -> u64
+  Fn __wrela_lane1_sum_method_hits(flat: read usize) -> u64
+  Fn __wrela_lane1_dump() -> unit
+  Struct Lane2Counters data
+    field enabled: u64
+    field hits: [u64; BLOCK_POOL_COUNT]
+  Static LANE2: Lane2Counters placed=0x40008800
+  Fn __wrela_block_hit(id: read usize) -> unit
+  Fn __wrela_lane2_begin() -> unit
+  Fn __wrela_lane2_end() -> unit
+  Fn __wrela_lane2_dump() -> unit
+  Fn ascii_digit(d: read u64) -> u8
+  Fn __wrela_fmt_dec(value: read u64, is_signed: read u64) -> u64
+  Fn copy_line_buf_range(bump: read usize, n: read usize) -> unit
+  Fn copy_bytes_range(src: read Bytes, bump: read usize, n: read usize) -> unit
+  Fn __wrela_trace_u64(value: read u64) -> unit
+  Fn __wrela_trace_p7_u64(value: read u64) -> unit
+  Fn __wrela_console_append_line_buf(len: read usize) -> u64
+  Fn __wrela_console_append_bytes(src: read Bytes, len: read usize) -> u64
+  Fn __wrela_abort_tail() -> unit
+  Fn finish_abort() -> unit
+  Fn append_failed_literal() -> u64
+  Fn append_newline_literal() -> u64
+  Fn __wrela_abort(msg: read Bytes) -> unit
+  Fn __wrela_abort_val(prefix: read Bytes, value: read u64, value_signed: read u64, suffix: read Bytes) -> unit
+  Fn __wrela_deadline_poll() -> unit
+  Fn __wrela_deadline_scan() -> unit
+  Const TURN_STATUS_COMPLETED: u64
+  Const TURN_STATUS_SUSPENDED: u64
+  Const TURN_STATUS_CANCELLED: u64
+  Fn __wrela_rt_run_one(core: read usize) -> u64
+  Fn __wrela_child_poll(site: read usize) -> u64
+  Fn __wrela_rt_xsend(edge: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_rt_xreply(edge: read usize, turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_rt_drain(core: read usize) -> u64
+  Fn __wrela_try_drain(core: read usize) -> u64
+  Fn __wrela_xsend_0(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_1(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_2(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_3(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_4(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_5(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_6(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_7(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xreply_0(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_1(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_2(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_3(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_4(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_5(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_6(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_7(turn_and_tag: read u64, reply: read u64) -> unit
+  Const REPLY_TAG_OK: u64
+  Const CALL_ERROR_TAG_CANCELLED: u64
+  Fn __wrela_rt_enqueue(core: read usize, root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_try_enqueue(core: read usize, handle: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_enqueue_local(root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_0(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_1(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_2(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_3(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_4(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_5(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_6(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_7(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_8(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_9(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_10(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_11(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_12(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_13(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_14(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_15(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_16(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_17(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_18(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_19(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_20(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_21(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_22(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_23(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_24(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_25(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_26(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_27(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_28(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_29(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_30(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_31(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_invoke_xreply(edge: read usize, turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_deliver_reply(root: read usize, ti: read usize, reply: read u64, tag: read u64) -> unit
+  Fn __wrela_rt_select(core: read usize, root: read usize) -> u64
+  Fn __wrela_try_select(core: read usize, slot: read usize) -> u64
+  Fn __wrela_rt_boot_init() -> unit
+  Fn __wrela_rt_secondary_entry(core: read usize) -> unit
+  Fn __wrela_vector0() -> unit
+  Fn __wrela_rt_checkpoint(core: read usize) -> unit
+  Fn __wrela_append_ok_literal() -> u64
+  Fn __wrela_append_passed_comma_literal() -> u64
+  Fn __wrela_append_failed_tail_literal() -> u64
+  Fn __wrela_append_deadlock_literal() -> u64
+  Fn __wrela_abort_deadlock() -> unit
+  Const QUIESCE_POLL_BOUND: usize
+  Fn __wrela_secondaries_idle() -> u64
+  Fn __wrela_quiesce_before_halt() -> u64
+  Fn __wrela_lane1_quiesce_timeout_line() -> unit
+  Fn __wrela_rt_summary_and_halt() -> unit
+  Fn __wrela_rt_primary_boot() -> unit
+  Fn __wrela_rt_primary_entry() -> unit
 Module path=display
   Struct DisplayDevice data
     field id: u32
@@ -416,4 +985,5 @@ Module path=examples.check_pixels_thin_feature
   Fn world(p: read Vec3, params: read SceneParams) -> Field
   Fn shade(surface: read SurfaceContext[MaterialId], params: read SceneParams) -> MaterialSample
   Fn pinned_scene_contract() -> unit
+  AsyncFn thin_feature_is_not_sample_culled(renderer: read Actor[Renderer[SceneParams]]) -> unit
   Fn build() -> Image

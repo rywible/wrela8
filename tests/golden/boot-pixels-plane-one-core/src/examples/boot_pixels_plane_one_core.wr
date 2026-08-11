@@ -1,0 +1,211 @@
+module examples.boot_pixels_plane_one_core
+
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_frame_digest,
+    __wrela_pixels_p7_run_worker_with_proposals,
+)
+from drivers.display import Display, DisplayDevice
+
+pub struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    pub phase: f32
+    @range(min=-8.0, max=8.0)
+    pub unused_control: f32
+
+pub enum MaterialId:
+    Ground
+
+enum ObjectId:
+    Ground
+
+const WIDTH: u32 = 64
+const HEIGHT: u32 = 32
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    return mark(
+        plane(p, Vec3(x=0.0, y=0.0, z=1.0), offset=params.phase),
+        object=ObjectId.Ground,
+        material=MaterialId.Ground,
+    )
+
+@material
+fn shade(
+    surface: SurfaceContext[MaterialId],
+    read params: SceneParams,
+) -> MaterialSample:
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+    )
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert WIDTH == 64, "single-core plane width remains pinned"
+    assert HEIGHT == 32, "single-core plane height remains pinned"
+
+@actor
+struct OneCorePlaneProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    pub async fn render(mut self) -> u64:
+        frame = RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0, unused_control=7.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=0,
+        )
+        result = await self.renderer.render(frame=take frame)
+        @discard(reason="a rejected render returns the failed-job sentinel")
+        match result:
+            case .Err(_):
+                return 18446744073709551615
+            case .Ok(rendered):
+                __wrela_trace_p7_u64(rendered.certificate_runs)
+                __wrela_trace_p7_u64(rendered.event_corridors)
+                __wrela_trace_p7_u64(rendered.revalidated_proposals)
+                __wrela_trace_p7_u64(5780180186688408645)
+                __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+                __wrela_trace_p7_u64(4922225244575680596)
+                exact_digest = __wrela_pixels_p7_debug_frame_digest(0)
+                assert exact_digest[0] == 1, "single-core exact frame is complete"
+                word: usize = 0
+                @budget(bound=4)
+                while word < 4:
+                    packed = exact_digest[word + 1]
+                    if word == 0:
+                        assert packed == 5103229672427504515, "single-core exact digest word zero"
+                    elif word == 1:
+                        assert packed == 14671586064629379507, "single-core exact digest word one"
+                    elif word == 2:
+                        assert packed == 3970903405857294658, "single-core exact digest word two"
+                    else:
+                        assert packed == 17783162213222808057, "single-core exact digest word three"
+                    __wrela_trace_p7_u64(packed)
+                    word = word + 1
+                evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+                if evidence[0] == 1:
+                    __wrela_trace_p7_u64(4847371096046259761)
+                    evidence_word: usize = 0
+                    @budget(bound=16)
+                    while evidence_word < 16:
+                        evidence = __wrela_pixels_p7_debug_certified_run_word(
+                            0,
+                            0,
+                            0,
+                            evidence_word,
+                        )
+                        assert evidence[0] == 1, "instrumented run evidence is complete"
+                        __wrela_trace_p7_u64(evidence[1])
+                        evidence_word = evidence_word + 1
+                telemetry_word: usize = 0
+                @budget(bound=4)
+                while telemetry_word < 4:
+                    __wrela_trace_p7_u64(
+                        rendered.certificate_telemetry_digest[telemetry_word],
+                    )
+                    telemetry_word = telemetry_word + 1
+                assert rendered.certificate_runs == 128, "single-core run telemetry matches four-core"
+                assert rendered.event_corridors == 0, "single-core plane needs no corridors"
+                assert rendered.revalidated_proposals == 120, "single-core proposal telemetry matches four-core"
+                disabled_count = __wrela_pixels_p7_run_worker_with_proposals(0, 0, false)
+                assert disabled_count == 2048, "disabled proposals preserve success and pixel count"
+                disabled_digest = __wrela_pixels_p7_debug_frame_digest(0)
+                assert disabled_digest[0] == 1, "disabled proposal frame is complete"
+                assert disabled_digest[1] == 5103229672427504515, "disabled proposals preserve digest word zero"
+                assert disabled_digest[2] == 14671586064629379507, "disabled proposals preserve digest word one"
+                assert disabled_digest[3] == 3970903405857294658, "disabled proposals preserve digest word two"
+                assert disabled_digest[4] == 17783162213222808057, "disabled proposals preserve digest word three"
+                dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+                if dump_header[0] == 1:
+                    __wrela_trace_p7_u64(7599824371187933777)
+                    dump_index: u64 = 1
+                    @budget(bound=65551)
+                    while dump_index <= dump_header[1]:
+                        dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                        assert dump_value[0] == 1, "instrumented frame dump is complete"
+                        __wrela_trace_p7_u64(dump_value[1])
+                        dump_index = dump_index + 1
+                return exact_digest[1]
+@test(runtime)
+async fn one_core_matches_four_core_digest(probe: Actor[OneCorePlaneProbe]):
+    result = await probe.render()
+    @discard(reason="the imported probe pins all four exact digest words")
+    match result:
+        case .Ok(first_digest_byte):
+            assert first_digest_byte != 18446744073709551615, "single-core exact frame succeeds"
+        case .Err(_):
+            assert false, "single-core probe call is admitted"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-plane-one-core", target=Target.wrela_machine_v1, cores=1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(
+        Display,
+        device=display_device,
+        width=WIDTH,
+        height=HEIGHT,
+        refresh_hz=60,
+        core=0,
+    )
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=WIDTH,
+        height=HEIGHT,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    probe = img.actor(
+        OneCorePlaneProbe,
+        mailbox=1,
+        core=0,
+        renderer=renderer,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

@@ -365,6 +365,11 @@ fn target_actor_core(
         let worker = caller_key
             .rsplit_once(".__bootstrap_worker_path_")
             .and_then(|(_, suffix)| suffix.parse::<usize>().ok())
+            .or_else(|| {
+                caller_key
+                    .strip_prefix("pixels_p7_worker_job_4_")
+                    .and_then(|suffix| suffix.parse::<usize>().ok())
+            })
             .ok_or_else(|| {
                 LayoutError::new(format!(
                     "split-core RendererWorker call `{caller_key}` has no sealed worker index"
@@ -3072,7 +3077,6 @@ fn verify_placed_static_reservations(
                 continue;
             }
             let is_exact_generated_alias = placed_static.is_generated_pixels_alias
-                && reservation.name == "frameprog"
                 && allowed_aliases.iter().any(|alias| {
                     alias.name == placed_static.name
                         && alias.addr == placed_static.addr
@@ -3113,21 +3117,63 @@ fn verify_pixels_placed_static_reservations(
             end: plan.pixelsdata_end,
         },
     ];
-    let root_size = u64::from(wrela_machine::pixels::FRAME_PROGRAM_HEADER_BYTES_V1)
-        .checked_add(
-            u64::from(wrela_machine::pixels::FRAME_PROGRAM_TABLE_BYTES_V1)
-                .checked_mul(u64::from(
-                    wrela_machine::pixels::FrameProgramTableKindV1::REQUIRED_COUNT,
-                ))
-                .ok_or_else(|| LayoutError::new("P025: generated directory view size overflow"))?,
-        )
-        .ok_or_else(|| LayoutError::new("P025: generated frame-program root size overflow"))?;
+    let header_size = u64::from(wrela_machine::pixels::FRAME_PROGRAM_HEADER_BYTES_V1);
+    let directory_size = u64::from(wrela_machine::pixels::FRAME_PROGRAM_TABLE_BYTES_V1)
+        .checked_mul(u64::from(
+            wrela_machine::pixels::FrameProgramTableKindV1::REQUIRED_COUNT,
+        ))
+        .ok_or_else(|| LayoutError::new("P025: generated directory view size overflow"))?;
     let mut aliases = Vec::new();
     for (renderer, placement) in renderers.iter().zip(&plan.renderers) {
+        let mut framebuffer_offset = 0_u64;
+        let mut framebuffer_chunk = 0_usize;
+        while framebuffer_offset < placement.framebuffer_bytes {
+            let size = (placement.framebuffer_bytes - framebuffer_offset)
+                .min(crate::pixels::glue::WORKSPACE_VIEW_CHUNK_BYTES);
+            aliases.push(AllowedPixelsAlias {
+                name: format!(
+                    "R{}_DEBUG_FRAMEBUFFER_CHUNK_{framebuffer_chunk}",
+                    placement.index
+                ),
+                addr: placement
+                    .framebuffer_base
+                    .checked_add(framebuffer_offset)
+                    .ok_or_else(|| {
+                        LayoutError::new("P025: generated framebuffer chunk alias address overflow")
+                    })?,
+                size,
+            });
+            framebuffer_offset = framebuffer_offset.checked_add(size).ok_or_else(|| {
+                LayoutError::new("P025: generated framebuffer chunk alias offset overflow")
+            })?;
+            framebuffer_chunk = framebuffer_chunk.checked_add(1).ok_or_else(|| {
+                LayoutError::new("P015: generated framebuffer chunk alias count overflow")
+            })?;
+        }
         aliases.push(AllowedPixelsAlias {
-            name: format!("R{}_FRAME_PROGRAM", placement.index),
+            name: format!("R{}_FRAME_SNAPSHOT", placement.index),
+            addr: placement
+                .state_base
+                .checked_add(renderer.mutable_layout.frame_snapshots.offset)
+                .ok_or_else(|| {
+                    LayoutError::new("P025: generated frame snapshot alias address overflow")
+                })?,
+            size: crate::pixels::capacities::P7_CANONICAL_FRAME_SNAPSHOT_BYTES,
+        });
+        aliases.push(AllowedPixelsAlias {
+            name: format!("R{}_FRAME_PROGRAM_HEADER", placement.index),
             addr: placement.frameprog_base,
-            size: root_size,
+            size: header_size,
+        });
+        aliases.push(AllowedPixelsAlias {
+            name: format!("R{}_FRAME_PROGRAM_DIRECTORY", placement.index),
+            addr: placement
+                .frameprog_base
+                .checked_add(header_size)
+                .ok_or_else(|| {
+                    LayoutError::new("P025: generated directory alias address overflow")
+                })?,
+            size: directory_size,
         });
         let tables =
             crate::pixels::binary_verify::verify_envelope(&renderer.encoded).map_err(|error| {
@@ -3151,6 +3197,84 @@ fn verify_pixels_placed_static_reservations(
                     })?,
                 size: u64::from(table.byte_len),
             });
+        }
+        for worker in &placement.per_core {
+            aliases.push(AllowedPixelsAlias {
+                name: format!(
+                    "R{}_WORKER_{}_WORKSPACE_HEADER",
+                    placement.index, worker.worker_index
+                ),
+                addr: worker.workspace_base,
+                size: crate::pixels::capacities::WORKSPACE_HEADER_BYTES_V1,
+            });
+            for (name, offset, bytes) in renderer
+                .projective
+                .program()
+                .capacities
+                .worker_workspace_regions()
+                .map_err(LayoutError::new)?
+            {
+                if name == "HEADER" {
+                    continue;
+                }
+                let mut chunk_offset = 0_u64;
+                let mut chunk = 0_usize;
+                while chunk_offset < bytes {
+                    let chunk_bytes =
+                        (bytes - chunk_offset).min(crate::pixels::glue::WORKSPACE_VIEW_CHUNK_BYTES);
+                    aliases.push(AllowedPixelsAlias {
+                        name: format!(
+                            "R{}_WORKER_{}_WORKSPACE_{}_CHUNK_{}",
+                            placement.index, worker.worker_index, name, chunk
+                        ),
+                        addr: worker
+                            .workspace_base
+                            .checked_add(offset)
+                            .and_then(|base| base.checked_add(chunk_offset))
+                            .ok_or_else(|| {
+                                LayoutError::new(
+                                    "P025: worker workspace chunk alias address overflow",
+                                )
+                            })?,
+                        size: chunk_bytes,
+                    });
+                    chunk_offset = chunk_offset.checked_add(chunk_bytes).ok_or_else(|| {
+                        LayoutError::new("P025: worker workspace chunk alias offset overflow")
+                    })?;
+                    chunk = chunk.checked_add(1).ok_or_else(|| {
+                        LayoutError::new("P025: worker workspace chunk alias count overflow")
+                    })?;
+                }
+            }
+            if renderer
+                .structural
+                .program()
+                .capacities
+                .telemetry_bytes_instrumented
+                != 0
+            {
+                let telemetry_bytes =
+                    crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1 * 8;
+                aliases.push(AllowedPixelsAlias {
+                    name: format!(
+                        "R{}_WORKER_{}_TELEMETRY",
+                        placement.index, worker.worker_index
+                    ),
+                    addr: placement
+                        .state_base
+                        .checked_add(renderer.mutable_layout.telemetry.offset)
+                        .and_then(|base| {
+                            u64::try_from(worker.worker_index)
+                                .ok()
+                                .and_then(|index| index.checked_mul(telemetry_bytes))
+                                .and_then(|offset| base.checked_add(offset))
+                        })
+                        .ok_or_else(|| {
+                            LayoutError::new("P025: worker telemetry alias address overflow")
+                        })?,
+                    size: telemetry_bytes,
+                });
+            }
         }
     }
     verify_placed_static_reservations(placed, &reservations, &aliases)
@@ -3394,7 +3518,7 @@ pub fn lower_and_codegen_image(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
-    renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
+    _renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
     pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
     instrumented_pixels: bool,
     runtime_tests: &[String],
@@ -3422,26 +3546,22 @@ pub fn lower_and_codegen_image(
         crate::pixels::glue::synthesize_image_graph(graph, &generated_renderers)?;
     let graph = &generated_graph;
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
-    let pixels_skeleton = if graph.renderers.is_empty() {
-        None
-    } else {
-        let configs = renderer_configs.ok_or_else(|| {
-            "pixels::config: lowering requires the validated renderer side table".to_string()
-        })?;
-        let (owner_module, owner) = programs
-            .iter()
-            .find(|(_, program)| program.image_fn.is_some())
-            .ok_or_else(|| "pixels: image owner program is missing".to_string())?;
-        if !crate::pixels::is_walking_skeleton(owner_module, graph) {
-            None
-        } else {
-            Some(crate::pixels::compile_plane_skeleton(
-                owner, programs, graph, configs,
-            )?)
-        }
-    };
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    // Renderer workers deliberately keep all mutable sweep state in their
+    // compiler-placed workspace. They therefore have an empty actor-state
+    // layout even in the preliminary image pass, before the live generated
+    // module has supplied ordinary sema instantiation records.
+    for actor in &graph.actors {
+        let name = crate::sema::types::render_type(&actor.actor_type);
+        if name
+            .strip_prefix("RendererWorker")
+            .is_some_and(|suffix| suffix.parse::<usize>().is_ok())
+        {
+            layout_ctx.structs.entry(name.clone()).or_default();
+            layout_ctx.struct_field_names.entry(name).or_default();
+        }
+    }
     for renderer in &graph.renderers {
         let display = crate::sema::types::render_type(&renderer.actor_type);
         layout_ctx
@@ -3568,7 +3688,7 @@ pub fn lower_and_codegen_image(
         async_tests,
         wiring.as_ref().map(|w| &w.tables),
     );
-    let need_live = wiring.is_some() || !tests.is_empty() || pixels_skeleton.is_some();
+    let need_live = wiring.is_some() || !tests.is_empty();
 
     let pixels_config_text = if let Some(programs) = pixels_programs
         && !programs.compiled_renderers.is_empty()
@@ -3628,7 +3748,7 @@ pub fn lower_and_codegen_image(
     let group_arena_capacity = count_with_group_sites(&live_modules);
     let enqueue_specs = mailbox_enqueue_specs(graph, &live_modules, &layout_ctx)?;
     let _late_address_relax = crate::codegen::late_address_relax_guard();
-    let mut program = crate::codegen::codegen_program_with_async(
+    let program = crate::codegen::codegen_program_with_async(
         &mwir,
         &flow,
         &layout_ctx,
@@ -3637,14 +3757,6 @@ pub fn lower_and_codegen_image(
         &enqueue_specs,
     )
     .map_err(|e| e.message)?;
-    if let Some(skeleton) = &pixels_skeleton {
-        crate::codegen::install_pixels_plane_renderer(
-            &mut program,
-            &skeleton.seed_metadata,
-            &skeleton.semantic_seed,
-        )?;
-        crate::cost::audit::audit_program(&program)?;
-    }
     let async_frames =
         crate::codegen::async_frame_sizes(&flow, &layout_ctx).map_err(|e| e.message)?;
     let (group_child_index, _) =
@@ -5308,6 +5420,9 @@ fn two():
         use crate::opts::{CompileMode, apply_mode};
 
         apply_mode(CompileMode::Release);
+        // `AdrAddressing` is parked; force it on so the reloc class and its
+        // layout resolution stay exercised until the opt is unparked.
+        crate::codegen::set_adr_addressing(true);
         let src = "module examples.layout_adr_rodata\n\npub fn add(a: u8, b: u8) -> u8:\n    \
                    return a + b\n";
         let tokens = crate::syntax::lexer::lex(src).expect("lex");
@@ -5629,7 +5744,7 @@ fn two():
         let mut state_alias = window_static("R0_FRAME_PROGRAM", 0x2000, 0x160);
         state_alias.is_generated_pixels_alias = true;
         let error = verify_placed_static_reservations(&[state_alias], &reservations, &aliases)
-            .expect_err("no generated aliases are writable-state exceptions");
+            .expect_err("a frame-program alias cannot masquerade as a workspace view");
         assert!(error.message.contains("pixelsdata"), "{}", error.message);
     }
 

@@ -45,6 +45,52 @@ pub enum Class {
     Unexpected,
 }
 
+fn generated_worker_root(suffix: &str) -> bool {
+    let Some(rest) = suffix.strip_prefix("WORKER_") else {
+        return false;
+    };
+    let Some((worker, root)) = rest.split_once('_') else {
+        return false;
+    };
+    if worker.parse::<usize>().is_err() {
+        return false;
+    }
+    if matches!(root, "TELEMETRY" | "WORKSPACE_HEADER") {
+        return true;
+    }
+    let Some(root) = root.strip_prefix("WORKSPACE_") else {
+        return false;
+    };
+    const WORKSPACE_REGIONS: &[&str] = &[
+        "ACTIVE_FEATURES",
+        "ROOTS",
+        "ROOTS_TMP",
+        "ROOT_STACK",
+        "ACTIVE_SHEETS",
+        "EVENTS",
+        "EVENT_STACK",
+        "RUNS",
+        "REBUILD",
+        "CORRIDORS",
+        "FIXED_Q",
+        "SHADING",
+        "TRANSPARENCY",
+    ];
+    WORKSPACE_REGIONS.iter().any(|region| {
+        root.strip_prefix(region)
+            .and_then(|suffix| suffix.strip_prefix("_CHUNK_"))
+            .is_some_and(|chunk| {
+                !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    })
+}
+
+fn generated_framebuffer_root(suffix: &str) -> bool {
+    suffix
+        .strip_prefix("DEBUG_FRAMEBUFFER_CHUNK_")
+        .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 pub fn classify(name: &str) -> Class {
     if fixed_core_names().iter().any(|n| n == name) {
         return Class::Fixed;
@@ -70,6 +116,11 @@ pub fn classify(name: &str) -> Class {
     if let Some((index, suffix)) = name.strip_prefix('R').and_then(|rest| rest.split_once('_'))
         && let Ok(index) = index.parse::<usize>()
         && (suffix == "FRAME_PROGRAM"
+            || suffix == "FRAME_PROGRAM_HEADER"
+            || suffix == "FRAME_PROGRAM_DIRECTORY"
+            || suffix == "FRAME_SNAPSHOT"
+            || generated_framebuffer_root(suffix)
+            || generated_worker_root(suffix)
             || matches!(
                 suffix,
                 "SCALAR_TABLE"
@@ -172,9 +223,12 @@ mod tests {
 
     #[test]
     fn fixed_set_len_matches_core_plus_mb_pool() {
-        assert_eq!(fixed_core_names().len(), 19);
+        // The console ring is three placed statics since its 2026-08-07
+        // enlargement split desc/avail/doorbell pages (decisions 890-893
+        // pool discipline unchanged).
+        assert_eq!(fixed_core_names().len(), 21);
         assert_eq!(MB_POOL_COUNT, 32);
-        assert_eq!(fixed_set_len(), 83);
+        assert_eq!(fixed_set_len(), 85);
         for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
         }
@@ -193,6 +247,50 @@ mod tests {
             classify("R17_CAMERA_LIGHT_POST_TABLE"),
             Class::RendererRoot(17)
         );
+        assert_eq!(classify("R0_FRAME_PROGRAM_HEADER"), Class::RendererRoot(0));
+        assert_eq!(
+            classify("R0_FRAME_PROGRAM_DIRECTORY"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(classify("R0_WORKER_3_TELEMETRY"), Class::RendererRoot(0));
+        assert_eq!(
+            classify("R0_DEBUG_FRAMEBUFFER_CHUNK_0"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(
+            classify("R0_DEBUG_FRAMEBUFFER_CHUNK_42"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(classify("R0_FRAME_SNAPSHOT"), Class::RendererRoot(0));
+        assert_eq!(
+            classify("R0_WORKER_3_WORKSPACE_HEADER"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(
+            classify("R0_WORKER_3_WORKSPACE_ROOTS_CHUNK_0"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(
+            classify("R0_WORKER_3_WORKSPACE_ROOTS_TMP_CHUNK_10"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(
+            classify("R0_WORKER_3_WORKSPACE_ACTIVE_FEATURES_CHUNK_0"),
+            Class::RendererRoot(0)
+        );
+        assert_eq!(
+            classify("R0_WORKER_X_WORKSPACE_ROOTS_CHUNK_0"),
+            Class::Unexpected
+        );
+        assert_eq!(
+            classify("R0_WORKER_0_WORKSPACE_UNKNOWN_0"),
+            Class::Unexpected
+        );
+        assert_eq!(
+            classify("R0_WORKER_0_WORKSPACE_ROOTS_CHUNK_X"),
+            Class::Unexpected
+        );
+        assert_eq!(classify("R0_DEBUG_FRAMEBUFFER_CHUNK_X"), Class::Unexpected);
         assert_eq!(classify("R0_BOGUS_TABLE"), Class::Unexpected);
         assert_eq!(classify("RX_FRAME_PROGRAM"), Class::Unexpected);
         assert_eq!(classify("RING0_DATA"), Class::Unexpected);

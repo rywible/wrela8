@@ -1,24 +1,37 @@
 module examples.check_pixels_displace
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
+from core.runtime import __wrela_trace_p7_u64
 from core.field import (
     Field,
     Rgb,
     Vec3,
+    length3,
     mark,
+    sin_scalar,
     sinusoidal_displace,
     sphere,
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
     LightConfig,
+    LightFrame,
     MaterialSample,
     ProbeConfig,
+    RenderFrame,
+    Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_frame_digest,
 )
 from drivers.display import Display, DisplayDevice
 
@@ -54,6 +67,75 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 fn pinned_scene_contract():
     assert FIXTURE_ID == 5, "fixture id must remain pinned"
     assert AMPLITUDE_RAW == 1, "adversarial scene value must remain pinned"
+
+@test(runtime)
+async fn displaced_surface_renders_from_scratch(renderer: Actor[Renderer[SceneParams]]):
+    frame = RenderFrame[SceneParams](
+        params=SceneParams(phase=0.0),
+        camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+        lights=LightFrame.empty(),
+        exposure=0.0,
+        environment=Rgb(r=0.0, g=0.0, b=0.0),
+        frame_index=5,
+    )
+    result = await renderer.render(frame=take frame)
+    @discard(reason="the exact result assertion converts every render failure into test failure")
+    match result:
+        case .Ok(rendered):
+            __wrela_trace_p7_u64(rendered.certificate_runs)
+            __wrela_trace_p7_u64(rendered.event_corridors)
+            __wrela_trace_p7_u64(rendered.revalidated_proposals)
+            __wrela_trace_p7_u64(5780180186688408645)
+            __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+            if evidence[0] == 1:
+                __wrela_trace_p7_u64(4847371096046259761)
+                evidence_word: usize = 0
+                @budget(bound=16)
+                while evidence_word < 16:
+                    evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, evidence_word)
+                    assert evidence[0] == 1, "instrumented run evidence is complete"
+                    __wrela_trace_p7_u64(evidence[1])
+                    evidence_word = evidence_word + 1
+            __wrela_trace_p7_u64(4922225244575680596)
+            digest = __wrela_pixels_p7_debug_frame_digest(0)
+            digest_word: usize = 1
+            @budget(bound=4)
+            while digest_word < 5:
+                __wrela_trace_p7_u64(digest[digest_word])
+                digest_word = digest_word + 1
+            assert rendered.frame_index == 5, "displaced frame renders"
+            dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+            if dump_header[0] == 1:
+                __wrela_trace_p7_u64(7599824371187933777)
+                dump_index: u64 = 1
+                @budget(bound=65551)
+                while dump_index <= dump_header[1]:
+                    dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                    assert dump_value[0] == 1, "instrumented frame dump is complete"
+                    __wrela_trace_p7_u64(dump_value[1])
+                    dump_index = dump_index + 1
+        case .Err(call_error):
+            match call_error:
+                case .Op(failure):
+                    match failure.error:
+                        case .RootIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(4294967296 + tile.value.to[u64]())
+                        case .EventIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(8589934592 + tile.value.to[u64]())
+                        case .CertificateExhausted(tile):
+                            __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+                        case .CapacityExceeded(capacity):
+                            __wrela_trace_p7_u64(17179869184 + capacity.kind.to[u64]())
+                        case .FixedPointRangeExceeded(tile):
+                            __wrela_trace_p7_u64(21474836480 + tile.value.to[u64]())
+                        case .InternalInvariant(invariant):
+                            __wrela_trace_p7_u64(invariant.kind.to[u64]())
+                        case _:
+                            pass
+                case _:
+                    pass
+            assert false, "valid displaced surface renders from scratch"
 
 @image
 pub fn build() -> Image:

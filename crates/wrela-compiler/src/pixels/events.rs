@@ -250,6 +250,66 @@ pub enum OmissionHint {
         kind: PredicateOmissionKind,
         proof: super::exclusions::BernsteinProofPayload,
     },
+    /// The clip plane's `q` lies strictly outside the feature's sealed
+    /// projected `q` span, so no root of the feature can ever sit on that clip
+    /// plane and the crossing the event would mark does not exist.
+    ClipQOutsideFeatureQSpan {
+        clip_q: f64,
+        feature_q: F64Interval,
+        margin: f64,
+    },
+}
+
+/// Relative slack required before a near/far clip event may be proven vacuous.
+///
+/// Geometrically the omission is exact: `ProjectedFeatureSpan::q` outward-
+/// encloses the reciprocal depth of the feature's whole world AABB, so a clip
+/// `q` outside it names a depth the feature never reaches. The guest reaches
+/// the same conclusion operationally — `select_visibility` clamps a feature's
+/// root-`q` search interval to this very span (`stdlib/core/render.wr`,
+/// `__wrela_pixels_p7_feature_q_span`) — but it reads the span through an f32
+/// round-trip (at most two f32 ulps of outward motion) and through
+/// `__wrela_pixels_p7_interval_from_f32`, which widens by `|raw| / 65536 + 64`
+/// fixed-point quanta, i.e. by `q * 2^-16` plus 64 quanta. Both terms are
+/// bounded by roughly `2^-14` of the camera's `q` scale for any exponent the
+/// fixed-q policy can seal, so demanding `2^-8` of that scale dominates them by
+/// more than an order of magnitude. `finish_frame_program` re-checks every
+/// omission recorded here against the exponent the frame program actually
+/// seals, so the slack is a filter and not the proof of record.
+const CLIP_Q_OMISSION_RELATIVE_SLACK_V1: f64 = 1.0 / 256.0;
+
+/// Outward-rounded distance by which `clip_q` clears `feature_q`, less the
+/// slack above. `None` whenever the clip `q` is inside the feature's span or
+/// too close to it for the omission to be safe.
+pub(crate) fn clip_q_omission_margin(
+    feature_q: F64Interval,
+    camera_q: F64Interval,
+    clip_q: f64,
+) -> Option<f64> {
+    if !clip_q.is_finite() || !feature_q.lo.is_finite() || !feature_q.hi.is_finite() {
+        return None;
+    }
+    let scale = camera_q.lo.abs().max(camera_q.hi.abs());
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let slack = super::reference::interval::next_up(scale * CLIP_Q_OMISSION_RELATIVE_SLACK_V1);
+    let gap = if clip_q > feature_q.hi {
+        clip_q - feature_q.hi
+    } else if clip_q < feature_q.lo {
+        feature_q.lo - clip_q
+    } else {
+        return None;
+    };
+    if !(gap > slack) {
+        return None;
+    }
+    let margin = super::reference::interval::next_down(gap - slack);
+    if margin.is_finite() && margin > 0.0 {
+        Some(margin)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1043,6 +1103,11 @@ pub fn compile(
                             feature.feature
                         )
                     })?;
+                // A leading coefficient with no `(u, q)` dependence has no zero
+                // curve anywhere in the output, so the silhouette it would mark
+                // does not exist. `StrictProjectiveLeadingSign` above already
+                // drops the sign-provable case; this covers the remaining one,
+                // where the constant's sign is not sealed but its constancy is.
                 let (representation, sides) = match condition {
                     SilhouetteCondition::LinearLeadingCoefficient(coefficient) => (
                         EventRepresentation::LinearLeadingCoefficient {
@@ -1183,13 +1248,31 @@ pub fn compile(
                 EventSideMeaning::crossing(EventSide::OutsideClip, EventSide::InsideClip),
             ),
         ] {
+            let subject = EventSubject {
+                kind,
+                feature: Some(feature.feature),
+                owner: None,
+                ordinal,
+            };
+            // The clip edge is the locus where this feature's root sits exactly
+            // on the clip plane. A feature whose sealed projected q span does
+            // not reach that q has no such locus anywhere in the output, so the
+            // event marks a boundary that does not exist — and, left emitted, a
+            // degenerate ray polynomial can still produce a spurious level set
+            // there for the coverage tier to mistake for occupancy.
+            if let Some(margin) = clip_q_omission_margin(span.q, projective.camera.q, q) {
+                compiler.omit(
+                    subject,
+                    OmissionHint::ClipQOutsideFeatureQSpan {
+                        clip_q: q,
+                        feature_q: span.q,
+                        margin,
+                    },
+                );
+                continue;
+            }
             compiler.emit(
-                EventSubject {
-                    kind,
-                    feature: Some(feature.feature),
-                    owner: None,
-                    ordinal,
-                },
+                subject,
                 &participants,
                 span.clone(),
                 feature.influencing_params.clone(),
@@ -1480,6 +1563,33 @@ mod tests {
         let left = if negations.0 { -left } else { left };
         let right = if negations.1 { -right } else { right };
         left - right
+    }
+
+    #[test]
+    fn clip_q_omission_needs_a_separation_the_guest_widening_cannot_close() {
+        let camera = F64Interval::new(0.0078125, 10.000000000000002).unwrap();
+        let near = camera.hi;
+        let far = camera.lo;
+        // A feature whose whole world AABB sits between the clip planes can
+        // never place a root on either of them.
+        let inside = F64Interval::new(0.15442127623884103, 0.6903199296309185).unwrap();
+        let near_margin = clip_q_omission_margin(inside, camera, near).expect("near clip clears");
+        let far_margin = clip_q_omission_margin(inside, camera, far).expect("far clip clears");
+        assert!(near_margin > 9.0 && near_margin < 9.32, "{near_margin}");
+        assert!(far_margin > 0.1 && far_margin < 0.147, "{far_margin}");
+        // A feature reaching a clip plane keeps its event. `derive` clamps the
+        // projected span to the camera range, so touching is exact equality.
+        let touching_near = F64Interval::new(0.2, near).unwrap();
+        assert_eq!(clip_q_omission_margin(touching_near, camera, near), None);
+        let touching_far = F64Interval::new(far, 0.2).unwrap();
+        assert_eq!(clip_q_omission_margin(touching_far, camera, far), None);
+        // Separations inside the slack are refused rather than proven: the
+        // guest widens the span it reads and could still reach the clip.
+        let hairline = F64Interval::new(0.2, near - camera.hi / 1024.0).unwrap();
+        assert_eq!(clip_q_omission_margin(hairline, camera, near), None);
+        // A span straddling the clip q is never omitted.
+        let straddling = F64Interval::new(0.2, 12.0).unwrap();
+        assert_eq!(clip_q_omission_margin(straddling, camera, near), None);
     }
 
     #[test]

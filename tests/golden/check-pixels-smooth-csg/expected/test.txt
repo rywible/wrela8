@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 0000000000000098
+p7 00000000000000cc
+p7 00000000000000f0
+p7 503753414d504c45
+p7 000000000000ffff
+p7 444f41c7e764c854
+p7 73ac7cc19aad97a3
+p7 a1342a862bd5d6bb
+p7 2c3ede8827a1ef0e
+p7 65b8a74a9e661df9
+test smooth_object_sweeps_all_roots: ok
+2 passed, 0 failed
+lane1 turns=3 run_one=6 messages=3
+lane1 hits=0:2,1:2,2:1

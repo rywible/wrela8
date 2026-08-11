@@ -1,0 +1,17 @@
+module pixels_program_view
+
+from core.render_program import CoeffSnapshot, ProgramViewError
+
+@test
+fn coefficient_snapshot_count_is_checked():
+    values: [f32; 16] = [0.0; 16]
+    packed = CoeffSnapshot.packed(values=values, count=257)
+    match packed:
+        case .Ok(_):
+            assert false, "an oversized generated coefficient table cannot be viewed"
+        case .Err(error):
+            match error:
+                case .ProgramIndex:
+                    pass
+                case _:
+                    assert false, "the checked index failure is stable"

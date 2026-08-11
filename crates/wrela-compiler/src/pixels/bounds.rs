@@ -356,6 +356,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            camera_pose: None,
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),

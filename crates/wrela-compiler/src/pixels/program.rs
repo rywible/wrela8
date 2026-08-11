@@ -1234,40 +1234,37 @@ fn composition_operands(value: &super::polynomial::CompositionPlan) -> Vec<u64> 
 }
 
 fn event_kind(kind: super::event_kinds::EventKind) -> u64 {
-    use super::event_kinds::EventKind;
-    match kind {
-        EventKind::ProjectedBoundEnter => 1,
-        EventKind::ProjectedBoundExit => 2,
-        EventKind::Silhouette => 3,
-        EventKind::FeatureBoundary => 4,
-        EventKind::RepeatBoundary => 5,
-        EventKind::SmoothBandEnter => 6,
-        EventKind::SmoothCenterTie => 7,
-        EventKind::MaterialBoundary => 8,
-        EventKind::NearClip => 9,
-        EventKind::FarClip => 10,
-        EventKind::FixedPointResetOnly => 11,
-        EventKind::DepthSwap => 12,
-    }
+    super::event_kinds::kind_wire_tag(kind)
 }
 
 fn representation_tag(representation: &super::events::EventRepresentation) -> u16 {
+    super::event_kinds::representation_wire_tag(representation_kind(representation))
+}
+
+/// Payload-free tag for a sealed representation, so the wire mapping and the
+/// guest-facing classification share one vocabulary (`pixels::event_kinds`).
+pub(crate) fn representation_kind(
+    representation: &super::events::EventRepresentation,
+) -> super::event_kinds::RepresentationTag {
+    use super::event_kinds::RepresentationTag as Tag;
     use super::events::EventRepresentation;
     match representation {
-        EventRepresentation::LinearLeadingCoefficient { .. } => 1,
-        EventRepresentation::QuadraticDiscriminant { .. } => 2,
-        EventRepresentation::SparsePredicate { .. } => 3,
-        EventRepresentation::DeformationTaylorPredicate { .. } => 4,
-        EventRepresentation::TorusLocalOracle { .. } => 5,
-        EventRepresentation::SmoothBandTaylorPredicate { .. } => 6,
-        EventRepresentation::SmoothTieTaylorPredicate { .. } => 7,
-        EventRepresentation::MaterialDifferenceTaylorPredicate { .. } => 8,
-        EventRepresentation::RepeatAffineBoundary { .. } => 9,
-        EventRepresentation::ClipQ { .. } => 10,
-        EventRepresentation::ProjectedBoundary { .. } => 11,
-        EventRepresentation::FixedPointReset => 12,
-        EventRepresentation::DirectDepthCrossProduct { .. } => 13,
-        EventRepresentation::TaylorDepthDifference { .. } => 14,
+        EventRepresentation::LinearLeadingCoefficient { .. } => Tag::LinearLeadingCoefficient,
+        EventRepresentation::QuadraticDiscriminant { .. } => Tag::QuadraticDiscriminant,
+        EventRepresentation::SparsePredicate { .. } => Tag::SparsePredicate,
+        EventRepresentation::DeformationTaylorPredicate { .. } => Tag::DeformationTaylorPredicate,
+        EventRepresentation::TorusLocalOracle { .. } => Tag::TorusLocalOracle,
+        EventRepresentation::SmoothBandTaylorPredicate { .. } => Tag::SmoothBandTaylorPredicate,
+        EventRepresentation::SmoothTieTaylorPredicate { .. } => Tag::SmoothTieTaylorPredicate,
+        EventRepresentation::MaterialDifferenceTaylorPredicate { .. } => {
+            Tag::MaterialDifferenceTaylorPredicate
+        }
+        EventRepresentation::RepeatAffineBoundary { .. } => Tag::RepeatAffineBoundary,
+        EventRepresentation::ClipQ { .. } => Tag::ClipQ,
+        EventRepresentation::ProjectedBoundary { .. } => Tag::ProjectedBoundary,
+        EventRepresentation::FixedPointReset => Tag::FixedPointReset,
+        EventRepresentation::DirectDepthCrossProduct { .. } => Tag::DirectDepthCrossProduct,
+        EventRepresentation::TaylorDepthDifference { .. } => Tag::TaylorDepthDifference,
     }
 }
 
@@ -1681,6 +1678,83 @@ fn capacity_values(
     ]
 }
 
+/// Re-derives, at the exponent the frame program actually seals, the fixed-point
+/// interval the guest will clamp a feature's root-`q` search to, and confirms
+/// that every near/far clip event omitted as vacuous really is unreachable.
+///
+/// The guest reads a feature's sealed projected `q` span through
+/// `__wrela_pixels_p7_feature_q_span` (f64 bits -> f32 -> one outward f32 ulp)
+/// and then through `__wrela_pixels_p7_interval_from_f32`, which truncates to
+/// the sealed exponent, widens by one unit for the truncation, and widens again
+/// by `|raw| / 65536 + 64` quanta. `select_visibility` intersects the global
+/// `[q_lo, q_hi]` raw domain with the result, so a feature whose widened raw
+/// span stops strictly short of the global raw bound can never produce a root on
+/// that clip plane, and the clip crossing the omitted event would have marked
+/// does not exist anywhere in the output.
+fn verify_clip_q_omissions(
+    projective: &super::verify::ProjectiveProgram,
+    exponent: i16,
+    q_lo: f64,
+    q_hi: f64,
+) -> Result<(), String> {
+    use super::reference::interval::{next_down, next_down_f32, next_up, next_up_f32};
+
+    let scale = 2.0_f64.powi(-i32::from(exponent));
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("P017: fixed-q exponent has no finite reciprocal scale".to_string());
+    }
+    // The same global raw bounds the generated glue seals for the guest.
+    let global_lo_raw = (q_lo * scale).floor();
+    let global_hi_raw = (q_hi * scale).ceil();
+    // Truncation slack, then `|raw| / 65536 + 64`, both outward.
+    let widen = |raw: f64| next_up(1.0 + (raw.abs() * scale).abs() / 65536.0 + 64.0);
+    for entry in &projective.events.ledger {
+        let Some(super::events::OmissionHint::ClipQOutsideFeatureQSpan {
+            clip_q, feature_q, ..
+        }) = entry.omission.as_ref()
+        else {
+            continue;
+        };
+        let feature = entry.subject.feature.ok_or_else(|| {
+            format!(
+                "pixels::program: clip-q omission {:?} has no feature",
+                entry.subject
+            )
+        })?;
+        let near = matches!(entry.subject.kind, super::event_kinds::EventKind::NearClip);
+        let guest_edge = if near {
+            f64::from(next_up_f32(feature_q.hi as f32))
+        } else {
+            f64::from(next_down_f32(feature_q.lo as f32))
+        };
+        let scaled = guest_edge * scale;
+        if !scaled.is_finite() {
+            return Err(format!(
+                "P017: clip-q omission for {feature} does not scale into the sealed fixed-q domain"
+            ));
+        }
+        let reachable = if near {
+            next_up(scaled.ceil() + widen(guest_edge))
+        } else {
+            next_down(scaled.floor() - widen(guest_edge))
+        };
+        let excluded = if near {
+            reachable < global_hi_raw
+        } else {
+            reachable > global_lo_raw
+        };
+        if !excluded {
+            return Err(format!(
+                "P017: clip event {:?} for {feature} was omitted as vacuous, but at fixed-q exponent \
+                 {exponent} the guest's clamped root-q interval still reaches clip q={clip_q} \
+                 (raw reach {reachable}, global raw domain [{global_lo_raw}, {global_hi_raw}])",
+                entry.subject.kind,
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn finish_frame_program(
     renderer_index: usize,
     graph: &super::symbolic::SymbolicGraph,
@@ -1715,6 +1789,7 @@ pub fn finish_frame_program(
         .map_err(|_| "P015: renderer index exceeds FrameProgram u16".to_string())?;
     let structural = structural.program();
     let projective = projective.program();
+    verify_clip_q_omissions(projective, fixed_q_setup.run.domain.exponent, q_lo, q_hi)?;
     let mut by_kind = BTreeMap::<FrameProgramTableKindV1, Vec<FrameRecord>>::new();
     for kind in FrameProgramTableKindV1::ALL {
         by_kind.insert(kind, Vec::new());

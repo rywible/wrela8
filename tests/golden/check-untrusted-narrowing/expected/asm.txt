@@ -44,7 +44,7 @@ Program
     0019: d2800022  movz x2, #0x1
     0020: 8a020083  and x3, x4, x2
     0021: b4000043  cbz x3, #8
-    0022: 14000012  b #72
+    0022: 14000013  b #76
     0023: f94003e9  ldr x9, [sp, #0]
     0024: aa0903e2  mov x2, x9
     0025: d2800023  movz x3, #0x1
@@ -54,15 +54,16 @@ Program
     0029: 8a020083  and x3, x4, x2
     0030: b4000063  cbz x3, #12
     0031: d2800000  movz x0, #0x0
-    0032: 14000008  b #32
+    0032: 14000009  b #36
     0033: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0034: 10000009  adr x9, rodata+0x0
-    0035: f90003e9  str x9, [sp]  ; Bytes.base
-    0036: d2800b49  movz x9, #0x5a
-    0037: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0038: 910003e0  add x0, sp, #0  ; *Bytes
-    0039: 94000000  bl <__wrela_abort>
-    0040: 910083ff  add sp, sp, #32
-    0041: d65f03c0  ret
+    0034: 90000009  adrp x9, rodata+0x0
+    0035: 91000129  add x9, x9, rodata+0x0
+    0036: f90003e9  str x9, [sp]  ; Bytes.base
+    0037: d2800b49  movz x9, #0x5a
+    0038: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0039: 910003e0  add x0, sp, #0  ; *Bytes
+    0040: 94000000  bl <__wrela_abort>
+    0041: 910083ff  add sp, sp, #32
+    0042: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)

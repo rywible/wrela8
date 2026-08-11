@@ -6,24 +6,134 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
+  Input path=core/render_interval.wr sha256=02865a0800dd6fa78f8997f17b6df194e703c7dab1df7ed8614e3aa0ae734713
   Input path=input.wr sha256=fa8d8dbf27a46288ca3b6f2fda624754975ca14124a04f9fb18b76725af04a1b
   Name value=check-pixels-config-zero
   Target value=Target.wrela_machine_v1
   OnFailure index=0 policy=Failure.Halt
-  Section name=pages base=0x40000000 size=28672
+  Section name=pages base=0x40000000 size=245760
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
-  Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=0
-  Section name=abort base=0x40500050 size=120
-  Section name=checkpoint base=0x405000c8 size=4
-  Entry base=0x40500000
-  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=27 rank_cycles=27 schedule_cycles=27 footprint_cycles=0 executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 rodata_bytes=0 image_bytes=204 sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4
-    Workload name=flat proxy_cycles=27
-    Owner name=app proxy_cycles=27
-    Owner name=runtime proxy_cycles=0
+  Section name=entry base=0x40600000 size=80
+  Section name=code base=0x40600050 size=30940
+  Section name=rodata base=0x40607930 size=325
+  Section name=abort base=0x40607a78 size=120
+  Section name=checkpoint base=0x40607af0 size=4
+  Entry base=0x40600000
+  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=5809 rank_cycles=5809 schedule_cycles=5809 footprint_cycles=0 executable_words=7786 executable_code_bytes=31144 fetched_text_bytes=31232 rodata_bytes=325 image_bytes=31476 sync_frame_max_bytes=1760 async_frame_total_bytes=0 ghz=2.4
+    Workload name=flat proxy_cycles=5809
+    Owner name=app proxy_cycles=2725
+    Owner name=runtime proxy_cycles=3084
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_entry_method_proxy_cycles=0
-    Budget n=0 fetched_text_bytes=256 executable_code_bytes=204 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=1 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-    Shared proxy_cycles=27
-    Scope name=linked-image executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 image_bytes=204 rodata_bytes=0 sync_frame_max_bytes=0 async_frame_total_bytes=0
+    Budget n=0 fetched_text_bytes=31232 executable_code_bytes=31144 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=8 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Shared proxy_cycles=5809
+    Scope name=linked-image executable_words=7786 executable_code_bytes=31144 fetched_text_bytes=31232 image_bytes=31476 rodata_bytes=325 sync_frame_max_bytes=1760 async_frame_total_bytes=0
+  Convention fns=107 frameless=21 tail_calls=0
+    Fn key=FixedDomain.contains_raw frame=48 residents=14 regs=x0-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
+    Fn key=FixedDomain.exponent_value frame=48 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
+    Fn key=FixedDomain.full frame=48 residents=3 regs=x0-x2 clobbers=x0-x2,x8-x10,x30-x31 pool=23
+    Fn key=Iv32.lower frame=32 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
+    Fn key=Iv32.point frame=32 residents=1 regs=x0 clobbers=x0,x8-x10,x30-x31 pool=23
+    Fn key=Iv32.range frame=32 residents=2 regs=x0-x1 clobbers=x0-x1,x8-x10,x30-x31 pool=22
+    Fn key=Iv32.upper frame=32 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
+    Fn key=__wrela_pixels_f32_to_bits frame=0 residents=2 regs=x1 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_abs frame=0 residents=4 regs=x0-x3 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_csg_influence frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_csg_occupancy frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_deformation_miss_model frame=192 residents=23 regs=x0-x7,x11-x17,x19-x26 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_event_class frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_event_clip_q frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_event_polynomial frame=336 residents=15 regs=x0-x3,x6-x7,x11-x17,x19-x20 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_event_polynomial_uv2_bounds frame=576 residents=10 regs=x0-x5,x7,x11-x13 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_event_predicate_curve frame=416 residents=22 regs=x0-x3,x6-x7,x11-x17,x19-x27 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_feature_filter_excludes_root frame=304 residents=5 regs=x0-x1,x6-x7,x11 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_feature_normal frame=272 residents=9 regs=x0-x4,x7,x11-x13 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_feature_polynomial frame=336 residents=15 regs=x0-x3,x6-x7,x11-x17,x19-x20 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_feature_polynomial_uv_bounds frame=176 residents=22 regs=x0-x7,x11-x17,x19-x25 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_feature_q_span frame=48 residents=5 regs=x0-x4 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_feature_support_q_span frame=80 residents=6 regs=x0-x2,x5-x7 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_feature_valid frame=240 residents=6 regs=x0-x4 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_feature_valid_filter frame=304 residents=5 regs=x0-x1,x4,x7,x11 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_feature_world_bounds frame=80 residents=9 regs=x0-x7,x11 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_frame_snapshot_camera frame=112 residents=13 regs=x0-x7,x11-x15 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_light_kinds frame=80 residents=9 regs=x0-x7,x11 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_light_scalars frame=1760 residents=24 regs=x0-x7,x11-x17,x19-x27 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_meta frame=48 residents=4 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_params frame=144 residents=17 regs=x0-x7,x11-x17,x19-x20 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_post frame=48 residents=5 regs=x0-x4 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_frame_snapshot_store frame=1296 residents=4 regs=x0,x2,x7 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_framebuffer_alpha_samples frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_framebuffer_byte frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_framebuffer_digest frame=64 residents=6 regs=x0-x5 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_framebuffer_pixel_written frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_framebuffer_reset frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_framebuffer_write frame=0 residents=7 regs=x0-x5 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_initial_inside frame=256 residents=6 regs=x0-x3,x6-x7 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_material_event_coverage frame=272 residents=8 regs=x0-x4,x7,x11-x12 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_numeric_config frame=128 residents=15 regs=x0-x7,x11-x17 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_object_composed_root frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_object_q_tube frame=336 residents=11 regs=x0-x1,x3-x4,x7,x11-x16 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_object_support frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_param_slot frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_pinned_camera frame=128 residents=14 regs=x0-x7,x11-x16 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_polynomial_at_q frame=128 residents=3 regs=x1-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_power frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_projected_union_mode frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_root_coefficient frame=256 residents=4 regs=x0-x1,x4-x5 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_root_polynomial_base frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_standard_interval_mul frame=64 residents=2 regs=x2-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_standard_torus_cell_positive_hit frame=32 residents=7 regs=x0-x6 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_standard_torus_coefficients frame=864 residents=23 regs=x0-x1,x3-x7,x11-x17,x19-x27 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_standard_torus_discriminant frame=576 residents=9 regs=x2-x7,x11-x13 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_standard_torus_feature frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_standard_torus_pixel_bounds frame=544 residents=12 regs=x1-x7,x11-x15 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_standard_torus_positive_hit frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_standard_torus_value frame=496 residents=5 regs=x1-x5 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_telemetry_charge frame=0 residents=5 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_telemetry_counter frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_telemetry_reset frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_torus_event_magnitudes frame=1120 residents=22 regs=x0-x1,x4-x7,x11-x17,x19-x27 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_worker_assignment frame=80 residents=9 regs=x0-x7,x11 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_worker_error_class frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p7_workspace_charge frame=0 residents=5 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_workspace_counter frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_workspace_load_certified_run_word frame=32 residents=6 regs=x0-x5 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_workspace_load_root frame=96 residents=12 regs=x0-x7,x11-x14 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_workspace_load_root_tmp frame=96 residents=12 regs=x0-x7,x11-x14 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_workspace_reset frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_workspace_store_certified_run frame=208 residents=5 regs=x0-x2,x7 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_workspace_store_coverage frame=80 residents=5 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_workspace_store_root frame=80 residents=4 regs=x0-x2 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_workspace_store_root_tmp frame=80 residents=4 regs=x0-x2 clobbers=all pool=22
+    Fn key=__wrela_pixels_program_digest_byte frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_program_header frame=64 residents=7 regs=x0-x6 clobbers=all pool=23
+    Fn key=__wrela_pixels_program_operand frame=32 residents=6 regs=x0-x5 clobbers=all pool=20
+    Fn key=__wrela_pixels_program_record frame=64 residents=8 regs=x0-x7 clobbers=all pool=21
+    Fn key=__wrela_pixels_program_validate frame=0 residents=2 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_tile_event frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
+    Fn key=__wrela_pixels_tile_event_count frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_tile_feature frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
+    Fn key=__wrela_pixels_tile_feature_count frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
+    Fn key=fixed_domain frame=112 residents=10 regs=x0-x5 clobbers=x0-x5,x8-x11,x30-x31 pool=20
+    Fn key=interval_abs frame=128 residents=20 regs=x0,x3-x4,x7,x13-x14 clobbers=x0-x14,x30-x31 pool=19
+    Fn key=interval_add frame=128 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x6,x8-x12,x30-x31 pool=20
+    Fn key=interval_affine frame=208 residents=5 regs=x4-x6 clobbers=x0-x17,x19-x25,x30-x31 pool=19
+    Fn key=interval_ceil_div frame=16 residents=12 regs=x0-x6 clobbers=x0-x6,x9-x13,x30-x31 pool=20
+    Fn key=interval_contains_zero frame=32 residents=6 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
+    Fn key=interval_convert frame=304 residents=96 regs=x0-x1,x3-x7,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
+    Fn key=interval_floor_div frame=16 residents=12 regs=x0-x6 clobbers=x0-x6,x9-x13,x30-x31 pool=20
+    Fn key=interval_from_f32_bits frame=240 residents=101 regs=x0-x1,x4-x7,x15-x17,x19-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=16
+    Fn key=interval_hull frame=144 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x5,x8-x11,x30-x31 pool=20
+    Fn key=interval_intersect frame=160 residents=16 regs=x0,x3-x6 clobbers=x0-x6,x8-x11,x30-x31 pool=20
+    Fn key=interval_max frame=144 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x5,x8-x11,x30-x31 pool=20
+    Fn key=interval_min frame=144 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x5,x8-x11,x30-x31 pool=20
+    Fn key=interval_mul frame=320 residents=113 regs=x0-x1,x3-x7,x14-x17,x19-x25 clobbers=x0-x17,x19-x25,x30-x31 pool=18
+    Fn key=interval_narrow frame=128 residents=16 regs=x1,x3-x6 clobbers=x0-x6,x8-x12,x30-x31 pool=19
+    Fn key=interval_negate frame=112 residents=8 regs=x0-x1,x3 clobbers=x0-x6,x8-x12,x30-x31 pool=19
+    Fn key=interval_scale_pow2 frame=272 residents=86 regs=x0-x1,x3-x7,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
+    Fn key=interval_square frame=240 residents=10 regs=x0-x1,x3-x5 clobbers=x0-x17,x19-x25,x30-x31 pool=20
+    Fn key=interval_strict_negative frame=32 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=23
+    Fn key=interval_strict_positive frame=32 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=23
+    Fn key=interval_sub frame=128 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x6,x8-x12,x30-x31 pool=20
+    Fn key=interval_valid frame=48 residents=23 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22

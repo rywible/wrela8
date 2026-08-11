@@ -4232,7 +4232,7 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (41, 47),
+            (42, 48),
             "the measured size of C1's win once item E removed the frame slack, \
              item I coalesced the allocator's copies and item J's GVN removed \
              the redundancy under both forms; re-measure this rather than \

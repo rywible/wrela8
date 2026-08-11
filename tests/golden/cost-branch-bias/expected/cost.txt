@@ -2,27 +2,27 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=137 schedule_cycles=137 footprint_cycles=0 total_proxy_cycles=137
-  Scope scope=closure executable_words=209 executable_code_bytes=836 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=80 async_frame_total_bytes=0
-  Workload name=flat proxy_cycles=137
-  Owner name=app proxy_cycles=137
+  Rank rank_cycles=148 schedule_cycles=148 footprint_cycles=0 total_proxy_cycles=148
+  Scope scope=closure executable_words=220 executable_code_bytes=880 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=80 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=148
+  Owner name=app proxy_cycles=148
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checks owner=app frame_bytes=0 proxy_cycles=33
+  Fn key=checks owner=app frame_bytes=0 proxy_cycles=41
     Term rule=Mem level=buffered count=16
     Term rule=abort count=8
     Term rule=adrp count=8
-    Term rule=alu count=24
+    Term rule=alu count=32
     Term rule=branch count=9
     Term rule=mov_wide count=8
     Term rule=store count=16
-  Fn key=ladder owner=app frame_bytes=80 proxy_cycles=51
+  Fn key=ladder owner=app frame_bytes=80 proxy_cycles=52
     Term rule=Mem level=buffered count=3
     Term rule=Mem level=l1_hit count=1
     Term rule=Mem level=unresolved count=1
     Term rule=abort count=1
     Term rule=adrp count=1
-    Term rule=alu count=27
+    Term rule=alu count=28
     Term rule=branch count=17
     Term rule=load count=2
     Term rule=mov_wide count=9
@@ -31,11 +31,11 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=alu count=13
     Term rule=branch count=13
     Term rule=mov_wide count=11
-  Fn key=spin owner=app frame_bytes=0 proxy_cycles=22
+  Fn key=spin owner=app frame_bytes=0 proxy_cycles=24
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
-    Term rule=alu count=17
+    Term rule=alu count=19
     Term rule=branch count=6
     Term rule=mov_wide count=8
     Term rule=store count=4

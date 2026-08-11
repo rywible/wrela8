@@ -15,7 +15,7 @@ pub struct Store:
 @layout_assert
 fn entry_and_code(report: ImageReport):
     assert report.machine_revision == 1, "machine revision is wrela-machine-v1"
-    assert report.entry == 0x40500000, "entry is IMAGE_BASE"
+    assert report.entry == 0x40600000, "entry is IMAGE_BASE"
     assert report.pages_base == 0x40000000, "pages region starts at DRAM_BASE"
     assert report.code_base > report.entry, "code follows entry"
     assert report.code_size > 0, "code section is nonempty"

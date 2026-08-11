@@ -1,0 +1,112 @@
+module examples.check_pixels_visibility_probe
+
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
+from core.runtime import __wrela_trace_p7_u64
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    CameraBounds,
+    LightConfig,
+    MaterialSample,
+    ProbeConfig,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+    __wrela_pixels_p7_debug_probe,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 41
+
+struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    phase: f32
+
+enum MaterialId:
+    Ground
+
+enum ObjectId:
+    Ground
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    return mark(
+        plane(p, Vec3(x=0.0, y=0.0, z=1.0), offset=params.phase),
+        object=ObjectId.Ground,
+        material=MaterialId.Ground,
+    )
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 41, "fixture id must remain pinned"
+
+@test(runtime)
+fn reports_guest_visibility_evidence():
+    params: [f32; 16] = [0.0; 16]
+    camera: [f32; 12] = [
+        0.0, 0.0, -4.35,
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+    ]
+    visibility = __wrela_pixels_p7_debug_probe(0, 5, 32, 16, params, camera)
+    assert visibility[0] == 1, "guest probe certifies"
+    assert visibility[1] == 1, "guest probe hits"
+    assert visibility[10] == 1, "guest probe carries a normal"
+    nx = (visibility[11] * 32767 / 1000000).to[u64]() & 65535
+    ny = (visibility[12] * 32767 / 1000000).to[u64]() & 65535
+    nz = (visibility[13] * 32767 / 1000000).to[u64]() & 65535
+    __wrela_trace_p7_u64(
+        (visibility[1].to[u64]() << 32) | visibility[4].to[u64](),
+    )
+    __wrela_trace_p7_u64(visibility[5].to[u64]())
+    __wrela_trace_p7_u64(visibility[6].to[u64]())
+    __wrela_trace_p7_u64(
+        (visibility[10].to[u64]() << 56)
+            | (visibility[14].to[u64]() << 48)
+            | (nx << 32)
+            | (ny << 16)
+            | nz,
+    )
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-pixels-visibility-probe", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

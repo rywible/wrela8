@@ -85,7 +85,7 @@ mod tests {
         );
         assert_eq!(
             site_count(),
-            201,
+            204,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

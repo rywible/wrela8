@@ -2,56 +2,60 @@ Program
   Fn key=checked_add frame=0 bytes
     0000: 8b010002  add x2, x0, x1
     0001: f2607c5f  tst x2, #0xffffffff00000000
-    0002: 54000100  b.eq #32
+    0002: 54000120  b.eq #36
     0003: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0004: 10000009  adr x9, rodata+0x0
+    0004: 90000009  adrp x9, rodata+0x0
+    0005: 91000129  add x9, x9, rodata+0x0
+    0006: f90003e9  str x9, [sp]  ; Bytes.base
+    0007: d2800349  movz x9, #0x1a
+    0008: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0009: 910003e0  add x0, sp, #0  ; *Bytes
+    0010: 94000000  bl <__wrela_abort>
+    0011: aa0203e0  mov x0, x2
+    0012: d65f03c0  ret
+  Fn key=checked_div frame=0 bytes
+    0000: eb1f003f  cmp x1, xzr
+    0001: 54000121  b.ne #36
+    0002: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0003: 90000009  adrp x9, rodata+0x1a
+    0004: 91000129  add x9, x9, rodata+0x1a
     0005: f90003e9  str x9, [sp]  ; Bytes.base
-    0006: d2800349  movz x9, #0x1a
+    0006: d2800209  movz x9, #0x10
     0007: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0008: 910003e0  add x0, sp, #0  ; *Bytes
     0009: 94000000  bl <__wrela_abort>
-    0010: aa0203e0  mov x0, x2
-    0011: d65f03c0  ret
-  Fn key=checked_div frame=0 bytes
-    0000: eb1f003f  cmp x1, xzr
-    0001: 54000101  b.ne #32
-    0002: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0003: 10000009  adr x9, rodata+0x1a
-    0004: f90003e9  str x9, [sp]  ; Bytes.base
-    0005: d2800209  movz x9, #0x10
-    0006: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0007: 910003e0  add x0, sp, #0  ; *Bytes
-    0008: 94000000  bl <__wrela_abort>
-    0009: b26183ec  mov x12, #0xffffffff80000000
-    0010: eb0c001f  cmp x0, x12
-    0011: 54000161  b.ne #44
-    0012: 9280000d  movn x13, #0x0
-    0013: eb0d003f  cmp x1, x13
-    0014: 54000101  b.ne #32
-    0015: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0016: 10000009  adr x9, rodata+0x2a
-    0017: f90003e9  str x9, [sp]  ; Bytes.base
-    0018: d2800349  movz x9, #0x1a
-    0019: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0020: 910003e0  add x0, sp, #0  ; *Bytes
-    0021: 94000000  bl <__wrela_abort>
-    0022: 9ac10c02  sdiv x2, x0, x1
-    0023: aa0203e0  mov x0, x2
-    0024: d65f03c0  ret
+    0010: b26183ec  mov x12, #0xffffffff80000000
+    0011: eb0c001f  cmp x0, x12
+    0012: 54000181  b.ne #48
+    0013: 9280000d  movn x13, #0x0
+    0014: eb0d003f  cmp x1, x13
+    0015: 54000121  b.ne #36
+    0016: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0017: 90000009  adrp x9, rodata+0x2a
+    0018: 91000129  add x9, x9, rodata+0x2a
+    0019: f90003e9  str x9, [sp]  ; Bytes.base
+    0020: d2800349  movz x9, #0x1a
+    0021: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0022: 910003e0  add x0, sp, #0  ; *Bytes
+    0023: 94000000  bl <__wrela_abort>
+    0024: 9ac10c02  sdiv x2, x0, x1
+    0025: aa0203e0  mov x0, x2
+    0026: d65f03c0  ret
   Fn key=mixed frame=0 bytes
     0000: 8b010003  add x3, x0, x1
     0001: d3403c63  ubfx x3, x3, #0, #16
     0002: 8b020060  add x0, x3, x2
     0003: f270bc1f  tst x0, #0xffffffffffff0000
-    0004: 54000100  b.eq #32
+    0004: 54000120  b.eq #36
     0005: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0006: 10000009  adr x9, rodata+0x0
-    0007: f90003e9  str x9, [sp]  ; Bytes.base
-    0008: d2800349  movz x9, #0x1a
-    0009: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0010: 910003e0  add x0, sp, #0  ; *Bytes
-    0011: 94000000  bl <__wrela_abort>
-    0012: d65f03c0  ret
+    0006: 90000009  adrp x9, rodata+0x0
+    0007: 91000129  add x9, x9, rodata+0x0
+    0008: f90003e9  str x9, [sp]  ; Bytes.base
+    0009: d2800349  movz x9, #0x1a
+    0010: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0011: 910003e0  add x0, sp, #0  ; *Bytes
+    0012: 94000000  bl <__wrela_abort>
+    0013: d65f03c0  ret
   Fn key=wrapping_add frame=0 bytes
     0000: 8b010002  add x2, x0, x1
     0001: d3401c42  ubfx x2, x2, #0, #8

@@ -394,19 +394,19 @@ fn validate_sinusoidal_contract_links(
     let expected = [
         amplitude_value
             .abs_f32()?
-            .mul_f32(point(super::scalar::SOURCE_TRIG_VALUE_FACTOR_V1)?)?,
+            .mul_f32(point(super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2)?)?,
         amplitude_value
             .mul_f32(frequency_value)?
             .abs_f32()?
-            .mul_f32(point(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1)?)?,
+            .mul_f32(point(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2)?)?,
         amplitude_value
             .mul_f32(frequency2)?
             .abs_f32()?
-            .mul_f32(point(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1)?)?,
+            .mul_f32(point(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2)?)?,
         amplitude_value
             .mul_f32(frequency3)?
             .abs_f32()?
-            .mul_f32(point(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1)?)?,
+            .mul_f32(point(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2)?)?,
     ];
     let declared_ids = [
         contract.amplitude_bound,

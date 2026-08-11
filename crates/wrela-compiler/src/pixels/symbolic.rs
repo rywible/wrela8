@@ -3628,13 +3628,13 @@ impl<'a> Compiler<'a> {
         )?;
         let displacement = self.mul(amplitude, wave, module, span)?;
         let value_factor =
-            self.const_f32(super::scalar::SOURCE_TRIG_VALUE_FACTOR_V1, module, span)?;
+            self.const_f32(super::scalar::SOURCE_TRIG_VALUE_FACTOR_V2, module, span)?;
         let gradient_factor =
-            self.const_f32(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V1, module, span)?;
+            self.const_f32(super::scalar::SOURCE_TRIG_GRADIENT_FACTOR_V2, module, span)?;
         let hessian_factor =
-            self.const_f32(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V1, module, span)?;
+            self.const_f32(super::scalar::SOURCE_TRIG_HESSIAN_FACTOR_V2, module, span)?;
         let third_factor =
-            self.const_f32(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V1, module, span)?;
+            self.const_f32(super::scalar::SOURCE_TRIG_THIRD_FACTOR_V2, module, span)?;
         let amplitude_abs = self.abs(amplitude, module, span)?;
         let amplitude_bound = self.mul(amplitude_abs, value_factor, module, span)?;
         let amplitude_frequency = self.mul(amplitude, frequency, module, span)?;
@@ -5041,6 +5041,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            camera_pose: None,
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),

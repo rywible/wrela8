@@ -131,6 +131,7 @@ fn check_typed_single_with_decls(
     module: &Module,
     path: &str,
 ) -> Result<(typed::TypedProgram, Vec<types::DeclItem>), SemaError> {
+    check_reserved_source_names(module, path)?;
     prepare_stdlib_enums_for_file(path, module)?;
     let specialized = specialize::specialize(module)?;
     let layouts = types::check_layouts(&specialized)?;
@@ -408,6 +409,9 @@ fn check_program_typed_tables(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
+    for (key, module) in modules {
+        check_reserved_source_names(module, paths.get(key).map_or("<unknown>", String::as_str))?;
+    }
     prepare_stdlib_enums_for_closure(modules, paths)?;
     let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
@@ -439,29 +443,98 @@ fn check_program_typed_tables(
     }
 
     inject_time_prelude_bindings(&mut bindings, &specialized);
+    inject_pixels_prelude_bindings(&mut bindings, &specialized);
     let core_render = vec!["core".to_string(), "render".to_string()];
-    let renderer_modules: BTreeSet<Vec<String>> = specialized
+    let image_pixels = crate::loader::IMAGE_PIXELS_MODULE_KEY
         .iter()
-        .filter(|(_, module)| crate::syntax::printer::pretty(module).contains(".renderer["))
-        .map(|(key, _)| key.clone())
-        .collect();
+        .map(|part| (*part).to_string())
+        .collect::<Vec<_>>();
+    let core_field = vec!["core".to_string(), "field".to_string()];
+    let core_render_interval = vec!["core".to_string(), "render_interval".to_string()];
+    let core_render_program = vec!["core".to_string(), "render_program".to_string()];
+    let core_render_certificate = vec!["core".to_string(), "render_certificate".to_string()];
+    let core_render_coverage = vec!["core".to_string(), "render_coverage".to_string()];
+    let has_pixels_runtime = symtabs.contains_key(&image_pixels)
+        && symtabs.contains_key(&core_render)
+        && symtabs.contains_key(&core_field);
+    if has_pixels_runtime {
+        let scalar_helper_contexts = bindings.keys().cloned().collect::<Vec<_>>();
+        // Imported bodies are evaluated in the caller's module context. Make
+        // the generated coefficient evaluator's closed scalar helper surface
+        // explicit throughout the P7 call closure so a nonlinear scene cannot
+        // pass checking and then fail during sealed-runtime lowering.
+        for key in scalar_helper_contexts {
+            let Some(module_bindings) = bindings.get_mut(&key) else {
+                continue;
+            };
+            for name in ["cos_scalar", "rsqrt_scalar", "sin_scalar", "sqrt_scalar"] {
+                if !symtabs[&key].contains_key(name) && !module_bindings.contains_key(name) {
+                    module_bindings.insert(
+                        name.to_string(),
+                        imports::ImportBinding {
+                            target_module: core_field.clone(),
+                            target_name: name.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        let pixels_helper_contexts = bindings.keys().cloned().collect::<Vec<_>>();
+        for key in pixels_helper_contexts {
+            let Some(module_bindings) = bindings.get_mut(&key) else {
+                continue;
+            };
+            for (target_module, names) in [
+                (
+                    &core_render_interval,
+                    &[
+                        "FixedDomain",
+                        "Iv32",
+                        "NumericOutcome",
+                        "interval_add",
+                        "interval_ceil_div",
+                        "interval_floor_div",
+                        "interval_mul",
+                        "interval_narrow",
+                        "interval_sub",
+                        "interval_valid",
+                    ][..],
+                ),
+                (&core_render_program, &["polynomial_horner9"][..]),
+                (
+                    &core_render_certificate,
+                    &["certify_monotone_root", "certify_quadratic_discriminant"][..],
+                ),
+                (
+                    &core_render_coverage,
+                    &["CoverageOutcome", "coverage_line_twice_area"][..],
+                ),
+            ] {
+                if !symtabs.contains_key(target_module) {
+                    continue;
+                }
+                for name in names {
+                    if !symtabs[&key].contains_key(*name) && !module_bindings.contains_key(*name) {
+                        module_bindings.insert(
+                            (*name).to_string(),
+                            imports::ImportBinding {
+                                target_module: target_module.clone(),
+                                target_name: (*name).to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
     for (key, module_bindings) in &mut bindings {
-        if key == &core_render || !renderer_modules.contains(key) {
+        if key == &core_render || !has_pixels_runtime {
             continue;
         }
-        for name in [
-            "Renderer",
-            "RendererWorker",
-            "RendererFrameBounds",
-            "RenderPath",
-            "RenderFrame",
-            "RenderedFrame",
-            "RenderError",
-            "Camera",
-            "Light",
-            "LightFrame",
-            "__wrela_pixels_p5_finite",
-        ] {
+        // The injected Pixels surface comes from one table
+        // (`pixels::surface`); see its module docs for why hand-maintained
+        // copies of these lists were a standing source of drift.
+        for name in crate::pixels::surface::injected_core_render_names() {
             if symtabs[key].contains_key(name) || module_bindings.contains_key(name) {
                 continue;
             }
@@ -469,6 +542,111 @@ fn check_program_typed_tables(
                 name.to_string(),
                 imports::ImportBinding {
                     target_module: core_render.clone(),
+                    target_name: name.to_string(),
+                },
+            );
+        }
+        for name in crate::pixels::surface::injected_image_pixels_names() {
+            if symtabs[key].contains_key(name)
+                || module_bindings.contains_key(name)
+                || !symtabs.contains_key(&image_pixels)
+            {
+                continue;
+            }
+            module_bindings.insert(
+                name.to_string(),
+                imports::ImportBinding {
+                    target_module: image_pixels.clone(),
+                    target_name: name.to_string(),
+                },
+            );
+        }
+        for (module, names) in [
+            (
+                vec!["core".to_string(), "render_interval".to_string()],
+                &[
+                    "FixedDomain",
+                    "Iv32",
+                    "NumericOutcome",
+                    "interval_add",
+                    "interval_ceil_div",
+                    "interval_floor_div",
+                    "interval_mul",
+                    "interval_narrow",
+                    "interval_valid",
+                ][..],
+            ),
+            (
+                vec!["core".to_string(), "render_program".to_string()],
+                &[
+                    "Polynomial9",
+                    "Polynomial9Outcome",
+                    "bernstein_from_power9",
+                    "bernstein_lerp_ratio",
+                    "polynomial_compose9",
+                    "polynomial_horner9",
+                    "polynomial_multiply9",
+                    "program_binomial",
+                    "program_ceil_div",
+                    "program_floor_div",
+                    "program_gcd",
+                ][..],
+            ),
+        ] {
+            if !symtabs.contains_key(&module) {
+                continue;
+            }
+            for name in names {
+                if symtabs[key].contains_key(*name) || module_bindings.contains_key(*name) {
+                    continue;
+                }
+                module_bindings.insert(
+                    (*name).to_string(),
+                    imports::ImportBinding {
+                        target_module: module.clone(),
+                        target_name: (*name).to_string(),
+                    },
+                );
+            }
+        }
+    }
+    let render_program = vec!["core".to_string(), "render_program".to_string()];
+    let program_view_modules = bindings
+        .iter()
+        .filter(|(_, module_bindings)| {
+            module_bindings.values().any(|binding| {
+                binding.target_module == render_program
+                    && matches!(
+                        binding.target_name.as_str(),
+                        "FrameProgramView" | "FeatureIdSlice"
+                    )
+            })
+        })
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    for key in program_view_modules {
+        let module_bindings = bindings
+            .get_mut(&key)
+            .expect("program-view module key came from bindings");
+        for name in [
+            "__wrela_pixels_program_validate",
+            "__wrela_pixels_program_header",
+            "__wrela_pixels_program_digest_byte",
+            "__wrela_pixels_program_record",
+            "__wrela_pixels_program_operand",
+            "__wrela_pixels_tile_feature",
+            "__wrela_pixels_tile_feature_count",
+        ] {
+            if symtabs[&key].contains_key(name)
+                || module_bindings.contains_key(name)
+                || !symtabs.contains_key(&image_pixels)
+            {
+                continue;
+            }
+            module_bindings.insert(
+                name.to_string(),
+                imports::ImportBinding {
+                    target_module: image_pixels.clone(),
                     target_name: name.to_string(),
                 },
             );
@@ -667,6 +845,109 @@ fn check_program_typed_tables(
     ))
 }
 
+pub fn is_compiler_reserved_source_name(name: &str) -> bool {
+    name.starts_with("__wrela_") || name.starts_with("RendererWorker")
+}
+
+/// Opt-in marker letting a repository-owned golden fixture name the
+/// compiler-reserved Pixels surface in order to pin its contract.
+pub const COMPILER_INTERNAL_FIXTURE_MARKER: &str = "@wrela-compiler-internal";
+
+/// Is this source file a toolchain-owned stdlib module?
+///
+/// Trust follows the stdlib *layout*, not the path the compiler was built at.
+/// `loader::stdlib_core_root` resolves `core.*` and `drivers.*` imports either
+/// to a `stdlib/` sibling of the package root or to the toolchain copy, so a
+/// compiler binary that has been moved, or a project vendoring its own
+/// `stdlib/`, is a supported configuration — and pinning trust to
+/// `CARGO_MANIFEST_DIR` made the stdlib itself fail this check there, with a
+/// baffling "compiler-reserved namespace" error on toolchain code.
+fn is_stdlib_source(path: &Path) -> bool {
+    let components: Vec<_> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components
+        .windows(2)
+        .any(|pair| pair[0] == "stdlib" && (pair[1] == "core" || pair[1] == "drivers"))
+}
+
+fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaError> {
+    let source_path = Path::new(path);
+    // Angle-bracket paths are compiler-owned synthetic/re-check inputs. User
+    // files enter through the loader with a filesystem path and are checked
+    // before any live-rtconfig re-check replaces that provenance with
+    // `<module.path>`.
+    let synthetic = path.starts_with('<') && path.ends_with('>');
+    if synthetic || is_stdlib_source(source_path) {
+        return Ok(());
+    }
+
+    let source = std::fs::read_to_string(source_path)
+        .unwrap_or_else(|_| crate::syntax::printer::pretty(module));
+
+    // A handful of repository-owned golden fixtures deliberately name
+    // generated intrinsics in order to pin their contracts. That trust is
+    // declared per file rather than inherited from a directory: blanket-
+    // trusting `tests/golden/` meant no fixture could ever exercise the fence
+    // itself, which is why the rejection had only unit-test coverage. Both
+    // halves are required — a marker outside this repository grants nothing,
+    // so a user package cannot opt itself in.
+    // Match the directive as a comment line, not as a loose substring: prose
+    // that merely mentions the marker (a fixture explaining why it does *not*
+    // opt in, say) must not thereby opt itself in.
+    let marked = source.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('#') && line.contains(COMPILER_INTERNAL_FIXTURE_MARKER)
+    });
+    let repository_fixture = marked
+        && Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden")
+            .canonicalize()
+            .ok()
+            .is_some_and(|root| {
+                source_path
+                    .canonicalize()
+                    .is_ok_and(|source| source.starts_with(root))
+            });
+    if repository_fixture {
+        return Ok(());
+    }
+
+    // Inspect tokens rather than just declarations: a user reference to a
+    // magic lowering name is as dangerous as defining it. The original file
+    // preserves useful source locations; in-memory callers fall back to the
+    // stable pretty-printer and still receive a deterministic diagnostic.
+    let tokens = crate::syntax::lexer::lex(&source).map_err(|error| SemaError {
+        category: "lex",
+        message: error.message,
+        line: error.line,
+        col: error.col,
+        extra_lines: Vec::new(),
+        omit_location: false,
+        missing_method: None,
+    })?;
+    if let Some(token) = tokens.into_iter().find(|token| {
+        token.kind == crate::syntax::lexer::TokenKind::Ident
+            && is_compiler_reserved_source_name(&token.text)
+    }) {
+        return Err(SemaError::at(
+            "name",
+            format!(
+                "`{}` is in a compiler-reserved namespace and cannot be defined or referenced by user modules",
+                token.text
+            ),
+            Span {
+                line: token.line,
+                col: token.col,
+                byte_start: token.byte_start,
+                byte_end: token.byte_end,
+            },
+        ));
+    }
+    Ok(())
+}
+
 fn splice_imported_decls(
     programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
@@ -695,6 +976,36 @@ fn splice_imported_decls(
     let shadow: BTreeMap<(Vec<String>, Vec<String>), String> = {
         let same_decl = |a: &(Vec<String>, String), b: &(Vec<String>, String)| -> bool {
             if a == b {
+                return true;
+            }
+            let canonical_pixels_wire_alias =
+                |left: &(Vec<String>, String), right: &(Vec<String>, String)| {
+                    let render_program = ["core", "render_program"];
+                    let image_pixels = ["core", "__image_pixels"];
+                    let module_is = |module: &[String], expected: &[&str]| {
+                        module
+                            .iter()
+                            .map(String::as_str)
+                            .eq(expected.iter().copied())
+                    };
+                    ((module_is(&left.0, &render_program) && module_is(&right.0, &image_pixels))
+                        || (module_is(&left.0, &image_pixels)
+                            && module_is(&right.0, &render_program)))
+                        && left.1 == right.1
+                        && matches!(
+                            left.1.as_str(),
+                            "FrameProgramHeaderV1"
+                                | "FrameProgramTableV1"
+                                | "FrameProgramRecordV1"
+                                | "FrameProgramImmediateV1"
+                        )
+                };
+            if canonical_pixels_wire_alias(a, b) {
+                // core.__image_pixels copies these four declarations
+                // mechanically from core.render_program before semantic
+                // checking. Treating the copy as the same declaration is
+                // narrower than the general shadow exception and preserves
+                // the imported-body fail-closed rule for every other name.
                 return true;
             }
             let (Some(pa), Some(pb)) = (programs.get(&a.0), programs.get(&b.0)) else {
@@ -1220,6 +1531,42 @@ fn inject_time_prelude_bindings(
     }
 }
 
+fn inject_pixels_prelude_bindings(
+    bindings: &mut BTreeMap<Vec<String>, imports::ImportBindings>,
+    specialized: &BTreeMap<Vec<String>, Module>,
+) {
+    let pixels_key = vec!["core".to_string(), "__image_pixels".to_string()];
+    let Some(pixels_module) = specialized.get(&pixels_key) else {
+        return;
+    };
+    let accessors = pixels_module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            crate::syntax::ast::Item::Fn(function)
+                if function.is_pub && function.name.starts_with("__wrela_pixels_") =>
+            {
+                Some(function.name.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for key in specialized.keys() {
+        if key == &pixels_key {
+            continue;
+        }
+        let module_bindings = bindings.entry(key.clone()).or_default();
+        for name in &accessors {
+            module_bindings
+                .entry(name.clone())
+                .or_insert_with(|| imports::ImportBinding {
+                    target_module: pixels_key.clone(),
+                    target_name: name.clone(),
+                });
+        }
+    }
+}
+
 fn inject_time_prelude_types(
     imported: &mut types::ImportedTypes,
     closure_shapes: &BTreeMap<Vec<String>, BTreeMap<String, usize>>,
@@ -1290,5 +1637,20 @@ mod tests {
             err.message
                 .contains("imports through the single-module entry")
         );
+    }
+
+    #[test]
+    fn user_modules_cannot_enter_compiler_reserved_namespaces() {
+        for source in [
+            "module m\n\nfn __wrela_pixels_f32_to_bits(value: f32) -> u32:\n    return 0\n",
+            "module m\n\nfn f() -> u32:\n    return __wrela_pixels_f32_to_bits(0.0)\n",
+            "module m\n\npub struct RendererWorkerPool:\n    value: u32\n",
+        ] {
+            let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
+            let error = check_reserved_source_names(&module, "/nonexistent/user-module.wr")
+                .expect_err("reserved name must fail before lowering");
+            assert_eq!(error.category, "name");
+            assert!(error.message.contains("compiler-reserved namespace"));
+        }
     }
 }

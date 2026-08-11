@@ -1,5 +1,9 @@
 module examples.check_pixels_smooth_csg
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
 from core.field import (
     Field,
     Rgb,
@@ -7,19 +11,25 @@ from core.field import (
     mark,
     smooth_union,
     sphere,
-    union,
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
     LightConfig,
+    LightFrame,
     MaterialSample,
     ProbeConfig,
+    RenderFrame,
+    Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_frame_digest,
 )
 from drivers.display import Display, DisplayDevice
 
@@ -55,6 +65,72 @@ fn pinned_scene_contract():
     assert FIXTURE_ID == 3, "fixture id must remain pinned"
     assert SMOOTH_K_NUMERATOR == 1, "adversarial scene value must remain pinned"
 
+@actor
+struct SmoothSweepProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    pub async fn run(mut self) -> u32:
+        frame = RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=3,
+        )
+        rendered = await self.renderer.render(frame=take frame)
+        @discard(reason="the runtime assertion converts every render error into fixture failure")
+        match rendered:
+            case .Ok(value):
+                __wrela_trace_p7_u64(value.certificate_runs)
+                __wrela_trace_p7_u64(value.event_corridors)
+                __wrela_trace_p7_u64(value.revalidated_proposals)
+                __wrela_trace_p7_u64(5780180186688408645)
+                __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+                evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+                if evidence[0] == 1:
+                    __wrela_trace_p7_u64(4847371096046259761)
+                    evidence_word: usize = 0
+                    @budget(bound=16)
+                    while evidence_word < 16:
+                        evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, evidence_word)
+                        assert evidence[0] == 1, "instrumented run evidence is complete"
+                        __wrela_trace_p7_u64(evidence[1])
+                        evidence_word = evidence_word + 1
+                __wrela_trace_p7_u64(4922225244575680596)
+                digest = __wrela_pixels_p7_debug_frame_digest(0)
+                digest_word: usize = 1
+                @budget(bound=4)
+                while digest_word < 5:
+                    __wrela_trace_p7_u64(digest[digest_word])
+                    digest_word = digest_word + 1
+                dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+                if dump_header[0] == 1:
+                    __wrela_trace_p7_u64(7599824371187933777)
+                    dump_index: u64 = 1
+                    @budget(bound=65551)
+                    while dump_index <= dump_header[1]:
+                        dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                        assert dump_value[0] == 1, "instrumented frame dump is complete"
+                        __wrela_trace_p7_u64(dump_value[1])
+                        dump_index = dump_index + 1
+                return 0
+            case .Err(call_error):
+                return 1
+
+@test(runtime)
+async fn smooth_object_sweeps_all_roots(probe: Actor[SmoothSweepProbe]):
+    rendered = await probe.run()
+    @discard(reason="the assertion below converts actor-call failure into fixture failure")
+    match rendered:
+        case .Ok(status):
+            assert status == 0, "smooth-object visibility renders from scratch"
+        case .Err(_):
+            assert false, "smooth-object probe call succeeds"
+
 @image
 pub fn build() -> Image:
     img = Image(name="check-pixels-smooth-csg", target=Target.wrela_machine_v1)
@@ -85,5 +161,6 @@ pub fn build() -> Image:
         probes=ProbeConfig.fixed(enabled=false),
         initialization_deadline_ms=10,
     )
+    probe = img.actor(SmoothSweepProbe, renderer=renderer, mailbox=1)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

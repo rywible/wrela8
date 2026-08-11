@@ -1,0 +1,15 @@
+test pinned_scene_contract: ok
+p7 0000000000000096
+p7 000000000000006e
+p7 0000000000000078
+p7 503753414d504c45
+p7 0000000000000000
+p7 444f41c7e764c854
+p7 e798a70907487f13
+p7 0546d9bfc2f1f247
+p7 59148bd77b13da64
+p7 fbccb146ddb348b1
+test tangency_takes_bounded_event_path: ok
+2 passed, 0 failed
+lane1 turns=3 run_one=6 messages=3
+lane1 hits=0:2,1:2,2:1

@@ -2,6 +2,8 @@ module render_sweep
 
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_negate, interval_sub, interval_valid
 from core.render_program import BernsteinSplitOutcome3, bernstein_average, bernstein_sign, bernstein_subdivide
+from core.render_certificate import certify_monotone_root
+
 
 pub enum RootCertMethod:
     BernsteinFaces
@@ -38,7 +40,7 @@ pub enum RootCertificateOutcome:
     Rejected
     Error
 
-pub struct CertifiedRun:
+pub struct RootCertifiedRun:
     certificate: RootCertificate
     composition_shape: i32
 
@@ -58,7 +60,7 @@ pub struct CertifiedRun:
         return self.certificate.contraction_margin_value()
 
 pub enum CertifiedRunOutcome:
-    Value(CertifiedRun)
+    Value(RootCertifiedRun)
     Rejected
     Error
 
@@ -86,16 +88,13 @@ pub fn strict_margin(value: Iv32) -> i32:
     return 0
 
 pub fn monotone_certificate(lower: Iv32, upper: Iv32, derivative: Iv32) -> RootCertificateOutcome:
-    if not run_certificate(lower, upper, derivative):
+    certified = certify_monotone_root(lower, upper, derivative)
+    if certified[0] != 1:
         return .Rejected
-    face = strict_margin(lower)
-    other_face = strict_margin(upper)
-    if other_face < face:
-        face = other_face
     return .Value(RootCertificate(
         correction=Iv32.point(0),
-        derivative_margin=Iv32.point(strict_margin(derivative)),
-        face_margin=Iv32.point(face),
+        derivative_margin=Iv32.point(certified[2].to[i32]()),
+        face_margin=Iv32.point(certified[2].to[i32]()),
         contraction_margin=Iv32.point(0),
         method=.MonotoneTube,
     ))
@@ -257,21 +256,21 @@ pub fn certify_run(request: CertificateRequest) -> CertifiedRunOutcome:
     if composition_shape != 0:
         match bernstein_certificate(lower_coefficients, upper_coefficients, derivative):
             case .Value(certificate):
-                return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+                return .Value(RootCertifiedRun(certificate=certificate, composition_shape=composition_shape))
             case .Error:
                 return .Error
             case .Rejected:
                 pass
     match monotone_certificate(lower_face, upper_face, derivative):
         case .Value(certificate):
-            return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+            return .Value(RootCertifiedRun(certificate=certificate, composition_shape=composition_shape))
         case .Error:
             return .Error
         case .Rejected:
             pass
     match krawczyk_certificate(reciprocal_derivative, residual, derivative, correction, one, domain):
         case .Value(certificate):
-            return .Value(CertifiedRun(certificate=certificate, composition_shape=composition_shape))
+            return .Value(RootCertifiedRun(certificate=certificate, composition_shape=composition_shape))
         case .Error:
             return .Error
         case .Rejected:

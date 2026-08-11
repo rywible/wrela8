@@ -1,0 +1,261 @@
+module examples.boot_pixels_frame_input
+
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderError,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 72
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 72, "fixture id must remain pinned"
+# P7.2: invalid frame inputs return their exact error before any framebuffer
+# byte is touched, from-scratch rendering needs no previous snapshot, and the
+# packed snapshot is deterministic across identical frames.
+
+struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    phase: f32
+
+enum MaterialId:
+    Ground
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    ground = plane(p, Vec3(x=0.0, y=1.0, z=0.0), offset=params.phase)
+    return mark(ground, object=MaterialId.Ground, material=MaterialId.Ground)
+
+@material
+fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+fn pack_digest(read digest: [u8; 32]) -> u64:
+    packed: u64 = 0
+    digest_byte: usize = 0
+    @budget(bound=8)
+    while digest_byte < 8:
+        packed = packed | (
+            digest[digest_byte].to[u64]() << (digest_byte * 8).to[u64]()
+        )
+        digest_byte = digest_byte + 1
+    __wrela_trace_p7_u64(packed)
+    return packed
+
+fn classify(take error: RenderError) -> u64:
+    match error:
+        case .ParameterOutOfRange(_):
+            return 5
+        case .NonFiniteInput(_):
+            return 6
+        case .CertificateExhausted(tile):
+            __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+            return 3
+        case .RootIsolationExhausted(tile):
+            __wrela_trace_p7_u64(4294967296 + tile.value.to[u64]())
+            return 3
+        case .InternalInvariant(invariant):
+            __wrela_trace_p7_u64(7000000000 + invariant.kind.to[u64]())
+            return 3
+        case .FrameContractMismatch(path):
+            __wrela_trace_p7_u64(6000000000 + path.component.to[u64]())
+            return 3
+        case _:
+            return 3
+
+@actor
+struct RenderProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    fn __frame(read self, phase: f32, exposure: f32, index: u64) -> RenderFrame[SceneParams]:
+        return RenderFrame[SceneParams](
+            params=SceneParams(phase=phase),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=exposure,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=index,
+        )
+
+    pub async fn probe_error(mut self, phase: f32, exposure: f32) -> u64:
+        frame = self.__frame(phase, exposure, 1)
+        result = await self.renderer.render(frame=take frame)
+        @discard(reason="every arm returns the observed classification")
+        match result:
+            case .Ok(_):
+                return 0
+            case .Err(call_error):
+                match call_error:
+                    case .Op(failure):
+                        return classify(take failure.error)
+                    case _:
+                        return 4
+
+    pub async fn probe_digest(mut self, index: u64) -> u64:
+        frame = self.__frame(0.5, 0.0, index)
+        result = await self.renderer.render(frame=take frame)
+        @discard(reason="every arm returns the observed digest or zero")
+        match result:
+            case .Ok(rendered):
+                return pack_digest(rendered.displayed_digest)
+            case .Err(call_error):
+                match call_error:
+                    case .Op(failure):
+                        __wrela_trace_p7_u64(8000000 + classify(take failure.error))
+                    case _:
+                        __wrela_trace_p7_u64(8000099)
+                return 0
+
+@actor
+struct FrameProbe:
+    probe: Actor[RenderProbe]
+    out_of_range: f32
+    nonfinite: f32
+    nan: f32
+
+    init(mut self, probe: Actor[RenderProbe], out_of_range: f32, nonfinite: f32, nan: f32):
+        self.probe = probe
+        self.out_of_range = out_of_range
+        self.nonfinite = nonfinite
+        self.nan = nan
+
+    pub async fn run(mut self) -> u64:
+        # Out-of-range parameter: exact error, no previous snapshot needed.
+        observed = await self.probe.probe_error(phase=self.out_of_range, exposure=0.0)
+        code: u64 = 4
+        @discard(reason="admission failure maps to code 4")
+        match observed:
+            case .Ok(value):
+                code = value
+            case .Err(_):
+                code = 4
+        if code != 5:
+            return 100 + code
+        # Non-finite exposure: exact error.
+        observed = await self.probe.probe_error(phase=0.0, exposure=self.nonfinite)
+        @discard(reason="admission failure maps to code 4")
+        match observed:
+            case .Ok(value):
+                code = value
+            case .Err(_):
+                code = 4
+        if code != 6:
+            return 200 + code
+        # NaN exposure: exact error.
+        observed = await self.probe.probe_error(phase=0.0, exposure=self.nan)
+        @discard(reason="admission failure maps to code 4")
+        match observed:
+            case .Ok(value):
+                code = value
+            case .Err(_):
+                code = 4
+        if code != 6:
+            return 300 + code
+        # From-scratch valid frame renders with no prior snapshot, and the
+        # identical frame renders to the identical digest: the packed
+        # snapshot and the certified sweep are deterministic.
+        first_digest: u64 = 0
+        first_outcome = await self.probe.probe_digest(index=4)
+        @discard(reason="admission failure leaves a zero digest")
+        match first_outcome:
+            case .Ok(value):
+                first_digest = value
+            case .Err(_):
+                first_digest = 0
+        if first_digest == 0:
+            return 400
+        second_digest: u64 = 0
+        second_outcome = await self.probe.probe_digest(index=5)
+        @discard(reason="admission failure leaves a zero digest")
+        match second_outcome:
+            case .Ok(value):
+                second_digest = value
+            case .Err(_):
+                second_digest = 0
+        if second_digest == 0:
+            return 500
+        if first_digest != second_digest:
+            return 600
+        return 0
+
+@test(runtime)
+async fn frame_input_validation_is_exact(probe: Actor[FrameProbe]):
+    result = await probe.run()
+    @discard(reason="the assertion below fails the test on any probe code")
+    match result:
+        case .Ok(code):
+            __wrela_trace_p7_u64(9000000 + code)
+            assert code == 0, "frame input validation and snapshot determinism hold"
+        case .Err(_):
+            assert false, "frame probe call must be admitted"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-frame-input", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    one: f32 = 1.0
+    zero: f32 = 0.0
+    nonfinite: f32 = one / zero
+    nan: f32 = nonfinite - nonfinite
+    out_of_range: f32 = 3.0
+    renderer_probe = img.actor(RenderProbe, mailbox=1, core=0, renderer=renderer)
+    probe = img.actor(
+        FrameProbe,
+        mailbox=1,
+        core=0,
+        probe=renderer_probe,
+        out_of_range=out_of_range,
+        nonfinite=nonfinite,
+        nan=nan,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

@@ -427,8 +427,23 @@ pub fn ensure_image_pixels_stub(
     if modules.contains_key(&key) {
         return Ok(());
     }
-    let text = "module __image_pixels\n\npub const N_RENDERERS: usize = 0\n";
-    let tokens = crate::syntax::lexer::lex(text).map_err(|error| {
+    let interval_key = vec!["core".to_string(), "render_interval".to_string()];
+    if !modules.contains_key(&interval_key) {
+        let interval_file = toolchain_stdlib_core().join("render_interval.wr");
+        let interval_module = parse_file(&interval_file)?;
+        modules.insert(
+            interval_key,
+            LoadedModule {
+                file: interval_file,
+                module: interval_module,
+            },
+        );
+    }
+    // The stub module is built from the single-source Pixels surface table
+    // (`pixels::surface`) so a generated intrinsic cannot exist in the
+    // generator and the binding lists but not here.
+    let text = crate::pixels::surface::empty_image_pixels_source();
+    let tokens = crate::syntax::lexer::lex(&text).map_err(|error| {
         build_error(
             format!("pixels config stub lex: {}", error.message),
             Span::default(),
@@ -637,8 +652,10 @@ mod runtime_module_tests {
     #[test]
     fn zero_renderer_pixels_stub_is_importable_and_reports_zero() {
         let src = "module app\n\n\
-                   from core.__image_pixels import N_RENDERERS\n\n\
-                   const COUNT: usize = N_RENDERERS\n";
+                   from core.__image_pixels import N_RENDERERS, __wrela_pixels_program_validate\n\n\
+                   const COUNT: usize = N_RENDERERS\n\n\
+                   pub fn program_is_valid(renderer: usize) -> bool:\n\
+                   \x20   return __wrela_pixels_program_validate(renderer)\n";
         let tokens = lexer::lex(src).expect("lex");
         let module = parser::parse(tokens).expect("parse");
         let key = vec!["app".to_string()];
@@ -653,6 +670,7 @@ mod runtime_module_tests {
         if ensure_image_pixels_stub(&mut modules).is_err() {
             panic!("install pixels stub");
         }
+        assert!(modules.contains_key(&vec!["core".to_string(), "render_interval".to_string()]));
         let pixels_key = IMAGE_PIXELS_MODULE_KEY
             .iter()
             .map(|part| (*part).to_string())

@@ -1,5 +1,8 @@
 module examples.err_actor_generic_renderer_worker_spoof
 
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+
 
 @actor
 pub struct RendererWorker[const CORE: usize]:

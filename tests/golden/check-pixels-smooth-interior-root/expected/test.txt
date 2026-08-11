@@ -1,3 +1,13 @@
-test interior_root: ok
+test interior_root_formula: ok
 test saturated_branch: ok
-2 passed, 0 failed
+test pinned_scene_contract: ok
+p7 0000000000000001
+p7 0000000000000002
+p7 0000000000000001
+p7 000000000000a6de
+p7 000000000000a778
+p7 0000000000000000
+test renderer_finds_composed_root_without_leaf_zero: ok
+4 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

@@ -36,13 +36,14 @@ ImageReport v0
     Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
     Padding offset=0x100 size=1792
     Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
-  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
-    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
-    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
-    Padding offset=0x1004 size=2564
-    Field name=doorbell type=u64 offset=0x1a08 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
-    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
+  Layout name=ConsoleRingDescPage kind=runtime endian=little size=65536 padding=0
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=65536
+  Layout name=ConsoleRingAvailPage kind=runtime endian=little size=4 padding=0
+    Field name=avail_flags_idx type=u32 offset=0x0 size=4
+  Layout name=ConsoleRingDoorbellPage kind=runtime endian=little size=8 padding=0
+    Field name=doorbell type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=131072 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=131072
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
