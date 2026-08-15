@@ -1,0 +1,6 @@
+p7 00000000000000a5
+test partial_multitile_mode_presents_through_guest_vmm: ok
+1 passed, 0 failed
+lane1 turns=3 run_one=6 messages=3
+lane1 hits=0:2,1:2,2:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=65x33@75 format=1 descriptor=a1bfb8b634c87d6bd887ee23091a9495f1fd0a63aedd9163ddae75d6bcd08bfe visible=94b40e29f29c3a6508172364120ff9095838e1c077f5c7c7483bd6cd422f9783 raw=96e0c838704d91e3ea87caa082ab7e9d64645b94c09514a7b9379062f732ae46 vsync=0 checkpoint=0

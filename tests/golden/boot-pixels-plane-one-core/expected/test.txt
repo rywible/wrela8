@@ -5,10 +5,10 @@ p7 0000000000000078
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 46d2505958464383
-p7 cb9bf1cad9ce31b3
-p7 371b7b9bdf834942
-p7 f6ca7bd04e4b79f9
+p7 36e2c0d44ffa1383
+p7 b3890dd8588401b3
+p7 7e81003a5ffdc142
+p7 b595eccc970f59f9
 p7 0000000000000000
 p7 0000000000000000
 p7 0000000000000000
@@ -17,3 +17,4 @@ test one_core_matches_four_core_digest: ok
 2 passed, 0 failed
 lane1 turns=3 run_one=6 messages=3
 lane1 hits=0:2,1:2,2:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=c99370631416dda685fc4cb3f94a242ec0b11a4d6c96c80da884506e0b809b87 visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=0 checkpoint=0

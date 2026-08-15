@@ -1,0 +1,1 @@
+error[pixels P010]: renderer display transport 0x6800 is not a machine-v1 display doorbell slot at 29:58

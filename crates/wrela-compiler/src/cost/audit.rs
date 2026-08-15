@@ -26,6 +26,7 @@ fn ra(word: u32) -> u8 {
 fn is_load_store(word: u32) -> bool {
     crate::encode::access_width_bytes(word).is_some()
         && (word & 0x3f00_0000 == 0x3900_0000
+            || matches!(word & 0xffc0_0000, 0x3dc0_0000 | 0x3d80_0000)
             || (word & 0x3fff_fc00 == 0x08df_fc00)
             || (word & 0x3fff_fc00 == 0x089f_fc00))
 }

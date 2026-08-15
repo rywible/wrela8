@@ -1,6 +1,268 @@
 module render_raster
 
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_ceil_div, interval_floor_div, interval_narrow
+from core.field import Vec3, rsqrt_scalar, sqrt_scalar
+
+pub struct IdentitySetId:
+    pub value: u32
+
+pub struct MaterialSummaryId:
+    pub value: u32
+
+pub struct LightSummaryId:
+    pub value: u32
+
+pub struct RunId:
+    pub value: u16
+
+pub struct EventId:
+    pub value: u16
+
+# A compact reference into the generated event arena. `T` is nominal: the
+# same offset cannot be passed between unrelated ID domains.
+pub struct IdSlice[T]:
+    pub first: u16
+    pub count: u16
+
+pub struct AffineRunSetup:
+    pub value: i32
+    pub delta: i32
+    pub error_radius: i32
+
+pub struct OutputProofCode:
+    pub bits: u8
+
+pub struct RasterRun:
+    pub x0: u16
+    pub x1: u16
+    pub q: QRunScalar
+    pub q_u: AffineRunSetup
+    pub q_v: AffineRunSetup
+    pub identity: IdentitySetId
+    pub material_summary: MaterialSummaryId
+    pub light_summary: LightSummaryId
+    pub proof_code: OutputProofCode
+
+pub struct EventPixel:
+    pub x: u16
+    pub coverage: Iv32
+    pub front_run: RunId
+    pub back_run: RunId
+    pub event_ids: IdSlice[EventId]
+
+# Source-level nominal wrapper for the existing array type. The private
+# intrinsic below is the only ASIMD seam; named accessors keep lane order
+# explicit in Wrela source and preserve the scalar semantics used by eval.
+pub struct I32x4:
+    # Two ordinary i64 slots form one packed 128-bit backend value. This
+    # keeps the nominal type inside the existing Wrela type system while
+    # giving the ASIMD seam four contiguous little-endian i32 lanes.
+    words: [i64; 2]
+
+    pub fn from_lanes(lanes: [i32; 4]) -> I32x4:
+        return I32x4(words=[
+            (lanes[0].to[i64]() & 4294967295) | (lanes[1].to[i64]() *% 4294967296),
+            (lanes[2].to[i64]() & 4294967295) | (lanes[3].to[i64]() *% 4294967296),
+        ])
+
+    pub fn lane(read self, index: usize) -> i32:
+        assert index < 4
+        word = self.words[index / 2]
+        if index % 2 == 0:
+            return (word *% 4294967296 >> 32).to[i32]()
+        return (word >> 32).to[i32]()
+
+pub fn pixels_i32x4_backend_add(read lhs: I32x4, read rhs: I32x4) -> I32x4:
+    return I32x4.from_lanes([
+        lhs.lane(0) + rhs.lane(0),
+        lhs.lane(1) + rhs.lane(1),
+        lhs.lane(2) + rhs.lane(2),
+        lhs.lane(3) + rhs.lane(3),
+    ])
+
+pub enum I32x4Outcome:
+    Value(I32x4)
+    Error
+
+pub struct ScalarRasterValues:
+    values: [i32; 64]
+    count: u8
+
+    pub fn length(read self) -> u8:
+        return self.count
+
+    pub fn value(read self, index: usize) -> i32:
+        assert index < self.count.to[usize]()
+        return self.values[index]
+
+pub enum ScalarRasterOutcome:
+    Value(ScalarRasterValues)
+    Error
+
+# Permanent scalar oracle for one certified microtile. The caller owns debug
+# color evaluation and the single BGRA write; this routine owns the exact
+# q/dq/ddq recurrence and final-index check.
+pub fn raster_run_scalar(q: i32, dq: i32, ddq: i32, width: u8) -> ScalarRasterOutcome:
+    if width == 0 or width > 64:
+        return .Error
+    values: [i32; 64] = [0; 64]
+    current_q = q
+    current_dq = dq
+    index: u8 = 0
+    @budget(bound=64)
+    while index < width:
+        values[index.to[usize]()] = current_q
+        index = index + 1
+        if index < width:
+            next_q = current_q.to[i64]() + current_dq.to[i64]()
+            next_dq = current_dq.to[i64]() + ddq.to[i64]()
+            if next_q < -2147483648 or next_q > 2147483647 or next_dq < -2147483648 or next_dq > 2147483647:
+                return .Error
+            current_q = next_q.to[i32]()
+            current_dq = next_dq.to[i32]()
+    assert index == width
+    return .Value(ScalarRasterValues(values=values, count=width))
+
+pub fn i32x4_add_checked(read lhs: I32x4, read rhs: I32x4) -> I32x4Outcome:
+    lane: usize = 0
+    @budget(bound=4)
+    while lane < 4:
+        value = lhs.lane(lane).to[i64]() + rhs.lane(lane).to[i64]()
+        if value < -2147483648 or value > 2147483647:
+            return .Error
+        lane = lane + 1
+    return .Value(pixels_i32x4_backend_add(lhs, rhs))
+
+# Four consecutive second-order recurrence samples. Checked construction is
+# outside the intrinsic, so the ASIMD add has exactly the already-proved
+# ordinary-add semantics.
+pub fn raster_run4(q: i32, dq: i32, ddq: i32) -> I32x4Outcome:
+    q64 = q.to[i64]()
+    dq64 = dq.to[i64]()
+    ddq64 = ddq.to[i64]()
+    offsets: [i64; 4] = [0, dq64, 2 * dq64 + ddq64, 3 * dq64 + 3 * ddq64]
+    lane: usize = 0
+    @budget(bound=4)
+    while lane < 4:
+        value = q64 + offsets[lane]
+        if value < -2147483648 or value > 2147483647:
+            return .Error
+        lane = lane + 1
+    return i32x4_add_checked(
+        I32x4.from_lanes([q; 4]),
+        I32x4.from_lanes([
+            offsets[0].to[i32](), offsets[1].to[i32](),
+            offsets[2].to[i32](), offsets[3].to[i32](),
+        ]),
+    )
+
+# Normative P8 reciprocal-square-root refinement. `rsqrt_scalar` supplies the
+# sealed source seed; two explicitly ordered Newton steps make the packet
+# normal contract independent of optimizer reassociation.
+pub fn raster_rsqrt(value: f32) -> f32:
+    if value <= 0.0:
+        return 0.0
+    estimate = rsqrt_scalar(value)
+    estimate = estimate * (1.5 - 0.5 * value * estimate * estimate)
+    estimate = estimate * (1.5 - 0.5 * value * estimate * estimate)
+    return estimate
+
+pub fn reconstruct_packet_normal(q: f32, q_u: f32, q_v: f32, u: f32, v: f32, direction_required: bool) -> Vec3:
+    normal = Vec3(x=q_u, y=q_v, z=q - u * q_u - v * q_v)
+    if not direction_required:
+        return normal
+    norm_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z
+    assert norm_squared > 0.0
+    inverse_norm = raster_rsqrt(norm_squared)
+    return Vec3(
+        x=normal.x * inverse_norm,
+        y=normal.y * inverse_norm,
+        z=normal.z * inverse_norm,
+    )
+
+pub fn reconstruct_packet_world_normal(q: f32, q_u: f32, q_v: f32, u: f32, v: f32, read right: Vec3, read up: Vec3, read forward: Vec3, direction_required: bool) -> Vec3:
+    camera_normal = reconstruct_packet_normal(q, q_u, q_v, u, v, false)
+    world = Vec3(
+        x=right.x * camera_normal.x + up.x * camera_normal.y + forward.x * camera_normal.z,
+        y=right.y * camera_normal.x + up.y * camera_normal.y + forward.y * camera_normal.z,
+        z=right.z * camera_normal.x + up.z * camera_normal.y + forward.z * camera_normal.z,
+    )
+    if not direction_required:
+        return world
+    norm_squared = world.x * world.x + world.y * world.y + world.z * world.z
+    assert norm_squared > 0.0
+    inverse_norm = raster_rsqrt(norm_squared)
+    return Vec3(x=world.x * inverse_norm, y=world.y * inverse_norm, z=world.z * inverse_norm)
+
+# World position is deliberately separate from normal reconstruction. The
+# generated dependency summaries call this only when a material or light
+# consumes position, keeping the P8 debug-identity loop reciprocal-free.
+pub fn reconstruct_packet_world_position(q: f32, u: f32, v: f32, read eye: Vec3, read right: Vec3, read up: Vec3, read forward: Vec3) -> Vec3:
+    assert q != 0.0
+    reciprocal_q = 1.0 / q
+    return Vec3(
+        x=eye.x + (forward.x + u * right.x + v * up.x) * reciprocal_q,
+        y=eye.y + (forward.y + u * right.y + v * up.y) * reciprocal_q,
+        z=eye.z + (forward.z + u * right.z + v * up.z) * reciprocal_q,
+    )
+
+pub struct RasterGeometryLane:
+    pub q_raw: i32
+    pub q_error: i32
+    pub q_u_raw: i32
+    pub q_u_error: i32
+    pub q_v_raw: i32
+    pub q_v_error: i32
+    pub q: f32
+    pub q_u: f32
+    pub q_v: f32
+    pub u: f32
+    pub v: f32
+
+fn raster_i32_enclosure_fits(raw: i32, error: i32) -> bool:
+    if error < 0:
+        return false
+    low = raw.to[i64]() - error.to[i64]()
+    high = raw.to[i64]() + error.to[i64]()
+    return low >= -2147483648 and high <= 2147483647
+
+pub fn raster_geometry_lane_valid(read lane: RasterGeometryLane, material_dependencies: u32, light_dependencies: u32, read camera: [f32; 12]) -> bool:
+    # The values consumed below are the actual scalar/vector raster lanes.
+    # Validate every one against the compact run enclosure before any
+    # normalization or optional reciprocal. This is also the instrumented
+    # conformance boundary: a checked lane is evidence from the production
+    # path, not a separately rendered host value.
+    if (
+        not raster_i32_enclosure_fits(lane.q_raw, lane.q_error)
+        or not raster_i32_enclosure_fits(lane.q_u_raw, lane.q_u_error)
+        or not raster_i32_enclosure_fits(lane.q_v_raw, lane.q_v_error)
+    ):
+        return false
+    # Construct and transform the geometric normal for every raster lane.
+    # A dependency summary may omit normalization, but it may not bypass the
+    # q/q_u/q_v recurrence or its camera-basis boundary.
+    camera_z = lane.q - lane.u * lane.q_u - lane.v * lane.q_v
+    normal_x = camera[6] * lane.q_u + camera[9] * lane.q_v + camera[3] * camera_z
+    normal_y = camera[7] * lane.q_u + camera[10] * lane.q_v + camera[4] * camera_z
+    normal_z = camera[8] * lane.q_u + camera[11] * lane.q_v + camera[5] * camera_z
+    if (
+        normal_x * 0.0 != 0.0
+        or normal_y * 0.0 != 0.0
+        or normal_z * 0.0 != 0.0
+    ):
+        return false
+    dependencies = material_dependencies | light_dependencies
+    if dependencies & 2 != 0:
+        # P8's debug summary never requests exact direction. Keep unexpected
+        # dependency bits fail-closed; `reconstruct_packet_world_normal`
+        # supplies the sealed rsqrt/Newton path for the first P9 summary that
+        # opts in, without paying for unreachable normalization in P8 images.
+        return false
+    # P8's debug identity summary does not consume world position. The
+    # dependency-gated reciprocal path remains isolated in
+    # `reconstruct_packet_world_position` for material lowering; it must not
+    # enter this debug raster image before P9 supplies a consuming summary.
+    return true
 
 pub struct QRunScalar:
     q: i32

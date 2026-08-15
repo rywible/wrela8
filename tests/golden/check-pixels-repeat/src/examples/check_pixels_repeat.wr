@@ -108,7 +108,7 @@ async fn repeat_events_resolve_from_scratch(renderer: Actor[Renderer[SceneParams
                     packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 4, "repeat boundaries render from scratch"
+            assert rendered.frame_index == 0, "first repeat-boundary frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "repeat boundaries enter the fixed event ladder"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:

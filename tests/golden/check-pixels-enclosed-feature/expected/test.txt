@@ -3,13 +3,14 @@ p7 0000000000000094
 p7 000000000000006e
 p7 00000000000000a4
 p7 503753414d504c45
-p7 000000000000ffff
+p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 184e4d6560b7e0e3
-p7 8b048185ac324463
-p7 4e3d49fa4e504d82
-p7 e31b1311d3dd1b79
+p7 28294b189183faab
+p7 d332754d9f9a5d3b
+p7 bb5b980e4c6e5302
+p7 77af02ef02296849
 test enclosed_feature_is_found_structurally: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=3d9d9ab803c201a4c2ce2d634033cdfa281c6dcf6a0ba65f7fbc1be741d53f7a visible=2037d7ac37a7fbd78a48fc1a9877788e1e9dede67e2415929b9fb61521758fa2 raw=2037d7ac37a7fbd78a48fc1a9877788e1e9dede67e2415929b9fb61521758fa2 vsync=8 checkpoint=8

@@ -327,6 +327,10 @@ pub struct RootSheet {
     pub q_model: QModel,
     pub q_domain: Iv32,
     pub q_error: Iv32,
+    /// Certified projective inverse-depth derivative with respect to screen u.
+    pub q_u: Iv32,
+    /// Certified projective inverse-depth derivative with respect to screen v.
+    pub q_v: Iv32,
     pub normal_model: NormalModel,
     pub q_order_slack: i32,
     pub root_slack: i32,
@@ -361,6 +365,8 @@ pub struct CertifiedRun {
     pub sheet_count: u16,
     pub q_model: QModel,
     pub q_error: Iv32,
+    pub q_u: Iv32,
+    pub q_v: Iv32,
     pub q_order_slack: Iv32,
     pub root_slack: Iv32,
     pub identity: IdentitySetId,
@@ -469,6 +475,8 @@ pub fn decode_certified_run_record(words: [u64; 16]) -> Result<CertifiedRun, Swe
         sheet_count,
         q_model,
         q_error,
+        q_u: Iv32::default(),
+        q_v: Iv32::default(),
         q_order_slack,
         root_slack,
         identity: IdentitySetId((words[1] >> 32) as u32),
@@ -566,31 +574,45 @@ pub fn certify_regular_run(
     let visible_sheet = visible
         .map(|index| u16::try_from(index).map_err(|_| SweepError::CapacityExceeded))
         .transpose()?;
-    let (identity, q_model, q_error, normal_model, root_slack, q_order_slack, method, shape) =
-        if let Some(index) = visible {
-            let sheet = sheets[index];
-            (
-                sheet.root.identity_set,
-                sheet.q_model,
-                sheet.q_error,
-                sheet.normal_model,
-                Iv32::point(sheet.root_slack),
-                Iv32::point(sheet.q_order_slack),
-                decode_method(sheet.method)?,
-                decode_shape(sheet.composition_shape)?,
-            )
-        } else {
-            (
-                IdentitySetId(0),
-                QModel::default(),
-                Iv32::default(),
-                NormalModel::default(),
-                Iv32::point(minimum),
-                Iv32::point(minimum),
-                RootMethod::MonotoneTube,
-                CompositionShape::General,
-            )
-        };
+    let (
+        identity,
+        q_model,
+        q_error,
+        q_u,
+        q_v,
+        normal_model,
+        root_slack,
+        q_order_slack,
+        method,
+        shape,
+    ) = if let Some(index) = visible {
+        let sheet = sheets[index];
+        (
+            sheet.root.identity_set,
+            sheet.q_model,
+            sheet.q_error,
+            sheet.q_u,
+            sheet.q_v,
+            sheet.normal_model,
+            Iv32::point(sheet.root_slack),
+            Iv32::point(sheet.q_order_slack),
+            decode_method(sheet.method)?,
+            decode_shape(sheet.composition_shape)?,
+        )
+    } else {
+        (
+            IdentitySetId(0),
+            QModel::default(),
+            Iv32::default(),
+            Iv32::default(),
+            Iv32::default(),
+            NormalModel::default(),
+            Iv32::point(minimum),
+            Iv32::point(minimum),
+            RootMethod::MonotoneTube,
+            CompositionShape::General,
+        )
+    };
     let run = CertifiedRun {
         x0,
         x1: endpoint,
@@ -599,6 +621,8 @@ pub fn certify_regular_run(
         sheet_count: u16::try_from(sheets.len()).map_err(|_| SweepError::CapacityExceeded)?,
         q_model,
         q_error,
+        q_u,
+        q_v,
         q_order_slack,
         root_slack,
         identity,
@@ -902,6 +926,8 @@ mod tests {
             },
             q_domain: root.q,
             q_error: Iv32::point(1),
+            q_u: Iv32::point(0),
+            q_v: Iv32::point(0),
             normal_model: NormalModel::default(),
             q_order_slack: 8,
             root_slack: 8,

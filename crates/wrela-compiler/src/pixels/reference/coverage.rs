@@ -234,6 +234,32 @@ pub fn half_plane_area(
     if coverage_domain.exponent > 0 {
         return Err(NumericError::InvalidDomain);
     }
+    rational_coverage(half_plane_rational_area(edge, owner)?, coverage_domain)
+}
+
+/// Exact round-half-up byte coverage for a linear event over the unit pixel.
+/// This retains the clipped polygon's rational area until the final byte
+/// conversion, rather than quantizing through the ordinary fixed coverage
+/// domain first.
+pub fn half_plane_byte(edge: HalfPlane, owner: BoundaryOwner) -> Result<u8, NumericError> {
+    let area = half_plane_rational_area(edge, owner)?.checked_mul_integer(255)?;
+    let doubled_numerator = area
+        .numerator
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(area.denominator))
+        .ok_or(NumericError::Overflow)?;
+    let doubled_denominator = area
+        .denominator
+        .checked_mul(2)
+        .ok_or(NumericError::Overflow)?;
+    u8::try_from(doubled_numerator.div_euclid(doubled_denominator))
+        .map_err(|_| NumericError::Overflow)
+}
+
+fn half_plane_rational_area(
+    edge: HalfPlane,
+    owner: BoundaryOwner,
+) -> Result<Rational, NumericError> {
     if [edge.a, edge.b, edge.c]
         .into_iter()
         .any(|value| !(-1_000_000..=1_000_000).contains(&value))
@@ -271,7 +297,7 @@ pub fn half_plane_area(
     vertices = output;
     count = output_count;
     if count < 3 {
-        return Ok(Iv32::point(0));
+        return Ok(Rational::zero());
     }
     let mut double_area = Rational::zero();
     for index in 0..count {
@@ -280,8 +306,7 @@ pub fn half_plane_area(
         double_area =
             double_area.checked_add(a.x.checked_mul(b.y)?.checked_sub(a.y.checked_mul(b.x)?)?)?;
     }
-    let area = double_area.abs()?.checked_div_integer(2)?;
-    rational_coverage(area, coverage_domain)
+    double_area.abs()?.checked_div_integer(2)
 }
 
 /// Conservative area around a quadratic segment. The caller supplies a chord
@@ -545,6 +570,32 @@ mod tests {
                 BoundaryOwner::LowerOrLeft
             ),
             Ok(Iv32::point(0))
+        );
+    }
+
+    #[test]
+    fn diagonal_byte_rounding_keeps_the_exact_rational_until_the_end() {
+        assert_eq!(
+            half_plane_byte(
+                HalfPlane {
+                    a: -32,
+                    b: 32,
+                    c: 11,
+                },
+                BoundaryOwner::UpperOrRight,
+            ),
+            Ok(200),
+        );
+        assert_eq!(
+            half_plane_byte(
+                HalfPlane {
+                    a: 32,
+                    b: -32,
+                    c: 21,
+                },
+                BoundaryOwner::LowerOrLeft,
+            ),
+            Ok(240),
         );
     }
 

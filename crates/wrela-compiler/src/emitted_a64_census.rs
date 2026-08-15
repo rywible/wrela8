@@ -191,9 +191,17 @@ mod tests {
             "encode_enc_site_total ({}) != sum of per-file counts ({total})",
             encode_enc_site_count()
         );
+        // 445 -> 447: P8's `validate_pixels_i32x4_raster_a64` audit names the
+        // two ASIMD encodings it checks for in the emitted raster loop. It reads
+        // encodings rather than emitting them, so it is classified in
+        // `non_inventory` alongside the other census/patch helpers.
+        //
+        // 447 -> 452: `try_copy_slots_with_loop` emits the counted aggregate
+        // copy (load, store, two pointer bumps, and the loop branch) that
+        // replaces an unrolled load/store pair per word for large records.
         assert_eq!(
             encode_enc_site_count(),
-            439,
+            452,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

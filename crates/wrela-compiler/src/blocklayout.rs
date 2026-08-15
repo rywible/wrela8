@@ -610,7 +610,12 @@ mod tests {
     fn the_measured_hot_text_footprint_before_and_after() {
         // Re-measured 2026-08-07 with `AdrAddressing` parked (the P7
         // image-base move put DRAM pages beyond ADR reach).
-        const BEFORE_HOT_TEXT_BYTES: u64 = 2368;
+        //
+        // Re-measured again after large aggregate copies became counted loops:
+        // a copy that was a straight run of load/store pairs is now its own
+        // small block, so the production window fetches slightly more hot text
+        // even though total emitted text fell by about a quarter.
+        const BEFORE_HOT_TEXT_BYTES: u64 = 2432;
 
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
@@ -816,8 +821,10 @@ mod tests {
         );
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
-            // Re-measured 2026-08-07 with `AdrAddressing` parked.
-            (1805, 1805, 0, 0)
+            // Re-measured 2026-08-07 with `AdrAddressing` parked, and again
+            // once counted-loop aggregate copies replaced the unrolled
+            // per-word pairs (1805 -> 1765 emitted words).
+            (1765, 1765, 0, 0)
         );
         assert_eq!(summary.fns_moved, 0);
         assert_eq!(
@@ -1033,7 +1040,11 @@ mod tests {
             ),
             // Release column re-measured 2026-08-07 with `AdrAddressing`
             // parked; headroom against the L1I stays positive on both sides.
-            (46_656, 27_200, 65_536),
+            // Both columns re-measured again after counted-loop aggregate
+            // copies replaced the unrolled per-word pairs: the compositor's hot
+            // text fell on both sides, so the L1I headroom the note describes
+            // only grew.
+            (43_328, 23_616, 65_536),
             "the compositor's flat hot text, dev and release, against the L1I. Item M's \
              ~17 KB-of-headroom figure is the **dev** column; release has 37 KB of \
              headroom, so the L1I overflow term is zero on both sides and the only \

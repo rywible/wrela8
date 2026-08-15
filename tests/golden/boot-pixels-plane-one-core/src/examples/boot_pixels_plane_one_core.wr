@@ -101,13 +101,13 @@ struct OneCorePlaneProbe:
                 while word < 4:
                     packed = exact_digest[word + 1]
                     if word == 0:
-                        assert packed == 5103229672427504515, "single-core exact digest word zero"
+                        assert packed == 3954935440892105603, "single-core exact digest word zero"
                     elif word == 1:
-                        assert packed == 14671586064629379507, "single-core exact digest word one"
+                        assert packed == 12936886627447603635, "single-core exact digest word one"
                     elif word == 2:
-                        assert packed == 3970903405857294658, "single-core exact digest word two"
+                        assert packed == 9115567371493163330, "single-core exact digest word two"
                     else:
-                        assert packed == 17783162213222808057, "single-core exact digest word three"
+                        assert packed == 13084624655846693369, "single-core exact digest word three"
                     __wrela_trace_p7_u64(packed)
                     word = word + 1
                 evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
@@ -135,14 +135,10 @@ struct OneCorePlaneProbe:
                 assert rendered.certificate_runs == 128, "single-core run telemetry matches four-core"
                 assert rendered.event_corridors == 0, "single-core plane needs no corridors"
                 assert rendered.revalidated_proposals == 120, "single-core proposal telemetry matches four-core"
-                disabled_count = __wrela_pixels_p7_run_worker_with_proposals(0, 0, false)
-                assert disabled_count == 2048, "disabled proposals preserve success and pixel count"
-                disabled_digest = __wrela_pixels_p7_debug_frame_digest(0)
-                assert disabled_digest[0] == 1, "disabled proposal frame is complete"
-                assert disabled_digest[1] == 5103229672427504515, "disabled proposals preserve digest word zero"
-                assert disabled_digest[2] == 14671586064629379507, "disabled proposals preserve digest word one"
-                assert disabled_digest[3] == 3970903405857294658, "disabled proposals preserve digest word two"
-                assert disabled_digest[4] == 17783162213222808057, "disabled proposals preserve digest word three"
+                # Archive the presented frame and its telemetry before the
+                # scalar no-proposal differential run resets worker-local
+                # counters. The latter is deliberately decision-inert but is
+                # not the frame whose one/four-worker telemetry is compared.
                 dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
                 if dump_header[0] == 1:
                     __wrela_trace_p7_u64(7599824371187933777)
@@ -153,6 +149,14 @@ struct OneCorePlaneProbe:
                         assert dump_value[0] == 1, "instrumented frame dump is complete"
                         __wrela_trace_p7_u64(dump_value[1])
                         dump_index = dump_index + 1
+                disabled_count = __wrela_pixels_p7_run_worker_with_proposals(0, 0, false)
+                assert disabled_count == 2048, "disabled proposals preserve success and pixel count"
+                disabled_digest = __wrela_pixels_p7_debug_frame_digest(0)
+                assert disabled_digest[0] == 1, "disabled proposal frame is complete"
+                assert disabled_digest[1] == 3954935440892105603, "disabled proposals preserve digest word zero"
+                assert disabled_digest[2] == 12936886627447603635, "disabled proposals preserve digest word one"
+                assert disabled_digest[3] == 9115567371493163330, "disabled proposals preserve digest word two"
+                assert disabled_digest[4] == 13084624655846693369, "disabled proposals preserve digest word three"
                 return exact_digest[1]
 @test(runtime)
 async fn one_core_matches_four_core_digest(probe: Actor[OneCorePlaneProbe]):

@@ -12,6 +12,7 @@ Module path=__image_pixels
   Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
   Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
   Fn __wrela_pixels_p7_abs(value: read f32) -> f32
+  Fn __wrela_pixels_p7_half_plane_byte(a: read i32, b: read i32, c: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_power(value: read f32, exponent: read u64) -> [f32; 2]
   Fn __wrela_pixels_p7_root_coefficient(renderer: read usize, target: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 2]
   Fn __wrela_pixels_p7_root_polynomial_base(renderer: read usize) -> u32
@@ -30,9 +31,16 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_event_polynomial_uv2_bounds(renderer: read usize, event: read u32, u: read f32, v: read f32, ru: read f32, rv: read f32, magnitudes: read [f32; 65]) -> [f32; 4]
   Fn __wrela_pixels_p7_event_clip_q(renderer: read usize, event: read u32) -> [f32; 2]
   Fn __wrela_pixels_p7_event_predicate_curve(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 20]
-  Fn __wrela_pixels_p7_deformation_miss_model(renderer: read usize, event: read u32) -> [f32; 21]
+  Fn __wrela_pixels_p7_deformation_miss_model(renderer: read usize, event: read u32) -> [f32; 26]
   Fn __wrela_pixels_p7_pinned_camera(renderer: read usize) -> [f32; 13]
   Fn __wrela_pixels_p7_projected_union_mode(renderer: read usize) -> u64
+  Fn __wrela_pixels_p8_axis_box(renderer: read usize) -> [f32; 9]
+  Fn __wrela_pixels_p7_min(a: read f32, b: read f32) -> f32
+  Fn __wrela_pixels_p7_max(a: read f32, b: read f32) -> f32
+  Fn __wrela_pixels_p7_outward_low(value: read f32) -> f32
+  Fn __wrela_pixels_p7_outward_high(value: read f32) -> f32
+  Fn __wrela_pixels_p8_ratio_bounds(numerator_lo: read f32, numerator_hi: read f32, denominator_lo: read f32, denominator_hi: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p8_axis_box_coverage(renderer: read usize, x: read u32, y: read u32, camera: read [f32; 12]) -> [i64; 4]
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
   Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
@@ -66,6 +74,22 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_framebuffer_digest(renderer: read usize) -> [u64; 5]
   Fn __wrela_pixels_p7_framebuffer_alpha_samples(renderer: read usize) -> u64
   Fn __wrela_pixels_p7_framebuffer_pixel_written(renderer: read usize, pixel: read u32) -> bool
+  Fn __wrela_pixels_p8_initialize(renderer: read usize) -> bool
+  Fn __wrela_pixels_p8_begin(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p8_cancel(renderer: read usize) -> bool
+  Fn __wrela_pixels_p8_complete(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p8_write(renderer: read usize, worker: read u32, pixel: read u32, front: read u32, coverage: read u8, back: read u32) -> bool
+  Fn __wrela_pixels_p8_write4(renderer: read usize, worker: read u32, pixel: read u32, r: read u8, g: read u8, b: read u8) -> bool
+  Fn __wrela_pixels_p8_visible_byte(renderer: read usize, byte: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_visible_word(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_raw_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_descriptor_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_raster_evidence_store(renderer: read usize, pixel: read usize, q: read u64, derivatives: read u64, bounds: read u64, class: read u8) -> bool
+  Fn __wrela_pixels_p8_raster_evidence_word(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_present(renderer: read usize, frame_index: read u64) -> [u64; 3]
+  Fn __wrela_pixels_p8_display_doorbell(renderer: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_submit(doorbell_addr: read u64, control_addr: read u64) -> unit
   Fn __wrela_pixels_p7_workspace_reset(renderer: read usize, worker: read u32, generation: read u64) -> bool
   Fn __wrela_pixels_p7_workspace_charge(renderer: read usize, worker: read u32, slot: read usize, amount: read u64) -> bool
   Fn __wrela_pixels_p7_workspace_counter(renderer: read usize, worker: read u32, slot: read usize) -> [u64; 2]
@@ -79,6 +103,7 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_telemetry_reset(renderer: read usize, worker: read u32) -> bool
   Fn __wrela_pixels_p7_telemetry_charge(renderer: read usize, worker: read u32, counter: read usize, amount: read u64) -> bool
   Fn __wrela_pixels_p7_telemetry_counter(renderer: read usize, worker: read u32, counter: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_aligned_deformation_depth_miss(cell: read [f32; 4], t_lo: read f32, t_hi: read f32, phase: read f32, model: read [f32; 26], camera: read [f32; 12]) -> bool
 Module path=field
   Struct Vec2 data
     pub field x: f32
@@ -268,6 +293,8 @@ Module path=render
     pub field params: P
     pub field frame_index: u64
     pub field displayed_digest: [u8; 32]
+    pub field displayed_raw_tile_digest: [u64; 4]
+    pub field displayed_tile_descriptor_digest: [u64; 4]
     pub field rebuilt_tiles: u32
     pub field reused_tiles: u32
     pub field certificate_runs: u64
@@ -401,8 +428,10 @@ Module path=render
   Fn __wrela_pixels_p7_union_silhouette_coverage(renderer: read usize, worker: read u32, tile: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, center_sample: read P7VisibilitySample, snapshot: read FrameInputSnapshot) -> [i64; 4]
   Fn __wrela_pixels_p7_interval_sin(lo: read f32, hi: read f32) -> [f32; 2]
   Fn __wrela_pixels_p7_deformation_silhouette_misses(renderer: read usize, event: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_deformation_polynomial(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 8]
   Fn __wrela_pixels_p7_deformation_misses_cell(renderer: read usize, event: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
-  Fn __wrela_pixels_p7_half_plane_byte(a: read i32, b: read i32, c: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_deformation_hits_cell(renderer: read usize, event: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_deformation_veto_objects(renderer: read usize, tile: read u32, xy: read u64, filter: read [f32; 4], params: read [f32; 16], camera: read [f32; 12]) -> [u64; 4]
   Fn __wrela_pixels_p7_half_plane_units(a: read i32, b: read i32, c: read i32) -> [i64; 3]
   Fn __wrela_pixels_p7_predicate_curve_cell(renderer: read usize, event_id: read u32, u0: read f32, v0: read f32, u1: read f32, v1: read f32, snapshot: read FrameInputSnapshot) -> [f32; 8]
   Fn __wrela_pixels_p7_predicate_region_coverage(renderer: read usize, worker: read u32, tile: read u32, pixel: read u32, event_id: read u32, cell_uv: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 2]
@@ -421,6 +450,28 @@ Module path=render
   Fn __wrela_pixels_p7_density_bin(count: read u32) -> usize
   Fn __wrela_pixels_p7_run_length_bin(length: read u32) -> usize
   Fn __wrela_pixels_p7_charge_run_telemetry(renderer: read usize, worker: read u32, sample: read P7VisibilitySample, length: read u32) -> unit
+  Fn __wrela_pixels_p8_geometry_valid(q_raw: read i32, q_u_raw: read i32, q_v_raw: read i32, lane_u: read f32, lane_v: read f32, camera: read [f32; 12], scale: read f32) -> bool
+  Fn __wrela_pixels_p8_derivative_bounds(q_lo: read i32, q_hi: read i32, normal: read [f32; 4], center_u: read f32, center_v: read f32, camera: read [f32; 12]) -> [i64; 5]
+  Fn __wrela_pixels_p8_charge_raster_run(renderer: read usize, worker: read u32, telemetry_enabled: read bool, first_pixel: read u32, length: read u32, background: read bool) -> unit
+  Struct P8RasterContext data
+    field renderer: usize
+    field worker: u32
+    field y: u32
+    field width: u32
+    field height: u32
+    field camera: [f32; 12]
+    field scale: f32
+    field color: u32
+  Struct P8RasterSetupOutcome data
+    field ok: bool
+    field raster: RasterRun
+  Fn __wrela_pixels_p8_i64_magnitude(value: read i64) -> i64
+  Fn __wrela_pixels_p8_i32_fits(value: read i64) -> bool
+  Fn __wrela_pixels_p8_recurrence_valid(q: read i64, dq: read i64, ddq: read i64, error: read i64, width: read u32) -> bool
+  Fn __wrela_pixels_p8_raster_setup(sample: read P7VisibilitySample, model: read [i64; 8], modeled: read bool, x: read u32, x1: read u32, exponent: read i32, height: read u32, derivatives: read [i64; 4]) -> P8RasterSetupOutcome
+  Fn __wrela_pixels_p8_geometry_lane_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_raw: read i32, geometry_required: read bool) -> bool
+  Fn __wrela_pixels_p8_geometry_packet_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_packet: read I32x4, geometry_required: read bool) -> bool
+  Fn __wrela_pixels_p8_raster_regular(context: read P8RasterContext, raster: read RasterRun) -> u64
   Fn __wrela_pixels_p7_revalidated_proposal_count(previous: read P7RowCandidates, current: read P7RowCandidates) -> u16
   Fn __wrela_pixels_p7_row_candidates_with_proposal(previous: read P7RowCandidates, current: read P7RowCandidates, enabled: read bool) -> P7RowCandidates
   Fn __wrela_pixels_p7_run_worker_with_proposals(renderer_index: read usize, worker_index: read usize, proposals_enabled: read bool) -> u64
@@ -464,6 +515,7 @@ Module path=render
   Fn __wrela_pixels_p7_proposal_matches(proposal: read P7CertifiedRow, certified: read P7CertifiedRow) -> bool
   Fn __wrela_pixels_p7_resolve_silhouette_owner(renderer: read usize, worker_tile: read u64, xy: read u64, pixel_filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, initial: read P7VisibilitySample, curve: read [i64; 4]) -> P7VisibilitySample
   Fn __wrela_pixels_p7_choose_arrangement_axis(renderer: read usize, worker_tile: read u64, xy: read u64, cell: read [f32; 4], minimum: read [f32; 2], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> [i64; 3]
+  Fn __wrela_pixels_p7_resolve_pixel_arrangement_tier(renderer: read usize, worker_tile: read u64, xy: read u64, pixel_filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, initial: read P7VisibilitySample, integrated_coverage: read i64) -> P7PixelArrangement
   Fn __wrela_pixels_p7_resolve_pixel_arrangement(renderer: read usize, worker_tile: read u64, xy: read u64, pixel_filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, initial: read P7VisibilitySample, integrated_coverage: read i64) -> P7PixelArrangement
   Fn __wrela_pixels_p7_certify_pixel_row(renderer: read usize, worker: read u32, tile: read u32, y: read u32, x0: read u32, x1: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7CertifiedRow
   Fn __wrela_pixels_p7_try_certify_regular_row(renderer: read usize, worker: read u32, tile: read u32, y: read u32, x0: read u32, x1: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7CertifiedRow
@@ -773,36 +825,144 @@ Module path=render_program
   Fn quadratic_range2(c: read i32, bu: read i32, bv: read i32, buu: read i32, buv: read i32, bvv: read i32) -> QuadraticRangeOutcome
   Fn polynomial_sparse(c0: read i32, c1: read i32, u: read i32, t: read i32, domain: read FixedDomain) -> NumericOutcome
   Fn polynomial_taylor(c0: read i32, c1: read i32, x: read i32, remainder_radius: read i32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_raster
+  Struct IdentitySetId data
+    pub field value: u32
+  Struct MaterialSummaryId data
+    pub field value: u32
+  Struct LightSummaryId data
+    pub field value: u32
+  Struct RunId data
+    pub field value: u16
+  Struct EventId data
+    pub field value: u16
+  Struct IdSlice[T] data
+    pub field first: u16
+    pub field count: u16
+  Struct AffineRunSetup data
+    pub field value: i32
+    pub field delta: i32
+    pub field error_radius: i32
+  Struct OutputProofCode data
+    pub field bits: u8
+  Struct RasterRun data
+    pub field x0: u16
+    pub field x1: u16
+    pub field q: QRunScalar
+    pub field q_u: AffineRunSetup
+    pub field q_v: AffineRunSetup
+    pub field identity: IdentitySetId
+    pub field material_summary: MaterialSummaryId
+    pub field light_summary: LightSummaryId
+    pub field proof_code: OutputProofCode
+  Struct EventPixel data
+    pub field x: u16
+    pub field coverage: Iv32
+    pub field front_run: RunId
+    pub field back_run: RunId
+    pub field event_ids: IdSlice[EventId]
+  Struct I32x4 data
+    field words: [i64; 2]
+    fn from_lanes(lanes: read [i32; 4]) -> I32x4
+    fn lane(read self, index: read usize) -> i32
+  Fn pixels_i32x4_backend_add(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Enum I32x4Outcome data
+    variant Value(I32x4)
+    variant Error
+  Struct ScalarRasterValues data
+    field values: [i32; 64]
+    field count: u8
+    fn length(read self) -> u8
+    fn value(read self, index: read usize) -> i32
+  Enum ScalarRasterOutcome data
+    variant Value(ScalarRasterValues)
+    variant Error
+  Fn raster_run_scalar(q: read i32, dq: read i32, ddq: read i32, width: read u8) -> ScalarRasterOutcome
+  Fn i32x4_add_checked(lhs: read I32x4, rhs: read I32x4) -> I32x4Outcome
+  Fn raster_run4(q: read i32, dq: read i32, ddq: read i32) -> I32x4Outcome
+  Fn raster_rsqrt(value: read f32) -> f32
+  Fn reconstruct_packet_normal(q: read f32, q_u: read f32, q_v: read f32, u: read f32, v: read f32, direction_required: read bool) -> Vec3
+  Fn reconstruct_packet_world_normal(q: read f32, q_u: read f32, q_v: read f32, u: read f32, v: read f32, right: read Vec3, up: read Vec3, forward: read Vec3, direction_required: read bool) -> Vec3
+  Fn reconstruct_packet_world_position(q: read f32, u: read f32, v: read f32, eye: read Vec3, right: read Vec3, up: read Vec3, forward: read Vec3) -> Vec3
+  Struct RasterGeometryLane data
+    pub field q_raw: i32
+    pub field q_error: i32
+    pub field q_u_raw: i32
+    pub field q_u_error: i32
+    pub field q_v_raw: i32
+    pub field q_v_error: i32
+    pub field q: f32
+    pub field q_u: f32
+    pub field q_v: f32
+    pub field u: f32
+    pub field v: f32
+  Fn raster_i32_enclosure_fits(raw: read i32, error: read i32) -> bool
+  Fn raster_geometry_lane_valid(lane: read RasterGeometryLane, material_dependencies: read u32, light_dependencies: read u32, camera: read [f32; 12]) -> bool
+  Struct QRunScalar data
+    field q: i32
+    field dq: i32
+    field ddq: i32
+    field domain: FixedDomain
+    field error_radius: i32
+    field microtile_width: u8
+    field step: u8
+    fn make(q: read i32, dq: read i32, ddq: read i32, error_radius: read i32) -> QRunScalar
+    fn certified(q: read i32, dq: read i32, ddq: read i32, domain: read FixedDomain, error_radius: read i32, microtile_width: read u8) -> QRunScalar
+    fn value(read self) -> i32
+    fn delta(read self) -> i32
+    fn second_delta(read self) -> i32
+    fn error(read self) -> i32
+    fn width(read self) -> u8
+    fn exponent(read self) -> i32
+  Enum QStep data
+    variant Value(QRunScalar)
+    variant Error
+  Enum QSetup data
+    variant Value(QRunScalar)
+    variant Error
+  Fn fixed_q_select_integer_domain(maximum_abs: read i64) -> i32
+  Fn fixed_q_quantize_integer(value: read i32, exponent: read i32) -> NumericOutcome
+  Fn fixed_q_recurrence_fits(q: read Iv32, dq: read Iv32, ddq: read Iv32, width: read u8, domain: read FixedDomain) -> bool
+  Fn fixed_q_setup(q: read i32, dq: read i32, ddq: read i32, requested_width: read u8, model_error_radius: read i32) -> QSetup
+  Fn fixed_q_step(run: read QRunScalar) -> QStep
+  Fn fixed_q_nearer(a_q: read i32, a_error: read i32, b_q: read i32, b_error: read i32) -> bool
 Module path=display
   Struct DisplayDevice data
     field id: u32
   Enum Feature data
-    variant Bgra8
+    variant Bgra8Srgb
   Struct Display resource
     field device: DriverClaimedDevice[DisplayDevice]
     init(mut self, cap: take DeviceCap[DisplayDevice], width: read u32, height: read u32, refresh_hz: read u32) -> Result[unit, BootError]
-  Struct DisplayDoorbell data
-    field present: u64
   Struct DisplayMemory data
     field abi_version: u32
-    field format: u32
+    field format: u8
+    field generation: u8
+    field renderer_index: u16
     field width: u32
     field height: u32
-    field stride_bytes: u32
+    field refresh_hz: u32
     field tile_count: u32
     field sequence: u64
     field tiles_addr: u64
-    field tile_id: u32
-    field tile_x: u32
-    field tile_y: u32
-    field tile_width: u32
-    field tile_height: u32
-    field tile_stride_bytes: u32
+    field vsync_id: u64
+    field checkpoint: u64
+    field guest_visible_digest: [u64; 4]
+    field guest_raw_tile_digest: [u64; 4]
+    field guest_tile_descriptor_digest: [u64; 4]
+    field completion_status: u32
+    field control_reserved: [u8; 4]
     field tile_pixels_addr: u64
+    field tile_x: u16
+    field tile_y: u16
+    field tile_width: u16
+    field tile_height: u16
+    field tile_stride_bytes: u16
+    field tile_format: u8
+    field tile_reserved: [u8; 5]
     field pixels: [u8; 8192]
   Static DISPLAY_MEMORY: DisplayMemory placed=0x40100000
-  Static DISPLAY_DOORBELL: DisplayDoorbell placed=0x8006000
-  Fn __wrela_pixels_display_present(sequence: read u64) -> unit
+  Fn __wrela_pixels_display_submit_and_wait(doorbell_addr: read u64, control_addr: read u64) -> unit
 Module path=examples.check_pixels_plane
   Const FIXTURE_ID: u32
   Fn fixture_id() -> u32

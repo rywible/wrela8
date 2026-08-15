@@ -2407,14 +2407,15 @@ pub fn dump_frame_program(
     }
     out.push_str("  GeneratedModule end\n");
     out.push_str(&format!(
-        "  GeneratedActors coordinator={} workers={} palette=bootstrap families=[{}]\n",
+        "  GeneratedActors coordinator={} workers={} palette=debug-identity-fixed-q families=[{}]\n",
         renderer.generated.coordinator,
         renderer.generated.workers.len(),
         renderer.generated.bootstrap_families.join(","),
     ));
     out.push_str(
-        "  Execution from_scratch_sweep=true presentation=false bounded_local_rebuild=true \
-         dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true\n",
+        "  Execution from_scratch_sweep=true raster=scalar+i32x4-asimd coverage=analytic-exact \
+         presentation=machine-v1-bgra8-srgb bounded_local_rebuild=true dense_frame=false \
+         previous_state=false oracle_runtime=false debug_visibility=true\n",
     );
     Ok(out)
 }
@@ -2458,7 +2459,11 @@ pub fn dump_render_layout(
         "    Buffer front={:#x} back={:#x} bytes_each={}\n\
          \x20   Probe base={:#x} bytes={}\n\
          \x20   Telemetry offset={} production_bytes=0 instrumented_bytes={}\n\
-         \x20   Failure presentation=false contract=explicit-certified-error \
+         \x20   Scanout format=Bgra8Srgb tile=64x32 stride=256 allocation=8192 \
+         descriptor_bytes=24 generations=2 clear=boot-only\n\
+         \x20   Replay revision=display-v1 digests=[tile-descriptor,visible,raw-tile] \
+         vsync_checkpoint=true\n\
+         \x20   Failure presentation=retain-front contract=explicit-certified-or-display-error \
          execution={}\n",
         placement.framebuffer_base,
         framebuffer_back,
@@ -2515,6 +2520,7 @@ mod tests {
                 material: "shade".to_string(),
                 material_type: crate::sema::types::Type::U8,
                 display_index: 0,
+                display_doorbell_addr: wrela_machine::pixels::DOORBELL_ADDR,
                 width: 64,
                 height: 32,
                 refresh_hz: 60,

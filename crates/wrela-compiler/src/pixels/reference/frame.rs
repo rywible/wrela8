@@ -80,6 +80,24 @@ pub struct CompletedTile {
     pub digest: [u8; 32],
 }
 
+pub fn scanout_worker_range(
+    tile_count: u32,
+    worker_count: u32,
+    worker: u32,
+) -> Result<(u32, u32), SweepError> {
+    if tile_count == 0 || worker_count == 0 || worker >= worker_count {
+        return Err(SweepError::InternalInvariant);
+    }
+    let ceiling_partition = |ordinal: u32| {
+        (u64::from(tile_count) * u64::from(ordinal) + u64::from(worker_count - 1))
+            / u64::from(worker_count)
+    };
+    Ok((
+        u32::try_from(ceiling_partition(worker)).map_err(|_| SweepError::CapacityExceeded)?,
+        u32::try_from(ceiling_partition(worker + 1)).map_err(|_| SweepError::CapacityExceeded)?,
+    ))
+}
+
 pub fn render_tile(
     tile_id: u32,
     tile_x0: u16,
@@ -255,6 +273,31 @@ pub fn debug_frame_digest(tiles: &[CompletedTile]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_scanout_tile_has_exactly_one_worker_owner() {
+        for tile_count in [1, 2, 7, 17] {
+            for worker_count in 1..=4 {
+                let ranges = (0..worker_count)
+                    .map(|worker| scanout_worker_range(tile_count, worker_count, worker).unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(ranges[0].0, 0);
+                assert_eq!(ranges.last().unwrap().1, tile_count);
+                assert!(ranges.windows(2).all(|pair| pair[0].1 == pair[1].0));
+                for tile in 0..tile_count {
+                    assert_eq!(
+                        ranges
+                            .iter()
+                            .filter(|(start, end)| *start <= tile && tile < *end)
+                            .count(),
+                        1,
+                    );
+                }
+            }
+        }
+        assert_eq!(scanout_worker_range(1, 4, 0).unwrap(), (0, 1));
+        assert_eq!(scanout_worker_range(1, 4, 1).unwrap(), (1, 1));
+    }
 
     #[test]
     fn coverage_is_exactly_half_open_without_gaps_or_overlaps() {

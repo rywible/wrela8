@@ -37,7 +37,8 @@ const FIXTURE_ID: u32 = 9
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-const EDGE_X_RAW: i32 = 0
+const EDGE_DIAGONAL_RAW: i32 = 0
+const EDGE_DIAGONAL_OFFSET: f32 = 0.0859375
 const LEFT_MATERIAL_ID: u32 = 1
 const RIGHT_MATERIAL_ID: u32 = 2
 
@@ -57,7 +58,10 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
     material = surface.material
-    if surface.position.x >= params.phase:
+    # With the canonical camera and z=0 plane, x+y=11/128 projects to the exact
+    # offset diagonal pinned by the host oracle. Every owned boundary pixel is a
+    # true high-contrast diagonal half-plane case for the host interval oracle.
+    if surface.position.x + surface.position.y >= params.phase + EDGE_DIAGONAL_OFFSET:
         material = MaterialId.Accent
     sample = MaterialSample.standard(color=Rgb(r=0.125, g=0.25, b=0.5), roughness=0.75)
     match material:
@@ -70,11 +74,12 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 9, "fixture id must remain pinned"
-    assert EDGE_X_RAW == 0, "adversarial scene value must remain pinned"
+    assert EDGE_DIAGONAL_RAW == 0, "adversarial diagonal must remain pinned"
+    assert EDGE_DIAGONAL_OFFSET == 0.0859375, "diagonal subpixel offset must remain pinned"
 
 @test(runtime)
 async fn material_edge_uses_event_coverage(renderer: Actor[Renderer[SceneParams]]):
-    frame = RenderFrame[SceneParams](params=SceneParams(phase=0.0), camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)), lights=LightFrame.empty(), exposure=0.0, environment=Rgb(r=0.0, g=0.0, b=0.0), frame_index=9)
+    frame = RenderFrame[SceneParams](params=SceneParams(phase=0.0), camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.0)), lights=LightFrame.empty(), exposure=0.0, environment=Rgb(r=0.0, g=0.0, b=0.0), frame_index=9)
     result = await renderer.render(frame=take frame)
     @discard(reason="the exact result assertion converts every render failure into test failure")
     match result:
@@ -106,7 +111,7 @@ async fn material_edge_uses_event_coverage(renderer: Actor[Renderer[SceneParams]
                     packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 9, "material edge frame renders"
+            assert rendered.frame_index == 0, "first material-edge frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "material edge is charged to event corridors"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:
@@ -138,7 +143,7 @@ pub fn build() -> Image:
         tone_curve=ToneCurve.Linear,
         near=0.1,
         far=128.0,
-        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_min=Vec3(x=-4.0, y=-4.0, z=-3.9),
         world_max=Vec3(x=4.0, y=4.0, z=4.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
         light_config=LightConfig.fixed(capacity=0),

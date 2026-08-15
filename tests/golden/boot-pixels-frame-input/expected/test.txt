@@ -1,8 +1,10 @@
 test pinned_scene_contract: ok
-p7 7768d1ca36cc6383
-p7 7768d1ca36cc6383
+p7 c8f04696c6dc1d83
+p7 c8f04696c6dc1d83
 p7 0000000000895440
 test frame_input_validation_is_exact: ok
 2 passed, 0 failed
 lane1 turns=13 run_one=27 messages=13
 lane1 hits=0:6,1:4,2:6,3:7,4:2
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=b19c217091e0b717fd814f2de96308ef2a367349417c6912e1b8c9653992113a visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=4 checkpoint=4
+display v1 renderer=0 frame=1 generation=1 released=0 mode=64x32@60 format=1 descriptor=9c090571481de4e8b54006ddb481d8f1c5edf849435ed1b1789200828919793f visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=5 checkpoint=5

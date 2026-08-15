@@ -3,11 +3,14 @@ use std::time::Instant;
 
 use wrela_machine::report::RequestRing;
 
+use crate::VmmError;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::devices;
+#[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
+use crate::guest_dram_offset;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::hv;
 use crate::record;
-use crate::{VmmError, guest_dram_offset};
 
 pub(crate) fn host_entropy(buf: &mut [u8]) -> Result<(), VmmError> {
     let mut f = std::fs::File::open("/dev/urandom")
@@ -99,7 +102,6 @@ pub(crate) fn apply_entropy_read(
     fill_entropy_into_dram(host_ram, dest, &bytes)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn read_core_mark(host_ram: *const u8, core: usize) -> u64 {
     use wrela_machine::layout as machine_layout;
     let off =
@@ -109,7 +111,6 @@ pub(crate) fn read_core_mark(host_ram: *const u8, core: usize) -> u64 {
     u64::from_le_bytes(b)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn check_core_marks(host_ram: *const u8, cores: usize) -> Result<(), VmmError> {
     use wrela_machine::machine_info;
     if cores <= 1 {
@@ -302,7 +303,7 @@ impl AdmissionWitness {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn observe_admissions(
     witness: &mut AdmissionWitness,
     host_ram: *const u8,
@@ -329,7 +330,7 @@ pub(crate) fn observe_admissions(
         .map_err(VmmError::GuestFault)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn commit_admissions(
     chooser: &mut record::Chooser,
     admitted: &[(String, String)],
@@ -425,7 +426,6 @@ pub(crate) fn advance_pc(vcpu: u64) -> Result<(), VmmError> {
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn monotonic_ns() -> u64 {
     use std::sync::OnceLock;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
@@ -433,7 +433,6 @@ pub(crate) fn monotonic_ns() -> u64 {
     (epoch.elapsed().as_nanos() as u64).max(1)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn drain_console(host_ram: *const u8) -> Vec<u8> {
     use wrela_machine::console;
     use wrela_machine::layout as machine_layout;

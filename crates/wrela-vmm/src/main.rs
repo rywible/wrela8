@@ -5,7 +5,7 @@ use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
 
 fn usage() -> ! {
     eprintln!(
-        "usage: wrela-vmm <report> <img> [--record <path>] [--replay <path>] [--dump-lane2 <path>]"
+        "usage: wrela-vmm <report> <img> [--display headless|native] [--record <path>] [--replay <path>] [--dump-lane2 <path>]"
     );
     std::process::exit(EXIT_VMM_FAILURE);
 }
@@ -16,6 +16,7 @@ fn main() -> ExitCode {
     let mut record_path: Option<PathBuf> = None;
     let mut replay_path: Option<PathBuf> = None;
     let mut dump_lane2_path: Option<PathBuf> = None;
+    let mut display = wrela_vmm::display::DisplayBackendSelection::Headless;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -40,6 +41,14 @@ fn main() -> ExitCode {
                     None => usage(),
                 }
             }
+            "--display" => {
+                i += 1;
+                display = match args.get(i).map(String::as_str) {
+                    Some("headless") => wrela_vmm::display::DisplayBackendSelection::Headless,
+                    Some("native") => wrela_vmm::display::DisplayBackendSelection::Native,
+                    _ => usage(),
+                };
+            }
             other => positional.push(other.to_string()),
         }
         i += 1;
@@ -53,6 +62,10 @@ fn main() -> ExitCode {
     }
     if dump_lane2_path.is_some() && replay_path.is_some() {
         eprintln!("wrela-vmm: --dump-lane2 is not supported with --replay");
+        return ExitCode::from(EXIT_VMM_FAILURE as u8);
+    }
+    if replay_path.is_some() && display == wrela_vmm::display::DisplayBackendSelection::Native {
+        eprintln!("wrela-vmm: replay suppresses native presentation; use --display headless");
         return ExitCode::from(EXIT_VMM_FAILURE as u8);
     }
     let report_path = PathBuf::from(report);
@@ -103,7 +116,7 @@ fn main() -> ExitCode {
         };
     }
 
-    match wrela_vmm::boot_image(&report_path, &img_path) {
+    match wrela_vmm::boot_image_with_display(&report_path, &img_path, display) {
         Ok(outcome) => {
             if let Some(record_path) = record_path {
                 let recorded = wrela_vmm::record::RecordFile::from_outcome(&outcome);

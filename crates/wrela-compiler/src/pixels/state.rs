@@ -78,6 +78,8 @@ pub fn layout(
             cursor, final_capacities.total_renderer_state_bytes
         ));
     }
+    let production_total_bytes = cursor;
+    align(&mut cursor, 8, "telemetry")?;
     let telemetry = StateRegion {
         offset: cursor,
         bytes: capacities.telemetry_bytes_instrumented,
@@ -93,7 +95,7 @@ pub fn layout(
         ));
     }
     Ok(RendererStateLayout {
-        total_bytes: cursor,
+        total_bytes: production_total_bytes,
         instrumented_total_bytes,
         header,
         coefficient_snapshots,
@@ -155,5 +157,12 @@ mod tests {
         assert_eq!(exact, page * 3);
         let mut overflow = u64::MAX;
         assert!(align(&mut overflow, page, "test").is_err());
+    }
+
+    #[test]
+    fn telemetry_words_are_aligned_even_after_an_odd_production_layout() {
+        let mut cursor = 0x1172;
+        align(&mut cursor, 8, "telemetry").unwrap();
+        assert_eq!(cursor, 0x1178);
     }
 }

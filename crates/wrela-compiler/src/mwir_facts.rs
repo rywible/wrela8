@@ -79,6 +79,9 @@ pub(crate) fn inst_facts(inst: &Inst) -> InstFacts {
             InstFacts::new([*src], [*dst], [], effects)
         }
 
+        I32x4Add { dst, lhs, rhs } => InstFacts::new([*lhs, *rhs], [*dst], [], None),
+        I32x4FromLanes { dst, lanes } => InstFacts::new([*lanes], [*dst], [], None),
+
         MakeAggregate { dst, elems } => InstFacts::new(elems.iter().copied(), [*dst], [], None),
         MakeEnum { dst, payload, .. } => InstFacts::new(payload.iter().copied(), [*dst], [], None),
         StringConcat { dst, lhs, rhs, .. } => InstFacts::new([*lhs, *rhs], [*dst], [], MayTrap),

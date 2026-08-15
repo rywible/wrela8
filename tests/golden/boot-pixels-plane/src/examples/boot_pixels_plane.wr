@@ -94,11 +94,10 @@ async fn plane_renders_from_scratch(renderer: Actor[Renderer[SceneParams]]):
             while digest_word < 4:
                 __wrela_trace_p7_u64(exact_digest[digest_word + 1])
                 digest_word = digest_word + 1
-            # Worker 3 owns the final tile in the four-worker layout, matching
-            # the final tile owned by worker 0 in the one-worker control. Read
-            # the same spatial run so raw evidence equality tests proof
-            # determinism rather than worker partition order.
-            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 3, 0, 0)
+            # The single 64x32 scanout tile is wholly owned by worker 0 in
+            # both layouts. Read the same spatial run so raw evidence equality
+            # tests proof determinism rather than worker partition order.
+            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
             if evidence[0] == 1:
                 __wrela_trace_p7_u64(4847371096046259761)
                 evidence_word: usize = 0
@@ -106,7 +105,7 @@ async fn plane_renders_from_scratch(renderer: Actor[Renderer[SceneParams]]):
                 while evidence_word < 16:
                     evidence = __wrela_pixels_p7_debug_certified_run_word(
                         0,
-                        3,
+                        0,
                         0,
                         evidence_word,
                     )

@@ -104,7 +104,7 @@ async fn displaced_surface_renders_from_scratch(renderer: Actor[Renderer[ScenePa
             while digest_word < 5:
                 __wrela_trace_p7_u64(digest[digest_word])
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 5, "displaced frame renders"
+            assert rendered.frame_index == 0, "first displaced frame is presentation sequence zero"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:
                 __wrela_trace_p7_u64(7599824371187933777)

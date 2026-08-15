@@ -73,7 +73,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]|pixels-conformance\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]\n  cargo xtask pixels-conformance [--update] [--assume-guest-fixtures-verified] [--deep-worker-variants] [--case <name>]\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>|--case <exact>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N] [--isolate-pixels-bundles] [--assume-built]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -118,7 +118,38 @@ fn main() -> ExitCode {
             _ => Err("usage: cargo xtask pixels-repro [--smoke]".to_string()),
         },
         Some("pixels-conformance") => {
-            no_args("pixels-conformance", &args).and_then(|()| pixels_conformance())
+            let (mut update, mut verified, mut deep) = (false, false, false);
+            let mut cases: Vec<String> = Vec::new();
+            let mut accepted = true;
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--update" if !update => update = true,
+                    "--assume-guest-fixtures-verified" if !verified => verified = true,
+                    "--deep-worker-variants" if !deep => deep = true,
+                    "--case" => match rest.next() {
+                        Some(case) => cases.push(case.clone()),
+                        None => accepted = false,
+                    },
+                    other if other.starts_with("--case=") => {
+                        cases.push(other["--case=".len()..].to_string());
+                    }
+                    _ => accepted = false,
+                }
+            }
+            if accepted {
+                pixels_conformance(
+                    update,
+                    verified,
+                    deep,
+                    (!cases.is_empty()).then_some(cases.as_slice()),
+                )
+            } else {
+                Err("usage: cargo xtask pixels-conformance [--update] \
+                     [--assume-guest-fixtures-verified] [--deep-worker-variants] \
+                     [--case <name>]..."
+                    .to_string())
+            }
         }
         Some("verify-milestone") => Err(
             "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
@@ -164,16 +195,21 @@ fn main() -> ExitCode {
 
 fn deep_lane() -> Result<(), String> {
     run(
-        Command::new("cargo").args([
-            "test",
-            "--workspace",
-            "--exclude",
-            "wrela-vmm",
-            "--quiet",
-            "--",
-            "--ignored",
-            "--test-threads=1",
-        ]),
+        Command::new("cargo")
+            // The deep lane carries the exact re-derivation ratchet: every
+            // renderer compile under it re-runs the full P3/P4 pipelines and
+            // deep-compares the results (see pixels::verify).
+            .env(wrela_compiler::pixels::verify::EXACT_VERIFY_ENV, "1")
+            .args([
+                "test",
+                "--workspace",
+                "--exclude",
+                "wrela-vmm",
+                "--quiet",
+                "--",
+                "--ignored",
+                "--test-threads=1",
+            ]),
         "cargo test -- --ignored --test-threads=1 (deep lane)",
     )
 }
@@ -221,8 +257,11 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
     let mut seen_update = false;
     let mut seen_boot = false;
     let mut seen_filter = false;
+    let mut seen_case = false;
     let mut seen_jobs = false;
     let mut seen_boot_jobs = false;
+    let mut seen_isolate_pixels_bundles = false;
+    let mut seen_assume_built = false;
     let mut i = 0usize;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -249,6 +288,10 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
                 seen_filter = true;
                 opts.filter = Some(next(&mut i, "--filter")?.to_string());
             }
+            "--case" if !seen_case => {
+                seen_case = true;
+                opts.cases = Some(vec![next(&mut i, "--case")?.to_string()]);
+            }
             "--jobs" if !seen_jobs => {
                 seen_jobs = true;
                 opts.jobs = positive("--jobs", next(&mut i, "--jobs")?)?;
@@ -257,11 +300,31 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
                 seen_boot_jobs = true;
                 opts.boot_jobs = positive("--boot-jobs", next(&mut i, "--boot-jobs")?)?;
             }
+            "--isolate-pixels-bundles" if !seen_isolate_pixels_bundles => {
+                seen_isolate_pixels_bundles = true;
+                opts.isolate_pixels_bundles = true;
+            }
+            "--assume-built" if !seen_assume_built => {
+                seen_assume_built = true;
+                opts.assume_built = true;
+            }
             other if other.starts_with("--filter=") && !seen_filter => {
                 seen_filter = true;
                 opts.filter = Some(other["--filter=".len()..].to_string());
             }
-            "--update" | "--no-boot" | "--only-boot" | "--filter" | "--jobs" | "--boot-jobs" => {
+            other if other.starts_with("--case=") && !seen_case => {
+                seen_case = true;
+                opts.cases = Some(vec![other["--case=".len()..].to_string()]);
+            }
+            "--update"
+            | "--no-boot"
+            | "--only-boot"
+            | "--filter"
+            | "--case"
+            | "--jobs"
+            | "--boot-jobs"
+            | "--isolate-pixels-bundles"
+            | "--assume-built" => {
                 return Err(format!("golden: duplicate or conflicting flag `{arg}`"));
             }
             other => return Err(format!("golden: unknown flag `{other}`")),
@@ -269,6 +332,87 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
         i += 1;
     }
     Ok(opts)
+}
+
+#[cfg(test)]
+mod golden_cli_tests {
+    use super::*;
+
+    #[test]
+    fn partial_mode_renders_the_same_image_on_one_and_four_workers() {
+        // A 65x33 mode is four scanout tiles, so this pair is the corpus's
+        // cheapest real test of worker tile partitioning: at 64x32 a scene is a
+        // single tile and only worker zero ever receives work, which makes a
+        // four-core variant of those scenes nearly vacuous for partitioning.
+        // Both fixtures must keep their declared core counts or this would pass
+        // without comparing anything.
+        let visible = |case: &str| -> String {
+            let path = root()
+                .join("tests/golden")
+                .join(case)
+                .join("expected/test.txt");
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let line = text
+                .lines()
+                .find(|line| line.starts_with("display v1 "))
+                .unwrap_or_else(|| panic!("{case} has no presented-frame line"));
+            line.split_whitespace()
+                .find_map(|field| field.strip_prefix("visible="))
+                .unwrap_or_else(|| panic!("{case} presented no visible digest"))
+                .to_string()
+        };
+        let cores = |case: &str, source: &str| -> String {
+            let path = root()
+                .join("tests/golden")
+                .join(case)
+                .join("src/examples")
+                .join(source);
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        };
+        assert!(
+            cores("boot-pixels-partial-mode", "boot_pixels_partial_mode.wr").contains("cores=1"),
+            "the one-worker fixture must stay single-core"
+        );
+        assert!(
+            cores(
+                "boot-pixels-partial-mode-four-core",
+                "boot_pixels_partial_mode_four_core.wr"
+            )
+            .contains("cores=4"),
+            "the four-worker fixture must stay four-core"
+        );
+        assert_eq!(
+            visible("boot-pixels-partial-mode"),
+            visible("boot-pixels-partial-mode-four-core"),
+            "a multi-tile frame must be identical however its tiles are partitioned \
+             across workers"
+        );
+    }
+
+    #[test]
+    fn exact_case_and_pixels_bundle_isolation_are_parsed_fail_closed() {
+        let opts = parse_golden_opts(&[
+            "--case".to_string(),
+            "check-pixels-repeat".to_string(),
+            "--no-boot".to_string(),
+            "--isolate-pixels-bundles".to_string(),
+        ])
+        .expect("valid exact isolated golden selection");
+        assert_eq!(opts.cases, Some(vec!["check-pixels-repeat".to_string()]));
+        assert!(opts.boot == BootSel::None);
+        assert!(opts.isolate_pixels_bundles);
+
+        assert!(parse_golden_opts(&["--case=a".to_string(), "--case=b".to_string(),]).is_err());
+        assert!(
+            parse_golden_opts(&[
+                "--isolate-pixels-bundles".to_string(),
+                "--isolate-pixels-bundles".to_string(),
+            ])
+            .is_err()
+        );
+    }
 }
 
 fn cost_inventory() -> Result<(), String> {
@@ -351,7 +495,9 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
             .count())
     }
 
-    const ALL: usize = 132;
+    // P8 adds portable display/frame-output record-replay tests. The
+    // signed HVF-only lane remains unchanged and separately pinned below.
+    const ALL: usize = 141;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",
@@ -372,6 +518,21 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
     run(
         Command::new("cargo").args(["test", "-p", "wrela-vmm", "--lib", "--quiet"]),
         "portable wrela-vmm tests",
+    )
+}
+
+fn check_wrela_vmm_linux() -> Result<(), String> {
+    run(
+        Command::new("cargo").args([
+            "check",
+            "-p",
+            "wrela-vmm",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--all-targets",
+            "--quiet",
+        ]),
+        "Linux/aarch64 wrela-vmm compile check",
     )
 }
 
@@ -452,11 +613,13 @@ fn verify() -> Result<(), String> {
         "cargo xtask pixels-vectors",
         || pixels_vectors(false),
     )?;
+    // Measure the locked unit-lane placement budget before the sustained
+    // signed-guest conformance workload can thermally perturb the host.
     verify_stage(
         LANE,
-        "Pixels visibility conformance",
-        "cargo xtask pixels-conformance",
-        pixels_conformance,
+        "workspace units",
+        "cargo test --workspace --exclude wrela-vmm",
+        unit_lane,
     )?;
     verify_stage(
         LANE,
@@ -472,12 +635,6 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
-        "workspace units",
-        "cargo test --workspace --exclude wrela-vmm",
-        unit_lane,
-    )?;
-    verify_stage(
-        LANE,
         "Pixels decoder fuzz smoke",
         "cargo xtask fuzz pixels --iters 256 --seed 1",
         || fuzz_pixels(FUZZ_PIXELS_SMOKE_ITERS, FUZZ_PIXELS_DEEP_SEED),
@@ -490,11 +647,25 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
+        "Linux VMM compile",
+        "cargo check -p wrela-vmm --target aarch64-unknown-linux-gnu --all-targets",
+        check_wrela_vmm_linux,
+    )?;
+    verify_stage(
+        LANE,
         "signed HVF smoke",
         "cargo xtask verify",
         test_wrela_vmm_hvf_signed_smoke,
     )?;
     verify_goldens_parallel()?;
+    // Placed after the boot golden lane so it can trust freshly-verified
+    // guest transcripts instead of re-booting its fifteen fixture cases.
+    verify_stage(
+        LANE,
+        "Pixels visibility conformance",
+        "cargo xtask pixels-conformance",
+        || pixels_conformance(false, true, false, None),
+    )?;
     verify_stage(LANE, "documentation corpus", "cargo xtask corpus", || {
         corpus(&[])
     })?;
@@ -511,9 +682,13 @@ fn verify() -> Result<(), String> {
 }
 
 fn verify_goldens_parallel() -> Result<(), String> {
-    let jobs = golden::default_jobs();
-    let boot_jobs = (jobs / 2).max(1);
-    let static_jobs = jobs.saturating_sub(boot_jobs).max(1);
+    // Memory pressure is bounded inside the golden runner rather than by the
+    // worker counts: renderer-bearing pixels work (bundle compiles, isolated
+    // children, renderer dumps, and pixels guest boots) shares
+    // golden::HEAVY_PIXELS_JOBS permits, so the pools can use the full host
+    // width for the cheap dump stages without risking a 16 GiB host.
+    let boot_jobs = golden::DEFAULT_BOOT_JOBS;
+    let static_jobs = golden::default_jobs();
     let (boot, static_goldens) = std::thread::scope(|scope| {
         let boot = scope.spawn(|| {
             verify_stage(
@@ -538,6 +713,7 @@ fn verify_goldens_parallel() -> Result<(), String> {
                     golden(&GoldenOpts {
                         boot: BootSel::None,
                         jobs: static_jobs,
+                        isolate_pixels_bundles: true,
                         ..GoldenOpts::default()
                     })
                 },
@@ -609,6 +785,14 @@ fn verify_deep() -> Result<(), String> {
                 ..GoldenOpts::default()
             })
         },
+    )?;
+    verify_stage(
+        LANE,
+        "Pixels visibility conformance (all worker-invariance classes)",
+        "cargo xtask pixels-conformance --deep-worker-variants",
+        // The boot-golden stage above has just verified every guest fixture, so
+        // this adds only the four-worker invariance classes the fast lane defers.
+        || pixels_conformance(false, true, true, None),
     )?;
     verify_stage(
         LANE,
@@ -2497,6 +2681,7 @@ pub(crate) fn build_runtime_test_image(
 
 struct VmmBoot {
     transcript: String,
+    diagnostics: String,
     exit_code_class: i32,
 }
 
@@ -2546,6 +2731,7 @@ fn run_vmm(vmm: &Path, report_path: &Path, img_path: &Path) -> Result<VmmBoot, S
         .map_err(|e| format!("run wrela-vmm: {e}"))?;
     Ok(VmmBoot {
         transcript: String::from_utf8_lossy(&out.stdout).into_owned(),
+        diagnostics: String::from_utf8_lossy(&out.stderr).into_owned(),
         exit_code_class: out.status.code().unwrap_or(-1),
     })
 }
@@ -2717,8 +2903,9 @@ fn diff_eval_over_cases(
         let boot = boot_result?;
         if boot.exit_code_class != 0 && boot.exit_code_class != 1 {
             return Err(format!(
-                "diff-eval: case {name}: the wrela VMM did not boot the test image (exit {})",
-                boot.exit_code_class
+                "diff-eval: case {name}: the wrela VMM did not boot the test image (exit {}): {}",
+                boot.exit_code_class,
+                boot.diagnostics.trim(),
             ));
         }
 

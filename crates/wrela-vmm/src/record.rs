@@ -3,6 +3,68 @@ use std::path::Path;
 
 use crate::{BootOutcome, VmmError, boot_image_core};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameOutputV1 {
+    pub renderer_index: u16,
+    pub sequence: u64,
+    pub generation: u8,
+    pub released_generation: Option<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: u32,
+    pub format: u8,
+    pub tile_descriptor_digest: String,
+    pub visible_digest: String,
+    pub raw_tile_digest: String,
+    pub vsync_id: u64,
+    pub checkpoint: u64,
+}
+
+impl FrameOutputV1 {
+    fn from_presented(frame: &wrela_machine::pixels::PresentedFrame) -> Self {
+        Self {
+            renderer_index: frame.renderer_index,
+            sequence: frame.sequence,
+            generation: frame.generation,
+            released_generation: frame.released_generation,
+            width: frame.mode.width,
+            height: frame.mode.height,
+            refresh_hz: frame.mode.refresh_hz,
+            format: frame.format,
+            tile_descriptor_digest: bytes_to_lowercase_hex(&frame.tile_descriptor_digest),
+            visible_digest: bytes_to_lowercase_hex(&frame.visible_digest),
+            raw_tile_digest: bytes_to_lowercase_hex(&frame.raw_tile_digest),
+            vsync_id: frame.vsync_id,
+            checkpoint: frame.checkpoint,
+        }
+    }
+
+    fn to_presented(&self) -> Result<wrela_machine::pixels::PresentedFrame, String> {
+        let tile_descriptor_digest = parse_digest(&self.tile_descriptor_digest)?;
+        let visible_digest = parse_digest(&self.visible_digest)?;
+        let raw_tile_digest = parse_digest(&self.raw_tile_digest)?;
+        Ok(wrela_machine::pixels::PresentedFrame {
+            renderer_index: self.renderer_index,
+            sequence: self.sequence,
+            generation: self.generation,
+            released_generation: self.released_generation,
+            mode: wrela_machine::pixels::DisplayModeV1 {
+                width: self.width,
+                height: self.height,
+                refresh_hz: self.refresh_hz,
+            },
+            format: self.format,
+            tile_descriptor_digest,
+            visible_digest,
+            raw_tile_digest,
+            digest: self.visible_digest.clone(),
+            vsync_id: self.vsync_id,
+            checkpoint: self.checkpoint,
+            bgra: Vec::new(),
+        })
+    }
+}
+
 pub fn digest_hex(bytes: &[u8]) -> String {
     wrela_machine::sha256::sha256_hex(bytes)
 }
@@ -40,6 +102,7 @@ pub enum ChoiceEntry {
         sequence: u64,
         digest: String,
     },
+    FrameOutputV1(FrameOutputV1),
 }
 
 impl ChoiceEntry {
@@ -53,6 +116,7 @@ impl ChoiceEntry {
             ChoiceEntry::Progress { .. } => "Progress",
             ChoiceEntry::EntropyRead { .. } => "EntropyRead",
             ChoiceEntry::FramePresent { .. } => "FramePresent",
+            ChoiceEntry::FrameOutputV1(_) => "FrameOutputV1",
         }
     }
 
@@ -87,6 +151,24 @@ impl ChoiceEntry {
             ChoiceEntry::FramePresent { sequence, digest } => {
                 format!("FramePresent sequence={sequence} digest={digest}")
             }
+            ChoiceEntry::FrameOutputV1(frame) => format!(
+                "FrameOutputV1 renderer={} sequence={} generation={} released={} width={} height={} refresh={} format={} descriptor={} visible={} raw={} vsync={} checkpoint={}",
+                frame.renderer_index,
+                frame.sequence,
+                frame.generation,
+                frame
+                    .released_generation
+                    .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                frame.width,
+                frame.height,
+                frame.refresh_hz,
+                frame.format,
+                frame.tile_descriptor_digest,
+                frame.visible_digest,
+                frame.raw_tile_digest,
+                frame.vsync_id,
+                frame.checkpoint,
+            ),
         }
     }
 
@@ -182,6 +264,47 @@ impl ChoiceEntry {
                     digest: digest.to_string(),
                 })
             }
+            "FrameOutputV1" => {
+                let number = |key: &str| -> Result<u64, String> {
+                    field(key)?
+                        .parse()
+                        .map_err(|e| format!("bad FrameOutputV1 {key}: {e}"))
+                };
+                let digest = |key: &str| -> Result<String, String> {
+                    let value = field(key)?;
+                    parse_digest(value).map_err(|e| format!("bad FrameOutputV1 {key}: {e}"))?;
+                    Ok(value.to_string())
+                };
+                let released_generation = match field("released")? {
+                    "none" => None,
+                    value => Some(
+                        value
+                            .parse::<u8>()
+                            .map_err(|e| format!("bad FrameOutputV1 released: {e}"))?,
+                    ),
+                };
+                Ok(ChoiceEntry::FrameOutputV1(FrameOutputV1 {
+                    renderer_index: u16::try_from(number("renderer")?)
+                        .map_err(|_| "bad FrameOutputV1 renderer: out of range".to_string())?,
+                    sequence: number("sequence")?,
+                    generation: u8::try_from(number("generation")?)
+                        .map_err(|_| "bad FrameOutputV1 generation: out of range".to_string())?,
+                    released_generation,
+                    width: u32::try_from(number("width")?)
+                        .map_err(|_| "bad FrameOutputV1 width: out of range".to_string())?,
+                    height: u32::try_from(number("height")?)
+                        .map_err(|_| "bad FrameOutputV1 height: out of range".to_string())?,
+                    refresh_hz: u32::try_from(number("refresh")?)
+                        .map_err(|_| "bad FrameOutputV1 refresh: out of range".to_string())?,
+                    format: u8::try_from(number("format")?)
+                        .map_err(|_| "bad FrameOutputV1 format: out of range".to_string())?,
+                    tile_descriptor_digest: digest("descriptor")?,
+                    visible_digest: digest("visible")?,
+                    raw_tile_digest: digest("raw")?,
+                    vsync_id: number("vsync")?,
+                    checkpoint: number("checkpoint")?,
+                }))
+            }
             other => Err(format!("unknown choice tag `{other}`")),
         }
     }
@@ -210,6 +333,16 @@ fn lowercase_hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
         out.push((hi_n << 4) | lo_n);
     }
     Ok(out)
+}
+
+fn parse_digest(hex: &str) -> Result<[u8; 32], String> {
+    if !wrela_machine::sha256::is_sha256_hex(hex) {
+        return Err(format!("not a lowercase SHA-256 digest: {hex:?}"));
+    }
+    let bytes = lowercase_hex_to_bytes(hex)?;
+    bytes
+        .try_into()
+        .map_err(|_| "SHA-256 digest was not 32 bytes".to_string())
 }
 
 fn lowercase_hex_nibble(c: char) -> Result<u8, String> {
@@ -251,6 +384,7 @@ pub enum ChoiceRequest {
         sequence: u64,
         digest: String,
     },
+    FrameOutputV1(FrameOutputV1),
 }
 
 impl ChoiceRequest {
@@ -264,6 +398,7 @@ impl ChoiceRequest {
             ChoiceRequest::Progress { .. } => "Progress",
             ChoiceRequest::EntropyRead { .. } => "EntropyRead",
             ChoiceRequest::FramePresent { .. } => "FramePresent",
+            ChoiceRequest::FrameOutputV1(_) => "FrameOutputV1",
         }
     }
 
@@ -307,6 +442,7 @@ impl ChoiceRequest {
                 sequence: *sequence,
                 digest: digest.clone(),
             },
+            ChoiceRequest::FrameOutputV1(frame) => ChoiceEntry::FrameOutputV1(frame.clone()),
         }
     }
 }
@@ -357,6 +493,11 @@ pub enum Divergence {
         index: usize,
         recorded: String,
         actual: String,
+    },
+    FrameOutputMismatch {
+        index: usize,
+        frame: u64,
+        class: String,
     },
 }
 
@@ -426,7 +567,15 @@ impl std::fmt::Display for Divergence {
             } => write!(
                 f,
                 "choice #{index} frame present mismatch: recorded `{recorded}`, this boot \
-                 presented `{actual}`"
+                presented `{actual}`"
+            ),
+            Divergence::FrameOutputMismatch {
+                index,
+                frame,
+                class,
+            } => write!(
+                f,
+                "choice #{index} display output diverged at frame {frame}, class {class}"
             ),
         }
     }
@@ -654,6 +803,32 @@ impl Chooser {
         Ok(())
     }
 
+    pub fn check_frame_output(
+        &mut self,
+        frame: &wrela_machine::pixels::PresentedFrame,
+    ) -> Result<(), crate::VmmError> {
+        let actual_frame = FrameOutputV1::from_presented(frame);
+        let request = ChoiceRequest::FrameOutputV1(actual_frame.clone());
+        let actual = request.fallback();
+        let index = self.resolved_count();
+        let chosen = self.choose_checked(request, || actual.clone())?;
+        if let ChoiceEntry::FrameOutputV1(recorded_frame) = chosen
+            && recorded_frame != actual_frame
+        {
+            let recorded = recorded_frame
+                .to_presented()
+                .expect("validated replay frame digests remain parseable");
+            let class =
+                crate::replay::frame_divergence_class(&recorded, frame).unwrap_or("record-payload");
+            self.note_divergence_checked(Divergence::FrameOutputMismatch {
+                index,
+                frame: recorded_frame.sequence,
+                class: class.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn note_divergence_checked(
         &mut self,
         divergence: Divergence,
@@ -865,28 +1040,25 @@ pub fn replay(
         .choices
         .iter()
         .filter_map(|choice| match choice {
-            ChoiceEntry::FramePresent { sequence, digest } => {
-                Some(wrela_machine::pixels::PresentedFrame {
-                    sequence: *sequence,
-                    digest: digest.clone(),
-                    bgra: Vec::new(),
-                })
-            }
+            ChoiceEntry::FrameOutputV1(frame) => Some(
+                frame
+                    .to_presented()
+                    .expect("parsed FrameOutputV1 digests remain valid"),
+            ),
             _ => None,
         })
         .collect();
-    if crate::replay::verify_frame_replay(&recorded_frames, &outcome.frames).is_err()
+    if let Err(error) = crate::replay::verify_frame_replay(&recorded_frames, &outcome.frames)
         && !divergences
             .iter()
-            .any(|d| matches!(d, Divergence::FramePresentMismatch { .. }))
+            .any(|d| matches!(d, Divergence::FrameOutputMismatch { .. }))
     {
-        divergences.push(Divergence::FramePresentMismatch {
+        divergences.push(Divergence::FrameOutputMismatch {
             index: 0,
-            recorded: String::from_utf8_lossy(&crate::replay::frame_log_bytes(&recorded_frames))
-                .trim()
-                .to_string(),
-            actual: String::from_utf8_lossy(&crate::replay::frame_log_bytes(&outcome.frames))
-                .trim()
+            frame: recorded_frames.first().map_or(0, |frame| frame.sequence),
+            class: error
+                .rsplit_once("class ")
+                .map_or("frame-count", |(_, class)| class)
                 .to_string(),
         });
     }
@@ -1070,6 +1242,31 @@ mod tests {
     }
 
     #[test]
+    fn frame_output_v1_round_trips_every_replay_identity_field() {
+        let frame = FrameOutputV1 {
+            renderer_index: 2,
+            sequence: 7,
+            generation: 1,
+            released_generation: Some(0),
+            width: 65,
+            height: 33,
+            refresh_hz: 60,
+            format: wrela_machine::pixels::FORMAT_BGRA8_SRGB,
+            tile_descriptor_digest: "11".repeat(32),
+            visible_digest: "22".repeat(32),
+            raw_tile_digest: "33".repeat(32),
+            vsync_id: 9,
+            checkpoint: 12,
+        };
+        let entry = ChoiceEntry::FrameOutputV1(frame);
+        assert_eq!(entry.tag(), "FrameOutputV1");
+        assert_eq!(
+            ChoiceEntry::parse_fields(&entry.to_text_fields()).expect("parses"),
+            entry
+        );
+    }
+
+    #[test]
     fn parse_rejects_an_unversioned_or_foreign_header() {
         let text = "clock_log_len=0\ntranscript_digest=x\nexit_code=0\nexits=1\n";
         assert!(RecordFile::parse(text).is_err());
@@ -1209,6 +1406,40 @@ mod tests {
         assert!(
             error.to_string().contains("frame present mismatch"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn frame_output_replay_names_the_first_changed_digest_class() {
+        let mut presented = wrela_machine::pixels::PresentedFrame {
+            renderer_index: 0,
+            sequence: 0,
+            generation: 0,
+            released_generation: None,
+            mode: wrela_machine::pixels::DisplayModeV1::SEED,
+            format: wrela_machine::pixels::FORMAT_BGRA8_SRGB,
+            tile_descriptor_digest: [1; 32],
+            visible_digest: [2; 32],
+            raw_tile_digest: [3; 32],
+            digest: String::new(),
+            vsync_id: 0,
+            checkpoint: 0,
+            bgra: Vec::new(),
+        };
+        let recorded = ChoiceEntry::FrameOutputV1(FrameOutputV1::from_presented(&presented));
+        presented.raw_tile_digest[0] ^= 1;
+        let mut chooser = Chooser::replayer(vec![recorded]);
+        chooser
+            .check_frame_output(&presented)
+            .expect("non-strict replay records the mismatch");
+        let (_, divergences) = finish_chooser(chooser).expect("finish replay");
+        assert_eq!(
+            divergences,
+            vec![Divergence::FrameOutputMismatch {
+                index: 0,
+                frame: 0,
+                class: "raw-tile".to_string(),
+            }]
         );
     }
 

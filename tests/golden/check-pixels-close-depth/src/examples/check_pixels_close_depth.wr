@@ -119,7 +119,7 @@ async fn close_depth_uses_bounded_corridor(renderer: Actor[Renderer[SceneParams]
                     enabled3 = packed
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 6, "close-depth frame renders from scratch"
+            assert rendered.frame_index == 0, "first close-depth frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "close-depth ambiguity is charged to bounded corridors"
             # P7.11: enabling proposals must not change displayed output. This
             # scene has two overlapping sphere silhouettes, so consecutive rows

@@ -149,6 +149,9 @@ pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
 }
 
 pub fn access_width_bytes(word: u32) -> Option<u8> {
+    if matches!(word & 0xffc0_0000, 0x3dc0_0000 | 0x3d80_0000) {
+        return Some(16);
+    }
     let width = 1u8 << (word >> 30);
     if word & 0x3F00_0000 == 0x3900_0000 {
         return Some(width);
@@ -794,6 +797,26 @@ pub fn enc_brk(imm16: u16) -> u32 {
     (0b11010100001 << 21) | ((imm16 as u32) << 5)
 }
 
+pub fn enc_ldr_q_imm(rt: u8, rn: u8, imm: u16) -> u32 {
+    assert!(rt < 32 && rn < 32 && imm % 16 == 0 && imm <= 65_520);
+    0x3dc0_0000 | (u32::from(imm / 16) << 10) | (u32::from(rn) << 5) | u32::from(rt)
+}
+
+pub fn enc_str_q_imm(rt: u8, rn: u8, imm: u16) -> u32 {
+    assert!(rt < 32 && rn < 32 && imm % 16 == 0 && imm <= 65_520);
+    0x3d80_0000 | (u32::from(imm / 16) << 10) | (u32::from(rn) << 5) | u32::from(rt)
+}
+
+pub fn enc_add_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    assert!(vd < 32 && vn < 32 && vm < 32);
+    0x4ea0_8400 | (u32::from(vm) << 16) | (u32::from(vn) << 5) | u32::from(vd)
+}
+
+pub fn enc_uzp1_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    assert!(vd < 32 && vn < 32 && vm < 32);
+    0x4e80_1800 | (u32::from(vm) << 16) | (u32::from(vn) << 5) | u32::from(vd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,6 +825,15 @@ mod tests {
     fn ret_defaults_to_x30() {
         assert_eq!(enc_ret(30), 0xd65f03c0);
         assert_eq!(enc_ret(0), 0xd65f0000);
+    }
+
+    #[test]
+    fn pixels_i32x4_words_match_arm_architecture_encodings() {
+        assert_eq!(enc_ldr_q_imm(0, 9, 0), 0x3dc0_0120);
+        assert_eq!(enc_ldr_q_imm(1, 10, 16), 0x3dc0_0541);
+        assert_eq!(enc_uzp1_v4s(0, 0, 3), 0x4e83_1800);
+        assert_eq!(enc_add_v4s(2, 0, 1), 0x4ea1_8402);
+        assert_eq!(enc_str_q_imm(2, 11, 32), 0x3d80_0962);
     }
 
     #[test]

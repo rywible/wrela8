@@ -517,7 +517,10 @@ mod tests {
             "the final linked executable is below L1I under actual addresses"
         );
         assert_eq!(i_charge, 0, "no synthetic padding charge remains");
-        assert_eq!(linked.executable_words(), 13533);
+        // 13533 -> 13389: counted-loop aggregate copies replaced the unrolled
+        // load/store pair per word, so the shipped image is smaller. Re-locked
+        // against the new measurement.
+        assert_eq!(linked.executable_words(), 13389);
     }
 
     #[test]

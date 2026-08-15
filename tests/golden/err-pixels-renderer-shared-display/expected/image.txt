@@ -1,1 +1,1 @@
-error[pixels P021]: more than one renderer claims display declaration `driver#0` (renderer#0 and renderer#1) at 55:46
+error[pixels P021]: more than one renderer claims display doorbell 0x8006000 (renderer#0 and renderer#1) at 34:50

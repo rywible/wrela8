@@ -97,7 +97,7 @@ async fn thin_feature_is_not_sample_culled(renderer: Actor[Renderer[SceneParams]
                     packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 7, "thin feature frame renders"
+            assert rendered.frame_index == 0, "first thin-feature frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "thin curved feature reaches bounded pixel cells"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:

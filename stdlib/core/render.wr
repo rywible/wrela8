@@ -2,12 +2,14 @@ module render
 
 
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sin_scalar, sqrt_scalar
-from core.__image_pixels import __wrela_pixels_f32_to_bits, __wrela_pixels_p7_abs, __wrela_pixels_p7_csg_influence, __wrela_pixels_p7_csg_occupancy, __wrela_pixels_p7_deformation_miss_model, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_event_polynomial, __wrela_pixels_p7_event_polynomial_uv2_bounds, __wrela_pixels_p7_event_class, __wrela_pixels_p7_event_clip_q, __wrela_pixels_p7_event_predicate_curve, __wrela_pixels_p7_feature_filter_excludes_root, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_polynomial_uv_bounds, __wrela_pixels_p7_feature_q_span, __wrela_pixels_p7_feature_support_q_span, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_feature_world_bounds, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_initial_inside, __wrela_pixels_p7_material_event_coverage, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_object_composed_root, __wrela_pixels_p7_object_q_tube, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_projected_union_mode, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_standard_torus_cell_positive_hit, __wrela_pixels_p7_standard_torus_coefficients, __wrela_pixels_p7_standard_torus_discriminant, __wrela_pixels_p7_standard_torus_feature, __wrela_pixels_p7_standard_torus_pixel_bounds, __wrela_pixels_p7_standard_torus_positive_hit, __wrela_pixels_p7_standard_torus_value, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_torus_event_magnitudes, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p7_workspace_load_root, __wrela_pixels_p7_workspace_load_root_tmp, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p7_workspace_store_root, __wrela_pixels_p7_workspace_store_root_tmp, __wrela_pixels_program_digest_byte, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_validate, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count, __wrela_pixels_tile_feature, __wrela_pixels_tile_feature_count
+from core.__image_pixels import __wrela_pixels_f32_to_bits, __wrela_pixels_p7_abs, __wrela_pixels_p7_csg_influence, __wrela_pixels_p7_csg_occupancy, __wrela_pixels_p7_deformation_miss_model, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_event_polynomial, __wrela_pixels_p7_event_polynomial_uv2_bounds, __wrela_pixels_p7_event_class, __wrela_pixels_p7_event_clip_q, __wrela_pixels_p7_event_predicate_curve, __wrela_pixels_p7_feature_filter_excludes_root, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_polynomial_uv_bounds, __wrela_pixels_p7_feature_q_span, __wrela_pixels_p7_feature_support_q_span, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_feature_world_bounds, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_initial_inside, __wrela_pixels_p7_material_event_coverage, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_object_composed_root, __wrela_pixels_p7_object_q_tube, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_projected_union_mode, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_standard_torus_cell_positive_hit, __wrela_pixels_p7_standard_torus_coefficients, __wrela_pixels_p7_standard_torus_discriminant, __wrela_pixels_p7_standard_torus_feature, __wrela_pixels_p7_standard_torus_pixel_bounds, __wrela_pixels_p7_standard_torus_positive_hit, __wrela_pixels_p7_standard_torus_value, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_torus_event_magnitudes, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p7_workspace_load_root, __wrela_pixels_p7_workspace_load_root_tmp, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p7_workspace_store_root, __wrela_pixels_p7_workspace_store_root_tmp, __wrela_pixels_p8_axis_box_coverage, __wrela_pixels_p8_begin, __wrela_pixels_p8_cancel, __wrela_pixels_p8_complete, __wrela_pixels_p8_descriptor_digest, __wrela_pixels_p8_digest, __wrela_pixels_p8_display_doorbell, __wrela_pixels_p8_initialize, __wrela_pixels_p8_present, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_raster_evidence_word, __wrela_pixels_p8_raw_digest, __wrela_pixels_p8_submit, __wrela_pixels_p8_visible_byte, __wrela_pixels_p8_visible_word, __wrela_pixels_p8_write, __wrela_pixels_p8_write4, __wrela_pixels_program_digest_byte, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_validate, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count, __wrela_pixels_tile_feature, __wrela_pixels_tile_feature_count
+from core.__image_pixels import __wrela_pixels_p7_half_plane_byte, __wrela_pixels_p7_aligned_deformation_depth_miss
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_sub, interval_valid
 from core.render_program import Polynomial9, Polynomial9Outcome, bernstein_from_power9, bernstein_lerp_ratio, polynomial_compose9, polynomial_horner9, polynomial_multiply9, program_binomial, program_ceil_div, program_floor_div, program_gcd
 from core.render_certificate import certify_monotone_root, certify_quadratic_discriminant
 
 from core.render_coverage import CoverageOutcome, coverage_line_twice_area
+from core.render_raster import AffineRunSetup, EventId, EventPixel, I32x4, IdSlice, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, QRunScalar, RasterRun, RunId, pixels_i32x4_backend_add
 
 pub fn __wrela_pixels_p5_finite(value: f32) -> bool:
     max_finite: f32 = 340282346638528859811704183484516925440.0
@@ -533,6 +535,8 @@ pub struct RenderedFrame[P]:
     pub params: P
     pub frame_index: u64
     pub displayed_digest: [u8; 32]
+    pub displayed_raw_tile_digest: [u64; 4]
+    pub displayed_tile_descriptor_digest: [u64; 4]
     pub rebuilt_tiles: u32
     pub reused_tiles: u32
     pub certificate_runs: u64
@@ -3288,6 +3292,7 @@ pub fn __wrela_pixels_p7_union_silhouette_coverage_at_slack(
     relevant_events: [u32; 8] = [0; 8]
     relevant_representations: [u8; 8] = [0; 8]
     relevant_count: u8 = 0
+    band_influence = false
     owner_event: i64 = -1
     tile_ordinal: u32 = 0
     @budget(bound=256)
@@ -3316,6 +3321,16 @@ pub fn __wrela_pixels_p7_union_silhouette_coverage_at_slack(
             # admitted only for members that cannot leave the window.
             relevant_count = relevant_count + 1
             owner_event = event_id.to[i64]()
+        elif pixel_in_event and event_class & 2048 != 0:
+            # A smooth-combiner band bounds occupancy — inside it the
+            # composite surface deviates from the members, so a smooth
+            # union's bridge can occupy cells whose every member discriminant
+            # is provably negative. The band is not a curve this tier can
+            # track, and its sealed span is conservatively the whole frame,
+            # so declining it outright would decline every pixel. Instead the
+            # cell walk below stops trusting member-structural occupancy
+            # conclusions and corroborates them against composite occupancy.
+            band_influence = true
         elif (
             pixel_in_event and event_class & 1 != 0
             and event_class & 16 == 0 and event_class & 512 == 0
@@ -3755,10 +3770,13 @@ pub fn __wrela_pixels_p7_union_silhouette_coverage_at_slack(
             ordinal = ordinal + 1
         # Resolve any deferred union sample now that every member's sign over
         # this cell is known. With no member ambiguous here, occupancy is
-        # constant across the cell and one reading decides it in both
-        # directions — a hit fills the cell, a miss empties it. With a member
-        # ambiguous, no point reading can be attributed to a particular
-        # member, so the cell keeps its full area as uncertainty instead.
+        # constant across the cell in a *pure* union and one reading decides
+        # it in both directions — a hit fills the cell, a miss empties it.
+        # (Inside a smooth band that constancy fails; the corroboration block
+        # below re-derives any such cell from composite occupancy.) With a
+        # member ambiguous, no point reading can be attributed to a
+        # particular member, so the cell keeps its full area as uncertainty
+        # instead.
         cell_contaminated = false
         if sampled_pending:
             if ambiguous_count == 0:
@@ -3773,6 +3791,58 @@ pub fn __wrela_pixels_p7_union_silhouette_coverage_at_slack(
             else:
                 cell_contaminated = true
                 all_outside = false
+        # Inside a smooth band, "every member discriminant is negative" no
+        # longer proves emptiness and one occupancy reading no longer proves
+        # fullness: the composite bridge occupies member-root-free cells and
+        # its own silhouette crosses them. Any cell about to be decided
+        # without a member-ambiguity witness is instead refined to the
+        # corroboration floor and then decided by composite occupancy itself:
+        # five agreeing readings decide the cell exactly as one reading
+        # decides an unambiguous cell of a pure union, and a disagreement is
+        # the blend silhouette crossing this cell, which only refinement can
+        # apportion. Measured on `check-pixels-smooth-csg`: the four
+        # neck-saddle pixels displayed the member-union coverage 218 where
+        # the blended surface truly covers 237.
+        if (
+            band_influence and not any_inside
+            and not cell_contaminated and ambiguous_count == 0
+        ):
+            if depth < 5:
+                all_outside = false
+            else:
+                occupied_readings: u8 = 0
+                probe_index: u8 = 0
+                @budget(bound=5)
+                while probe_index < 5:
+                    probe_u = center_u
+                    probe_v = center_v
+                    if probe_index == 1:
+                        probe_u = cu0
+                        probe_v = cv0
+                    elif probe_index == 2:
+                        probe_u = cu1
+                        probe_v = cv0
+                    elif probe_index == 3:
+                        probe_u = cu0
+                        probe_v = cv1
+                    elif probe_index == 4:
+                        probe_u = cu1
+                        probe_v = cv1
+                    point = __wrela_pixels_p7_point_union_occupancy(
+                        renderer, worker, x, y,
+                        probe_u, probe_v, candidates, snapshot,
+                    )
+                    if point[0] != 1:
+                        return [0; 4]
+                    if point[2] == 1:
+                        occupied_readings = occupied_readings + 1
+                    probe_index = probe_index + 1
+                if occupied_readings == 5:
+                    any_inside = true
+                elif occupied_readings == 0:
+                    all_outside = true
+                else:
+                    all_outside = false
         weight: u64 = 1
         weight_depth = depth
         @budget(bound=12)
@@ -4130,7 +4200,11 @@ fn __wrela_pixels_p7_interval_sin(lo: f32, hi: f32) -> [f32; 2]:
                 high = value
         index = index + 1
         step = step + 1
-    pad: f32 = 0.0001220703125
+    # Range reduction and the odd degree-11 polynomial use fewer than 32
+    # dependent rounded binary32 operations. This is the next f32 above
+    # gamma_40, leaving eight operations of headroom without a fixed 1/8192
+    # geometric skin that adaptive coverage can never refine.
+    pad: f32 = 0.0000023841917027311865
     low = low - pad
     high = high + pad
     if low < -1.0:
@@ -4139,15 +4213,9 @@ fn __wrela_pixels_p7_interval_sin(lo: f32, hi: f32) -> [f32; 2]:
         high = 1.0
     return [low, high]
 
-# Prove a bounded-displacement silhouette misses a pixel, subdividing when the
-# whole-pixel bound is too loose.
-#
-# The per-cell test below bounds the ray quadratic's coefficients over the cell
-# by a bilinear model, so a wide cell means a wide `H`, a wide `t` window, and
-# a sine range too broad to localize the displacement. Splitting shrinks all
-# three at once. A pixel is proven when *every* sub-cell is proven, which is
-# sound because the sub-cells cover it; any leaf that reaches the depth cap
-# unproven answers `false`, exactly as before.
+# Prove a bounded-displacement silhouette misses one complete screen cell.
+# Screen subdivision belongs to the caller's arrangement ladder; this helper
+# answers only the certified per-cell question and otherwise declines.
 
 pub fn __wrela_pixels_p7_deformation_silhouette_misses(
     renderer: usize,
@@ -4159,74 +4227,9 @@ pub fn __wrela_pixels_p7_deformation_silhouette_misses(
     read params: [f32; 16],
     read camera: [f32; 12],
 ) -> bool:
-    if __wrela_pixels_p7_deformation_misses_cell(
+    return __wrela_pixels_p7_deformation_misses_cell(
         renderer, event, u0, v0, u1, v1, params, camera,
-    ):
-        return true
-    cell_u0: [f32; 68] = [0.0; 68]
-    cell_v0: [f32; 68] = [0.0; 68]
-    cell_u1: [f32; 68] = [0.0; 68]
-    cell_v1: [f32; 68] = [0.0; 68]
-    cell_depth: [u8; 68] = [0; 68]
-    cell_u0[0] = u0
-    cell_v0[0] = v0
-    cell_u1[0] = u1
-    cell_v1[0] = v1
-    stack_count: u8 = 1
-    visited: u32 = 0
-    @budget(bound=512)
-    while stack_count > 0:
-        stack_count = stack_count - 1
-        slot = stack_count.to[usize]()
-        a_u0 = cell_u0[slot]
-        a_v0 = cell_v0[slot]
-        a_u1 = cell_u1[slot]
-        a_v1 = cell_v1[slot]
-        depth = cell_depth[slot]
-        visited = visited + 1
-        if visited > 400:
-            return false
-        if depth > 0:
-            if __wrela_pixels_p7_deformation_misses_cell(
-                renderer, event, a_u0, a_v0, a_u1, a_v1, params, camera,
-            ):
-                continue
-        # Depth 4 is where this stops paying: depth 5 proves not one extra
-        # pixel on the permanent fixture. That reading is only trustworthy
-        # because the `visited` cap was raised alongside it — at 340 it sat
-        # just under the 341 nodes a full depth-4 sweep already walks, so every
-        # deeper setting was truncated back to the same work and an earlier
-        # "depth 7 changes nothing" measurement meant nothing at all.
-        if depth >= 4:
-            return false
-        if stack_count > 63:
-            return false
-        mid_u = (a_u0 + a_u1) * 0.5
-        mid_v = (a_v0 + a_v1) * 0.5
-        if not __wrela_pixels_p5_finite(mid_u) or not __wrela_pixels_p5_finite(mid_v):
-            return false
-        child: u8 = 0
-        @budget(bound=4)
-        while child < 4:
-            destination = stack_count.to[usize]()
-            child_u0 = a_u0
-            child_u1 = mid_u
-            if child % 2 == 1:
-                child_u0 = mid_u
-                child_u1 = a_u1
-            child_v0 = a_v0
-            child_v1 = mid_v
-            if child >= 2:
-                child_v0 = mid_v
-                child_v1 = a_v1
-            cell_u0[destination] = child_u0
-            cell_v0[destination] = child_v0
-            cell_u1[destination] = child_u1
-            cell_v1[destination] = child_v1
-            cell_depth[destination] = depth + 1
-            stack_count = stack_count + 1
-            child = child + 1
-    return true
+    )
 
 # Bit 31 of `event` selects which of the two sealed proofs may conclude (the
 # packing keeps the call at the 8-argument codegen limit): with it set, only
@@ -4235,6 +4238,71 @@ pub fn __wrela_pixels_p7_deformation_silhouette_misses(
 # and the surface may still be crossed. A caller asking "is the surface
 # absent?" must not accept the transversal answer. Event ids are sealed table
 # indices far below the bit, so the packing is unambiguous.
+pub fn __wrela_pixels_p7_deformation_polynomial(
+    renderer: usize,
+    event: u32,
+    u: f32,
+    v: f32,
+    read params: [f32; 16],
+    read camera: [f32; 12],
+) -> [f32; 8]:
+    model = __wrela_pixels_p7_deformation_miss_model(renderer, event)
+    if model[0] != 1.0 or model[1] < 0.0 or model[1] > 4294967295.0:
+        return [0.0; 8]
+    if model[21] == 1.0:
+        ex = camera[0] - model[22]
+        ey = camera[1] - model[23]
+        ez = camera[2] - model[24]
+        dx = camera[3] + u * camera[6] + v * camera[9]
+        dy = camera[4] + u * camera[7] + v * camera[10]
+        dz = camera[5] + u * camera[8] + v * camera[11]
+        ax = dx * dx
+        ay = dy * dy
+        az = dz * dz
+        bx = dx * ex
+        by = dy * ey
+        bz = dz * ez
+        cx = ex * ex
+        cy = ey * ey
+        cz = ez * ez
+        rr = model[18] * model[18]
+        a = ax + ay + az
+        b = 2.0 * (bx + by + bz)
+        c = cx + cy + cz - rr
+        # No coefficient dependency path has more than seven rounded binary32
+        # operations from exact stored inputs. This scale is the next f32
+        # above gamma_8 = 8u/(1-8u), so multiplying the local magnitude sum is
+        # an outward standard forward-error bound. A zero expression is
+        # computed exactly from zero products, so no unrelated absolute floor
+        # belongs here; such a floor would leave a fixed subpixel skin.
+        error_scale: f32 = 0.0000004768376129504759
+        a_error = (
+            __wrela_pixels_p7_abs(ax) + __wrela_pixels_p7_abs(ay)
+            + __wrela_pixels_p7_abs(az)
+        ) * error_scale
+        b_error = 2.0 * (
+            __wrela_pixels_p7_abs(bx) + __wrela_pixels_p7_abs(by)
+            + __wrela_pixels_p7_abs(bz)
+        ) * error_scale
+        c_error = (
+            __wrela_pixels_p7_abs(cx) + __wrela_pixels_p7_abs(cy)
+            + __wrela_pixels_p7_abs(cz) + __wrela_pixels_p7_abs(rr)
+        ) * error_scale
+        if not __wrela_pixels_p5_finite(a) or not __wrela_pixels_p5_finite(b):
+            return [0.0; 8]
+        if not __wrela_pixels_p5_finite(c) or not a_error >= 0.0:
+            return [0.0; 8]
+        return [1.0, 2.0, a, b, c, a_error, b_error, c_error]
+    polynomial = __wrela_pixels_p7_feature_polynomial(
+        renderer, model[1].to[u32](), u, v, params, camera,
+    )
+    if polynomial[0] != 1.0 or polynomial[1] != 2.0:
+        return [0.0; 8]
+    return [
+        1.0, 2.0, polynomial[2], polynomial[3], polynomial[4],
+        model[4], model[5], model[6],
+    ]
+
 fn __wrela_pixels_p7_deformation_misses_cell(
     renderer: usize,
     event: u32,
@@ -4257,15 +4325,16 @@ fn __wrela_pixels_p7_deformation_misses_cell(
     band_t = model[3]
     if band < 0.0 or band_t < 0.0 or model[7] < 0.0:
         return false
-    p00 = __wrela_pixels_p7_feature_polynomial(renderer, feature, u0, v0, params, camera)
-    p10 = __wrela_pixels_p7_feature_polynomial(renderer, feature, u1, v0, params, camera)
-    p01 = __wrela_pixels_p7_feature_polynomial(renderer, feature, u0, v1, params, camera)
-    if p00[0] != 1.0 or p10[0] != 1.0 or p01[0] != 1.0:
+    p00 = __wrela_pixels_p7_deformation_polynomial(renderer, event_id, u0, v0, params, camera)
+    p10 = __wrela_pixels_p7_deformation_polynomial(renderer, event_id, u1, v0, params, camera)
+    p01 = __wrela_pixels_p7_deformation_polynomial(renderer, event_id, u0, v1, params, camera)
+    p11 = __wrela_pixels_p7_deformation_polynomial(renderer, event_id, u1, v1, params, camera)
+    if p00[0] != 1.0 or p10[0] != 1.0 or p01[0] != 1.0 or p11[0] != 1.0:
         return false
     # The sealed model is derived only for a degree-two ray quadratic; any
     # other degree means the coefficient reading below is not the one the
     # proof was written against.
-    if p00[1] != 2.0 or p10[1] != 2.0 or p01[1] != 2.0:
+    if p00[1] != 2.0 or p10[1] != 2.0 or p01[1] != 2.0 or p11[1] != 2.0:
         return false
     width_u = __wrela_pixels_p7_abs(u1 - u0)
     width_v = __wrela_pixels_p7_abs(v1 - v0)
@@ -4281,11 +4350,7 @@ fn __wrela_pixels_p7_deformation_misses_cell(
         f00 = p00[index + 2]
         f10 = p10[index + 2]
         f01 = p01[index + 2]
-        # The affine model through three corners. Its range over the cell lies
-        # between the smallest and largest of the four corner values, and the
-        # sealed second-derivative bounds cap how far the coefficient can leave
-        # that model anywhere inside the cell.
-        f11 = f10 + f01 - f00
+        f11 = p11[index + 2]
         low = f00
         high = f00
         if f10 < low:
@@ -4300,11 +4365,18 @@ fn __wrela_pixels_p7_deformation_misses_cell(
             high = f01
         if f11 > high:
             high = f11
+        coefficient_error = p00[index + 5]
+        if p10[index + 5] > coefficient_error:
+            coefficient_error = p10[index + 5]
+        if p01[index + 5] > coefficient_error:
+            coefficient_error = p01[index + 5]
+        if p11[index + 5] > coefficient_error:
+            coefficient_error = p11[index + 5]
         residual = (
             model[index * 3 + 8] * width_u * width_u * 0.125
             + model[index * 3 + 9] * width_u * width_v
             + model[index * 3 + 10] * width_v * width_v * 0.125
-            + model[index + 4]
+            + coefficient_error
         ) * widen
         if not residual >= 0.0:
             return false
@@ -4398,12 +4470,36 @@ fn __wrela_pixels_p7_deformation_misses_cell(
     if frequency == 0.0 or phase_slot < 0.0 or phase_slot > 15.0:
         return false
     amplitude = model[17]
+    if model[21] == 1.0 and model[25] > 0.0:
+        amplitude = model[25]
     radius = model[18]
     if not amplitude > 0.0 or not radius > 0.0:
         return false
     phase = params[phase_slot.to[usize]()]
     if not __wrela_pixels_p5_finite(phase):
         return false
+    aligned_direct = (
+        model[21] == 1.0
+        and camera[0] == model[22] and camera[1] == model[23]
+        and camera[3] == 0.0 and camera[4] == 0.0 and camera[5] == 1.0
+        and camera[6] == 1.0 and camera[7] == 0.0 and camera[8] == 0.0
+        and camera[9] == 0.0 and camera[10] == 1.0 and camera[11] == 0.0
+    )
+    if aligned_direct and width_u <= 0.00002 and width_v <= 0.00002:
+        # On the authored surface, distance = r - d and |d| <= A, hence the
+        # canonical ray's z coordinate must lie within r+A of the centre.
+        # This is a complete possible-root window independent of the looser
+        # quadratic coefficient box used by the generic proof below.
+        direct_z = model[24] - camera[2]
+        direct_extent = radius + amplitude
+        direct_t_lo = direct_z - direct_extent
+        if direct_t_lo < 0.0:
+            direct_t_lo = 0.0
+        direct_t_hi = direct_z + direct_extent
+        if __wrela_pixels_p7_aligned_deformation_depth_miss(
+            [u0, v0, u1, v1], direct_t_lo, direct_t_hi, phase, model, camera,
+        ):
+            return true
     # Rate of world x along the ray, hulled over the whole uv cell:
     # dir.x = forward.x + u right.x + v up.x.
     rate_lo = camera[3] + u0 * camera[6] + v0 * camera[9]
@@ -4453,6 +4549,150 @@ fn __wrela_pixels_p7_deformation_misses_cell(
         if not __wrela_pixels_p5_finite(centre_lo) or not __wrela_pixels_p5_finite(centre_hi):
             round_index = 16
             continue
+        # A second miss proof avoids ranging sine across the whole possible-
+        # root window. Let t0 be a ray's closest base-sphere approach and
+        # s=t-t0. Inside that window the radial distance has curvature at
+        # least k, while Taylor's theorem gives
+        #
+        #   d(t) >= d(t0) + d'(t0)s - M s^2/2.
+        #
+        # Therefore the authored field is bounded below by a quadratic whose
+        # minimum is F(t0)-|d'(t0)|^2/(2(k-M)). All inputs below are outward
+        # cell hulls. Outside the window, H exceeds the already-sound
+                # `local_band`, so a positive quadratic minimum proves the whole ray
+        # root-free. Sign-indefinite b declines this optional proof.
+        if model[21] == 1.0 and b_hi < 0.0:
+            closest_lo = (0.0 - b_hi) / (2.0 * a_hi)
+            closest_hi = (0.0 - b_lo) / (2.0 * a_lo)
+            if closest_lo >= 0.0 and closest_hi >= closest_lo:
+                closest_x_lo = camera[0] + rate_lo * closest_lo
+                closest_x_hi = closest_x_lo
+                closest_product: u8 = 1
+                @budget(bound=4)
+                while closest_product < 4:
+                    closest_rate = rate_lo
+                    if closest_product % 2 == 1:
+                        closest_rate = rate_hi
+                    closest_t = closest_lo
+                    if closest_product >= 2:
+                        closest_t = closest_hi
+                    closest_x = camera[0] + closest_rate * closest_t
+                    if closest_x < closest_x_lo:
+                        closest_x_lo = closest_x
+                    if closest_x > closest_x_hi:
+                        closest_x_hi = closest_x
+                    closest_product = closest_product + 1
+                proof_a_lo = a_lo
+                proof_rho_squared_lo = radius * radius + minimum_lo
+                # For an axis-aligned canonical camera looking through a
+                # sphere centre on its z axis, retain the exact correlation
+                # discarded by a generic (a,b,c) coefficient box:
+                # rho0^2 = z^2 s/(1+s), s=u^2+v^2, and
+                # x(t0)=cx+u z/(1+s). The strict guards make this an optional
+                # specialization; every other camera keeps the enclosure
+                # above. Each formula has at most six dependent rounded
+                # operations; upward gamma_8 pads leave two operations of
+                # headroom.
+                aligned = (
+                    camera[0] == model[22] and camera[1] == model[23]
+                    and camera[3] == 0.0 and camera[4] == 0.0 and camera[5] == 1.0
+                    and camera[6] == 1.0 and camera[7] == 0.0 and camera[8] == 0.0
+                    and camera[9] == 0.0 and camera[10] == 1.0 and camera[11] == 0.0
+                    and __wrela_pixels_p7_abs(u0) < 1.0
+                    and __wrela_pixels_p7_abs(u1) < 1.0
+                )
+                if aligned:
+                    u_abs_min = __wrela_pixels_p7_abs(u0)
+                    if __wrela_pixels_p7_abs(u1) < u_abs_min:
+                        u_abs_min = __wrela_pixels_p7_abs(u1)
+                    if u0 <= 0.0 and u1 >= 0.0:
+                        u_abs_min = 0.0
+                    v_abs_min = __wrela_pixels_p7_abs(v0)
+                    if __wrela_pixels_p7_abs(v1) < v_abs_min:
+                        v_abs_min = __wrela_pixels_p7_abs(v1)
+                    if v0 <= 0.0 and v1 >= 0.0:
+                        v_abs_min = 0.0
+                    direct_s_lo = u_abs_min * u_abs_min + v_abs_min * v_abs_min
+                    direct_z = model[24] - camera[2]
+                    direct_z_squared = direct_z * direct_z
+                    proof_a_lo = (1.0 + direct_s_lo) * 0.9999995231623870495241
+                    proof_rho_squared_lo = (
+                        direct_z_squared * direct_s_lo / (1.0 + direct_s_lo)
+                    )
+                    proof_rho_squared_lo = proof_rho_squared_lo - (
+                        (__wrela_pixels_p7_abs(proof_rho_squared_lo) + direct_z_squared)
+                        * 0.0000004768376129504759
+                    )
+                    direct_corner: u8 = 0
+                    @budget(bound=4)
+                    while direct_corner < 4:
+                        direct_u = u0
+                        if direct_corner % 2 == 1:
+                            direct_u = u1
+                        direct_v = v0
+                        if direct_corner >= 2:
+                            direct_v = v1
+                        direct_s = direct_u * direct_u + direct_v * direct_v
+                        direct_x = model[22] + direct_u * direct_z / (1.0 + direct_s)
+                        if direct_corner == 0 or direct_x < closest_x_lo:
+                            closest_x_lo = direct_x
+                        if direct_corner == 0 or direct_x > closest_x_hi:
+                            closest_x_hi = direct_x
+                        direct_corner = direct_corner + 1
+                    direct_x_pad = (
+                        __wrela_pixels_p7_abs(closest_x_lo)
+                        + __wrela_pixels_p7_abs(closest_x_hi)
+                        + __wrela_pixels_p7_abs(model[22])
+                        + __wrela_pixels_p7_abs(direct_z)
+                    ) * 0.0000004768376129504759
+                    closest_x_lo = closest_x_lo - direct_x_pad
+                    closest_x_hi = closest_x_hi + direct_x_pad
+                closest_sine = __wrela_pixels_p7_interval_sin(
+                    frequency * closest_x_lo + phase,
+                    frequency * closest_x_hi + phase,
+                )
+                closest_cosine = __wrela_pixels_p7_interval_sin(
+                    frequency * closest_x_lo + phase + 1.5707963705062866,
+                    frequency * closest_x_hi + phase + 1.5707963705062866,
+                )
+                closest_displacement_lo = amplitude * closest_sine[0]
+                rate_abs = __wrela_pixels_p7_abs(rate_lo)
+                if __wrela_pixels_p7_abs(rate_hi) > rate_abs:
+                    rate_abs = __wrela_pixels_p7_abs(rate_hi)
+                cosine_abs = __wrela_pixels_p7_abs(closest_cosine[0])
+                if __wrela_pixels_p7_abs(closest_cosine[1]) > cosine_abs:
+                    cosine_abs = __wrela_pixels_p7_abs(closest_cosine[1])
+                slope = amplitude * __wrela_pixels_p7_abs(frequency) * rate_abs * cosine_abs
+                second = (
+                    amplitude * frequency * frequency * rate_abs * rate_abs
+                )
+                slope = slope * 1.000003814697265625
+                second = second * 1.000003814697265625
+                rho_squared_lo = proof_rho_squared_lo
+                distance_squared_hi = radius * radius + local_band
+                if rho_squared_lo > 0.0 and distance_squared_hi > 0.0:
+                    distance_hi = sqrt_scalar(distance_squared_hi)
+                    curvature = (
+                        proof_a_lo * rho_squared_lo
+                        / (distance_squared_hi * distance_hi)
+                    ) * 0.999996185302734375
+                    radial_lo = sqrt_scalar(rho_squared_lo)
+                    field_lo = radial_lo - radius + closest_displacement_lo
+                    correction: f32 = 0.0
+                    if curvature > second:
+                        correction = slope * slope / (2.0 * (curvature - second))
+                        field_lo = field_lo - correction
+                    field_magnitude = (
+                        __wrela_pixels_p7_abs(radial_lo) + radius
+                        + __wrela_pixels_p7_abs(closest_displacement_lo)
+                        + correction
+                    )
+                    # Inputs above are already outward enclosures. Fewer than
+                    # twenty further rounded operations feed this comparison;
+                    # this is the next f32 above gamma_24.
+                    field_slack = field_magnitude * 0.0000014305136346592917
+                    if curvature > second and field_lo - field_slack > 0.0:
+                        return true
         t_lo = centre_lo - half_width
         t_hi = centre_hi + half_width
         if t_lo < 0.0:
@@ -4496,13 +4736,13 @@ fn __wrela_pixels_p7_deformation_misses_cell(
         displacement_lo = amplitude * sine[0]
         signed_band = 0.0 - displacement_lo * (2.0 * radius - displacement_lo)
         # The test below is monotone increasing in `signed_band`, so rounding
-        # it *up* is the weakening direction; a relative nudge far above the
-        # few ulps the two operations above can accumulate keeps it an upper
-        # bound on `max H` without needing a second sealed constant.
+        # it *up* is the weakening direction. The expression uses fewer than
+        # 32 binary32 operations, so a 32-epsilon relative nudge encloses it
+        # without leaving a non-refinable 1e-4 silhouette skin.
         if signed_band >= 0.0:
-            signed_band = signed_band * 1.0001
+            signed_band = signed_band * 1.000003814697265625
         else:
-            signed_band = signed_band * 0.9999
+            signed_band = signed_band * 0.999996185302734375
         if not __wrela_pixels_p5_finite(signed_band):
             round_index = 16
             continue
@@ -4513,7 +4753,23 @@ fn __wrela_pixels_p7_deformation_misses_cell(
         band_a = a_hi
         if signed_band < 0.0:
             band_a = a_lo
-        if discriminant_hi + 4.0 * band_a * signed_band + slack < 0.0:
+        # The coefficient construction above already includes its sealed
+        # approximation errors. Bound only the arithmetic performed by this
+        # localized expression from the magnitudes of its actual terms. The
+        # expression has seven rounded operations; the scale below is the
+        # next f32 above gamma_16 and therefore also covers construction of
+        # this local magnitude with more than a twofold operation margin.
+        # Adding it is the weakening direction.
+        product_magnitude = __wrela_pixels_p7_abs(product_lo)
+        if __wrela_pixels_p7_abs(product_hi) > product_magnitude:
+            product_magnitude = __wrela_pixels_p7_abs(product_hi)
+        localized_magnitude = (
+            __wrela_pixels_p7_abs(square_hi)
+            + 4.0 * product_magnitude
+            + 4.0 * band_a * __wrela_pixels_p7_abs(signed_band)
+        )
+        localized_slack = localized_magnitude * 0.0000009536753395877895
+        if discriminant_hi + 4.0 * band_a * signed_band + localized_slack < 0.0:
             return true
         # Localizing the *tangency* proof alongside this one was measured and
         # proves nothing extra: its sealed `(r + A)^2 G^2` term does not
@@ -4530,99 +4786,299 @@ fn __wrela_pixels_p7_deformation_misses_cell(
         # window is a subset, so re-measuring there can only lower it again.
         # `sine[1]` takes no part — the wave's inward half moves the surface
         # away from the ray, which the supremum at `d_lo` already covers.
-        if not signed_band < local_band:
+        contracts = signed_band < local_band
+        if not contracts:
             round_index = 16
             continue
         local_band = signed_band
         round_index = round_index + 1
-    # Two further constructions were built here and both proved nothing, which
-    # together rule out the whole family of "tighten the enclosure" fixes.
-    #
-    # The first split the band-sized window into sixteen equal segments, each
-    # with its own sine-derived band. It cannot fire by construction: inside
-    # the window `H <= B` holds by definition, so a segment clears its own band
-    # only where the wave drags that band below the quadratic's floor, and near
-    # closest approach the floor is already at its smallest.
-    #
-    # The second was the reference oracle's own proof — adaptive bisection of
-    # the depth range against a 640-cell budget, retiring each segment when the
-    # ray is wholly outside `r - d_lo` or wholly inside `r - d_hi`, compared as
-    # squared radii so no square root is taken. That is not sized by the band
-    # and so is not stuck where the band proof is, and `pixel_bundle_root_free`
-    # retires these pixels with it inside 512 cells. In the guest it moved
-    # nothing. Slashing the sealed per-coefficient rounding allowance 64-fold
-    # on top of it also moved nothing.
-    #
-    # So the remaining pixels are not blocked by how tightly this file encloses
-    # anything, and no further tightening here is worth building. What decides
-    # their byte is upstream of this proof.
     return false
 
-# Exact rounded byte of the area of `a*s + b*t + c >= 0` over the unit square.
-#
-# `coverage_line_twice_area` reports the same area, but through a 512th-scale
-# integer quotient it rounds outward because a 512th is the finest unit it
-# reports. Rescaling that to a 0..255 byte carries the outward rounding at
-# 255/512 — very nearly half a byte — so an edge whose true coverage lands near
-# a byte boundary comes back as a two byte interval even though the closed form
-# already determined it. That is quantization, not uncertainty: the area is a
-# rational whose numerator and denominator both fit in i64, so the rounded byte
-# is evaluated here with no intermediate rounding at all.
-#
-# The geometry is exactly `coverage_line_twice_area`'s: reflect negative
-# coefficients into the positive quadrant, then take the inclusion/exclusion sum
-# of squared hinges over `2*A*B`. `t < A + B` holds inside the branch that
-# reaches the sum, which is why that function's third hinge — live only when
-# `t > A + B` — is absent. Only the final scaling differs: one round half up of
-# `255 * foreground / denominator`. Every operand stays far inside i64: the
-# extents are capped at 10^6, so the denominator is at most 2*10^12 and twice
-# the numerator about 10^15.
-#
-# Returns `[known, byte]`; `known == 0` means the inputs left the range this
-# exact form covers, and the caller keeps whatever bound it already had.
-fn __wrela_pixels_p7_half_plane_byte(a: i32, b: i32, c: i32) -> [i64; 2]:
-    if a < -1000000 or a > 1000000 or b < -1000000 or b > 1000000 or c < -1000000 or c > 1000000:
-        return [0, 0]
-    aa = a.to[i64]()
-    bb = b.to[i64]()
-    cc = c.to[i64]()
-    if aa < 0:
-        cc = cc + aa
-        aa = -aa
-    if bb < 0:
-        cc = cc + bb
-        bb = -bb
-    threshold = -cc
-    if threshold <= 0:
-        return [1, 255]
-    if threshold >= aa + bb:
-        return [1, 0]
-    numerator: i64 = 0
-    denominator: i64 = 0
-    if aa == 0:
-        numerator = (bb - threshold) * 255
-        denominator = bb
-    elif bb == 0:
-        numerator = (aa - threshold) * 255
-        denominator = aa
+# Prove every ray in one cell crosses the authored sinusoidally displaced
+# sphere. A common depth is enough: if all rays are inside the surface there
+# and the sealed far seed is outside, continuity supplies a root for each ray.
+# At fixed positive depth the sphere quadratic is convex in (u,v), so its
+# maximum over the cell is attained at a corner.
+pub fn __wrela_pixels_p7_deformation_hits_cell(
+    renderer: usize,
+    event: u32,
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+    read params: [f32; 16],
+    read camera: [f32; 12],
+) -> bool:
+    model = __wrela_pixels_p7_deformation_miss_model(renderer, event)
+    if model[0] != 1.0 or model[1] < 0.0 or model[1] > 4294967295.0:
+        return false
+    amplitude = model[25]
+    if model[21] != 1.0 or not amplitude > 0.0 or not model[18] > amplitude:
+        return false
+    if model[19] == 0.0 or model[20] < 0.0 or model[20] > 15.0:
+        return false
+    phase = params[model[20].to[usize]()]
+    if not __wrela_pixels_p5_finite(phase):
+        return false
+    center_u = (u0 + u1) * 0.5
+    center_v = (v0 + v1) * 0.5
+    aligned = (
+        camera[0] == model[22] and camera[1] == model[23]
+        and camera[3] == 0.0 and camera[4] == 0.0 and camera[5] == 1.0
+        and camera[6] == 1.0 and camera[7] == 0.0 and camera[8] == 0.0
+        and camera[9] == 0.0 and camera[10] == 1.0 and camera[11] == 0.0
+        and __wrela_pixels_p7_abs(u0) < 1.0
+        and __wrela_pixels_p7_abs(u1) < 1.0
+    )
+    depth: f32 = 0.0
+    if aligned:
+        center_s = center_u * center_u + center_v * center_v
+        direct_z = model[24] - camera[2]
+        depth = direct_z / (1.0 + center_s)
+        newton: u8 = 0
+        @budget(bound=2)
+        while newton < 2:
+            center_x = center_u * depth
+            center_y = center_v * depth
+            center_z = depth - direct_z
+            center_rho_squared = (
+                center_x * center_x + center_y * center_y + center_z * center_z
+            )
+            if not center_rho_squared > 0.0:
+                newton = 2
+                continue
+            center_rho = sqrt_scalar(center_rho_squared)
+            argument = model[19] * (model[22] + center_x) + phase
+            center_sine = sin_scalar(argument)
+            center_cosine = sin_scalar(argument + 1.5707963705062866)
+            radial_numerator = (1.0 + center_s) * depth - direct_z
+            derivative = (
+                radial_numerator / center_rho
+                + amplitude * model[19] * center_u * center_cosine
+            )
+            hessian = (
+                (1.0 + center_s) / center_rho
+                - radial_numerator * radial_numerator
+                    / (center_rho_squared * center_rho)
+                - amplitude * model[19] * model[19]
+                    * center_u * center_u * center_sine
+            )
+            if not hessian > 0.0 or not __wrela_pixels_p5_finite(hessian):
+                newton = 2
+                continue
+            depth = depth - derivative / hessian
+            newton = newton + 1
     else:
-        h0 = threshold * threshold
-        h1: i64 = 0
-        h2: i64 = 0
-        if threshold > aa:
-            h1 = (threshold - aa) * (threshold - aa)
-        if threshold > bb:
-            h2 = (threshold - bb) * (threshold - bb)
-        denominator = 2 * aa * bb
-        foreground = denominator - (h0 - h1 - h2)
-        if foreground < 0:
-            foreground = 0
-        if foreground > denominator:
-            foreground = denominator
-        numerator = foreground * 255
-    if not denominator > 0:
-        return [0, 0]
-    return [1, (2 * numerator + denominator) / (2 * denominator)]
+        center = __wrela_pixels_p7_deformation_polynomial(
+            renderer, event, center_u, center_v, params, camera,
+        )
+        if center[0] != 1.0 or center[1] != 2.0 or not center[2] > 0.0:
+            return false
+        depth = (0.0 - center[3]) / (2.0 * center[2])
+    if not depth > 0.0 or not __wrela_pixels_p5_finite(depth):
+        return false
+
+    h_hi: f32 = 0.0
+    h_error: f32 = 0.0
+    x_error: f32 = 0.0
+    direct_distance_squared_hi: f32 = 0.0
+    direct_distance_error: f32 = 0.0
+    x_lo: f32 = 0.0
+    x_hi: f32 = 0.0
+    corner: u8 = 0
+    @budget(bound=4)
+    while corner < 4:
+        u = u0
+        if corner % 2 == 1:
+            u = u1
+        v = v0
+        if corner >= 2:
+            v = v1
+        h: f32 = 0.0
+        corner_error: f32 = 0.0
+        x: f32 = 0.0
+        corner_x_error: f32 = 0.0
+        distance_squared: f32 = 0.0
+        distance_error: f32 = 0.0
+        if aligned:
+            direct_z = model[24] - camera[2]
+            point_x = u * depth
+            point_y = v * depth
+            point_z = depth - direct_z
+            point_x_squared = point_x * point_x
+            point_y_squared = point_y * point_y
+            point_z_squared = point_z * point_z
+            distance_squared = point_x_squared + point_y_squared + point_z_squared
+            distance_error = (
+                point_x_squared + point_y_squared + point_z_squared
+            ) * 0.0000004768376129504759
+            h = distance_squared - model[18] * model[18]
+            corner_error = distance_error + (
+                model[18] * model[18] * 0.0000004768376129504759
+            )
+            x = model[22] + u * depth
+            corner_x_error = (
+                __wrela_pixels_p7_abs(model[22])
+                + __wrela_pixels_p7_abs(u * depth)
+            ) * 0.0000004768376129504759
+        else:
+            polynomial = __wrela_pixels_p7_deformation_polynomial(
+                renderer, event, u, v, params, camera,
+            )
+            if polynomial[0] != 1.0 or polynomial[1] != 2.0:
+                return false
+            h = polynomial[2] * depth * depth + polynomial[3] * depth + polynomial[4]
+            corner_error = polynomial[5] * depth * depth + polynomial[6] * depth + polynomial[7]
+            x = camera[0] + (camera[3] + u * camera[6] + v * camera[9]) * depth
+        if not __wrela_pixels_p5_finite(h) or not __wrela_pixels_p5_finite(x):
+            return false
+        if corner == 0 or h > h_hi:
+            h_hi = h
+        if corner == 0 or corner_error > h_error:
+            h_error = corner_error
+        if corner == 0 or corner_x_error > x_error:
+            x_error = corner_x_error
+        if aligned and (corner == 0 or distance_squared > direct_distance_squared_hi):
+            direct_distance_squared_hi = distance_squared
+        if aligned and (corner == 0 or distance_error > direct_distance_error):
+            direct_distance_error = distance_error
+        if corner == 0 or x < x_lo:
+            x_lo = x
+        if corner == 0 or x > x_hi:
+            x_hi = x
+        corner = corner + 1
+    if not h_error >= 0.0 or not __wrela_pixels_p5_finite(h_error):
+        return false
+    h_hi = h_hi + h_error
+    x_lo = x_lo - x_error
+    x_hi = x_hi + x_error
+    if h_hi >= 0.0:
+        h_hi = h_hi * 1.000003814697265625
+    else:
+        h_hi = h_hi * 0.999996185302734375
+
+    sine = __wrela_pixels_p7_interval_sin(
+        model[19] * x_lo + phase,
+        model[19] * x_hi + phase,
+    )
+    displacement_hi = amplitude * sine[1]
+    if aligned:
+        distance_squared_hi = direct_distance_squared_hi + direct_distance_error
+        if distance_squared_hi > 0.0:
+            distance_hi = (
+                sqrt_scalar(distance_squared_hi) * 1.000000476837385576751
+            )
+            direct_displacement_hi = displacement_hi + (
+                __wrela_pixels_p7_abs(displacement_hi) + amplitude
+            ) * 0.0000002384186360672588
+            field_hi = distance_hi - model[18] + direct_displacement_hi
+            field_magnitude = (
+                __wrela_pixels_p7_abs(distance_hi) + model[18]
+                + __wrela_pixels_p7_abs(direct_displacement_hi)
+            )
+            # The squared distance and x hulls already carry their own gamma
+            # bounds. The explicit sqrt and displacement nudges above leave
+            # only the final two additions, covered upward by gamma_4.
+            field_slack = field_magnitude * 0.000000476837385576751
+            if field_hi + field_slack < 0.0:
+                return true
+    band_lo = 0.0 - displacement_hi * (2.0 * model[18] - displacement_hi)
+    if not __wrela_pixels_p5_finite(band_lo):
+        return false
+    if band_lo >= 0.0:
+        band_lo = band_lo * 0.999996185302734375
+    else:
+        band_lo = band_lo * 1.000003814697265625
+    return h_hi < band_lo
+
+# Return the set of single-feature bounded-displacement objects whose sealed
+# exterior proof covers one complete pixel/refinement cell. The projective root
+# program for such an object is deliberately the undeformed predictor; callers
+# remove only the named objects before running ordinary visibility. Keeping
+# row candidates and frame snapshots out of this helper preserves their normal
+# caller-local representation across source evaluation and emitted guest code.
+pub fn __wrela_pixels_p7_deformation_veto_objects(
+    renderer: usize,
+    tile: u32,
+    xy: u64,
+    read filter: [f32; 4],
+    read params: [f32; 16],
+    read camera: [f32; 12],
+) -> [u64; 4]:
+    x = (xy & 4294967295).to[u32]()
+    y = (xy >> 32).to[u32]()
+    event_count = __wrela_pixels_tile_event_count(renderer, tile)
+    if event_count == 4294967295 or event_count > 256:
+        return [0; 4]
+    u0 = filter[0] - filter[2]
+    u1 = filter[0] + filter[2]
+    v0 = filter[1] - filter[3]
+    v1 = filter[1] + filter[3]
+    if filter[2] < 0.0 or filter[3] < 0.0:
+        return [0; 4]
+    deformation_objects: u64 = 0
+    veto_objects: u64 = 0
+    hit_objects: u64 = 0
+    ordinal: u32 = 0
+    @budget(bound=256)
+    while ordinal < event_count:
+        event = __wrela_pixels_tile_event(renderer, tile, ordinal)
+        ordinal = ordinal + 1
+        if event[0] != 1 or event[1] > 4294967295:
+            return [0; 4]
+        event_id = event[1].to[u32]()
+        span = __wrela_pixels_p7_event_pixel_span(renderer, event_id, x, y)
+        if span[0] != 1:
+            return [0; 4]
+        if span[1] != 1:
+            continue
+        model = __wrela_pixels_p7_deformation_miss_model(renderer, event_id)
+        if model[0] != 1.0 or model[1] < 0.0 or model[1] > 4294967295.0:
+            continue
+        feature = model[1].to[u32]()
+        object = __wrela_pixels_program_operand(renderer, 4, feature, 0)
+        if object[0] != 1 or object[1] >= 64:
+            return [0; 4]
+        # The proof names one feature. Removing its complete object is valid
+        # only when that feature is the object's sole leaf.
+        leaves = __wrela_pixels_program_operand(renderer, 3, object[1].to[u32](), 4)
+        if leaves[0] != 1 or leaves[1] != 1:
+            continue
+        deformation_objects = deformation_objects | (1.to[u64]() << object[1])
+        config = __wrela_pixels_p7_numeric_config(renderer)
+        if config[0] != 1:
+            return [0; 4]
+        seed = __wrela_pixels_p7_initial_inside(
+            renderer,
+            filter[0],
+            filter[1],
+            __wrela_pixels_p7_raw_to_f32(
+                config[5].to[i32](),
+                config[3].to[i32](),
+            ),
+            params,
+            camera,
+        )
+        if seed[0] != 1:
+            return [0; 4]
+        if (seed[1] >> object[1]) & 1 != 0:
+            continue
+        if __wrela_pixels_p7_deformation_silhouette_misses(
+            renderer,
+            event_id | 2147483648,
+            u0,
+            v0,
+            u1,
+            v1,
+            params,
+            camera,
+        ):
+            veto_objects = veto_objects | (1.to[u64]() << object[1])
+        elif __wrela_pixels_p7_deformation_hits_cell(
+            renderer, event_id, u0, v0, u1, v1, params, camera,
+        ):
+            hit_objects = hit_objects | (1.to[u64]() << object[1])
+    return [1, deformation_objects, veto_objects, hit_objects]
 
 # Exact enclosure of the area of `a*s + b*t + c >= 0` over the unit square, in
 # 1048576ths: the same rational as `__wrela_pixels_p7_half_plane_byte`, floored
@@ -5468,6 +5924,9 @@ pub fn __wrela_pixels_p7_silhouette_coverage(
     read center_sample: P7VisibilitySample,
     read snapshot: FrameInputSnapshot,
 ) -> [i64; 4]:
+    axis_box = __wrela_pixels_p8_axis_box_coverage(renderer, x, y, snapshot.camera)
+    if axis_box[0] == 1:
+        return axis_box
     q: f32 = 1.0
     union_coverage = __wrela_pixels_p7_union_silhouette_coverage(
         renderer, worker, tile, x, y, candidates, center_sample, snapshot,
@@ -5664,7 +6123,7 @@ pub fn __wrela_pixels_p7_silhouette_coverage(
                     if boundary[0] == 1:
                         predicate_classified = true
                         classified_curves = classified_curves + 1
-                        if boundary[1] == 1:
+                        if boundary[1] == 0:
                             crossing_curves = crossing_curves + 1
                             if arrangement_count < 8:
                                 arrangement_slot = arrangement_count.to[usize]()
@@ -6171,7 +6630,11 @@ pub fn __wrela_pixels_p7_silhouette_coverage(
             )
             if arrangement[0] == 1:
                 return [1, 1, arrangement[1], 0]
-            return [0, arrangement[1], 0, 0]
+            # This optional analytic tier may fail to pin a byte at its fixed
+            # quadtree depth. That is a precision decline, not a malformed
+            # event: the complete adaptive visibility arrangement below owns
+            # the fallback and remains the acceptance boundary.
+            return [1, 0, 0, 0]
     # Every occupancy-bearing event covering this pixel reduced to a curve, and
     # every one of those curves provably misses the pixel. The sealed event set
     # is the complete set of visibility boundaries, so occupancy cannot change
@@ -6265,6 +6728,10 @@ pub fn __wrela_pixels_p7_pixel_visibility_from_candidates(
     sample.root_count = (sample.root_count & 4294901760) | roots.count
     return sample
 
+# Seal q_u/q_v before a regular sample crosses into P8. The four point rays
+# are independently certified against the complete candidate set. Their
+# outward q differences form the affine derivative enclosure consumed by the
+# compact raster record; a missing/mismatched witness declines fail-closed.
 fn __wrela_pixels_p7_density_bin(count: u32) -> usize:
     if count == 0:
         return 0
@@ -6327,6 +6794,456 @@ fn __wrela_pixels_p7_charge_run_telemetry(
     _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 137, length.to[u64]())
     return unit
 
+fn __wrela_pixels_p8_geometry_valid(
+    q_raw: i32,
+    q_u_raw: i32,
+    q_v_raw: i32,
+    lane_u: f32,
+    lane_v: f32,
+    read camera: [f32; 12],
+    scale: f32,
+) -> bool:
+    q = q_raw.to[f32]() * scale
+    q_u = q_u_raw.to[f32]() * scale
+    q_v = q_v_raw.to[f32]() * scale
+    camera_z = q - lane_u * q_u - lane_v * q_v
+    normal_x = camera[6] * q_u + camera[9] * q_v + camera[3] * camera_z
+    normal_y = camera[7] * q_u + camera[10] * q_v + camera[4] * camera_z
+    normal_z = camera[8] * q_u + camera[11] * q_v + camera[5] * camera_z
+    return (normal_x + normal_y + normal_z) * 0.0 == 0.0
+
+fn __wrela_pixels_p8_derivative_bounds(
+    q_lo: i32,
+    q_hi: i32,
+    read normal: [f32; 4],
+    center_u: f32,
+    center_v: f32,
+    read camera: [f32; 12],
+) -> [i64; 5]:
+    camera_nu = camera[6] * normal[1] + camera[7] * normal[2] + camera[8] * normal[3]
+    camera_nv = camera[9] * normal[1] + camera[10] * normal[2] + camera[11] * normal[3]
+    camera_nz = camera[3] * normal[1] + camera[4] * normal[2] + camera[5] * normal[3]
+    normal_scale = camera_nz + center_u * camera_nu + center_v * camera_nv
+    if normal_scale > -0.00000095367431640625 and normal_scale < 0.00000095367431640625:
+        return [0; 5]
+    # q and its two derivatives share one fixed domain, so the common dyadic
+    # scale cancels in q*n/normal_scale. A fixed 2^16-raw-unit guard exceeds
+    # the accumulated f32 endpoint-conversion, multiply-add, division, and
+    # truncation error throughout the accepted i32 result range. The caller
+    # turns these outward endpoints into compact affine centers and radii.
+    q_u_factor = camera_nu / normal_scale
+    q_v_factor = camera_nv / normal_scale
+    q_u_a = q_lo.to[f32]() * q_u_factor
+    q_u_b = q_hi.to[f32]() * q_u_factor
+    q_v_a = q_lo.to[f32]() * q_v_factor
+    q_v_b = q_hi.to[f32]() * q_v_factor
+    if q_u_b < q_u_a:
+        swap = q_u_a
+        q_u_a = q_u_b
+        q_u_b = swap
+    if q_v_b < q_v_a:
+        swap = q_v_a
+        q_v_a = q_v_b
+        q_v_b = swap
+    # Ordered range comparisons also reject NaNs, so non-finite endpoints fail
+    # closed without a second set of floating-point predicates.
+    if not (
+        q_u_a >= -2147352576.0
+        and q_u_b <= 2147352576.0
+        and q_v_a >= -2147352576.0
+        and q_v_b <= 2147352576.0
+    ):
+        return [0; 5]
+    return [
+        1,
+        q_u_a.to[i64]() - 65536,
+        q_u_b.to[i64]() + 65536,
+        q_v_a.to[i64]() - 65536,
+        q_v_b.to[i64]() + 65536,
+    ]
+
+fn __wrela_pixels_p8_charge_raster_run(
+    renderer: usize,
+    worker: u32,
+    telemetry_enabled: bool,
+    first_pixel: u32,
+    length: u32,
+    background: bool,
+) -> unit:
+    if not telemetry_enabled:
+        return unit
+    scalar: u32 = 0
+    remaining = length
+    scalar_prefix = (4 - first_pixel % 4) % 4
+    if scalar_prefix > remaining:
+        scalar_prefix = remaining
+    scalar = scalar_prefix
+    remaining = remaining - scalar_prefix
+    packets = remaining / 4
+    scalar = scalar + remaining % 4
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 142, packets.to[u64]())
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 143, scalar.to[u64]())
+    if background:
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 147, length.to[u64]())
+    else:
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 144, length.to[u64]())
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 145, length.to[u64]())
+    return unit
+
+struct P8RasterContext:
+    renderer: usize
+    worker: u32
+    y: u32
+    width: u32
+    height: u32
+    camera: [f32; 12]
+    scale: f32
+    color: u32
+
+struct P8RasterSetupOutcome:
+    ok: bool
+    raster: RasterRun
+
+fn __wrela_pixels_p8_i64_magnitude(value: i64) -> i64:
+    if value < 0:
+        return 0 - value
+    return value
+
+fn __wrela_pixels_p8_i32_fits(value: i64) -> bool:
+    return value >= -2147483648 and value <= 2147483647
+
+fn __wrela_pixels_p8_recurrence_valid(q: i64, dq: i64, ddq: i64, error: i64, width: u32) -> bool:
+    if error < 0:
+        return false
+    proof_q = q
+    proof_dq = dq
+    step: u32 = 0
+    @budget(bound=16)
+    while step < width:
+        if (
+            not __wrela_pixels_p8_i32_fits(proof_q)
+            or not __wrela_pixels_p8_i32_fits(proof_q - error)
+            or not __wrela_pixels_p8_i32_fits(proof_q + error)
+            or not __wrela_pixels_p8_i32_fits(proof_dq)
+        ):
+            return false
+        proof_q = proof_q + proof_dq
+        proof_dq = proof_dq + ddq
+        step = step + 1
+    # Runs are sealed to at most sixteen pixels. Proving every scalar
+    # recurrence state also proves every packet lane: the ASIMD additions use
+    # wrapping i32 arithmetic, and each mathematically resulting lane was just
+    # shown to lie in i32, so its modular representation is identical.
+    return true
+
+fn __wrela_pixels_p8_raster_setup(
+    read sample: P7VisibilitySample,
+    read model: [i64; 8],
+    modeled: bool,
+    x: u32,
+    x1: u32,
+    exponent: i32,
+    height: u32,
+    read derivatives: [i64; 4],
+) -> P8RasterSetupOutcome:
+    q0_lo = sample.q_lo.to[i64]()
+    q0_hi = sample.q_hi.to[i64]()
+    dq_lo: i64 = 0
+    dq_hi: i64 = 0
+    ddq_lo: i64 = 0
+    ddq_hi: i64 = 0
+    q_error_lo: i64 = sample.q_lo.to[i64]() - q0_hi
+    q_error_hi: i64 = sample.q_hi.to[i64]() - q0_lo
+    if modeled:
+        q0_lo = model[0]
+        q0_hi = model[1]
+        dq_lo = model[2]
+        dq_hi = model[3]
+        ddq_lo = model[4]
+        ddq_hi = model[5]
+        q_error_lo = model[6]
+        q_error_hi = model[7]
+    packet_q64 = q0_lo + (q0_hi - q0_lo) / 2
+    packet_dq64 = dq_lo + (dq_hi - dq_lo) / 2
+    packet_ddq64 = ddq_lo + (ddq_hi - ddq_lo) / 2
+    q_error64 = q0_hi - packet_q64
+    if packet_q64 - q0_lo > q_error64:
+        q_error64 = packet_q64 - q0_lo
+    q_error_lo = __wrela_pixels_p8_i64_magnitude(q_error_lo)
+    q_error_hi = __wrela_pixels_p8_i64_magnitude(q_error_hi)
+    if q_error_lo > q_error64:
+        q_error64 = q_error_lo
+    if q_error_hi > q_error64:
+        q_error64 = q_error_hi
+    q_u_lo64 = derivatives[0]
+    q_u_hi64 = derivatives[1]
+    q_u_delta_lo64: i64 = 0
+    q_u_delta_hi64: i64 = 0
+    if modeled:
+        q_u_lo64 = interval_floor_div(model[2] * height.to[i64](), 2)
+        q_u_hi64 = interval_ceil_div(model[3] * height.to[i64](), 2)
+        q_u_delta_lo64 = interval_floor_div(model[4] * height.to[i64](), 2)
+        q_u_delta_hi64 = interval_ceil_div(model[5] * height.to[i64](), 2)
+    q_v_lo64 = derivatives[2]
+    q_v_hi64 = derivatives[3]
+    q_u64 = q_u_lo64 + (q_u_hi64 - q_u_lo64) / 2
+    q_u_delta64 = q_u_delta_lo64 + (q_u_delta_hi64 - q_u_delta_lo64) / 2
+    q_v64 = q_v_lo64 + (q_v_hi64 - q_v_lo64) / 2
+    q_u_error64 = __wrela_pixels_p8_i64_magnitude(q_u_hi64 - q_u64)
+    q_u_low_error64 = __wrela_pixels_p8_i64_magnitude(q_u64 - q_u_lo64)
+    if q_u_low_error64 > q_u_error64:
+        q_u_error64 = q_u_low_error64
+    q_u_delta_error64 = __wrela_pixels_p8_i64_magnitude(q_u_delta_hi64 - q_u_delta64)
+    q_u_delta_low_error64 = __wrela_pixels_p8_i64_magnitude(q_u_delta64 - q_u_delta_lo64)
+    if q_u_delta_low_error64 > q_u_delta_error64:
+        q_u_delta_error64 = q_u_delta_low_error64
+    q_u_error64 = q_u_error64 + (x1 - x).to[i64]() * q_u_delta_error64
+    q_v_error64 = __wrela_pixels_p8_i64_magnitude(q_v_hi64 - q_v64)
+    q_v_low_error64 = __wrela_pixels_p8_i64_magnitude(q_v64 - q_v_lo64)
+    if q_v_low_error64 > q_v_error64:
+        q_v_error64 = q_v_low_error64
+    # Every center is the midpoint of i32 endpoints and therefore remains in
+    # i32.  Only the enclosing radius can exceed the compact record domain.
+    ok = (
+        q_error64 >= 0 and q_error64 <= 2147483647
+        and q_u_error64 >= 0 and q_u_error64 <= 2147483647
+        and q_v_error64 >= 0 and q_v_error64 <= 2147483647
+        and __wrela_pixels_p8_i32_fits(q_u64)
+        and __wrela_pixels_p8_i32_fits(q_u_delta64)
+        and __wrela_pixels_p8_i32_fits(q_v64)
+        and __wrela_pixels_p8_recurrence_valid(
+            q_u64,
+            q_u_delta64,
+            0,
+            q_u_error64,
+            x1 - x,
+        )
+        and __wrela_pixels_p8_recurrence_valid(q_v64, 0, 0, q_v_error64, x1 - x)
+        and __wrela_pixels_p8_recurrence_valid(
+            packet_q64,
+            packet_dq64,
+            packet_ddq64,
+            q_error64,
+            x1 - x,
+        )
+    )
+    proof_bits: u8 = 7
+    if not sample.hit:
+        proof_bits = proof_bits | 8
+    return P8RasterSetupOutcome(
+        ok=ok,
+        raster=RasterRun(
+            x0=x.to[u16](),
+            x1=x1.to[u16](),
+            q=QRunScalar.certified(
+                packet_q64.to[i32](),
+                packet_dq64.to[i32](),
+                packet_ddq64.to[i32](),
+                FixedDomain.full(exponent),
+                q_error64.to[i32](),
+                (x1 - x).to[u8](),
+            ),
+            q_u=AffineRunSetup(
+                value=q_u64.to[i32](),
+                delta=q_u_delta64.to[i32](),
+                error_radius=q_u_error64.to[i32](),
+            ),
+            q_v=AffineRunSetup(
+                value=q_v64.to[i32](),
+                delta=0,
+                error_radius=q_v_error64.to[i32](),
+            ),
+            identity=IdentitySetId(value=sample.identity),
+            material_summary=MaterialSummaryId(value=0),
+            light_summary=LightSummaryId(value=0),
+            proof_code=OutputProofCode(bits=proof_bits),
+        ),
+    )
+
+# Execute the compact regular-run record outside the proof-rich sweep worker.
+# Besides keeping the hot loop auditable, this sharply limits spill traffic:
+# the sweep worker's live certificate state is intentionally much larger than
+# the raster state and must not be carried through every packet operation.
+fn __wrela_pixels_p8_geometry_lane_valid(
+    read context: P8RasterContext,
+    read raster: RasterRun,
+    raster_x: u32,
+    q_raw: i32,
+    geometry_required: bool,
+) -> bool:
+    scalar_offset = (raster_x - raster.x0.to[u32]()).to[i64]()
+    q_u_raw64 = raster.q_u.value.to[i64]() + scalar_offset * raster.q_u.delta.to[i64]()
+    q_v_raw64 = raster.q_v.value.to[i64]() + scalar_offset * raster.q_v.delta.to[i64]()
+    if not __wrela_pixels_p8_i32_fits(q_u_raw64) or not __wrela_pixels_p8_i32_fits(q_v_raw64):
+        return false
+    scalar_u = (
+        2 * raster_x.to[i64]() + 1 - context.width.to[i64]()
+    ).to[f32]() / context.height.to[f32]()
+    scalar_v = (
+        context.height.to[i64]() - 2 * context.y.to[i64]() - 1
+    ).to[f32]() / context.height.to[f32]()
+    if geometry_required and not __wrela_pixels_p8_geometry_valid(
+            q_raw,
+            q_u_raw64.to[i32](),
+            q_v_raw64.to[i32](),
+            scalar_u,
+            scalar_v,
+            context.camera,
+            context.scale,
+        ):
+        return false
+    evidence_class: u8 = 3
+    if geometry_required:
+        evidence_class = 1
+    evidence_q = (
+        (q_raw.to[i64]().to[u64]() & 4294967295)
+        | (raster.q.error().to[u64]() << 32)
+    )
+    evidence_derivatives = (
+        (q_u_raw64 & 4294967295).to[u64]()
+        | ((q_v_raw64 & 4294967295).to[u64]() << 32)
+    )
+    evidence_bounds = (
+        raster.q_u.error_radius.to[u64]()
+        | (raster.q_v.error_radius.to[u64]() << 31)
+    )
+    return __wrela_pixels_p8_raster_evidence_store(
+        context.renderer,
+        (context.y *% context.width +% raster_x).to[usize](),
+        evidence_q,
+        evidence_derivatives,
+        evidence_bounds,
+        evidence_class,
+    )
+
+fn __wrela_pixels_p8_geometry_packet_valid(
+    read context: P8RasterContext,
+    read raster: RasterRun,
+    raster_x: u32,
+    read q_packet: I32x4,
+    geometry_required: bool,
+) -> bool:
+    geometry_lane: usize = 0
+    @budget(bound=4)
+    while geometry_lane < 4:
+        if not __wrela_pixels_p8_geometry_lane_valid(
+            context,
+            raster,
+            raster_x + geometry_lane.to[u32](),
+            q_packet.lane(geometry_lane),
+            geometry_required,
+        ):
+            return false
+        geometry_lane = geometry_lane + 1
+    return true
+
+fn __wrela_pixels_p8_raster_regular(read context: P8RasterContext, read raster: RasterRun) -> u64:
+    start = raster.x0.to[u32]()
+    end = raster.x1.to[u32]()
+    if end < start or end > context.width:
+        return 18446744073709551615
+    geometry_required = raster.proof_code.bits & 8 == 0
+    r = (context.color & 255).to[u8]()
+    g = ((context.color >> 8) & 255).to[u8]()
+    b = ((context.color >> 16) & 255).to[u8]()
+    raster_x = start
+    raster_q = raster.q.value().to[i64]()
+    raster_dq = raster.q.delta().to[i64]()
+    raster_ddq = raster.q.second_delta().to[i64]()
+    @budget(bound=3)
+    while raster_x < end and raster_x % 4 != 0:
+        if not __wrela_pixels_p8_geometry_lane_valid(
+            context,
+            raster,
+            raster_x,
+            raster_q.to[i32](),
+            geometry_required,
+        ):
+            return 18446744073709551615
+        if not __wrela_pixels_p8_write(
+            context.renderer,
+            context.worker,
+            context.y *% context.width +% raster_x,
+            context.color,
+            255,
+            0,
+        ):
+            return 18446744073709551615
+        raster_q = raster_q +% raster_dq
+        raster_dq = raster_dq +% raster_ddq
+        raster_x = raster_x +% 1
+    if end -% raster_x >= 4:
+        advance_delta = 16 *% raster_ddq
+        q_packet = I32x4.from_lanes([
+            raster_q.to[i32](),
+            (raster_q +% raster_dq).to[i32](),
+            (raster_q +% 2 *% raster_dq +% raster_ddq).to[i32](),
+            (raster_q +% 3 *% raster_dq +% 3 *% raster_ddq).to[i32](),
+        ])
+        q_advance = I32x4.from_lanes([
+            (4 *% raster_dq +% 6 *% raster_ddq).to[i32](),
+            (4 *% raster_dq +% 10 *% raster_ddq).to[i32](),
+            (4 *% raster_dq +% 14 *% raster_ddq).to[i32](),
+            (4 *% raster_dq +% 18 *% raster_ddq).to[i32](),
+        ])
+        q_advance_delta = I32x4.from_lanes([advance_delta.to[i32](); 4])
+        @budget(bound=16)
+        while end -% raster_x >= 4:
+            if not __wrela_pixels_p8_geometry_packet_valid(
+                context,
+                raster,
+                raster_x,
+                q_packet,
+                geometry_required,
+            ):
+                return 18446744073709551615
+            if not __wrela_pixels_p8_write4(
+                context.renderer,
+                context.worker,
+                context.y *% context.width +% raster_x,
+                r,
+                g,
+                b,
+            ):
+                return 18446744073709551615
+            raster_x = raster_x +% 4
+            raster_q = raster_q +% 4 *% raster_dq +% 6 *% raster_ddq
+            raster_dq = raster_dq +% 4 *% raster_ddq
+            if end -% raster_x >= 4:
+                q_packet = pixels_i32x4_backend_add(q_packet, q_advance)
+                q_advance = pixels_i32x4_backend_add(q_advance, q_advance_delta)
+    @budget(bound=3)
+    while raster_x < end:
+        if not __wrela_pixels_p8_geometry_lane_valid(
+            context,
+            raster,
+            raster_x,
+            raster_q.to[i32](),
+            geometry_required,
+        ):
+            return 18446744073709551615
+        if not __wrela_pixels_p8_write(
+            context.renderer,
+            context.worker,
+            context.y *% context.width +% raster_x,
+            context.color,
+            255,
+            0,
+        ):
+            return 18446744073709551615
+        raster_q = raster_q +% raster_dq
+        raster_dq = raster_dq +% raster_ddq
+        raster_x = raster_x +% 1
+    span = (end -% start).to[u64]()
+    if not __wrela_pixels_p7_workspace_charge(
+            context.renderer,
+            context.worker,
+            2,
+            span,
+        ):
+        return 18446744073709551615
+    return span
+
 pub fn __wrela_pixels_p7_revalidated_proposal_count(
     read previous: P7RowCandidates,
     read current: P7RowCandidates,
@@ -6383,12 +7300,15 @@ pub fn __wrela_pixels_p7_run_worker_with_proposals(
     if config[0] != 1 or config[6] < 0 or config[6] > 16:
         return 18446744073709551615
     if not proposals_enabled:
-        tile_columns = (config[1].to[u32]() + 15) / 16
-        tile_rows = (config[2].to[u32]() + 15) / 16
+        tile_columns = (config[1].to[u32]() + 63) / 64
+        tile_rows = (config[2].to[u32]() + 31) / 32
         tile_count = tile_columns.to[u64]() * tile_rows.to[u64]()
         if assignment[4] != 0 or assignment[5] != tile_count:
             return 18446744073709551615
-        if not __wrela_pixels_p7_framebuffer_reset(renderer_index):
+        if not __wrela_pixels_p8_initialize(renderer_index):
+            return 18446744073709551615
+        _ = __wrela_pixels_p8_cancel(renderer_index)
+        if __wrela_pixels_p8_begin(renderer_index)[0] != 1:
             return 18446744073709551615
     job = RendererWorkerJob(
         renderer_index=renderer_index,
@@ -6641,7 +7561,7 @@ pub fn __wrela_pixels_p7_choose_arrangement_axis(
         return [1, 2, evaluations]
     return [0, 0, evaluations]
 
-pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
+fn __wrela_pixels_p7_resolve_pixel_arrangement_tier(
     renderer: usize,
     worker_tile: u64,
     xy: u64,
@@ -6651,6 +7571,10 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     read initial: P7VisibilitySample,
     integrated_coverage: i64,
 ) -> P7PixelArrangement:
+    high_precision = integrated_coverage == -2
+    effective_coverage = integrated_coverage
+    if high_precision:
+        effective_coverage = -1
     worker = (worker_tile & 4294967295).to[u32]()
     tile = (worker_tile >> 32).to[u32]()
     x = (xy & 4294967295).to[u32]()
@@ -6664,10 +7588,15 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     resolved_units: u64 = 0
     unresolved_units: u64 = 0
     maximum_roots: u32 = 0
-    # A 2^24 binary area ledger gives the adaptive splitter a stable integer
-    # measure while keeping every coverage product comfortably inside u64.
-    coverage_units: u64 = 16777216
-    coverage_half: u64 = 8388608
+    # Ordinary event pixels use thirteen bisections per axis. A caller may
+    # deterministically request the fourteen-per-axis tier after this one ends
+    # specifically at an unresolved byte boundary; both ledgers stay well
+    # inside u64 for every product below.
+    coverage_units: u64 = 67108864
+    coverage_half: u64 = 33554432
+    if high_precision:
+        coverage_units = 268435456
+        coverage_half = 134217728
     # Anisotropic adaptive event arrangement (the P7.10 pixel-cell tier).
     # Binary splits keep a bounded frontier while half-decidability probes
     # choose the productive axis; every pushed half is re-certified on pop.
@@ -6677,7 +7606,7 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     cell_rv: [f32; 72] = [0.0; 72]
     cell_weight: [u64; 72] = [0; 72]
     stack_count: u8 = 1
-    if integrated_coverage >= 0:
+    if effective_coverage >= 0:
         stack_count = 0
         resolved_units = coverage_units
         maximum_roots = selected.root_count & 65535
@@ -6686,11 +7615,28 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     cell_ru[0] = pixel_filter[2]
     cell_rv[0] = pixel_filter[3]
     cell_weight[0] = coverage_units
-    minimum_ru = pixel_filter[2] * 0.000244140625
-    minimum_rv = pixel_filter[3] * 0.000244140625
+    minimum_scale: f32 = 0.0001220703125
+    if high_precision:
+        minimum_scale = 0.00006103515625
+    minimum_ru = pixel_filter[2] * minimum_scale
+    minimum_rv = pixel_filter[3] * minimum_scale
     undecided_units: u64 = coverage_units
-    if integrated_coverage >= 0:
+    if effective_coverage >= 0:
         undecided_units = 0
+    deformation_arrangement = false
+    deformation_root = __wrela_pixels_p7_deformation_veto_objects(
+        renderer,
+        tile,
+        x.to[u64]() | (y.to[u64]() << 32),
+        pixel_filter,
+        snapshot.params,
+        snapshot.camera,
+    )
+    if deformation_root[0] != 1:
+        return P7PixelArrangement.failure(13)
+    if deformation_root[1] != 0:
+        deformation_arrangement = true
+    cell_limit: u32 = 262144
     processed_cells: u32 = 0
     @budget(bound=2097152)
     while stack_count > 0:
@@ -6710,7 +7656,31 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
         @budget(bound=72)
         while scan < stack_count:
             lighter = cell_weight[scan.to[usize]()] < cell_weight[heaviest.to[usize]()]
-            if (drain_light and lighter) or (not drain_light and not lighter):
+            choose = (drain_light and lighter) or (not drain_light and not lighter)
+            if (
+                deformation_arrangement
+                and cell_weight[scan.to[usize]()] == cell_weight[heaviest.to[usize]()]
+            ):
+                pixel_radius_squared = (
+                    pixel_filter[0] * pixel_filter[0]
+                    + pixel_filter[1] * pixel_filter[1]
+                )
+                current_radius_squared = (
+                    cell_u[scan.to[usize]()] * cell_u[scan.to[usize]()]
+                    + cell_v[scan.to[usize]()] * cell_v[scan.to[usize]()]
+                )
+                chosen_radius_squared = (
+                    cell_u[heaviest.to[usize]()] * cell_u[heaviest.to[usize]()]
+                    + cell_v[heaviest.to[usize]()] * cell_v[heaviest.to[usize]()]
+                )
+                current_margin = __wrela_pixels_p7_abs(
+                    current_radius_squared - pixel_radius_squared
+                )
+                chosen_margin = __wrela_pixels_p7_abs(
+                    chosen_radius_squared - pixel_radius_squared
+                )
+                choose = current_margin > chosen_margin
+            if choose:
                 heaviest = scan
             scan = scan + 1
         stack_index = heaviest.to[usize]()
@@ -6728,7 +7698,7 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
             cell_rv[stack_index] = cell_rv[tail]
             cell_weight[stack_index] = cell_weight[tail]
         processed_cells = processed_cells + 1
-        if processed_cells > 262144:
+        if processed_cells > cell_limit:
             exhausted = P7PixelArrangement.failure(42)
             exhausted.model[0] = processed_cells.to[i32]()
             exhausted.model[1] = (__wrela_pixels_f32_to_bits(center_u) >> 1).to[i32]()
@@ -6739,16 +7709,106 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
             exhausted.model[6] = selected_units.to[i32]()
             exhausted.model[7] = unresolved_units.to[i32]()
             return exhausted
+        cell_filter: [f32; 4] = [center_u, center_v, radius_u, radius_v]
+        cell_candidates = candidates
         cell_sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
             renderer=renderer,
             worker=worker,
             tile=tile,
             span=x | ((x + 1) << 16),
             y=y,
-            filter=[center_u, center_v, radius_u, radius_v],
-            candidates=candidates,
+            filter=cell_filter,
+            candidates=cell_candidates,
             snapshot=snapshot,
         )
+        # A predictor event still belongs to the undeformed surface. If the
+        # sealed exterior proof covers this complete refinement cell, remove
+        # the proved-absent object before interpreting either the hit or event
+        # verdict. The localized proof itself carries a backend-independent
+        # strict-separation envelope, so this is deterministic for event cells
+        # as well as ordinary hits.
+        deformation_objects: u64 = 0
+        veto: u64 = 0
+        proved_hits: u64 = 0
+        if deformation_arrangement:
+            deformation = __wrela_pixels_p7_deformation_veto_objects(
+                renderer,
+                tile,
+                x.to[u64]() | (y.to[u64]() << 32),
+                cell_filter,
+                snapshot.params,
+                snapshot.camera,
+            )
+            if deformation[0] != 1:
+                return P7PixelArrangement.failure(13)
+            deformation_objects = deformation[1]
+            veto = deformation[2]
+            proved_hits = deformation[3]
+            if veto != 0:
+                cell_candidates = P7RowCandidates(ok=true, error=0, ids=[0; 256], count=0)
+                candidate: u16 = 0
+                @budget(bound=256)
+                while candidate < candidates.count:
+                    feature = candidates.ids[candidate.to[usize]()]
+                    candidate = candidate + 1
+                    owner = __wrela_pixels_program_operand(renderer, 4, feature, 0)
+                    if owner[0] != 1 or owner[1] >= 64:
+                        return P7PixelArrangement.failure(13)
+                    if (veto >> owner[1]) & 1 != 0:
+                        continue
+                    cell_candidates.ids[cell_candidates.count.to[usize]()] = feature
+                    cell_candidates.count = cell_candidates.count + 1
+                cell_sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+                    renderer=renderer,
+                    worker=worker,
+                    tile=tile,
+                    span=x | ((x + 1) << 16),
+                    y=y,
+                    filter=cell_filter,
+                    candidates=cell_candidates,
+                    snapshot=snapshot,
+                )
+            if proved_hits != 0 and deformation_objects & (veto | proved_hits) == deformation_objects:
+                # A whole-cell authored hit may retire the predictor's own
+                # silhouette event only when every remaining row candidate
+                # names that one proved-hit object and one identity. This is
+                # an existence-and-ownership proof for the authored surface;
+                # any competing object or identity leaves the cell ambiguous.
+                authored_owner: u64 = 64
+                authored_identity: u64 = 65536
+                authored_hit = cell_candidates.count > 0
+                identity_candidate: u16 = 0
+                @budget(bound=256)
+                while identity_candidate < cell_candidates.count:
+                    feature = cell_candidates.ids[identity_candidate.to[usize]()]
+                    identity_candidate = identity_candidate + 1
+                    owner = __wrela_pixels_program_operand(renderer, 4, feature, 0)
+                    identity = __wrela_pixels_program_operand(renderer, 4, feature, 3)
+                    if (
+                        owner[0] != 1 or owner[1] >= 64
+                        or identity[0] != 1 or identity[1] > 65535
+                        or (proved_hits >> owner[1]) & 1 == 0
+                    ):
+                        authored_hit = false
+                        continue
+                    if authored_owner == 64:
+                        authored_owner = owner[1]
+                        authored_identity = identity[1]
+                    elif owner[1] != authored_owner or identity[1] != authored_identity:
+                        authored_hit = false
+                if authored_hit:
+                    cell_sample.ok = true
+                    cell_sample.error = 0
+                    cell_sample.hit = true
+                    cell_sample.event = false
+                    cell_sample.object = authored_owner.to[u32]()
+                    cell_sample.identity = authored_identity.to[u32]()
+            if cell_sample.ok and deformation_objects & (veto | proved_hits) != deformation_objects:
+                # An ordinary predictor result is not an authored-surface
+                # proof, including background beyond an outward displacement.
+                # Keep refining until the displaced sphere is proved wholly
+                # hit/miss or the byte ledger can absorb the boundary cells.
+                cell_sample.event = true
         ambiguous = not cell_sample.ok or cell_sample.event
         if not cell_sample.ok and cell_sample.error != 4 and cell_sample.error != 6:
             if cell_sample.error == 5:
@@ -6759,15 +7819,35 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
         if ambiguous and weight >= 2 and (can_split_u or can_split_v):
             if stack_count > 69:
                 return P7PixelArrangement.failure(43)
-            axis = __wrela_pixels_p7_choose_arrangement_axis(
-                renderer,
-                worker_tile,
-                xy,
-                [center_u, center_v, radius_u, radius_v],
-                [minimum_ru, minimum_rv],
-                candidates,
-                snapshot,
-            )
+            axis: [i64; 3] = [1, 2, 0]
+            if deformation_objects == 0:
+                axis = __wrela_pixels_p7_choose_arrangement_axis(
+                    renderer,
+                    worker_tile,
+                    xy,
+                    [center_u, center_v, radius_u, radius_v],
+                    [minimum_ru, minimum_rv],
+                    candidates,
+                    snapshot,
+                )
+            else:
+                # Predictor half-probes describe the undeformed primitive and
+                # cannot identify a productive authored-boundary split. The
+                # direct sphere's first-order screen variation scales as
+                # radius*|coordinate|; radius^2 retains curvature at an axis,
+                # and the x-only displacement adds a fixed u-gradient scale.
+                # This heuristic changes only traversal order: both children
+                # are still re-certified and every verdict is unchanged.
+                u_score = (
+                    radius_u * (__wrela_pixels_p7_abs(center_u) + 0.0625)
+                    + radius_u * radius_u
+                )
+                v_score = (
+                    radius_v * __wrela_pixels_p7_abs(center_v)
+                    + radius_v * radius_v
+                )
+                if can_split_u and (not can_split_v or u_score >= v_score):
+                    axis[1] = 1
             if axis[0] != 1 or axis[2] < 0 or axis[2] > 6:
                 return P7PixelArrangement.failure(43)
             processed_cells = processed_cells + axis[2].to[u32]()
@@ -6852,9 +7932,9 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     coverage_hi = (
         ((selected_units + unresolved_units) * 255 + coverage_half) / coverage_units
     ).to[u8]()
-    if integrated_coverage >= 0:
-        coverage_lo = integrated_coverage.to[u8]()
-        coverage_hi = integrated_coverage.to[u8]()
+    if effective_coverage >= 0:
+        coverage_lo = effective_coverage.to[u8]()
+        coverage_hi = effective_coverage.to[u8]()
     if coverage_lo != coverage_hi:
         failure = P7PixelArrangement.failure(47)
         failure.model[0] = selected_units.to[i32]()
@@ -6869,6 +7949,39 @@ pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
     )
     selected.coverage = coverage_hi
     return P7PixelArrangement.success(selected)
+
+pub fn __wrela_pixels_p7_resolve_pixel_arrangement(
+    renderer: usize,
+    worker_tile: u64,
+    xy: u64,
+    read pixel_filter: [f32; 4],
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+    read initial: P7VisibilitySample,
+    integrated_coverage: i64,
+) -> P7PixelArrangement:
+    ordinary = __wrela_pixels_p7_resolve_pixel_arrangement_tier(
+        renderer,
+        worker_tile,
+        xy,
+        pixel_filter,
+        candidates,
+        snapshot,
+        initial,
+        integrated_coverage,
+    )
+    if ordinary.error != 47 or integrated_coverage >= 0:
+        return ordinary
+    return __wrela_pixels_p7_resolve_pixel_arrangement_tier(
+        renderer,
+        worker_tile,
+        xy,
+        pixel_filter,
+        candidates,
+        snapshot,
+        initial,
+        -2,
+    )
 
 pub fn __wrela_pixels_p7_certify_pixel_row(
     renderer: usize,
@@ -6918,6 +8031,7 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
             1.0 / height_pixels.to[f32](),
             1.0 / height_pixels.to[f32](),
         ]
+        pixel_candidates = candidates
         sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
             renderer=renderer,
             worker=worker,
@@ -6925,143 +8039,59 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
             span=x | ((x + 1) << 16),
             y=y,
             filter=pixel_filter,
-            candidates=candidates,
+            candidates=pixel_candidates,
             snapshot=snapshot,
         )
-        # A certified point hit can still be wrong for a bounded-displacement
-        # object: root isolation certifies crossings of the sealed predictor,
-        # which is the *undisplaced* primitive ray equation, and at a grazing
-        # pixel the base surface is crossed while the displaced surface —
-        # pulled inward by the wave — is not. The exterior half of the
-        # deformation miss proof answers exactly that question: no point of
-        # the displaced surface lies on any ray of this pixel. When it proves
-        # absence (and every corroborating guard agrees), the object cannot
-        # contribute occupancy here, so its features are removed and
-        # visibility is re-selected from the remaining candidates; a scene
-        # whose only object it was resolves to background. Interior pixels
-        # cannot prove absence — the surface really is there — so their point
-        # hits are untouched, and every guard below fails closed to today's
-        # sample.
-        if sample.ok and sample.hit and not sample.event:
-            veto_owner: i64 = -1
-            veto_count = __wrela_pixels_tile_event_count(renderer, tile)
-            if veto_count != 4294967295 and veto_count <= 256:
-                veto_aspect = width_pixels.to[f32]() / height_pixels.to[f32]()
-                veto_u0 = ((x.to[f32]() / width_pixels.to[f32]()) * 2.0 - 1.0) * veto_aspect
-                veto_u1 = (((x + 1).to[f32]() / width_pixels.to[f32]()) * 2.0 - 1.0) * veto_aspect
-                veto_v0 = 1.0 - (y.to[f32]() / height_pixels.to[f32]()) * 2.0
-                veto_v1 = 1.0 - ((y + 1).to[f32]() / height_pixels.to[f32]()) * 2.0
-                veto_ordinal: u32 = 0
-                @budget(bound=256)
-                while veto_ordinal < veto_count:
-                    veto_event = __wrela_pixels_tile_event(renderer, tile, veto_ordinal)
-                    veto_ordinal = veto_ordinal + 1
-                    if veto_event[0] != 1 or veto_event[1] > 4294967295:
-                        continue
-                    veto_event_id = veto_event[1].to[u32]()
-                    # Only a bounded-displacement event carries a sealed miss
-                    # model; everything else is skipped without cost.
-                    veto_model = __wrela_pixels_p7_deformation_miss_model(
-                        renderer,
-                        veto_event_id,
-                    )
-                    if veto_model[0] != 1.0:
-                        continue
-                    # Span gate: a false predictor crossing needs the base
-                    # surface met while the displaced one is not, which is the
-                    # silhouette band the event was sealed over. Pixels outside
-                    # the span keep the fast path.
-                    veto_x0 = __wrela_pixels_program_operand(renderer, 7, veto_event_id, 3)
-                    veto_x1 = __wrela_pixels_program_operand(renderer, 7, veto_event_id, 4)
-                    veto_y0 = __wrela_pixels_program_operand(renderer, 7, veto_event_id, 5)
-                    veto_y1 = __wrela_pixels_program_operand(renderer, 7, veto_event_id, 6)
-                    if veto_x0[0] != 1 or veto_x1[0] != 1 or veto_y0[0] != 1 or veto_y1[0] != 1:
-                        continue
-                    if x.to[u64]() < veto_x0[1] or x.to[u64]() >= veto_x1[1]:
-                        continue
-                    if y.to[u64]() < veto_y0[1] or y.to[u64]() >= veto_y1[1]:
-                        continue
-                    if veto_model[1] < 0.0 or veto_model[1] > 4294967295.0:
-                        continue
-                    veto_feature = veto_model[1].to[u32]()
-                    veto_object = __wrela_pixels_program_operand(renderer, 4, veto_feature, 0)
-                    if veto_object[0] != 1 or veto_object[1] >= 64:
-                        continue
-                    # The veto can only change the answer when the suspicious
-                    # hit belongs to this object.
-                    if sample.object.to[u64]() != veto_object[1]:
-                        continue
-                    # The proof speaks for this one feature; only an object that
-                    # is exactly this feature is absent when the feature is.
-                    veto_leaves = __wrela_pixels_program_operand(
-                        renderer,
-                        3,
-                        veto_object[1].to[u32](),
-                        4,
-                    )
-                    if veto_leaves[0] != 1 or veto_leaves[1] != 1:
-                        continue
-                    # Absence means the ray is outside the surface everywhere,
-                    # so the sealed start-inside verdict must agree; a set bit
-                    # is a contradiction and the veto stands down.
-                    veto_seed = __wrela_pixels_p7_initial_inside(
-                        renderer,
-                        (veto_u0 + veto_u1) * 0.5,
-                        (veto_v0 + veto_v1) * 0.5,
-                        __wrela_pixels_p7_raw_to_f32(
-                            config[5].to[i32](),
-                            config[3].to[i32](),
-                        ),
-                        snapshot.params,
-                        snapshot.camera,
-                    )
-                    if veto_seed[0] != 1:
-                        continue
-                    if (veto_seed[1] >> veto_object[1]) & 1 != 0:
-                        continue
-                    if __wrela_pixels_p7_deformation_silhouette_misses(
-                        renderer,
-                        veto_event_id | 2147483648,
-                        veto_u0,
-                        veto_v0,
-                        veto_u1,
-                        veto_v1,
-                        snapshot.params,
-                        snapshot.camera,
-                    ):
-                        veto_owner = veto_object[1].to[i64]()
-                        veto_ordinal = veto_count
-            if veto_owner >= 0:
+        # A bounded-displacement predictor is not the authored surface. Apply
+        # the sealed absence veto whenever it reports either a hit or an event:
+        # both describe only the undeformed predictor, and a proved absence of
+        # the authored surface overrides both. The proof's strict-separation
+        # envelope keeps this decision identical in source and guest f32.
+        if candidates.count > 0:
+            deformation = __wrela_pixels_p7_deformation_veto_objects(
+                renderer,
+                tile,
+                x.to[u64]() | (y.to[u64]() << 32),
+                pixel_filter,
+                snapshot.params,
+                snapshot.camera,
+            )
+            if deformation[0] != 1:
+                return P7CertifiedRow.failure_with(12)
+            deformation_objects = deformation[1]
+            veto = deformation[2]
+            proved_hits = deformation[3]
+            if veto != 0:
                 if telemetry_enabled:
                     _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 140, 1)
-                veto_filtered = P7RowCandidates(
-                    ok=true,
-                    error=0,
-                    ids=[0; 256],
-                    count=0,
-                )
+                pixel_candidates = P7RowCandidates(ok=true, error=0, ids=[0; 256], count=0)
                 veto_copy: u16 = 0
                 @budget(bound=256)
                 while veto_copy < candidates.count:
-                    veto_keep = candidates.ids[veto_copy.to[usize]()]
-                    veto_keep_owner = __wrela_pixels_program_operand(renderer, 4, veto_keep, 0)
+                    feature = candidates.ids[veto_copy.to[usize]()]
                     veto_copy = veto_copy + 1
-                    if veto_keep_owner[0] == 1 and veto_keep_owner[1].to[i64]() == veto_owner:
+                    owner = __wrela_pixels_program_operand(renderer, 4, feature, 0)
+                    if owner[0] != 1 or owner[1] >= 64:
+                        return P7CertifiedRow.failure_with(12)
+                    if (veto >> owner[1]) & 1 != 0:
                         continue
-                    veto_filtered.ids[veto_filtered.count.to[usize]()] = veto_keep
-                    veto_filtered.count = veto_filtered.count + 1
-                revised = __wrela_pixels_p7_pixel_visibility_from_candidates(
+                    pixel_candidates.ids[pixel_candidates.count.to[usize]()] = feature
+                    pixel_candidates.count = pixel_candidates.count + 1
+                sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
                     renderer=renderer,
                     worker=worker,
                     tile=tile,
                     span=x | ((x + 1) << 16),
                     y=y,
                     filter=pixel_filter,
-                    candidates=veto_filtered,
+                    candidates=pixel_candidates,
                     snapshot=snapshot,
                 )
-                if revised.ok:
-                    sample = revised
+            if sample.ok and deformation_objects != 0 and (
+                not sample.hit
+                or deformation_objects & (veto | proved_hits) != deformation_objects
+            ):
+                sample.event = true
         if not sample.ok or sample.event:
             structural = __wrela_pixels_p7_structural_corridor_pixel(
                 renderer,
@@ -7103,7 +8133,7 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
                 span=x | ((x + 1) << 16),
                 y=y,
                 filter=point_filter,
-                candidates=candidates,
+                candidates=pixel_candidates,
                 snapshot=snapshot,
             )
             if side_sample.ok and side_sample.hit:
@@ -7116,11 +8146,16 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
                 tile,
                 x,
                 y,
-                candidates,
+                pixel_candidates,
                 side_sample,
                 snapshot,
             )
             if curve[0] == 1 and curve[1] == 1:
+                # The curve tier returns a singleton byte only after all
+                # relevant silhouette and validity boundaries have been
+                # integrated. Its zero is therefore as authoritative as a
+                # positive byte; declining it would route exact background
+                # pixels into the deliberately bounded adaptive fallback.
                 integrated_coverage = curve[2]
             elif curve[0] == 1:
                 # No analytic integrator applied (an eligible event family
@@ -7138,7 +8173,7 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
                     worker.to[u64]() | (tile.to[u64]() << 32),
                     x.to[u64]() | (y.to[u64]() << 32),
                     pixel_filter,
-                    candidates,
+                    pixel_candidates,
                     snapshot,
                     selected,
                     curve,
@@ -7151,7 +8186,7 @@ pub fn __wrela_pixels_p7_certify_pixel_row(
                 worker.to[u64]() | (tile.to[u64]() << 32),
                 x.to[u64]() | (y.to[u64]() << 32),
                 pixel_filter,
-                candidates,
+                pixel_candidates,
                 snapshot,
                 selected,
                 integrated_coverage,
@@ -7376,8 +8411,8 @@ pub fn __wrela_pixels_p7_try_certify_regular_row(
             qxx_hi = (
                 first_hi - center_lo * 2 + last_hi
             ) / curvature_scale + 2
-            q_error_lo = sample.q_lo.to[i64]() - center.q_hi.to[i64]()
-            q_error_hi = sample.q_hi.to[i64]() - center.q_lo.to[i64]()
+            q_error_lo = sample.q_lo.to[i64]() - left.q_hi.to[i64]()
+            q_error_hi = sample.q_hi.to[i64]() - left.q_lo.to[i64]()
             if (
                 qx_lo >= -2147483648 and qx_hi <= 2147483647
                 and qxx_lo >= -2147483648 and qxx_hi <= 2147483647
@@ -7385,8 +8420,8 @@ pub fn __wrela_pixels_p7_try_certify_regular_row(
             ):
                 span_modeled = true
                 span_model = [
-                    center.q_lo,
-                    center.q_hi,
+                    left.q_lo,
+                    left.q_hi,
                     qx_lo.to[i32](),
                     qx_hi.to[i32](),
                     qxx_lo.to[i32](),
@@ -7597,7 +8632,14 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
     tiles_x = (width + 15) / 16
     tiles_y = (height + 15) / 16
     tile_count = tiles_x * tiles_y
-    if tiles_x == 0 or tiles_y == 0 or job.tiles_end > tile_count:
+    scanout_tiles_x = (width + 63) / 64
+    scanout_tiles_y = (height + 31) / 32
+    scanout_tile_count = scanout_tiles_x * scanout_tiles_y
+    if (
+        tiles_x == 0 or tiles_y == 0
+        or scanout_tiles_x == 0 or scanout_tiles_y == 0
+        or job.tiles_end > scanout_tile_count
+    ):
         return __wrela_pixels_p7_worker_error(9, 0)
     if not __wrela_pixels_p7_workspace_reset(
         job.renderer_index,
@@ -7610,13 +8652,17 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
         job.worker_index,
     )
     written: u64 = 0
-    tile = job.tiles_start
+    tile: u32 = 0
     @budget(bound=16777216)
-    while tile < job.tiles_end:
+    while tile < tile_count:
         tile_x = tile % tiles_x
         tile_y = tile / tiles_x
         x0 = tile_x * 16
         y0 = tile_y * 16
+        scanout_tile = (y0 / 32) * scanout_tiles_x + x0 / 64
+        if scanout_tile < job.tiles_start or scanout_tile >= job.tiles_end:
+            tile = tile + 1
+            continue
         x1 = x0 + 16
         y1 = y0 + 16
         if x1 > width:
@@ -7837,6 +8883,8 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                 evidence_aux_lo = y.to[i64]()
                 evidence_aux_hi: i64 = 0
                 evidence_point_witness: i64 = 0
+                normal: [f32; 4] = [0.0; 4]
+                raster_derivatives: [i64; 4] = [0; 4]
                 if sample.hit and not sample.event:
                     center_x = x.to[f32]() + (end - x).to[f32]() * 0.5
                     center_u = (
@@ -7897,6 +8945,41 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                             normal_bounds = [nx, nx, ny, ny, nz, nz]
                         evidence_aux_lo = y.to[i64]() | ((nx & 65535) << 16)
                         evidence_aux_hi = (ny & 65535) | ((nz & 65535) << 16)
+                        derivative_bounds = __wrela_pixels_p8_derivative_bounds(
+                            sample.q_lo,
+                            sample.q_hi,
+                            normal,
+                            center_u,
+                            center_v,
+                            snapshot.camera,
+                        )
+                        if derivative_bounds[0] != 1:
+                            return __wrela_pixels_p7_worker_error(12, tile)
+                        raster_derivatives = [
+                            derivative_bounds[1], derivative_bounds[2],
+                            derivative_bounds[3], derivative_bounds[4],
+                        ]
+                    else:
+                        # Deformed/composed roots deliberately carry a
+                        # vacuous normal cone. Keep their compact derivatives
+                        # finite and conservative instead of inventing a
+                        # primitive normal: the P8 debug summary reconstructs
+                        # the lane but does not request normalized direction.
+                        derivative_envelope = sample.q_lo.to[i64]()
+                        if derivative_envelope < 0:
+                            derivative_envelope = -derivative_envelope
+                        q_hi_magnitude = sample.q_hi.to[i64]()
+                        if q_hi_magnitude < 0:
+                            q_hi_magnitude = -q_hi_magnitude
+                        if q_hi_magnitude > derivative_envelope:
+                            derivative_envelope = q_hi_magnitude
+                        derivative_envelope = derivative_envelope * height.to[i64]()
+                        if derivative_envelope > 2147483647:
+                            return __wrela_pixels_p7_worker_error(12, tile)
+                        raster_derivatives = [
+                            0 - derivative_envelope, derivative_envelope,
+                            0 - derivative_envelope, derivative_envelope,
+                        ]
                 evidence_meta = (
                     sample.root_count.to[i64]()
                     | (sample.proof_method.to[i64]() << 32)
@@ -7945,48 +9028,227 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                     corridor_record = corridor_record + 1
                 else:
                     run_record = run_record + 1
-                @budget(bound=16)
-                while x < end:
-                    r: u8 = 0
-                    g: u8 = 0
-                    b: u8 = 0
-                    a: u8 = 0
-                    if sample.hit:
-                        r = (sample.object & 255).to[u8]()
-                        g = (sample.identity & 255).to[u8]()
-                        b = ((sample.identity >> 8) & 255).to[u8]()
-                        width_class = sample.q_hi.to[i64]() - sample.q_lo.to[i64]()
-                        if width_class < 0:
-                            return __wrela_pixels_p7_worker_error(13, tile)
-                        if width_class > 126:
-                            width_class = 126
-                        a = (129 + width_class).to[u8]()
-                        if sample.event:
-                            a = sample.coverage
-                    pixel = y * width + x
-                    if not __wrela_pixels_p7_framebuffer_write(
-                        job.renderer_index,
-                        pixel,
-                        r,
-                        g,
-                        b,
-                        a,
-                    ):
+                if sample.hit and sample.q_hi.to[i64]() < sample.q_lo.to[i64]():
+                    return __wrela_pixels_p7_worker_error(13, tile)
+                r: u8 = 0
+                g: u8 = 0
+                b: u8 = 0
+                a: u8 = 255
+                back: u32 = 0
+                if sample.hit:
+                    r = ((sample.identity >> 8) & 255).to[u8]()
+                    g = (sample.identity & 255).to[u8]()
+                    width_class = sample.q_hi.to[i64]() - sample.q_lo.to[i64]()
+                    if width_class < 0:
                         return __wrela_pixels_p7_worker_error(13, tile)
-                    slot: usize = 2
+                    if width_class > 126:
+                        width_class = 126
+                    b = (129 + width_class).to[u8]()
                     if sample.event:
-                        slot = 3
-                    if not __wrela_pixels_p7_workspace_charge(
+                        # P8 event coverage uses a high-contrast debug
+                        # channel: after premultiplication the displayed blue
+                        # byte is exactly the certified coverage code. This
+                        # gives the independent conformance oracle a direct
+                        # guest-output byte rather than an inferred point
+                        # witness. Regular pixels retain the q-width code.
+                        b = 255
+                        a = sample.coverage
+                        if sample.proof_method & 128 != 0:
+                            secondary = sample.root_count >> 16
+                            back = (
+                                ((secondary >> 8) & 255)
+                                | ((secondary & 255) << 8)
+                                | (b.to[u32]() << 16)
+                            )
+                if sample.event:
+                    event_start = x
+                    @budget(bound=16)
+                    while x < end:
+                        # Materialize the compact event record against real,
+                        # per-pixel side-run and sealed-event arenas. Run IDs
+                        # 0 and 1 name the selected front and certified
+                        # secondary/background colors respectively; event_ids
+                        # contains every sealed event whose conservative span
+                        # owns this pixel. Rasterization below consumes these
+                        # references instead of the pre-lowering temporaries.
+                        event_side_runs: [u32; 2] = [
+                            r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
+                            back,
+                        ]
+                        # The sealed tile-event table is capped at 256 records.
+                        # The filtered view can legitimately retain more than
+                        # the analytic arrangement's crossing-curve limit: its
+                        # reset, ownership, and composite records remain real
+                        # event references and must not be discarded.
+                        # The arena is the deterministic filtered view of the
+                        # sealed tile-event table produced by the scan below.
+                        # IdSlice offsets index that view, so no second local
+                        # copy of the IDs is needed before immediate raster
+                        # consumption. Preserve its endpoint IDs in evidence.
+                        event_first_id: u16 = 0
+                        event_last_id: u16 = 0
+                        event_count = __wrela_pixels_tile_event_count(
+                            job.renderer_index,
+                            tile,
+                        )
+                        if event_count == 4294967295 or event_count > 256:
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        event_arena_count: u16 = 0
+                        event_arena_digest: u32 = 2166136261
+                        event_ordinal: u32 = 0
+                        @budget(bound=256)
+                        while event_ordinal < event_count:
+                            sealed_event = __wrela_pixels_tile_event(
+                                job.renderer_index,
+                                tile,
+                                event_ordinal,
+                            )
+                            if sealed_event[0] != 1 or sealed_event[1] > 65535:
+                                return __wrela_pixels_p7_worker_error(13, tile)
+                            sealed_event_id = sealed_event[1].to[u32]()
+                            sealed_span = __wrela_pixels_p7_event_pixel_span(
+                                job.renderer_index,
+                                sealed_event_id,
+                                x,
+                                y,
+                            )
+                            if sealed_span[0] != 1:
+                                return __wrela_pixels_p7_worker_error(13, tile)
+                            if sealed_span[1] == 1:
+                                if event_arena_count >= 256:
+                                    return __wrela_pixels_p7_worker_error(13, tile)
+                                if event_arena_count == 0:
+                                    event_first_id = sealed_event_id.to[u16]()
+                                event_last_id = sealed_event_id.to[u16]()
+                                event_arena_digest = (
+                                    event_arena_digest *% 16777619
+                                ) ^ sealed_event_id
+                                event_arena_count = event_arena_count + 1
+                            event_ordinal = event_ordinal + 1
+                        # Store the unique 1/256 coverage code whose sealed
+                        # ties-to-nearest byte encoding reproduces `a`.
+                        coverage_raw = ((a.to[u32]() * 256 + 127) / 255).to[i32]()
+                        event = EventPixel(
+                            x=x.to[u16](),
+                            coverage=Iv32.point(coverage_raw),
+                            front_run=RunId(value=0),
+                            back_run=RunId(value=1),
+                            event_ids=IdSlice[EventId](
+                                first=0,
+                                count=event_arena_count,
+                            ),
+                        )
+                        referenced_events_ok = (
+                            event.event_ids.first == 0
+                            and event.event_ids.count == event_arena_count
+                            and event_arena_digest != 2166136261
+                        )
+                        event_front = event_side_runs[
+                            event.front_run.value.to[usize]()
+                        ]
+                        event_back = event_side_runs[
+                            event.back_run.value.to[usize]()
+                        ]
+                        event_coverage = (
+                            (event.coverage.lower().to[u32]() * 255 + 128) / 256
+                        ).to[u8]()
+                        event_references = event.front_run.value.to[u64]() | (
+                            event.back_run.value.to[u64]() << 16
+                        ) | (event.event_ids.count.to[u64]() << 32)
+                        event_id_bounds: u64 = 0
+                        if event.event_ids.count > 0:
+                            event_id_bounds = event_first_id.to[u64]() | (
+                                event_last_id.to[u64]() << 16
+                            ) | ((event_arena_digest & 1073741823).to[u64]() << 32)
+                        if (
+                            event.x.to[u32]() >= width
+                            or event.front_run.value >= 2
+                            or event.back_run.value >= 2
+                            or event.front_run.value == event.back_run.value
+                            or event.event_ids.count == 0
+                            or not referenced_events_ok
+                            or event.coverage.lower() < 0
+                            or event.coverage.upper() > 256
+                            or event_coverage != a
+                            or not __wrela_pixels_p8_raster_evidence_store(
+                                job.renderer_index,
+                                (y * width + event.x.to[u32]()).to[usize](),
+                                event_coverage.to[u64](),
+                                event_references,
+                                event_id_bounds,
+                                2,
+                            )
+                            or not __wrela_pixels_p8_write(
+                                job.renderer_index,
+                                job.worker_index,
+                                y * width + event.x.to[u32](),
+                                event_front,
+                                event_coverage,
+                                event_back,
+                            )
+                            or not __wrela_pixels_p7_workspace_charge(
+                            job.renderer_index,
+                            job.worker_index,
+                            3,
+                            1,
+                            )
+                        ):
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        written = written +% 1
+                        if written == 18446744073709551615:
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        x = x + 1
+                    if telemetry_enabled:
+                        _ = __wrela_pixels_p7_telemetry_charge(
+                            job.renderer_index,
+                            job.worker_index,
+                            148,
+                            (end - event_start).to[u64](),
+                        )
+                else:
+                    setup = __wrela_pixels_p8_raster_setup(
+                        sample,
+                        model,
+                        row.modeled and row.count == 1,
+                        x,
+                        end,
+                        config[3].to[i32](),
+                        height,
+                        raster_derivatives,
+                    )
+                    if not setup.ok:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    raster = setup.raster
+                    raster_written = __wrela_pixels_p8_raster_regular(
+                        P8RasterContext(
+                            renderer=job.renderer_index,
+                            worker=job.worker_index,
+                            y=y,
+                            width=width,
+                            height=height,
+                            camera=snapshot.camera,
+                            scale=__wrela_pixels_p7_raw_to_f32(1, config[3].to[i32]()),
+                            color=r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
+                        ),
+                        raster,
+                    )
+                    if raster_written == 18446744073709551615:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    __wrela_pixels_p8_charge_raster_run(
                         job.renderer_index,
                         job.worker_index,
-                        slot,
-                        1,
-                    ):
+                        telemetry_enabled,
+                        y * width + x,
+                        end - x,
+                        raster.proof_code.bits & 8 != 0,
+                    )
+                    written = written +% raster_written
+                    if written < raster_written:
                         return __wrela_pixels_p7_worker_error(13, tile)
-                    written = written +% 1
-                    if written == 18446744073709551615:
-                        return __wrela_pixels_p7_worker_error(13, tile)
-                    x = x + 1
+                    x = end
+                    coverage_x = x
+                    index = index + 1
+                    continue
                 coverage_x = x
                 index = index + 1
             if coverage_x != x1:
@@ -8529,10 +9791,27 @@ pub fn __wrela_pixels_p7_debug_probe_validity(
     )
 
 pub fn __wrela_pixels_p7_debug_frame_digest(renderer: usize) -> [u64; 5]:
-    return __wrela_pixels_p7_framebuffer_digest(renderer)
+    return __wrela_pixels_p8_digest(renderer)
 
 pub fn __wrela_pixels_p7_debug_alpha_samples(renderer: usize) -> u64:
-    return __wrela_pixels_p7_framebuffer_alpha_samples(renderer)
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1:
+        return 18446744073709551615
+    samples: [u64; 3] = [
+        ((16 * config[1] + 31) * 4 + 3).to[u64](),
+        ((16 * config[1] + 32) * 4 + 3).to[u64](),
+        ((16 * config[1] + 40) * 4 + 3).to[u64](),
+    ]
+    packed: u64 = 0
+    sample: usize = 0
+    @budget(bound=3)
+    while sample < 3:
+        loaded = __wrela_pixels_p8_visible_byte(renderer, samples[sample].to[usize]())
+        if loaded[0] != 1:
+            return 18446744073709551615
+        packed = packed | (loaded[1] << (sample * 8).to[u64]())
+        sample = sample + 1
+    return packed
 
 pub fn __wrela_pixels_p7_debug_certified_run_word(
     renderer: usize,
@@ -8550,8 +9829,9 @@ pub fn __wrela_pixels_p7_debug_certified_run_word(
 # Instrumented-run frame dump for host conformance. Word 0 is the payload
 # length; words 1..6 pack the validated snapshot camera and 7..14 the packed
 # parameters (so the host oracle scores against the exact frame inputs, never
-# a guessed camera); word 15 is the framebuffer word count and the rest the
-# complete debug framebuffer as packed little-endian words. Readable only
+# a guessed camera); word 15 packs framebuffer/telemetry word counts, followed
+# by the complete debug framebuffer and CertificateTelemetry section. The VMM
+# captures fixed-q evidence directly from instrumented renderer state. Readable only
 # when certificate telemetry is enabled, so golden transcripts never change;
 # the fixture traces the words through its own runtime binding because
 # core.render cannot import core.runtime.
@@ -8563,7 +9843,9 @@ pub fn __wrela_pixels_p7_debug_frame_dump_word(renderer: usize, index: u64) -> [
         return [0; 2]
     frame_bytes = config[1].to[u64]() * config[2].to[u64]() * 4
     frame_words = (frame_bytes + 7) / 8
-    total = frame_words + 15
+    # One schema word plus four workers times 150 counters.
+    telemetry_words: u64 = 601
+    total = frame_words + 15 + telemetry_words
     if total > 65550:
         return [0; 2]
     if index == 0:
@@ -8581,22 +9863,27 @@ pub fn __wrela_pixels_p7_debug_frame_dump_word(renderer: usize, index: u64) -> [
         high = __wrela_pixels_f32_to_bits(params[param_slot * 2 + 1]).to[u64]()
         return [1, low | (high << 32)]
     if index == 15:
-        return [1, frame_words]
+        return [1, frame_words | (telemetry_words << 32)]
     word = index - 16
-    if word >= frame_words:
+    if word < frame_words:
+        return __wrela_pixels_p8_visible_word(renderer, word.to[usize]())
+    telemetry_index = word - frame_words
+    if telemetry_index == 0:
+        return [1, 2.to[u64]() | (150.to[u64]() << 16)]
+    if telemetry_index >= telemetry_words:
         return [0; 2]
-    value: u64 = 0
-    octet: u64 = 0
-    @budget(bound=8)
-    while octet < 8:
-        byte_index = word * 8 + octet
-        if byte_index < frame_bytes:
-            loaded = __wrela_pixels_p7_framebuffer_byte(renderer, byte_index.to[usize]())
-            if loaded[0] != 1:
-                return [0; 2]
-            value = value | (loaded[1] << (octet * 8))
-        octet = octet + 1
-    return [1, value]
+    flat = telemetry_index - 1
+    worker = (flat / 150).to[u32]()
+    counter = __wrela_pixels_p7_telemetry_counter(
+        renderer,
+        worker,
+        (flat % 150).to[usize](),
+    )
+    if counter[0] == 1:
+        return counter
+    if worker == 0:
+        return [0; 2]
+    return [1, 0]
 
 fn __wrela_pixels_p7_job_value(take result: Result[u64, CallError[never]]) -> u64:
     match result:
@@ -8794,7 +10081,10 @@ pub struct Renderer[P]:
         # Header, directory, digest, revision, flags, and reserved fields are
         # checked once at actor initialization. Per-frame turns only use the
         # checked, compiler-generated accessors.
-        self.program_valid = __wrela_pixels_program_validate(renderer_index.to[usize]())
+        self.program_valid = (
+            __wrela_pixels_program_validate(renderer_index.to[usize]())
+            and __wrela_pixels_p8_initialize(renderer_index.to[usize]())
+        )
 
     fn __validate_fixed_frame(read self, read frame: RenderFrame[P])
         -> Result[unit, RenderError]:
@@ -8903,9 +10193,11 @@ pub struct Renderer[P]:
             return self.__internal_error(take frame, 4099)
         expected_pixels = config[1].to[u64]() *% config[2].to[u64]()
         if worker_digest != expected_pixels:
+            _ = __wrela_pixels_p8_cancel(renderer_index)
             return self.__worker_error(take frame, 4, 0)
         exact = __wrela_pixels_p7_debug_frame_digest(renderer_index)
         if exact[0] != 1:
+            _ = __wrela_pixels_p8_cancel(renderer_index)
             return self.__internal_error(take frame, 4100)
         digest: [u8; 32] = [0; 32]
         word: usize = 0
@@ -8928,11 +10220,13 @@ pub struct Renderer[P]:
             proposals = __wrela_pixels_p7_workspace_counter(renderer_index, worker, 5)
             corridors = __wrela_pixels_p7_workspace_counter(renderer_index, worker, 6)
             if runs[0] != 1 or proposals[0] != 1 or corridors[0] != 1:
+                _ = __wrela_pixels_p8_cancel(renderer_index)
                 return self.__internal_error(take frame, 4101)
             next_runs = certificate_runs +% runs[1]
             next_proposals = revalidated_proposals +% proposals[1]
             next_corridors = event_corridors +% corridors[1]
             if next_runs < certificate_runs or next_proposals < revalidated_proposals or next_corridors < event_corridors:
+                _ = __wrela_pixels_p8_cancel(renderer_index)
                 return self.__internal_error(take frame, 4102)
             certificate_runs = next_runs
             revalidated_proposals = next_proposals
@@ -8950,8 +10244,8 @@ pub struct Renderer[P]:
             0,
         )[0] == 1
         counter: usize = 0
-        @budget(bound=142)
-        while telemetry_present and counter < 142:
+        @budget(bound=150)
+        while telemetry_present and counter < 150:
             merged: u64 = 0
             worker = 0
             @budget(bound=4)
@@ -8962,9 +10256,11 @@ pub struct Renderer[P]:
                     counter,
                 )
                 if value[0] != 1:
+                    _ = __wrela_pixels_p8_cancel(renderer_index)
                     return self.__internal_error(take frame, 4104)
                 next = merged +% value[1]
                 if next < merged:
+                    _ = __wrela_pixels_p8_cancel(renderer_index)
                     return self.__internal_error(take frame, 4105)
                 merged = next
                 worker = worker + 1
@@ -8975,11 +10271,34 @@ pub struct Renderer[P]:
             counter = counter + 1
         if not telemetry_present:
             telemetry_digest = [0; 4]
-        frame_index = frame.frame_index
+        submission = __wrela_pixels_p8_present(renderer_index, frame.frame_index)
+        if submission[0] != 2:
+            _ = __wrela_pixels_p8_cancel(renderer_index)
+            return self.__internal_error(take frame, 4107)
+        raw_digest = __wrela_pixels_p8_raw_digest(renderer_index)
+        descriptor_digest = __wrela_pixels_p8_descriptor_digest(renderer_index)
+        if raw_digest[0] != 1 or descriptor_digest[0] != 1:
+            _ = __wrela_pixels_p8_cancel(renderer_index)
+            return self.__internal_error(take frame, 4109)
+        doorbell = __wrela_pixels_p8_display_doorbell(renderer_index)
+        if doorbell[0] != 1:
+            _ = __wrela_pixels_p8_cancel(renderer_index)
+            return self.__internal_error(take frame, 4109)
+        __wrela_pixels_p8_submit(doorbell[1], submission[1])
+        present = __wrela_pixels_p8_complete(renderer_index)
+        if present[0] != 1:
+            display_error = RenderError.Display(DisplayError(code=present[1].to[u32]()))
+            return self.__render_error(
+                take frame,
+                take display_error,
+            )
+        frame_index = present[1]
         rendered = RenderedFrame[P](
             params=take frame.params,
             frame_index=frame_index,
             displayed_digest=digest,
+            displayed_raw_tile_digest=[raw_digest[1], raw_digest[2], raw_digest[3], raw_digest[4]],
+            displayed_tile_descriptor_digest=[descriptor_digest[1], descriptor_digest[2], descriptor_digest[3], descriptor_digest[4]],
             rebuilt_tiles=0,
             reused_tiles=0,
             certificate_runs=certificate_runs,
@@ -9098,8 +10417,8 @@ pub struct Renderer[P]:
         )
         if snapshot_stored == false:
             return self.__internal_error(take frame, 4096)
-        framebuffer_reset = __wrela_pixels_p7_framebuffer_reset(renderer_index.to[usize]())
-        if framebuffer_reset == false:
+        scanout = __wrela_pixels_p8_begin(renderer_index.to[usize]())
+        if scanout[0] != 1:
             return self.__internal_error(take frame, 4096)
         worker_0 = self.workers.worker_0
         worker_1 = self.workers.worker_1
@@ -9123,6 +10442,7 @@ pub struct Renderer[P]:
             for result in results:
                 worker_state = __wrela_pixels_p7_digest_result(worker_state, take result)
         if worker_state.ok == false:
+            _ = __wrela_pixels_p8_cancel(renderer_usize)
             return self.__worker_error(
                 take frame,
                 worker_state.error,

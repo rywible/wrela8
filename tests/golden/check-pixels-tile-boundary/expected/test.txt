@@ -1,0 +1,14 @@
+p7 0000000000000117
+p7 000002fe00000044
+p7 503753414d504c45
+p7 0000000000ffffff
+p7 444f41c7e764c854
+p7 471ed8d363b639df
+p7 9178e70742c0754f
+p7 274bbfd26639cea2
+p7 f9353191b11e4797
+test s: ok
+1 passed, 0 failed
+lane1 turns=2 run_one=4 messages=2
+lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=128x31@60 format=1 descriptor=8d00ed7165c4e3fc61f3ae2b214af3ee2b0f4668feea7aa5eecc27333d2614a0 visible=38ae295436583d4e45ab33e458d75b0cef789ae2aa9f04d17730405fec217ef3 raw=660338409a2ba721bc0258a5ca6840ebb33b9c8de2fd1856dbb2e2b0fd1b2818 vsync=17 checkpoint=17

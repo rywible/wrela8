@@ -1,13 +1,15 @@
 RenderLayout v1
   Renderer index=0
     FrameProgram base=0x40a30000 size=31440
-    State base=0x40a40000 size=250048
+    State base=0x40a40000 size=176690
     Coordinator core=0 actor=__wrela_renderer_0_coordinator
-    Worker index=0 core=0 actor=__wrela_renderer_0_worker_0 tiles=[0,2) workspace_base=0x40a60668 workspace_bytes=5920
-    Worker index=1 core=1 actor=__wrela_renderer_0_worker_1 tiles=[2,4) workspace_base=0x40a61d88 workspace_bytes=5920
-    Worker index=2 core=2 actor=__wrela_renderer_0_worker_2 tiles=[4,6) workspace_base=0x40a634a8 workspace_bytes=5920
-    Worker index=3 core=3 actor=__wrela_renderer_0_worker_3 tiles=[6,8) workspace_base=0x40a64bc8 workspace_bytes=5920
+    Worker index=0 core=0 actor=__wrela_renderer_0_worker_0 tiles=[0,1) workspace_base=0x40a60668 workspace_bytes=5920
+    Worker index=1 core=1 actor=__wrela_renderer_0_worker_1 tiles=[1,1) workspace_base=0x40a61d88 workspace_bytes=5920
+    Worker index=2 core=2 actor=__wrela_renderer_0_worker_2 tiles=[1,1) workspace_base=0x40a634a8 workspace_bytes=5920
+    Worker index=3 core=3 actor=__wrela_renderer_0_worker_3 tiles=[1,1) workspace_base=0x40a64bc8 workspace_bytes=5920
     Buffer front=0x40a67000 back=0x40a69000 bytes_each=8192
     Probe base=0x40a6b000 bytes=0
-    Telemetry offset=250048 production_bytes=0 instrumented_bytes=4544
-    Failure presentation=false contract=explicit-certified-error execution=certified-from-scratch
+    Telemetry offset=176696 production_bytes=0 instrumented_bytes=53952
+    Scanout format=Bgra8Srgb tile=64x32 stride=256 allocation=8192 descriptor_bytes=24 generations=2 clear=boot-only
+    Replay revision=display-v1 digests=[tile-descriptor,visible,raw-tile] vsync_checkpoint=true
+    Failure presentation=retain-front contract=explicit-certified-or-display-error execution=certified-from-scratch

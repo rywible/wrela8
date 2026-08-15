@@ -17,6 +17,7 @@ pub mod oracle;
 pub mod order;
 pub mod poly;
 pub mod polynomial;
+pub mod raster;
 pub mod rebuild;
 pub mod root;
 pub mod snapshot;

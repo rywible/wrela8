@@ -423,6 +423,47 @@ and `pixelsdata` placement supplied by Pixels. Ordinary runtime code remains
 owned by lowering and code generation. The VMM owns only display validation
 and scanout, never renderer semantics.
 
+### 3.2 P8 raster and presentation boundary
+
+The certified sweep lowers regular half-open domains to compact `RasterRun`
+records containing fixed-q `q`, `q_u`, and `q_v` recurrences, nominal summary
+IDs, and an output proof code. Event corridors lower to one `EventPixel` per
+owned pixel. Feature arrays and root-isolation stacks do not cross this
+boundary. A run that cannot fit a certified fixed-q microtile is split and
+re-anchored before lowering.
+
+The permanent scalar raster is the differential oracle. Production regular
+runs use four-lane `i32x4` recurrence packets; the AArch64 lowering emits
+128-bit ASIMD add operations and records the real frame-slot loads/stores in
+the cost model. Scalar prefix/suffix lanes and every microtile reset use the
+same certified recurrence. Regular runs never evaluate a field gradient or
+solve a root per pixel. Geometry dependency flags reconstruct the inverse-
+depth normal `(q_u, q_v, q-u*q_u-v*q_v)` and normalize it with the sealed
+numeric sequence only when direction is consumed. World position is absent
+from the P8 debug-identity program because no summary requests it.
+
+Event coverage is analytic interval coverage, not MSAA or TAA. Each event
+pixel blends its certified front and back codes with exact interval
+arithmetic. A non-singleton stored byte triggers the bounded curve, side, and
+pixel-domain refinement sequence; remaining ambiguity is
+`CertificateExhausted`. Regular runs skip event-owned pixels, so a visible
+pixel is written exactly once.
+
+Each renderer owns two complete row-major scanout generations. Image boot
+zeros both 8192-byte-per-tile allocations once. Every later successful frame
+overwrites every visible byte; padding is never touched and stays zero. The
+display owns the front generation until completion. Cancellation or display
+failure reclaims the back generation and preserves the prior front and frame
+sequence. A successful coordinator submission publishes ascending
+descriptors, records descriptor/visible/raw digests, and swaps ownership only
+after the machine-v1 completion status is `presented`.
+
+Before the coordinator hands the generation to the display device, generated
+bounded routines digest the visible bytes, every byte of each full tile
+allocation, and the exact ascending descriptor encoding independently. Those
+three guest evidence values occupy distinct machine control fields; the VMM
+reconstructs each input and rejects the submission if any class differs.
+
 ## 4. Internal data model and image format
 
 All IDs are typed dense integer newtypes assigned after deterministic

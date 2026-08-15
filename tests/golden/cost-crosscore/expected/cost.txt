@@ -2,16 +2,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=11376 schedule_cycles=11376 footprint_cycles=0 total_proxy_cycles=11376
-  Workload name=flat proxy_cycles=11376
-  Owner name=app proxy_cycles=1153
-  Owner name=runtime proxy_cycles=9569
+  Rank rank_cycles=11339 schedule_cycles=11339 footprint_cycles=0 total_proxy_cycles=11339
+  Workload name=flat proxy_cycles=11339
+  Owner name=app proxy_cycles=1159
+  Owner name=runtime proxy_cycles=9526
   Owner name=driver proxy_cycles=654
   Core n=0 proxy_cycles=1317 max_entry_method_proxy_cycles=654
-  Budget n=0 fetched_text_bytes=53824 executable_code_bytes=53664 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Budget n=0 fetched_text_bytes=53120 executable_code_bytes=52944 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
   Core n=1 proxy_cycles=48 max_entry_method_proxy_cycles=16
-  Budget n=1 fetched_text_bytes=53696 executable_code_bytes=53532 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=9627
+  Budget n=1 fetched_text_bytes=52928 executable_code_bytes=52812 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=9590
   Placeable id=driver#0 type=Doorbell core=0 turn_proxy=654 method=Doorbell.on_irq
   Placeable id=actor#0 type=Peer core=1 turn_proxy=16 method=Peer.publish
   Fn key=Doorbell.drain owner=app frame_bytes=48 proxy_cycles=333
@@ -1039,34 +1039,34 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=2
     Term rule=mov_wide count=6
     Term rule=store count=2
-  Fn key=__wrela_deadline_poll owner=runtime frame_bytes=96 proxy_cycles=171
-    Term rule=Mem level=buffered count=35
+  Fn key=__wrela_deadline_poll owner=runtime frame_bytes=96 proxy_cycles=165
+    Term rule=Mem level=buffered count=31
     Term rule=Mem level=forwarded count=9
     Term rule=Mem level=l1_hit count=9
     Term rule=Mem level=unresolved count=4
     Term rule=abort count=2
-    Term rule=abort_val count=4
-    Term rule=adrp count=10
-    Term rule=alu count=69
-    Term rule=branch count=28
+    Term rule=abort_val count=3
+    Term rule=adrp count=8
+    Term rule=alu count=63
+    Term rule=branch count=27
     Term rule=load count=22
-    Term rule=mov_wide count=53
+    Term rule=mov_wide count=49
     Term rule=mul count=4
-    Term rule=store count=35
-  Fn key=__wrela_deadline_scan owner=runtime frame_bytes=256 proxy_cycles=280
-    Term rule=Mem level=buffered count=79
-    Term rule=Mem level=forwarded count=24
-    Term rule=Mem level=l1_hit count=10
+    Term rule=store count=31
+  Fn key=__wrela_deadline_scan owner=runtime frame_bytes=256 proxy_cycles=265
+    Term rule=Mem level=buffered count=63
+    Term rule=Mem level=forwarded count=26
+    Term rule=Mem level=l1_hit count=8
     Term rule=Mem level=unresolved count=9
     Term rule=abort count=3
-    Term rule=abort_val count=10
-    Term rule=adrp count=23
-    Term rule=alu count=130
-    Term rule=branch count=39
+    Term rule=abort_val count=6
+    Term rule=adrp count=15
+    Term rule=alu count=106
+    Term rule=branch count=35
     Term rule=load count=43
-    Term rule=mov_wide count=101
+    Term rule=mov_wide count=85
     Term rule=mul count=10
-    Term rule=store count=79
+    Term rule=store count=63
   Fn key=__wrela_deliver_reply owner=runtime frame_bytes=48 proxy_cycles=120
     Term rule=Mem level=buffered count=34
     Term rule=Mem level=forwarded count=2
@@ -1106,7 +1106,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_drain_request_edge owner=runtime frame_bytes=0 proxy_cycles=30
+  Fn key=__wrela_drain_request_edge owner=runtime frame_bytes=0 proxy_cycles=36
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
@@ -1131,23 +1131,23 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_fmt_dec owner=runtime frame_bytes=48 proxy_cycles=225
-    Term rule=Mem level=buffered count=49
+  Fn key=__wrela_fmt_dec owner=runtime frame_bytes=48 proxy_cycles=218
+    Term rule=Mem level=buffered count=45
     Term rule=Mem level=forwarded count=4
     Term rule=Mem level=l1_hit count=8
     Term rule=Mem level=unresolved count=2
     Term rule=abort count=4
-    Term rule=abort_val count=7
-    Term rule=adrp count=18
-    Term rule=alu count=104
-    Term rule=branch count=28
+    Term rule=abort_val count=6
+    Term rule=adrp count=16
+    Term rule=alu count=98
+    Term rule=branch count=27
     Term rule=call count=1
     Term rule=load count=14
-    Term rule=mov_wide count=79
+    Term rule=mov_wide count=75
     Term rule=mul count=8
-    Term rule=store count=49
+    Term rule=store count=45
     Term rule=udiv count=2
-  Fn key=__wrela_init_nwords owner=runtime frame_bytes=0 proxy_cycles=19
+  Fn key=__wrela_init_nwords owner=runtime frame_bytes=0 proxy_cycles=25
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1155,7 +1155,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_init_store_word owner=runtime frame_bytes=0 proxy_cycles=52
+  Fn key=__wrela_init_store_word owner=runtime frame_bytes=0 proxy_cycles=46
     Term rule=Mem level=buffered count=12
     Term rule=abort count=1
     Term rule=abort_val count=2
@@ -1165,7 +1165,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=18
     Term rule=mul count=2
     Term rule=store count=12
-  Fn key=__wrela_invoke_xreply owner=runtime frame_bytes=32 proxy_cycles=132
+  Fn key=__wrela_invoke_xreply owner=runtime frame_bytes=32 proxy_cycles=126
     Term rule=Mem level=buffered count=6
     Term rule=Mem level=forwarded count=1
     Term rule=Mem level=l1_hit count=24
@@ -1177,7 +1177,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=25
     Term rule=mov_wide count=10
     Term rule=store count=6
-  Fn key=__wrela_irq_invoke owner=runtime frame_bytes=0 proxy_cycles=13
+  Fn key=__wrela_irq_invoke owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1185,7 +1185,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=3
     Term rule=store count=2
-  Fn key=__wrela_irq_mask owner=runtime frame_bytes=0 proxy_cycles=19
+  Fn key=__wrela_irq_mask owner=runtime frame_bytes=0 proxy_cycles=13
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1238,7 +1238,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=34
     Term rule=mul count=5
     Term rule=store count=15
-  Fn key=__wrela_mb_capacity owner=runtime frame_bytes=0 proxy_cycles=19
+  Fn key=__wrela_mb_capacity owner=runtime frame_bytes=0 proxy_cycles=13
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1246,7 +1246,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_mb_core owner=runtime frame_bytes=0 proxy_cycles=13
+  Fn key=__wrela_mb_core owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1254,7 +1254,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_mb_get_count owner=runtime frame_bytes=0 proxy_cycles=359
+  Fn key=__wrela_mb_get_count owner=runtime frame_bytes=0 proxy_cycles=365
     Term rule=Mem level=buffered count=2
     Term rule=Mem level=unresolved count=32
     Term rule=abort count=1
@@ -1274,7 +1274,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=32
     Term rule=mov_wide count=99
     Term rule=store count=2
-  Fn key=__wrela_mb_get_tail owner=runtime frame_bytes=0 proxy_cycles=365
+  Fn key=__wrela_mb_get_tail owner=runtime frame_bytes=0 proxy_cycles=359
     Term rule=Mem level=buffered count=2
     Term rule=Mem level=unresolved count=32
     Term rule=abort count=1
@@ -1284,7 +1284,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=32
     Term rule=mov_wide count=99
     Term rule=store count=2
-  Fn key=__wrela_mb_has_lineage owner=runtime frame_bytes=0 proxy_cycles=13
+  Fn key=__wrela_mb_has_lineage owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1312,7 +1312,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_mb_set_count owner=runtime frame_bytes=0 proxy_cycles=263
+  Fn key=__wrela_mb_set_count owner=runtime frame_bytes=0 proxy_cycles=269
     Term rule=Mem level=buffered count=34
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1320,7 +1320,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=100
     Term rule=mov_wide count=98
     Term rule=store count=34
-  Fn key=__wrela_mb_set_head owner=runtime frame_bytes=0 proxy_cycles=269
+  Fn key=__wrela_mb_set_head owner=runtime frame_bytes=0 proxy_cycles=263
     Term rule=Mem level=buffered count=34
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1328,7 +1328,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=100
     Term rule=mov_wide count=98
     Term rule=store count=34
-  Fn key=__wrela_mb_set_tail owner=runtime frame_bytes=0 proxy_cycles=263
+  Fn key=__wrela_mb_set_tail owner=runtime frame_bytes=0 proxy_cycles=269
     Term rule=Mem level=buffered count=34
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1344,7 +1344,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_mb_state owner=runtime frame_bytes=0 proxy_cycles=14
+  Fn key=__wrela_mb_state owner=runtime frame_bytes=0 proxy_cycles=20
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1352,7 +1352,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=6
     Term rule=store count=2
-  Fn key=__wrela_mb_store_word owner=runtime frame_bytes=0 proxy_cycles=616
+  Fn key=__wrela_mb_store_word owner=runtime frame_bytes=0 proxy_cycles=622
     Term rule=Mem level=buffered count=162
     Term rule=abort count=1
     Term rule=abort_val count=32
@@ -1370,7 +1370,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=7
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_method_is_aggregate owner=runtime frame_bytes=0 proxy_cycles=24
+  Fn key=__wrela_method_is_aggregate owner=runtime frame_bytes=0 proxy_cycles=30
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
@@ -1394,7 +1394,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=4
     Term rule=mov_wide count=3
     Term rule=store count=2
-  Fn key=__wrela_ring_capacity owner=runtime frame_bytes=0 proxy_cycles=25
+  Fn key=__wrela_ring_capacity owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1402,7 +1402,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_ring_dst_core owner=runtime frame_bytes=0 proxy_cycles=19
+  Fn key=__wrela_ring_dst_core owner=runtime frame_bytes=0 proxy_cycles=25
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1410,7 +1410,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_ring_slot_words owner=runtime frame_bytes=0 proxy_cycles=25
+  Fn key=__wrela_ring_slot_words owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1418,7 +1418,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_ring_src_core owner=runtime frame_bytes=0 proxy_cycles=19
+  Fn key=__wrela_ring_src_core owner=runtime frame_bytes=0 proxy_cycles=25
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1426,7 +1426,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_ring_target_handle owner=runtime frame_bytes=0 proxy_cycles=25
+  Fn key=__wrela_ring_target_handle owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1446,21 +1446,21 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=44
     Term rule=mov_wide count=21
     Term rule=store count=48
-  Fn key=__wrela_rt_checkpoint owner=runtime frame_bytes=800 proxy_cycles=423
-    Term rule=Mem level=buffered count=143
-    Term rule=Mem level=forwarded count=86
-    Term rule=Mem level=l1_hit count=26
+  Fn key=__wrela_rt_checkpoint owner=runtime frame_bytes=800 proxy_cycles=406
+    Term rule=Mem level=buffered count=135
+    Term rule=Mem level=forwarded count=89
+    Term rule=Mem level=l1_hit count=23
     Term rule=Mem level=unresolved count=5
     Term rule=abort count=6
-    Term rule=abort_val count=4
-    Term rule=adrp count=14
-    Term rule=alu count=100
-    Term rule=branch count=56
+    Term rule=abort_val count=2
+    Term rule=adrp count=10
+    Term rule=alu count=88
+    Term rule=branch count=54
     Term rule=call count=5
     Term rule=load count=117
-    Term rule=mov_wide count=104
+    Term rule=mov_wide count=96
     Term rule=mul count=9
-    Term rule=store count=143
+    Term rule=store count=135
   Fn key=__wrela_rt_drain owner=runtime frame_bytes=1328 proxy_cycles=728
     Term rule=Mem level=buffered count=281
     Term rule=Mem level=forwarded count=123
@@ -1492,21 +1492,21 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=35
     Term rule=mul count=3
     Term rule=store count=21
-  Fn key=__wrela_rt_run_one owner=runtime frame_bytes=592 proxy_cycles=379
-    Term rule=Mem level=buffered count=124
-    Term rule=Mem level=forwarded count=57
-    Term rule=Mem level=l1_hit count=42
+  Fn key=__wrela_rt_run_one owner=runtime frame_bytes=592 proxy_cycles=363
+    Term rule=Mem level=buffered count=116
+    Term rule=Mem level=forwarded count=60
+    Term rule=Mem level=l1_hit count=39
     Term rule=Mem level=unresolved count=4
     Term rule=abort count=3
-    Term rule=abort_val count=8
-    Term rule=adrp count=19
-    Term rule=alu count=117
-    Term rule=branch count=43
+    Term rule=abort_val count=6
+    Term rule=adrp count=15
+    Term rule=alu count=105
+    Term rule=branch count=41
     Term rule=call count=4
     Term rule=load count=103
-    Term rule=mov_wide count=101
+    Term rule=mov_wide count=93
     Term rule=mul count=8
-    Term rule=store count=124
+    Term rule=store count=116
   Fn key=__wrela_rt_secondary_entry owner=runtime frame_bytes=128 proxy_cycles=88
     Term rule=Mem level=buffered count=31
     Term rule=Mem level=forwarded count=9
@@ -1580,7 +1580,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=store count=1
   Fn key=__wrela_secondary_entry_body owner=runtime frame_bytes=0 proxy_cycles=2
     Term rule=branch count=2
-  Fn key=__wrela_select_count owner=runtime frame_bytes=0 proxy_cycles=25
+  Fn key=__wrela_select_count owner=runtime frame_bytes=0 proxy_cycles=19
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1588,7 +1588,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=branch count=10
     Term rule=mov_wide count=7
     Term rule=store count=2
-  Fn key=__wrela_select_root owner=runtime frame_bytes=0 proxy_cycles=36
+  Fn key=__wrela_select_root owner=runtime frame_bytes=0 proxy_cycles=30
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
@@ -1635,7 +1635,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=2
     Term rule=mov_wide count=5
     Term rule=store count=2
-  Fn key=__wrela_wake_invoke owner=runtime frame_bytes=0 proxy_cycles=13
+  Fn key=__wrela_wake_invoke owner=runtime frame_bytes=0 proxy_cycles=25
     Term rule=Mem level=buffered count=2
     Term rule=abort count=1
     Term rule=adrp count=1
@@ -1795,7 +1795,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=1
     Term rule=mov_wide count=1
     Term rule=store count=1
-  Fn key=__wrela_xsend_edge owner=runtime frame_bytes=0 proxy_cycles=30
+  Fn key=__wrela_xsend_edge owner=runtime frame_bytes=0 proxy_cycles=24
     Term rule=Mem level=buffered count=4
     Term rule=abort count=2
     Term rule=adrp count=2
@@ -1823,7 +1823,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=6
     Term rule=mul count=1
     Term rule=store count=2
-  Fn key=ascii_digit owner=app frame_bytes=0 proxy_cycles=62
+  Fn key=ascii_digit owner=app frame_bytes=0 proxy_cycles=68
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
@@ -1906,4 +1906,4 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=1
     Term rule=mov_wide count=5
     Term rule=store count=1
-  Scope scope=linked-image executable_words=13478 executable_code_bytes=53912 fetched_text_bytes=107520 image_bytes=4195984 rodata_bytes=536 sync_frame_max_bytes=1328 async_frame_total_bytes=208
+  Scope scope=linked-image executable_words=13298 executable_code_bytes=53192 fetched_text_bytes=106048 image_bytes=4195984 rodata_bytes=536 sync_frame_max_bytes=1328 async_frame_total_bytes=208

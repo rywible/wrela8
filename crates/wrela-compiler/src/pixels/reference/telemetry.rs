@@ -1,6 +1,6 @@
 //! Versioned, decision-inert certificate telemetry.
 
-pub const CERTIFICATE_TELEMETRY_VERSION: u16 = 1;
+pub const CERTIFICATE_TELEMETRY_VERSION: u16 = 2;
 pub const RUN_LENGTH_BINS: usize = 8;
 pub const ROOT_METHOD_COUNT: usize = 3;
 pub const COMPOSITION_SHAPE_COUNT: usize = 4;
@@ -10,7 +10,8 @@ pub const DENSITY_BINS: usize = 8;
 pub const SUBDIVISION_BINS: usize = 16;
 pub const REBUILD_REASON_COUNT: usize = 9;
 pub const FAILURE_CAUSE_COUNT: usize = 8;
-pub const CERTIFICATE_TELEMETRY_COUNTERS_V1: u64 = (RUN_LENGTH_BINS
+pub const RASTER_CONFORMANCE_COUNTERS: usize = 8;
+pub const CERTIFICATE_TELEMETRY_COUNTERS_V2: u64 = (RUN_LENGTH_BINS
     + ROOT_METHOD_COUNT
     + COMPOSITION_SHAPE_COUNT
     + EXPIRY_CAUSE_COUNT
@@ -19,7 +20,8 @@ pub const CERTIFICATE_TELEMETRY_COUNTERS_V1: u64 = (RUN_LENGTH_BINS
     + 2 * SUBDIVISION_BINS
     + 2 * REBUILD_REASON_COUNT
     + FAILURE_CAUSE_COUNT
-    + 5) as u64;
+    + 5
+    + RASTER_CONFORMANCE_COUNTERS) as u64;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +104,14 @@ pub struct CertificateTelemetry {
     pub proposed_records: u64,
     pub revalidated_records: u64,
     pub new_records: u64,
+    pub raster_packets: u64,
+    pub raster_scalar_edges: u64,
+    pub raster_q_checked: u64,
+    pub raster_normal_checked: u64,
+    pub raster_world_positions: u64,
+    pub raster_background_pixels: u64,
+    pub raster_event_pixels: u64,
+    pub raster_validation_failures: u64,
 }
 
 impl Default for CertificateTelemetry {
@@ -129,6 +139,14 @@ impl Default for CertificateTelemetry {
             proposed_records: 0,
             revalidated_records: 0,
             new_records: 0,
+            raster_packets: 0,
+            raster_scalar_edges: 0,
+            raster_q_checked: 0,
+            raster_normal_checked: 0,
+            raster_world_positions: 0,
+            raster_background_pixels: 0,
+            raster_event_pixels: 0,
+            raster_validation_failures: 0,
         }
     }
 }
@@ -208,6 +226,23 @@ impl CertificateTelemetry {
             (&mut self.proposed_records, tile.proposed_records),
             (&mut self.revalidated_records, tile.revalidated_records),
             (&mut self.new_records, tile.new_records),
+            (&mut self.raster_packets, tile.raster_packets),
+            (&mut self.raster_scalar_edges, tile.raster_scalar_edges),
+            (&mut self.raster_q_checked, tile.raster_q_checked),
+            (&mut self.raster_normal_checked, tile.raster_normal_checked),
+            (
+                &mut self.raster_world_positions,
+                tile.raster_world_positions,
+            ),
+            (
+                &mut self.raster_background_pixels,
+                tile.raster_background_pixels,
+            ),
+            (&mut self.raster_event_pixels, tile.raster_event_pixels),
+            (
+                &mut self.raster_validation_failures,
+                tile.raster_validation_failures,
+            ),
         ] {
             *target = target
                 .checked_add(source)
@@ -283,8 +318,9 @@ mod tests {
             + 2 * SUBDIVISION_BINS
             + 2 * REBUILD_REASON_COUNT
             + FAILURE_CAUSE_COUNT
-            + 5;
-        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V1, counted as u64);
-        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V1, 142);
+            + 5
+            + RASTER_CONFORMANCE_COUNTERS;
+        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V2, counted as u64);
+        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V2, 150);
     }
 }

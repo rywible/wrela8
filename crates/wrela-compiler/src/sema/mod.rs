@@ -454,6 +454,7 @@ fn check_program_typed_tables(
     let core_render_program = vec!["core".to_string(), "render_program".to_string()];
     let core_render_certificate = vec!["core".to_string(), "render_certificate".to_string()];
     let core_render_coverage = vec!["core".to_string(), "render_coverage".to_string()];
+    let core_render_raster = vec!["core".to_string(), "render_raster".to_string()];
     let has_pixels_runtime = symtabs.contains_key(&image_pixels)
         && symtabs.contains_key(&core_render)
         && symtabs.contains_key(&core_field);
@@ -486,6 +487,18 @@ fn check_program_typed_tables(
             };
             for (target_module, names) in [
                 (
+                    &core_render,
+                    &[
+                        "__wrela_pixels_p8_charge_raster_run",
+                        "__wrela_pixels_p8_geometry_valid",
+                        "__wrela_pixels_p8_i32_fits",
+                        "__wrela_pixels_p8_i64_magnitude",
+                        "__wrela_pixels_p8_raster_regular",
+                        "__wrela_pixels_p8_recurrence_valid",
+                        "__wrela_pixels_p8_raster_setup",
+                    ][..],
+                ),
+                (
                     &core_render_interval,
                     &[
                         "FixedDomain",
@@ -508,6 +521,32 @@ fn check_program_typed_tables(
                 (
                     &core_render_coverage,
                     &["CoverageOutcome", "coverage_line_twice_area"][..],
+                ),
+                (
+                    &core_render_raster,
+                    &[
+                        "AffineRunSetup",
+                        "EventId",
+                        "EventPixel",
+                        "I32x4",
+                        "I32x4Outcome",
+                        "IdSlice",
+                        "IdentitySetId",
+                        "LightSummaryId",
+                        "MaterialSummaryId",
+                        "OutputProofCode",
+                        "QRunScalar",
+                        "RasterGeometryLane",
+                        "RasterRun",
+                        "RunId",
+                        "i32x4_add_checked",
+                        "pixels_i32x4_backend_add",
+                        "raster_geometry_lane_valid",
+                        "raster_i32_enclosure_fits",
+                        "raster_run4",
+                        "reconstruct_packet_world_normal",
+                        "reconstruct_packet_world_position",
+                    ][..],
                 ),
             ] {
                 if !symtabs.contains_key(target_module) {
@@ -849,7 +888,7 @@ pub fn is_compiler_reserved_source_name(name: &str) -> bool {
     name.starts_with("__wrela_") || name.starts_with("RendererWorker")
 }
 
-/// Opt-in marker letting a repository-owned golden fixture name the
+/// Opt-in marker letting a repository-owned contract fixture name the
 /// compiler-reserved Pixels surface in order to pin its contract.
 pub const COMPILER_INTERNAL_FIXTURE_MARKER: &str = "@wrela-compiler-internal";
 
@@ -886,13 +925,14 @@ fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaEr
     let source = std::fs::read_to_string(source_path)
         .unwrap_or_else(|_| crate::syntax::printer::pretty(module));
 
-    // A handful of repository-owned golden fixtures deliberately name
+    // A handful of repository-owned contract fixtures deliberately name
     // generated intrinsics in order to pin their contracts. That trust is
-    // declared per file rather than inherited from a directory: blanket-
-    // trusting `tests/golden/` meant no fixture could ever exercise the fence
-    // itself, which is why the rejection had only unit-test coverage. Both
+    // declared per file rather than inherited from a directory: blanket
+    // trust would prevent fixtures from exercising the fence itself. Both
     // halves are required — a marker outside this repository grants nothing,
-    // so a user package cannot opt itself in.
+    // so a user package cannot opt itself in. The only trusted roots are the
+    // golden corpus and stdlib's own contract-test corpus; shipped core and
+    // driver modules are handled separately above.
     // Match the directive as a comment line, not as a loose substring: prose
     // that merely mentions the marker (a fixture explaining why it does *not*
     // opt in, say) must not thereby opt itself in.
@@ -900,16 +940,14 @@ fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaEr
         let line = line.trim_start();
         line.starts_with('#') && line.contains(COMPILER_INTERNAL_FIXTURE_MARKER)
     });
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repository_fixture = marked
-        && Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/golden")
-            .canonicalize()
-            .ok()
-            .is_some_and(|root| {
-                source_path
-                    .canonicalize()
-                    .is_ok_and(|source| source.starts_with(root))
-            });
+        && source_path.canonicalize().is_ok_and(|source| {
+            ["../../tests/golden", "../../stdlib/tests"]
+                .into_iter()
+                .filter_map(|relative| manifest.join(relative).canonicalize().ok())
+                .any(|root| source.starts_with(root))
+        });
     if repository_fixture {
         return Ok(());
     }

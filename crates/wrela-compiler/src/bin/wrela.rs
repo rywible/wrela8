@@ -13,11 +13,11 @@ use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::rtconfig;
 use wrela_compiler::sema;
-use wrela_compiler::sema::typed::{TestKind, TypedProgram};
+use wrela_compiler::sema::typed::{TestKind, TypedExprKind, TypedProgram, TypedStmtKind};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--image-digest-only] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -1812,6 +1812,22 @@ impl VmmSlot {
     }
 }
 
+fn runtime_tests_need_image_graph(program: &TypedProgram, runtime_tests: &[String]) -> bool {
+    runtime_tests.iter().any(|name| {
+        let Some(function) = program.fns.get(name) else {
+            return true;
+        };
+        if function.is_async || !function.params.is_empty() {
+            return true;
+        }
+        function.body.iter().any(|statement| match &statement.kind {
+            TypedStmtKind::Pass | TypedStmtKind::Return(None) => false,
+            TypedStmtKind::Return(Some(value)) => !matches!(value.kind, TypedExprKind::Unit),
+            _ => true,
+        })
+    })
+}
+
 fn test_cmd(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     wrela_compiler::codegen::set_block_count(false);
@@ -1822,6 +1838,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut omit_dmb = false;
     let mut block_count = false;
     let mut pixels_telemetry = false;
+    let mut image_digest_only = false;
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut _ghz = wrela_compiler::cost::profile_ghz();
     let mut i = 0;
@@ -1841,6 +1858,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
             block_count = true;
         } else if args[i] == "--pixels-telemetry" {
             pixels_telemetry = true;
+        } else if args[i] == "--image-digest-only" {
+            image_digest_only = true;
         } else if args[i] == "--no-bounds-elide" {
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
             return ExitCode::FAILURE;
@@ -1912,6 +1931,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .filter(|t| t.kind == TestKind::Runtime)
         .map(|t| t.name.clone())
         .collect();
+    let tests_need_image_graph = runtime_tests_need_image_graph(&program, &runtime_tests);
 
     if runtime_tests.is_empty() {
         print!("{comptime_report}");
@@ -1954,18 +1974,18 @@ fn test_cmd(args: &[String]) -> ExitCode {
     };
     layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &checked.programs);
     let layout_ctx = layout_ctx;
-    let graph = match &program.image_fn {
-        Some(fn_name) => match eval::interp::eval_image(&program, fn_name) {
+    let graph = match (&program.image_fn, tests_need_image_graph) {
+        (Some(fn_name), true) => match eval::interp::eval_image(&program, fn_name) {
             Ok(g) => g,
             Err(e) => {
                 print_sema_error(&eval::to_sema_error(e));
                 return ExitCode::FAILURE;
             }
         },
-        None => eval::image::ImageGraph::default(),
+        _ => eval::image::ImageGraph::default(),
     };
     let mut pixels_programs = None;
-    let checked_image = if program.image_fn.is_some() {
+    let checked_image = if program.image_fn.is_some() && tests_need_image_graph {
         match eval::image_checks::check_sealed(&graph, &program, &checked.programs) {
             Ok(checked_image) => {
                 match wrela_compiler::pixels::compile_all(
@@ -2114,6 +2134,17 @@ fn test_cmd(args: &[String]) -> ExitCode {
     }
     let source_digest = report::sha256_hex(source.as_bytes());
     let image_digest = report::sha256_hex(&image_layout.blob);
+    // The image digest fully determines a deterministic guest's behavior for
+    // a given VMM, so a harness can key a boot-result cache on it. Compiling
+    // is seconds; the boot it lets the caller skip is minutes.
+    if image_digest_only {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        for line in &comptime_lines {
+            println!("{line}");
+        }
+        println!("p8-image-digest {image_digest}");
+        return ExitCode::SUCCESS;
+    }
     let mut parsed = layout::parsed_runtime_tail(&image_layout);
     parsed.entry = image_layout.entry;
     parsed.image_sha256 = image_digest;
@@ -2424,6 +2455,32 @@ fn build_cmd(args: &[String]) -> ExitCode {
 mod tests {
     use super::*;
     use wrela_compiler::pixels::PixelsDumpStage;
+
+    fn typed_program(source: &str) -> TypedProgram {
+        let tokens = lexer::lex(source).unwrap();
+        let module = parser::parse(tokens).unwrap();
+        sema::check_typed(&module, "test.wr").unwrap()
+    }
+
+    #[test]
+    fn inert_runtime_tests_do_not_retain_an_unobservable_image_graph() {
+        let inert = typed_program("module test\n\n@test(runtime)\nfn inert():\n    return unit\n");
+        assert!(!runtime_tests_need_image_graph(
+            &inert,
+            &["inert".to_string()]
+        ));
+
+        let active =
+            typed_program("module test\n\n@test(runtime)\nfn active():\n    assert true\n");
+        assert!(runtime_tests_need_image_graph(
+            &active,
+            &["active".to_string()]
+        ));
+        assert!(runtime_tests_need_image_graph(
+            &active,
+            &["missing".to_string()]
+        ));
+    }
 
     #[test]
     fn pixels_dump_stage_names_are_canonical() {

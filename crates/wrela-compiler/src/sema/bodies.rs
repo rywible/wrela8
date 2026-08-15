@@ -2212,17 +2212,20 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
 }
 
 fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
-    let runtime_ok = mctx.loader_key.len() == crate::loader::RUNTIME_MODULE_KEY.len()
-        && mctx
-            .loader_key
-            .iter()
-            .zip(crate::loader::RUNTIME_MODULE_KEY.iter())
-            .all(|(a, b)| a == *b);
-    if !runtime_ok {
+    let allowed_module = |expected: &[&str]| {
+        mctx.loader_key.len() == expected.len()
+            && mctx
+                .loader_key
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual == *expected)
+    };
+    if !allowed_module(&crate::loader::RUNTIME_MODULE_KEY)
+        && !allowed_module(&["drivers", "display"])
+    {
         return Err(SemaError::at(
             "intrinsic",
-            "`@dmb` is legal only inside `stdlib/core/runtime.wr` (plans/M15.md item H)"
-                .to_string(),
+            "`@dmb` is legal only inside the sealed runtime and display driver modules".to_string(),
             attr.span,
         ));
     }

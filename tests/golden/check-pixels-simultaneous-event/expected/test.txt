@@ -3,13 +3,14 @@ p7 000000000000008a
 p7 00000000000000c8
 p7 00000000000000f0
 p7 503753414d504c45
-p7 000000000000f3f3
+p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 e42240ab00d6058b
-p7 4585fbbe70ef9bab
-p7 d2fba2426e8467e4
-p7 874f7896aba67209
+p7 0aa34374f7f94ad3
+p7 8438f600ea54f653
+p7 3ef6a37e1ed6a05e
+p7 e1dd0a9c041c79a9
 test simultaneous_events_share_a_corridor: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=3d9d9ab803c201a4c2ce2d634033cdfa281c6dcf6a0ba65f7fbc1be741d53f7a visible=900c037b5a5fd8b0ce1d1e91d138b32e790ee8e6aa184fe69db6148873f2e889 raw=900c037b5a5fd8b0ce1d1e91d138b32e790ee8e6aa184fe69db6148873f2e889 vsync=4 checkpoint=4

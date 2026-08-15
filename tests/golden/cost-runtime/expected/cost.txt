@@ -2,11 +2,11 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=685 schedule_cycles=685 footprint_cycles=0 total_proxy_cycles=685
-  Scope scope=closure executable_words=957 executable_code_bytes=3828 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=64 async_frame_total_bytes=0
-  Workload name=flat proxy_cycles=685
+  Rank rank_cycles=677 schedule_cycles=677 footprint_cycles=0 total_proxy_cycles=677
+  Scope scope=closure executable_words=937 executable_code_bytes=3748 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=64 async_frame_total_bytes=0
+  Workload name=flat proxy_cycles=677
   Owner name=app proxy_cycles=242
-  Owner name=runtime proxy_cycles=443
+  Owner name=runtime proxy_cycles=435
   Owner name=driver proxy_cycles=0
   Fn key=__wrela_abort owner=runtime frame_bytes=32 proxy_cycles=27
     Term rule=Mem level=buffered count=8
@@ -51,21 +51,21 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=2
     Term rule=mov_wide count=6
     Term rule=store count=2
-  Fn key=__wrela_fmt_dec owner=runtime frame_bytes=48 proxy_cycles=236
-    Term rule=Mem level=buffered count=49
+  Fn key=__wrela_fmt_dec owner=runtime frame_bytes=48 proxy_cycles=228
+    Term rule=Mem level=buffered count=45
     Term rule=Mem level=forwarded count=4
     Term rule=Mem level=l1_hit count=8
     Term rule=Mem level=unresolved count=2
     Term rule=abort count=4
-    Term rule=abort_val count=7
-    Term rule=adrp count=18
-    Term rule=alu count=122
-    Term rule=branch count=28
+    Term rule=abort_val count=6
+    Term rule=adrp count=16
+    Term rule=alu count=114
+    Term rule=branch count=27
     Term rule=call count=1
     Term rule=load count=14
-    Term rule=mov_wide count=79
+    Term rule=mov_wide count=75
     Term rule=mul count=8
-    Term rule=store count=49
+    Term rule=store count=45
     Term rule=udiv count=2
   Fn key=__wrela_line_begin owner=runtime frame_bytes=0 proxy_cycles=7
     Term rule=Mem level=buffered count=1

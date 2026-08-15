@@ -6,15 +6,15 @@ ImageGraph v0
     Arg label=transport value=24576
   Driver index=0 type=Display
     Arg label=device value=device#0
-    Arg label=width value=64
-    Arg label=height value=32
+    Arg label=width value=128
+    Arg label=height value=31
     Arg label=refresh_hz value=60
   Renderer index=0 params=SceneParams actor=Renderer[SceneParams]
     Arg label=field value=world
     Arg label=material value=shade
     Arg label=display value=driver#0
-    Arg label=width value=64
-    Arg label=height value=32
+    Arg label=width value=128
+    Arg label=height value=31
     Arg label=refresh_hz value=60
     Arg label=shade_hz value=60
     Arg label=profile value=RenderProfile.AaaByteExact

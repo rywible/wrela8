@@ -1,0 +1,1 @@
+error[pixels P010]: renderer display mode exceeds the machine-v1 height ceiling: found 8193, maximum is 8192 at 44:16

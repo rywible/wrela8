@@ -221,6 +221,49 @@ pub fn dot(a: Iv3, b: Iv3, domain: FixedDomain) -> Result<Iv32, NumericError> {
         .add(a.z.multiply(b.z, domain)?, domain)
 }
 
+pub fn transform_camera_to_world(
+    normal: Iv3,
+    right: Iv3,
+    up: Iv3,
+    forward: Iv3,
+    domain: FixedDomain,
+) -> Result<Iv3, NumericError> {
+    let component = |r: Iv32, u: Iv32, f: Iv32| {
+        r.multiply(normal.x, domain)?
+            .add(u.multiply(normal.y, domain)?, domain)?
+            .add(f.multiply(normal.z, domain)?, domain)
+    };
+    Ok(Iv3 {
+        x: component(right.x, up.x, forward.x)?,
+        y: component(right.y, up.y, forward.y)?,
+        z: component(right.z, up.z, forward.z)?,
+    })
+}
+
+pub fn reconstruct_world_position(
+    eye: [f32; 3],
+    projective_ray: [f32; 3],
+    q: f32,
+    required: bool,
+) -> Result<Option<[f32; 3]>, NumericError> {
+    if !required {
+        return Ok(None);
+    }
+    if !q.is_finite() || q == 0.0 || eye.iter().chain(&projective_ray).any(|v| !v.is_finite()) {
+        return Err(NumericError::NonFinite);
+    }
+    let reciprocal = 1.0 / q;
+    let position = [
+        eye[0] + projective_ray[0] * reciprocal,
+        eye[1] + projective_ray[1] * reciprocal,
+        eye[2] + projective_ray[2] * reciprocal,
+    ];
+    if position.iter().any(|value| !value.is_finite()) {
+        return Err(NumericError::Overflow);
+    }
+    Ok(Some(position))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +348,44 @@ mod tests {
         assert_eq!(
             normalized_dot_q8(direction, zero, D),
             Err(NumericError::InvalidDomain)
+        );
+    }
+
+    #[test]
+    fn camera_basis_transform_and_optional_position_obey_dependencies() {
+        let zero = Iv32::point(0);
+        let one = Iv32::point(256);
+        let normal = Iv3 {
+            x: zero,
+            y: zero,
+            z: one,
+        };
+        let right = Iv3 {
+            x: one,
+            y: zero,
+            z: zero,
+        };
+        let up = Iv3 {
+            x: zero,
+            y: one,
+            z: zero,
+        };
+        let forward = Iv3 {
+            x: zero,
+            y: zero,
+            z: one,
+        };
+        assert_eq!(
+            transform_camera_to_world(normal, right, up, forward, D),
+            Ok(normal)
+        );
+        assert_eq!(
+            reconstruct_world_position([1.0, 2.0, 3.0], [2.0, 0.0, -2.0], 2.0, false),
+            Ok(None)
+        );
+        assert_eq!(
+            reconstruct_world_position([1.0, 2.0, 3.0], [2.0, 0.0, -2.0], 2.0, true),
+            Ok(Some([2.0, 2.0, 2.0]))
         );
     }
 }

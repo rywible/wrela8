@@ -13,6 +13,18 @@ use super::{
 
 pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
     let parsed = parsed_runtime_tail(layout);
+    for renderer in &layout.renderers {
+        out.push_str(&format!(
+            "RendererPlacement index={} frameprog_base={:#x} frameprog_bytes={} state_base={:#x} state_bytes={} coordinator={} coordinator_core={}\n",
+            renderer.index,
+            renderer.frameprog_base,
+            renderer.frameprog_size,
+            renderer.state_base,
+            renderer.state_size,
+            renderer.coordinator_actor,
+            renderer.coordinator_core,
+        ));
+    }
     out.push_str(&wrela_machine::report::line_cores(parsed.cores));
     out.push('\n');
     for s in &parsed.core_stacks {
@@ -49,6 +61,52 @@ pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
             inj.base, inj.offset, inj.status, inj.vector,
         ));
         out.push('\n');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_vmm_tail_includes_renderer_frame_program_placements() {
+        let layout = ImageLayout {
+            blob: Vec::new(),
+            linked: None,
+            entry: 0,
+            sections: vec![super::super::Section {
+                name: "frameprog",
+                base: 0x40_1000,
+                size: 256,
+            }],
+            runtime: None,
+            pools: Vec::new(),
+            device_regs: Vec::new(),
+            blk: None,
+            irq_host_injects: Vec::new(),
+            core_entries: Vec::new(),
+            cores: 1,
+            placed_statics: Vec::new(),
+            renderers: vec![super::super::RendererPlacement {
+                index: 0,
+                frameprog_base: 0x40_1000,
+                frameprog_size: 256,
+                state_base: 0,
+                state_size: 0,
+                coordinator_actor: String::new(),
+                coordinator_core: 0,
+                per_core: Vec::new(),
+                framebuffer_base: 0,
+                framebuffer_bytes: 0,
+                probe_base: 0,
+                probe_bytes: 0,
+            }],
+        };
+        let mut report = String::new();
+        append_vmm_runtime_lines(&mut report, &layout);
+        assert!(report.starts_with(
+            "RendererPlacement index=0 frameprog_base=0x401000 frameprog_bytes=256 state_base=0x0 state_bytes=0 coordinator= coordinator_core=0\n"
+        ));
     }
 }
 
@@ -129,6 +187,8 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
                 index: renderer.index,
                 frameprog_base: renderer.frameprog_base,
                 frameprog_size: renderer.frameprog_size,
+                state_base: renderer.state_base,
+                state_size: renderer.state_size,
             })
             .collect(),
         blk,

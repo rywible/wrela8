@@ -228,6 +228,48 @@ impl QRunScalar {
         self.step += 1;
         Ok(q)
     }
+
+    /// Re-anchor the sealed recurrence at an absolute step without carrying
+    /// the hot-loop step counter across a microtile reset.
+    pub fn reset_at(self, steps: u32) -> Result<Self, NumericError> {
+        let n = i64::from(steps);
+        let triangular = n
+            .checked_mul(n.saturating_sub(1))
+            .ok_or(NumericError::Overflow)?
+            / 2;
+        let q = i64::from(self.q)
+            .checked_add(
+                n.checked_mul(i64::from(self.dq))
+                    .ok_or(NumericError::Overflow)?,
+            )
+            .and_then(|value| {
+                triangular
+                    .checked_mul(i64::from(self.ddq))
+                    .and_then(|term| value.checked_add(term))
+            })
+            .ok_or(NumericError::Overflow)?;
+        let dq = i64::from(self.dq)
+            .checked_add(
+                n.checked_mul(i64::from(self.ddq))
+                    .ok_or(NumericError::Overflow)?,
+            )
+            .ok_or(NumericError::Overflow)?;
+        let q = i32::try_from(q).map_err(|_| NumericError::Overflow)?;
+        let dq = i32::try_from(dq).map_err(|_| NumericError::Overflow)?;
+        if q < self.domain.min_raw
+            || q > self.domain.max_raw
+            || dq < self.domain.min_raw
+            || dq > self.domain.max_raw
+        {
+            return Err(NumericError::Overflow);
+        }
+        Ok(Self {
+            q,
+            dq,
+            step: 0,
+            ..self
+        })
+    }
 }
 
 fn quantize_real_interval(lo: f64, hi: f64, exponent: i16) -> Option<Iv32> {
@@ -342,6 +384,27 @@ mod tests {
         for n in 1_i32..=32 {
             let expected = 100 + n * 7 + n * (n - 1) / 2 * -1;
             assert_eq!(run.advance().unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn reset_anchor_matches_scalar_steps() {
+        let domain = FixedDomain::full(-8);
+        let run = setup(
+            Iv32::point(100),
+            Iv32::point(7),
+            Iv32::point(-1),
+            domain,
+            32,
+            0,
+        )
+        .unwrap();
+        let mut scalar = run;
+        for step in 0..=16 {
+            assert_eq!(run.reset_at(step).unwrap().q, scalar.q);
+            if step != 16 {
+                scalar.advance().unwrap();
+            }
         }
     }
 

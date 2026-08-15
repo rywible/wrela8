@@ -381,6 +381,7 @@ mod tests {
             material: String::new(),
             material_type: Type::Unit,
             display_index: 0,
+            display_doorbell_addr: wrela_machine::pixels::DOORBELL_ADDR,
             width: 4,
             height: 2,
             refresh_hz: 60,

@@ -609,6 +609,8 @@ mod tests {
                 },
                 q_domain: q,
                 q_error: Iv32::point(1),
+                q_u: Iv32::point(1),
+                q_v: Iv32::point(-2),
                 normal_model: NormalModel {
                     nx: Iv32::point(0),
                     ny: Iv32::point(0),

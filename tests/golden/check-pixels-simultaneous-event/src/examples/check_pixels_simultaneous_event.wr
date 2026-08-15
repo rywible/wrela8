@@ -97,7 +97,7 @@ async fn simultaneous_events_share_a_corridor(renderer: Actor[Renderer[ScenePara
                     packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == EVENT_FRAME_INDEX, "simultaneous event frame renders"
+            assert rendered.frame_index == 0, "first simultaneous-event frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "simultaneous events share charged corridors"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:

@@ -1029,8 +1029,12 @@ mod tests {
             .values()
             .map(|f| basic_block_ranges(&f.code).len() as u64)
             .sum();
+        // 304 -> 300: large aggregate copies became counted loops instead of an
+        // unrolled load/store pair per word, which removes straight-line words
+        // from the scored closure. Re-locked against the measurement, not
+        // widened to accommodate it.
         assert_eq!(
-            all_word_blocks, 304,
+            all_word_blocks, 300,
             "emitted-word blocks in the current scored closure"
         );
         assert!(

@@ -3161,6 +3161,44 @@ fn verify_pixels_placed_static_reservations(
             size: crate::pixels::capacities::P7_CANONICAL_FRAME_SNAPSHOT_BYTES,
         });
         aliases.push(AllowedPixelsAlias {
+            name: format!("R{}_SCANOUT_STATE", placement.index),
+            addr: placement
+                .state_base
+                .checked_add(renderer.mutable_layout.header.offset)
+                .ok_or_else(|| {
+                    LayoutError::new("P025: generated scanout-state alias address overflow")
+                })?,
+            size: renderer.mutable_layout.header.bytes,
+        });
+        let mut display_list_offset = 0_u64;
+        let mut display_list_chunk = 0_usize;
+        while display_list_offset < renderer.mutable_layout.tile_descriptors.bytes {
+            let size = (renderer.mutable_layout.tile_descriptors.bytes - display_list_offset)
+                .min(crate::pixels::glue::WORKSPACE_VIEW_CHUNK_BYTES);
+            aliases.push(AllowedPixelsAlias {
+                name: format!(
+                    "R{}_DISPLAY_LIST_CHUNK_{display_list_chunk}",
+                    placement.index
+                ),
+                addr: placement
+                    .state_base
+                    .checked_add(renderer.mutable_layout.tile_descriptors.offset)
+                    .and_then(|base| base.checked_add(display_list_offset))
+                    .ok_or_else(|| {
+                        LayoutError::new(
+                            "P025: generated display-list chunk alias address overflow",
+                        )
+                    })?,
+                size,
+            });
+            display_list_offset = display_list_offset.checked_add(size).ok_or_else(|| {
+                LayoutError::new("P025: generated display-list chunk alias offset overflow")
+            })?;
+            display_list_chunk = display_list_chunk.checked_add(1).ok_or_else(|| {
+                LayoutError::new("P015: generated display-list chunk alias count overflow")
+            })?;
+        }
+        aliases.push(AllowedPixelsAlias {
             name: format!("R{}_FRAME_PROGRAM_HEADER", placement.index),
             addr: placement.frameprog_base,
             size: header_size,
@@ -3254,7 +3292,7 @@ fn verify_pixels_placed_static_reservations(
                 != 0
             {
                 let telemetry_bytes =
-                    crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1 * 8;
+                    crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2 * 8;
                 aliases.push(AllowedPixelsAlias {
                     name: format!(
                         "R{}_WORKER_{}_TELEMETRY",
@@ -3513,6 +3551,37 @@ pub struct ImageCodegen {
     pub pixels_config_text: String,
 }
 
+fn runtime_test_roots_are_inert(
+    programs: &BTreeMap<String, TypedProgram>,
+    runtime_tests: &[String],
+) -> bool {
+    !runtime_tests.is_empty()
+        && runtime_tests.iter().all(|name| {
+            let function = programs.values().find_map(|program| {
+                program
+                    .tests
+                    .iter()
+                    .any(|test| {
+                        test.name == *name && test.kind == crate::sema::typed::TestKind::Runtime
+                    })
+                    .then(|| program.fns.get(name))
+                    .flatten()
+            });
+            function.is_some_and(|function| {
+                !function.is_async
+                    && function.params.is_empty()
+                    && function.body.iter().all(|statement| match &statement.kind {
+                        crate::sema::typed::TypedStmtKind::Pass
+                        | crate::sema::typed::TypedStmtKind::Return(None) => true,
+                        crate::sema::typed::TypedStmtKind::Return(Some(value)) => {
+                            matches!(value.kind, crate::sema::typed::TypedExprKind::Unit)
+                        }
+                        _ => false,
+                    })
+            })
+        })
+}
+
 pub fn lower_and_codegen_image(
     modules: &BTreeMap<String, Module>,
     programs: &BTreeMap<String, TypedProgram>,
@@ -3542,6 +3611,11 @@ pub fn lower_and_codegen_image(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let inert_runtime_test_image = graph.actors.is_empty()
+        && graph.drivers.is_empty()
+        && graph.devices.is_empty()
+        && graph.renderers.is_empty()
+        && runtime_test_roots_are_inert(programs, runtime_tests);
     let mut generated_graph =
         crate::pixels::glue::synthesize_image_graph(graph, &generated_renderers)?;
     let graph = &generated_graph;
@@ -3595,12 +3669,20 @@ pub fn lower_and_codegen_image(
         emit_comptime_tests,
         only: None,
     };
-    let reachable = crate::lower::guest_reachable_keys_closure(programs, &reach_opts);
+    let reachable = if inert_runtime_test_image {
+        crate::lower::guest_reachable_keys_closure_from_roots(
+            programs,
+            &reach_opts,
+            runtime_tests.iter().cloned(),
+        )
+    } else {
+        crate::lower::guest_reachable_keys_closure(programs, &reach_opts)
+    };
     let derive_opts = crate::lower::LowerOpts {
         emit_comptime_tests,
         only: Some(reachable),
     };
-    let flow_derive = lower_flow_closure(programs, capacity, &derive_opts)?;
+    let flow_derive = lower_flow_closure(programs, &derive_opts)?;
     let async_frames_derive =
         crate::codegen::async_frame_sizes(&flow_derive, &layout_ctx).map_err(|e| e.message)?;
     let (group_child_index_derive, _) =
@@ -3683,6 +3765,13 @@ pub fn lower_and_codegen_image(
             );
         }
     }
+    // The derive pass exists only to establish runtime wiring before the live
+    // generated modules are rechecked. Keeping its closure-sized FlowWIR and
+    // analyses alive across live lowering nearly doubles peak memory for
+    // large renderer sources, even though no later result reads them.
+    drop(flow_derive);
+    drop(async_frames_derive);
+    drop(group_child_index_derive);
     let tests = test_runner_facts(
         runtime_tests,
         async_tests,
@@ -3735,14 +3824,22 @@ pub fn lower_and_codegen_image(
         )?;
     }
 
-    let mut only = crate::lower::guest_reachable_keys_closure(&live_programs, &reach_opts);
+    let mut only = if inert_runtime_test_image {
+        crate::lower::guest_reachable_keys_closure_from_roots(
+            &live_programs,
+            &reach_opts,
+            runtime_tests.iter().cloned(),
+        )
+    } else {
+        crate::lower::guest_reachable_keys_closure(&live_programs, &reach_opts)
+    };
     crate::lower::seed_image_force_roots(&mut only, &live_programs, force_opts);
     let lower_opts = crate::lower::LowerOpts {
         emit_comptime_tests,
         only: Some(only),
     };
     let mwir = lower_mwir_closure(&live_programs, capacity, &lower_opts)?;
-    let flow = lower_flow_closure(&live_programs, capacity, &lower_opts)?;
+    let flow = lower_flow_closure(&live_programs, &lower_opts)?;
     let method_index =
         actor_method_index_tables(&live_modules, &layout_ctx).map_err(|e| e.message)?;
     let group_arena_capacity = count_with_group_sites(&live_modules);
@@ -3908,25 +4005,25 @@ fn lower_mwir_closure(
 ) -> Result<mwir::MwirProgram, String> {
     let mut mwir_programs = Vec::with_capacity(programs.len());
     for typed in programs.values() {
-        let mut stamped = typed.clone();
-        stamped.blk_capacity_sectors = capacity;
-        mwir_programs
-            .push(crate::lower::lower_program_with(&stamped, opts).map_err(|e| e.message)?);
+        mwir_programs.push(
+            crate::lower::lower_program_with_capacity(typed, opts, capacity)
+                .map_err(|e| e.message)?,
+        );
     }
-    Ok(merge_mwir_programs(mwir_programs))
+    let merged = merge_mwir_programs(mwir_programs);
+    crate::lower::validate_pixels_display_driver_bridge_target(&merged)
+        .map_err(|error| error.message)?;
+    Ok(merged)
 }
 
 fn lower_flow_closure(
     programs: &BTreeMap<String, TypedProgram>,
-    capacity: Option<u64>,
     opts: &crate::lower::LowerOpts,
 ) -> Result<FlowWirProgram, String> {
     let mut flow_fns = BTreeMap::new();
     for typed in programs.values() {
-        let mut stamped = typed.clone();
-        stamped.blk_capacity_sectors = capacity;
         flow_fns.extend(
-            crate::flowwir_lower::lower_program_with(&stamped, opts)
+            crate::flowwir_lower::lower_program_with(typed, opts)
                 .map_err(|e| e.message)?
                 .fns,
         );

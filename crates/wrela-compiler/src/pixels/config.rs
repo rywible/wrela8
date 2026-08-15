@@ -108,6 +108,8 @@ pub struct RendererConfig {
     pub material: String,
     pub material_type: Type,
     pub display_index: usize,
+    /// Sealed machine-v1 MMIO address of the bound display device doorbell.
+    pub display_doorbell_addr: u64,
     pub width: u32,
     pub height: u32,
     pub refresh_hz: u32,
@@ -282,6 +284,15 @@ fn integer(renderer: &RendererDecl, label: &str) -> ConfigResult<u32> {
         )
         .at(argument.span)
     })
+}
+
+fn oversized_mode_dimension(width: u32, height: u32) -> Option<(&'static str, u32, u32)> {
+    [
+        ("width", width, wrela_machine::pixels::MAX_MODE_WIDTH),
+        ("height", height, wrela_machine::pixels::MAX_MODE_HEIGHT),
+    ]
+    .into_iter()
+    .find(|(_, value, maximum)| value > maximum)
 }
 
 fn display_integer(
@@ -893,6 +904,7 @@ fn validate_renderers_inner(
     )
     .map_err(|error| error.at(fallback_span))?;
     let mut claimed_displays = BTreeMap::new();
+    let mut claimed_display_doorbells = BTreeMap::new();
     let mut configs = Vec::with_capacity(graph.renderers.len());
     for (declaration_index, renderer) in graph.renderers.iter().enumerate() {
         let actor_type_is_canonical = matches!(
@@ -1054,6 +1066,60 @@ fn validate_renderers_inner(
             )
             .at(device_binding.span));
         }
+        let transport = display_device
+            .args
+            .iter()
+            .find(|argument| argument.label == "transport")
+            .ok_or_else(|| {
+                coded(
+                    "P010",
+                    format!(
+                        "renderer display device#{display_device_index} has no `transport=` binding"
+                    ),
+                )
+                .at(device_binding.span)
+            })?;
+        let transport_offset = match &transport.value {
+            Value::U64(value) | Value::Usize(value) => *value,
+            Value::U32(value) => u64::from(*value),
+            Value::I64(value) | Value::Isize(value) if *value >= 0 => *value as u64,
+            Value::I32(value) if *value >= 0 => u64::from(*value as u32),
+            Value::Enum(0, payload) if payload.is_empty() => 0x6000,
+            value => {
+                return Err(coded(
+                    "P010",
+                    format!(
+                        "renderer display device#{display_device_index} has invalid `transport=` value {value:?}"
+                    ),
+                )
+                .at(transport.span));
+            }
+        };
+        let display_doorbell_addr = wrela_machine::mmio::MMIO_BASE
+            .checked_add(transport_offset)
+            .ok_or_else(|| {
+                coded("P010", "renderer display transport address overflows u64").at(transport.span)
+            })?;
+        if !wrela_machine::pixels::is_display_doorbell_addr(display_doorbell_addr) {
+            return Err(coded(
+                "P010",
+                format!(
+                    "renderer display transport {transport_offset:#x} is not a machine-v1 display doorbell slot"
+                ),
+            )
+            .at(transport.span));
+        }
+        if let Some(prior) =
+            claimed_display_doorbells.insert(display_doorbell_addr, declaration_index)
+        {
+            return Err(coded(
+                "P021",
+                format!(
+                    "more than one renderer claims display doorbell {display_doorbell_addr:#x} (renderer#{prior} and renderer#{declaration_index})"
+                ),
+            )
+            .at(transport.span));
+        }
         if let Some(prior) = claimed_displays.insert(display_index, declaration_index) {
             return Err(coded(
                 "P021",
@@ -1086,6 +1152,15 @@ fn validate_renderers_inner(
                 "P010",
                 "renderer display mode disagrees with the bound display driver: dimensions and rates must be positive",
             )
+                .at(arg(renderer, label)?.span));
+        }
+        if let Some((label, value, maximum)) = oversized_mode_dimension(width, height) {
+            return Err(coded(
+                "P010",
+                format!(
+                    "renderer display mode exceeds the machine-v1 {label} ceiling: found {value}, maximum is {maximum}"
+                ),
+            )
             .at(arg(renderer, label)?.span));
         }
         if refresh_hz % shade_hz != 0 {
@@ -1097,25 +1172,10 @@ fn validate_renderers_inner(
             )
             .at(arg(renderer, "shade_hz")?.span));
         }
-        // Pixel indices are contiguous across row wraps, so the last pixel of
-        // one row and the first pixel of the next belong to different tiles —
-        // potentially different render workers. Framebuffer color bytes (4 per
-        // pixel) and write-once marker bytes (1 per pixel) are stored in shared
-        // u64 words updated by non-atomic read-modify-write; only a width
-        // divisible by 8 guarantees no word is ever shared between two
-        // workers' pixels. Reject the mode at seal time rather than admit a
-        // cross-worker data race.
-        if width % 8 != 0 {
-            return Err(coded(
-                "P010",
-                format!(
-                    "renderer display width {width} is not a multiple of 8: framebuffer color \
-                     and write-marker words would be shared between render workers across row \
-                     boundaries"
-                ),
-            )
-            .at(arg(renderer, "width")?.span));
-        }
+        // P8 scanout is tile-local: every 64x32 allocation starts on its own
+        // aligned boundary and a tile has exactly one worker owner. Partial
+        // rows therefore never share an update word across workers, so mode
+        // width is no longer constrained by the pre-P8 linear framebuffer.
         if (width, height, refresh_hz) != (display_width, display_height, display_refresh_hz) {
             return Err(coded(
                 "P010",
@@ -1199,6 +1259,7 @@ fn validate_renderers_inner(
             material,
             material_type,
             display_index,
+            display_doorbell_addr,
             width,
             height,
             refresh_hz,
@@ -1304,6 +1365,33 @@ mod tests {
         assert_eq!(float(&renderer, "near").unwrap(), f64::MAX);
         let renderer = renderer_arg("near", Type::F64, Value::F64(f64::MIN_POSITIVE));
         assert_eq!(float(&renderer, "near").unwrap(), f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn machine_mode_dimension_ceiling_is_shared_exactly() {
+        assert_eq!(
+            oversized_mode_dimension(
+                wrela_machine::pixels::MAX_MODE_WIDTH,
+                wrela_machine::pixels::MAX_MODE_HEIGHT,
+            ),
+            None,
+        );
+        assert_eq!(
+            oversized_mode_dimension(wrela_machine::pixels::MAX_MODE_WIDTH + 1, 1),
+            Some((
+                "width",
+                wrela_machine::pixels::MAX_MODE_WIDTH + 1,
+                wrela_machine::pixels::MAX_MODE_WIDTH,
+            )),
+        );
+        assert_eq!(
+            oversized_mode_dimension(1, wrela_machine::pixels::MAX_MODE_HEIGHT + 1),
+            Some((
+                "height",
+                wrela_machine::pixels::MAX_MODE_HEIGHT + 1,
+                wrela_machine::pixels::MAX_MODE_HEIGHT,
+            )),
+        );
     }
 
     #[test]

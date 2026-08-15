@@ -4,7 +4,7 @@ pub struct DisplayDevice:
     id: u32
 
 pub enum Feature:
-    Bgra8
+    Bgra8Srgb
 
 @driver
 pub struct Display:
@@ -22,36 +22,44 @@ pub struct Display:
         return Ok(unit)
 
 @layout(runtime, endian=little)
-struct DisplayDoorbell:
-    @offset(0) present: u64
-
-@layout(runtime, endian=little)
 struct DisplayMemory:
     @offset(0x0000) abi_version: u32
-    @offset(0x0004) format: u32
+    @offset(0x0004) format: u8
+    @offset(0x0005) generation: u8
+    @offset(0x0006) renderer_index: u16
     @offset(0x0008) width: u32
     @offset(0x000c) height: u32
-    @offset(0x0010) stride_bytes: u32
+    @offset(0x0010) refresh_hz: u32
     @offset(0x0014) tile_count: u32
     @offset(0x0018) sequence: u64
     @offset(0x0020) tiles_addr: u64
-    @offset(0x0100) tile_id: u32
-    @offset(0x0104) tile_x: u32
-    @offset(0x0108) tile_y: u32
-    @offset(0x010c) tile_width: u32
-    @offset(0x0110) tile_height: u32
-    @offset(0x0114) tile_stride_bytes: u32
-    @offset(0x0118) tile_pixels_addr: u64
+    @offset(0x0028) vsync_id: u64
+    @offset(0x0030) checkpoint: u64
+    @offset(0x0038) guest_visible_digest: [u64; 4]
+    @offset(0x0058) guest_raw_tile_digest: [u64; 4]
+    @offset(0x0078) guest_tile_descriptor_digest: [u64; 4]
+    @offset(0x0098) completion_status: u32
+    @offset(0x009c) control_reserved: [u8; 4]
+    @offset(0x0100) tile_pixels_addr: u64
+    @offset(0x0108) tile_x: u16
+    @offset(0x010a) tile_y: u16
+    @offset(0x010c) tile_width: u16
+    @offset(0x010e) tile_height: u16
+    @offset(0x0110) tile_stride_bytes: u16
+    @offset(0x0112) tile_format: u8
+    @offset(0x0113) tile_reserved: [u8; 5]
     @offset(0x1000) pixels: [u8; 8192]
 
 @placed(0x40100000)
 static DISPLAY_MEMORY: DisplayMemory
 
-@placed(0x08006000)
-static DISPLAY_DOORBELL: DisplayDoorbell
-
-pub fn __wrela_pixels_display_present(sequence: u64) -> unit:
-    # This is the canonical retained presentation path. P5 roots it for the
-    # sealed orchestration closure but never calls it before a frame exists.
-    DISPLAY_DOORBELL.present = sequence
+pub fn __wrela_pixels_display_submit_and_wait(doorbell_addr: u64, control_addr: u64) -> unit:
+    # Publish every control, descriptor, and pixel store before the one-frame
+    # doorbell. Machine-v1 MMIO handling does not resume the guest until the
+    # host has either presented or rejected this exact request, so returning
+    # from this driver function is the completion boundary. Acquire before
+    # the coordinator inspects the terminal status and recovers ownership.
+    # Lowering replaces this driver-owned seam with the two barriers and the
+    # one dynamic MMIO store. Keeping the source body inert prevents ordinary
+    # code from manufacturing an unsealed MMIO capability.
     return unit

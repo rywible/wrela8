@@ -99,7 +99,7 @@ async fn enclosed_feature_is_found_structurally(renderer: Actor[Renderer[ScenePa
                     packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
                 __wrela_trace_p7_u64(packed)
                 digest_word = digest_word + 1
-            assert rendered.frame_index == 8, "enclosed feature renders from structural indexes"
+            assert rendered.frame_index == 0, "first enclosed-feature frame is presentation sequence zero"
             assert rendered.event_corridors > 0, "enclosed curved feature uses certified terminal corridors"
             dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
             if dump_header[0] == 1:

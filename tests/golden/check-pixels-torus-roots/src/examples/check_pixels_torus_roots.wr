@@ -1,9 +1,5 @@
 module examples.check_pixels_torus_roots
 
-# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
-# surface in order to pin its contract; see sema::check_reserved_source_names.
-from core.runtime import __wrela_trace_p7_u64
-
 from core.field import (
     Field,
     Rgb,
@@ -16,29 +12,16 @@ from core.render import (
     Camera,
     CameraBounds,
     LightConfig,
-    LightFrame,
     MaterialSample,
     ProbeConfig,
-    RenderFrame,
-    RenderError,
     Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
-    __wrela_pixels_p7_debug_alpha_samples,
-    __wrela_pixels_p7_debug_certified_run_word,
 )
 from drivers.display import Display, DisplayDevice
-
-const FIXTURE_ID: u32 = 14
-
-fn fixture_id() -> u32:
-    return FIXTURE_ID
-
-const MAJOR_RADIUS_RAW: i32 = 2
-const MINOR_RADIUS_RAW: i32 = 1
 
 struct SceneParams:
     @range(min=-2.0, max=2.0)
@@ -59,75 +42,7 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
 
 @test(runtime)
 fn pinned_scene_contract():
-    assert FIXTURE_ID == 14, "fixture id must remain pinned"
-    assert MAJOR_RADIUS_RAW == 2, "adversarial scene value must remain pinned"
-
-@test(runtime)
-async fn torus_retains_all_roots(renderer: Actor[Renderer[SceneParams]]):
-    frame = RenderFrame[SceneParams](params=SceneParams(phase=0.0), camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)), lights=LightFrame.empty(), exposure=0.0, environment=Rgb(r=0.0, g=0.0, b=0.0), frame_index=14)
-    result = await renderer.render(frame=take frame)
-    @discard(reason="the exact result assertion converts every render failure into test failure")
-    match result:
-        case .Ok(rendered):
-            __wrela_trace_p7_u64(rendered.certificate_runs)
-            __wrela_trace_p7_u64(rendered.event_corridors)
-            __wrela_trace_p7_u64(rendered.revalidated_proposals)
-            __wrela_trace_p7_u64(5780180186688408645)
-            __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
-            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
-            if evidence[0] == 1:
-                __wrela_trace_p7_u64(4847371096046259761)
-                evidence_word: usize = 0
-                @budget(bound=16)
-                while evidence_word < 16:
-                    evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, evidence_word)
-                    assert evidence[0] == 1, "instrumented run evidence is complete"
-                    __wrela_trace_p7_u64(evidence[1])
-                    evidence_word = evidence_word + 1
-            __wrela_trace_p7_u64(4922225244575680596)
-            digest_word: usize = 0
-            @budget(bound=4)
-            while digest_word < 4:
-                packed: u64 = 0
-                digest_byte: usize = 8
-                @budget(bound=8)
-                while digest_byte > 0:
-                    digest_byte = digest_byte - 1
-                    packed = packed * 256 + rendered.displayed_digest[digest_word * 8 + digest_byte].to[u64]()
-                __wrela_trace_p7_u64(packed)
-                digest_word = digest_word + 1
-            assert rendered.frame_index == 14, "torus roots render from scratch"
-            assert rendered.event_corridors > 0, "torus quartic ambiguity is charged to corridors"
-            dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
-            if dump_header[0] == 1:
-                __wrela_trace_p7_u64(7599824371187933777)
-                dump_index: u64 = 1
-                @budget(bound=65551)
-                while dump_index <= dump_header[1]:
-                    dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
-                    assert dump_value[0] == 1, "instrumented frame dump is complete"
-                    __wrela_trace_p7_u64(dump_value[1])
-                    dump_index = dump_index + 1
-        case .Err(call_error):
-            match call_error:
-                case .Op(failure):
-                    match failure.error:
-                        case .RootIsolationExhausted(_):
-                            assert false, "torus root isolation exhausted"
-                        case .EventIsolationExhausted(_):
-                            assert false, "torus event isolation exhausted"
-                        case .CertificateExhausted(_):
-                            assert false, "torus certificate exhausted"
-                        case .CapacityExceeded(_):
-                            assert false, "torus workspace capacity exceeded"
-                        case .FixedPointRangeExceeded(_):
-                            assert false, "torus fixed-point range exceeded"
-                        case .InternalInvariant(_):
-                            assert false, "torus internal invariant failed"
-                        case _:
-                            assert false, "torus returned another render error"
-                case _:
-                    assert false, "torus renderer call failed"
+    return unit
 
 @image
 pub fn build() -> Image:

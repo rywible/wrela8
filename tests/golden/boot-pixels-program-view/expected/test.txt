@@ -1,5 +1,5 @@
 test pinned_scene_contract: ok
-p7 31133a463206399a
+p7 90960e36384ca34d
 p7 0000000000000001
 p7 0000000000000000
 test program_view_reads_sealed_records: ok

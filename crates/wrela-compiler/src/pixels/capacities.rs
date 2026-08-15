@@ -32,8 +32,9 @@ pub(crate) const TRANSPARENCY_LAYER_BYTES_V1: u64 = 32;
 pub(crate) const KINETIC_CERTIFICATE_BYTES_V1: u64 = 128;
 pub(crate) const RENDERER_STATE_HEADER_BYTES_V1: u64 = 256;
 pub(crate) const FRAME_COMPLEX_PIXEL_BYTES_V1: u64 = 32;
-pub(crate) const TILE_DESCRIPTOR_BYTES_V1: u64 = 32;
-pub(crate) const TILE_OWNERSHIP_BYTES_V1: u64 = 4;
+pub(crate) const TILE_DESCRIPTOR_BYTES_V1: u64 =
+    wrela_machine::pixels::DISPLAY_TILE_DESC_BYTES_V1 as u64;
+pub(crate) const TILE_OWNERSHIP_BYTES_V1: u64 = 1;
 pub(crate) const FAILURE_RECORD_BYTES_V1: u64 = 64;
 pub(crate) const WORKSPACE_HEADER_BYTES_V1: u64 = 64;
 pub(crate) const P7_CANONICAL_FRAME_SNAPSHOT_BYTES: u64 = 688;
@@ -138,7 +139,7 @@ pub enum RebuildReasonV1 {
 }
 
 fn telemetry_counter_count_v1() -> u64 {
-    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1
+    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,8 +339,12 @@ fn final_renderer_state_bytes(
     .try_fold(0_u64, |sum, bytes| {
         add(sum, bytes, "p4_final_renderer_state_bytes")
     })?;
+    let telemetry_offset = total
+        .checked_add(7)
+        .map(|value| value & !7)
+        .ok_or_else(|| "P015: P4 telemetry state alignment overflow".to_string())?;
     let instrumented = add(
-        total,
+        telemetry_offset,
         structural.telemetry_bytes_instrumented,
         "p4_final_instrumented_renderer_state_bytes",
     )?;
@@ -1068,23 +1073,46 @@ pub fn derive(
         u64::from(config.worker_count),
         "all_worker_scratch_bytes",
     )?;
+    let pixel_count = mul(
+        u64::from(config.width),
+        u64::from(config.height),
+        "output_pixels",
+    )?;
     let telemetry_bytes_production = 0;
     let telemetry_bytes_per_worker = mul(
         telemetry_counter_count_v1(),
         8,
         "telemetry_bytes_per_worker",
     )?;
-    let telemetry_bytes_instrumented = mul(
+    let telemetry_counter_bytes_instrumented = mul(
         telemetry_bytes_per_worker,
         u64::from(config.worker_count),
+        "telemetry_counter_bytes_instrumented",
+    )?;
+    // Instrumented conformance retains the three fixed-q recurrence values
+    // and claim flags for every output pixel. It is deliberately outside the
+    // production layout and lets the host validate every regular lane rather
+    // than extrapolating from one representative run.
+    let raster_evidence_bytes = mul(pixel_count, 24, "raster_evidence_bytes")?;
+    let telemetry_bytes_instrumented = add(
+        telemetry_counter_bytes_instrumented,
+        raster_evidence_bytes,
         "telemetry_bytes_instrumented",
     )?;
-    let pixel_count = mul(
-        u64::from(config.width),
-        u64::from(config.height),
-        "output_pixels",
+    let scanout_tile_columns =
+        u64::from(config.width).div_ceil(u64::from(wrela_machine::pixels::TILE_WIDTH));
+    let scanout_tile_rows =
+        u64::from(config.height).div_ceil(u64::from(wrela_machine::pixels::TILE_HEIGHT));
+    let scanout_tile_count = mul(
+        scanout_tile_columns,
+        scanout_tile_rows,
+        "scanout_tile_count",
     )?;
-    let output_tile_bytes = mul(pixel_count, 4, "output_tile_bytes")?;
+    let output_tile_bytes = mul(
+        scanout_tile_count,
+        wrela_machine::pixels::TILE_ALLOCATION_BYTES as u64,
+        "output_tile_bytes",
+    )?;
     let output_double_buffer_bytes = mul(output_tile_bytes, 2, "output_double_buffer_bytes")?;
     let probe_bytes = if config.probes_enabled {
         mul(pixel_count, 16, "probe_bytes")?
@@ -1122,15 +1150,28 @@ pub fn derive(
         2,
         "frame_complex_double_buffer_bytes",
     )?;
-    // P3 has not fixed the later render-tile dimensions. Reserving one
-    // descriptor/owner per output pixel is the finite conservative endpoint;
-    // later milestones may prove a smaller exact tiling.
-    let tile_descriptor_bytes = mul(
-        pixel_count,
-        TILE_DESCRIPTOR_BYTES_V1,
+    // Each generation owns a complete control followed by an ascending,
+    // row-major descriptor list. Keeping the two lists disjoint makes failed
+    // submissions recoverable without mutating the current front list.
+    let descriptors_per_generation = add(
+        wrela_machine::pixels::CONTROL_BYTES as u64,
+        mul(
+            scanout_tile_count,
+            TILE_DESCRIPTOR_BYTES_V1,
+            "tile_descriptor_bytes",
+        )?,
         "tile_descriptor_bytes",
     )?;
-    let tile_ownership_bytes = mul(pixel_count, TILE_OWNERSHIP_BYTES_V1, "tile_ownership_bytes")?;
+    let tile_descriptor_bytes = mul(descriptors_per_generation, 2, "tile_descriptor_bytes")?;
+    let tile_ownership_bytes = mul(
+        mul(
+            scanout_tile_count,
+            TILE_OWNERSHIP_BYTES_V1,
+            "tile_ownership_bytes",
+        )?,
+        2,
+        "tile_ownership_bytes",
+    )?;
     let failure_record_bytes = FAILURE_RECORD_BYTES_V1;
     let pre_framebuffer_bytes = [
         state_header_bytes,
@@ -1172,8 +1213,12 @@ pub fn derive(
     ]
     .into_iter()
     .try_fold(0_u64, |sum, value| add(sum, value, "renderer_state_bytes"))?;
+    let telemetry_offset = total_renderer_state_bytes
+        .checked_add(7)
+        .map(|value| value & !7)
+        .ok_or_else(|| "P015: telemetry state alignment overflow".to_string())?;
     let total_renderer_state_bytes_instrumented = add(
-        total_renderer_state_bytes,
+        telemetry_offset,
         telemetry_bytes_instrumented,
         "instrumented_renderer_state_bytes",
     )?;
@@ -1357,9 +1402,9 @@ mod tests {
     fn telemetry_bytes_come_from_schema_counts() {
         assert_eq!(
             telemetry_counter_count_v1(),
-            crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1
+            crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2
         );
-        assert_eq!(telemetry_counter_count_v1() * 8, 1136);
+        assert_eq!(telemetry_counter_count_v1() * 8, 1200);
     }
 
     #[test]

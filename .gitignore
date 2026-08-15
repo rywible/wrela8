@@ -4,3 +4,8 @@
 .worktrees/
 .superpowers/
 /.wt/
+
+# Temporary four-core fixture trees built by `cargo xtask pixels-conformance`.
+# The run deletes its own tree; this keeps a killed run from ever presenting
+# one to `golden_case_dirs`, which does not filter dotfile directories.
+/tests/golden/.p8-four-core-*/

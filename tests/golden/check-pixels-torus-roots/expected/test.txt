@@ -1,15 +1,4 @@
 test pinned_scene_contract: ok
-p7 0000000000000008
-p7 00000000000007f8
-p7 0000000000000078
-p7 503753414d504c45
-p7 0000000000ffffff
-p7 444f41c7e764c854
-p7 d8aabc779cf1b623
-p7 8e2d3cfc35dd05bb
-p7 5e6950c62f0ae296
-p7 1beb7563e979ed79
-test torus_retains_all_roots: ok
-2 passed, 0 failed
-lane1 turns=2 run_one=4 messages=2
-lane1 hits=0:2,1:1
+1 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

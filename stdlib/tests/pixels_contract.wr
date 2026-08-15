@@ -1,5 +1,7 @@
 module pixels_contract
 
+# @wrela-compiler-internal: pins compiler-owned Pixels bootstrap dispatch.
+
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 from core.render import Camera, Light, LightConfig, LightFrame, LightKind, MaterialSample
 from core.render import __wrela_pixels_bootstrap_camera_light_post, __wrela_pixels_bootstrap_csg

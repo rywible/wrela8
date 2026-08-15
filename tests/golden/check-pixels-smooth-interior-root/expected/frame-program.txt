@@ -1,4 +1,4 @@
-FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd52ddf76ee2d065c968
+FrameProgram v1 renderer=0 digest=606817ec2c67e0bd4918ce6d2813c26304ec345e2066ea33ca4aaccad0a54766
   Header bytes=80 flags=0x1 total_bytes=46736 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1
   Directory count=17 offset=80
   Table kind=scalar code=1 record_bytes=16 count=16 offset=384 byte_len=256
@@ -18,7 +18,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
   Table kind=probe code=15 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=kinetic code=16 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=debug-name code=17 record_bytes=16 count=0 offset=0 byte_len=0
-  Capacity objects=1 features=2 candidate_features_per_tile=2 row_start_roots=8 active_sheets_per_row=8 event_intervals_per_row=13 root_stack_nodes=32 event_stack_nodes=8 runs_per_row=16 corridors_per_row=16 transparent_layers=1 state_bytes=40256
+  Capacity objects=1 features=2 candidate_features_per_tile=2 row_start_roots=8 active_sheets_per_row=8 event_intervals_per_row=13 root_stack_nodes=32 event_stack_nodes=8 runs_per_row=16 corridors_per_row=16 transparent_layers=1 state_bytes=45746
   FixedQDomain exponent=-17 maximum_raw=1342439424 reset_width=32 error_radius=1341783554
   Event id=e0 kind=near-clip repr=clip-q:10.000000000000002 roots=1 subdivision_depth=2 pixels=[0,16;0,16] tiles=[0,1;0,1]
   Event id=e1 kind=far-clip repr=clip-q:0.007812499999999999 roots=1 subdivision_depth=2 pixels=[0,16;0,16] tiles=[0,1;0,1]
@@ -43,15 +43,15 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
   ExclusionProof id=proof3 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,16]x[0,16] output=16x16 nearest-center-gap=0.5]
   ExclusionProof id=proof4 payload=bernstein:box=[]:polynomial=poly0:coefficient_root=c93:degrees=[]:coefficient_order=[]:conversion_radius=1.38777878078145775e-16:tree=[0:0:-:negative:2.687499976158139]:sign=negative:minimum_margin=2.687499976158139
   ExclusionProof id=proof5 payload=bernstein:box=[]:polynomial=poly3:coefficient_root=c94:degrees=[]:coefficient_order=[]:conversion_radius=1.38777878078145775e-16:tree=[0:0:-:negative:2.687499976158139]:sign=negative:minimum_margin=2.687499976158139
-  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a30000 frameprog_bytes=46736 state_base=0x40a40000 state_bytes=40256
+  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a30000 frameprog_bytes=46736 state_base=0x40a40000 state_bytes=45746
   GeneratedModule begin
     module __image_pixels
 
     from core.field import cos_scalar, rsqrt_scalar, sin_scalar, sqrt_scalar
 
-    from core.render_coverage import CoverageOutcome, coverage_line_twice_area
-
     from core.render_interval import FixedDomain, Iv32, interval_add, interval_from_f32_bits, interval_mul
+
+    from core.render_raster import AffineRunSetup, EventId, EventPixel, I32x4, IdSlice, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, QRunScalar, RasterGeometryLane, RasterRun, RunId, pixels_i32x4_backend_add, raster_geometry_lane_valid, raster_run4
 
     from core.render_certificate import certify_quadratic_discriminant
 
@@ -131,10 +131,11 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     const R0_FRAMEPROG_BASE: usize = 1084424192
     const R0_FRAMEPROG_BYTES: usize = 46736
     const R0_STATE_BASE: usize = 1084489728
-    const R0_STATE_BYTES: usize = 40256
+    const R0_STATE_BYTES: usize = 45746
     const R0_WIDTH: usize = 16
     const R0_HEIGHT: usize = 16
     const R0_DISPLAY_INDEX: usize = 0
+    const R0_DISPLAY_DOORBELL_ADDR: usize = 134242304
     const R0_REFRESH_HZ: usize = 60
     const R0_SHADE_HZ: usize = 60
     const R0_LIGHT_CAPACITY: usize = 0
@@ -174,20 +175,20 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     const R0_STRUCTURAL_PER_WORKER_SCRATCH_BYTES: usize = 5440
     const R0_STRUCTURAL_ALL_WORKER_SCRATCH_BYTES: usize = 5440
     const R0_TELEMETRY_PRODUCTION_BYTES: usize = 0
-    const R0_TELEMETRY_INSTRUMENTED_BYTES: usize = 1136
-    const R0_OUTPUT_TILE_BYTES: usize = 1024
-    const R0_OUTPUT_DOUBLE_BUFFER_BYTES: usize = 2048
+    const R0_TELEMETRY_INSTRUMENTED_BYTES: usize = 7344
+    const R0_OUTPUT_TILE_BYTES: usize = 8192
+    const R0_OUTPUT_DOUBLE_BUFFER_BYTES: usize = 16384
     const R0_PROBE_STATE_BYTES: usize = 0
     const R0_KINETIC_CERTIFICATE_BYTES: usize = 256
     const R0_STATE_HEADER_CAPACITY_BYTES: usize = 256
     const R0_COEFFICIENT_SNAPSHOT_CAPACITY_BYTES: usize = 0
     const R0_FRAME_SNAPSHOT_CAPACITY_BYTES: usize = 1376
     const R0_FRAME_COMPLEX_CAPACITY_BYTES: usize = 16384
-    const R0_TILE_DESCRIPTOR_CAPACITY_BYTES: usize = 8192
-    const R0_TILE_OWNERSHIP_CAPACITY_BYTES: usize = 1024
+    const R0_TILE_DESCRIPTOR_CAPACITY_BYTES: usize = 368
+    const R0_TILE_OWNERSHIP_CAPACITY_BYTES: usize = 2
     const R0_FAILURE_RECORD_CAPACITY_BYTES: usize = 64
-    const R0_PRODUCTION_STATE_BYTES: usize = 40256
-    const R0_INSTRUMENTED_STATE_BYTES: usize = 41392
+    const R0_PRODUCTION_STATE_BYTES: usize = 45746
+    const R0_INSTRUMENTED_STATE_BYTES: usize = 53096
     const R0_CANDIDATE_FEATURES_TILE: usize = 2
     const R0_ROW_START_ROOTS: usize = 8
     const R0_ACTIVE_SHEETS_ROW: usize = 8
@@ -248,28 +249,38 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     const R0_WORKER_SCRATCH_BASE: usize = 1084507744
     const R0_WORKER_SCRATCH_BYTES: usize = 9056
     const R0_FRAMEBUFFERS_BASE: usize = 1084518400
-    const R0_FRAMEBUFFERS_BYTES: usize = 2048
-    const R0_PROBES_BASE: usize = 1084520448
+    const R0_FRAMEBUFFERS_BYTES: usize = 16384
+    const R0_PROBES_BASE: usize = 1084534784
     const R0_PROBES_BYTES: usize = 0
-    const R0_KINETIC_STATE_BASE: usize = 1084520448
+    const R0_KINETIC_STATE_BASE: usize = 1084534784
     const R0_KINETIC_STATE_BYTES: usize = 256
-    const R0_TILE_DESCRIPTORS_BASE: usize = 1084520704
-    const R0_TILE_DESCRIPTORS_BYTES: usize = 8192
-    const R0_TILE_OWNERSHIP_BASE: usize = 1084528896
-    const R0_TILE_OWNERSHIP_BYTES: usize = 1024
-    const R0_FAILURE_BASE: usize = 1084529920
+    const R0_TILE_DESCRIPTORS_BASE: usize = 1084535040
+    const R0_TILE_DESCRIPTORS_BYTES: usize = 368
+    const R0_TILE_OWNERSHIP_BASE: usize = 1084535408
+    const R0_TILE_OWNERSHIP_BYTES: usize = 2
+    const R0_FAILURE_BASE: usize = 1084535410
     const R0_FAILURE_BYTES: usize = 64
-    const R0_TELEMETRY_BASE: usize = 1084529984
+    const R0_TELEMETRY_BASE: usize = 1084535480
     const R0_TELEMETRY_BYTES: usize = 0
     const R0_FRAMEBUFFER_BASE: usize = 1084518400
-    const R0_FRAMEBUFFER_BYTES: usize = 2048
-    const R0_PROBE_RESERVATION_BASE: usize = 1084520448
+    const R0_FRAMEBUFFER_BYTES: usize = 16384
+    const R0_PROBE_RESERVATION_BASE: usize = 1084534784
     const R0_PROBE_RESERVATION_BYTES: usize = 0
     @layout(runtime, endian=little)
     struct R0DebugFramebufferChunk0View:
-        words: [u64; 256]
+        words: [u64; 2048]
     @placed(0x40a47000)
     static R0_DEBUG_FRAMEBUFFER_CHUNK_0: R0DebugFramebufferChunk0View
+    @layout(runtime, endian=little)
+    struct R0ScanoutStateView:
+        words: [u64; 32]
+    @placed(0x40a40000)
+    static R0_SCANOUT_STATE: R0ScanoutStateView
+    @layout(runtime, endian=little)
+    struct R0DisplayListChunk0View:
+        words: [u64; 46]
+    @placed(0x40a4b100)
+    static R0_DISPLAY_LIST_CHUNK_0: R0DisplayListChunk0View
     @layout(runtime, endian=little)
     struct R0FrameSnapshotView:
         bits: [u32; 152]
@@ -462,7 +473,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     static R0_FRAME_PROGRAM_DIRECTORY: R0FrameProgramDirectoryView
     const R0_DIRECTORY_COUNT: usize = 17
 
-    const R0_EXPECTED_DIGEST: [u8; 32] = [10, 127, 197, 128, 153, 201, 104, 0, 180, 61, 219, 61, 105, 25, 141, 58, 253, 204, 180, 47, 113, 161, 189, 82, 221, 247, 110, 226, 208, 101, 201, 104, ]
+    const R0_EXPECTED_DIGEST: [u8; 32] = [96, 104, 23, 236, 44, 103, 224, 189, 73, 24, 206, 109, 40, 19, 194, 99, 4, 236, 52, 94, 32, 102, 234, 51, 202, 74, 172, 202, 208, 165, 71, 102, ]
     const R0_EXPECTED_DIRECTORY: [[u64; 5]; 17] = [
         [1, 16, 16, 384, 256],
         [2, 16, 4, 640, 64],
@@ -524,69 +535,69 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
 
     pub fn __wrela_pixels_program_digest_byte(renderer: usize, byte: usize) -> u8:
         if renderer == 0 and byte == 0:
-            return 10
+            return 96
         if renderer == 0 and byte == 1:
-            return 127
-        if renderer == 0 and byte == 2:
-            return 197
-        if renderer == 0 and byte == 3:
-            return 128
-        if renderer == 0 and byte == 4:
-            return 153
-        if renderer == 0 and byte == 5:
-            return 201
-        if renderer == 0 and byte == 6:
             return 104
+        if renderer == 0 and byte == 2:
+            return 23
+        if renderer == 0 and byte == 3:
+            return 236
+        if renderer == 0 and byte == 4:
+            return 44
+        if renderer == 0 and byte == 5:
+            return 103
+        if renderer == 0 and byte == 6:
+            return 224
         if renderer == 0 and byte == 7:
-            return 0
-        if renderer == 0 and byte == 8:
-            return 180
-        if renderer == 0 and byte == 9:
-            return 61
-        if renderer == 0 and byte == 10:
-            return 219
-        if renderer == 0 and byte == 11:
-            return 61
-        if renderer == 0 and byte == 12:
-            return 105
-        if renderer == 0 and byte == 13:
-            return 25
-        if renderer == 0 and byte == 14:
-            return 141
-        if renderer == 0 and byte == 15:
-            return 58
-        if renderer == 0 and byte == 16:
-            return 253
-        if renderer == 0 and byte == 17:
-            return 204
-        if renderer == 0 and byte == 18:
-            return 180
-        if renderer == 0 and byte == 19:
-            return 47
-        if renderer == 0 and byte == 20:
-            return 113
-        if renderer == 0 and byte == 21:
-            return 161
-        if renderer == 0 and byte == 22:
             return 189
+        if renderer == 0 and byte == 8:
+            return 73
+        if renderer == 0 and byte == 9:
+            return 24
+        if renderer == 0 and byte == 10:
+            return 206
+        if renderer == 0 and byte == 11:
+            return 109
+        if renderer == 0 and byte == 12:
+            return 40
+        if renderer == 0 and byte == 13:
+            return 19
+        if renderer == 0 and byte == 14:
+            return 194
+        if renderer == 0 and byte == 15:
+            return 99
+        if renderer == 0 and byte == 16:
+            return 4
+        if renderer == 0 and byte == 17:
+            return 236
+        if renderer == 0 and byte == 18:
+            return 52
+        if renderer == 0 and byte == 19:
+            return 94
+        if renderer == 0 and byte == 20:
+            return 32
+        if renderer == 0 and byte == 21:
+            return 102
+        if renderer == 0 and byte == 22:
+            return 234
         if renderer == 0 and byte == 23:
-            return 82
+            return 51
         if renderer == 0 and byte == 24:
-            return 221
+            return 202
         if renderer == 0 and byte == 25:
-            return 247
+            return 74
         if renderer == 0 and byte == 26:
-            return 110
+            return 172
         if renderer == 0 and byte == 27:
-            return 226
+            return 202
         if renderer == 0 and byte == 28:
             return 208
         if renderer == 0 and byte == 29:
-            return 101
+            return 165
         if renderer == 0 and byte == 30:
-            return 201
+            return 71
         if renderer == 0 and byte == 31:
-            return 104
+            return 102
         return 0
 
     pub fn __wrela_pixels_program_table_count(renderer: usize, table: u16) -> u32:
@@ -847,6 +858,58 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         if value < 0.0:
             return -value
         return value
+
+    # Exact rounded byte of `a*s + b*t + c >= 0` over the unit square.
+    # Evaluating the final rational directly avoids the one-byte
+    # enclosure introduced by an intermediate 512th-scale area.
+    pub fn __wrela_pixels_p7_half_plane_byte(a: i32, b: i32, c: i32) -> [i64; 2]:
+        if a < -1000000 or a > 1000000 or b < -1000000 or b > 1000000 or c < -1000000 or c > 1000000:
+            return [0, 0]
+        aa = a.to[i64]()
+        bb = b.to[i64]()
+        cc = c.to[i64]()
+        if aa < 0:
+            cc = cc + aa
+            aa = -aa
+        if bb < 0:
+            cc = cc + bb
+            bb = -bb
+        threshold = -cc
+        if threshold <= 0:
+            return [1, 255]
+        if threshold >= aa + bb:
+            return [1, 0]
+        numerator: i64 = 0
+        denominator: i64 = 0
+        if aa == 0:
+            numerator = (bb - threshold) * 255
+            denominator = bb
+        elif bb == 0:
+            numerator = (aa - threshold) * 255
+            denominator = aa
+        else:
+            h0 = threshold * threshold
+            h1: i64 = 0
+            h2: i64 = 0
+            if threshold > aa:
+                h1 = (threshold - aa) * (threshold - aa)
+            if threshold > bb:
+                h2 = (threshold - bb) * (threshold - bb)
+            denominator = 2 * aa * bb
+            foreground = denominator - (h0 - h1 - h2)
+            if foreground < 0:
+                foreground = 0
+            if foreground > denominator:
+                foreground = denominator
+            numerator = foreground * 255
+        if not denominator > 0:
+            return [0, 0]
+        return [1, (2 * numerator + denominator) / (2 * denominator)]
+
+    pub fn __wrela_pixels_p7_round_i32(value: f32) -> i32:
+        if value < 0.0:
+            return -((-value + 0.5).to[i32]())
+        return (value + 0.5).to[i32]()
 
     pub fn __wrela_pixels_p7_min(a: f32, b: f32) -> f32:
         if a < b:
@@ -1341,8 +1404,18 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
             return [1.0, 0.0078125]
         return [0.0, 0.0]
 
-    pub fn __wrela_pixels_p7_deformation_miss_model(renderer: usize, event: u32) -> [f32; 21]:
-        return [0.0; 21]
+    pub fn __wrela_pixels_p7_deformation_miss_model(renderer: usize, event: u32) -> [f32; 26]:
+        return [0.0; 26]
+
+    pub fn __wrela_pixels_p7_aligned_deformation_depth_miss(
+        read cell: [f32; 4],
+        t_lo: f32,
+        t_hi: f32,
+        phase: f32,
+        read model: [f32; 26],
+        read camera: [f32; 12],
+    ) -> bool:
+        return false
 
     pub fn __wrela_pixels_p7_standard_torus_event(renderer: usize, event: u32) -> bool:
         return false
@@ -1490,6 +1563,15 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         if renderer == 0:
             return 1
         return 0
+
+    pub fn __wrela_pixels_p8_axis_box(renderer: usize) -> [f32; 9]:
+        return [0.0; 9]
+
+    pub fn __wrela_pixels_p8_ratio_bounds(numerator_lo: f32, numerator_hi: f32, denominator_lo: f32, denominator_hi: f32) -> [f32; 2]:
+        return [1.0, -1.0]
+
+    pub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read camera: [f32; 12]) -> [i64; 4]:
+        return [0; 4]
 
     pub fn __wrela_pixels_p7_feature_normal(renderer: usize, feature: u32, u: f32, v: f32, q: f32, read params: [f32; 16], read camera: [f32; 12]) -> [f32; 4]:
         if not q > 0.0:
@@ -1889,7 +1971,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     pub fn __wrela_pixels_p7_event_class(representation: u64, kind: u64) -> u64:
         class: u64 = 0
         # Kinds that can bound where a surface is visible.
-        if kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 9 or kind == 10:
+        if kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 6 or kind == 9 or kind == 10:
             class = class | 1
         if representation == 1 and (kind == 1 or kind == 2 or kind == 4 or kind == 5 or kind == 6 or kind == 7 or kind == 8 or kind == 9 or kind == 10 or kind == 12):
             class = class | 1024
@@ -1911,8 +1993,10 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
             class = class | 1024
         if representation == 5 and (kind == 3):
             class = class | 1152
-        if representation == 6 and (kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 6 or kind == 7 or kind == 8 or kind == 9 or kind == 10 or kind == 12):
+        if representation == 6 and (kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 7 or kind == 8 or kind == 9 or kind == 10 or kind == 12):
             class = class | 1024
+        if representation == 6 and (kind == 6):
+            class = class | 3072
         if representation == 7 and (kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 6 or kind == 7 or kind == 8 or kind == 9 or kind == 10 or kind == 12):
             class = class | 1024
         if representation == 8 and (kind == 1 or kind == 2 or kind == 3 or kind == 4 or kind == 5 or kind == 6 or kind == 7 or kind == 8 or kind == 9 or kind == 10 or kind == 12):
@@ -2037,7 +2121,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
     pub fn __wrela_pixels_p7_framebuffer_store_byte(renderer: usize, byte: usize, value: u8) -> bool:
         shift = (byte % 8).to[u64]() * 8
         mask = 255.to[u64]() << shift
-        if renderer == 0 and byte.to[u64]() >= 0 and byte.to[u64]() < 2048:
+        if renderer == 0 and byte.to[u64]() >= 0 and byte.to[u64]() < 16384:
             word = (byte.to[u64]() - 0).to[usize]() / 8
             old = R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word]
             R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] = (old & (mask ^ 18446744073709551615)) | (value.to[u64]() << shift)
@@ -2046,7 +2130,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
 
     pub fn __wrela_pixels_p7_framebuffer_load_byte(renderer: usize, byte: usize) -> [u64; 2]:
         shift = (byte % 8).to[u64]() * 8
-        if renderer == 0 and byte.to[u64]() >= 0 and byte.to[u64]() < 2048:
+        if renderer == 0 and byte.to[u64]() >= 0 and byte.to[u64]() < 16384:
             word = (byte.to[u64]() - 0).to[usize]() / 8
             return [1, (R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] >> shift) & 255]
         return [0; 2]
@@ -2055,8 +2139,8 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         if renderer == 0:
             pass
             word_0: usize = 0
-            @budget(bound=256)
-            while word_0 < 256:
+            @budget(bound=2048)
+            while word_0 < 2048:
                 R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word_0] = 0
                 word_0 = word_0 + 1
             return true
@@ -2066,7 +2150,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         if renderer == 0:
             if pixel.to[u64]() >= 256:
                 return false
-            marker = 1024 + pixel.to[usize]()
+            marker = 8192 + pixel.to[usize]()
             marker_value = __wrela_pixels_p7_framebuffer_load_byte(0, marker)
             if marker_value[0] != 1 or marker_value[1] != 0:
                 return false
@@ -2083,12 +2167,12 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
 
     pub fn __wrela_pixels_p7_framebuffer_pixel_written(renderer: usize, pixel: u32) -> bool:
         if renderer == 0 and pixel.to[u64]() < 256:
-            value = __wrela_pixels_p7_framebuffer_load_byte(0, 1024 + pixel.to[usize]())
+            value = __wrela_pixels_p7_framebuffer_load_byte(0, 8192 + pixel.to[usize]())
             return value[0] == 1 and value[1] == 1
         return false
 
     pub fn __wrela_pixels_p7_framebuffer_word_r0(word: usize) -> [u64; 2]:
-        if word.to[u64]() >= 0 and word.to[u64]() < 256:
+        if word.to[u64]() >= 0 and word.to[u64]() < 2048:
             return [1, R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word - 0] ]
         return [0; 2]
 
@@ -2096,7 +2180,7 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         marker_word: usize = 0
         @budget(bound=32)
         while marker_word < 32:
-            marker = __wrela_pixels_p7_framebuffer_word_r0(128 + marker_word)
+            marker = __wrela_pixels_p7_framebuffer_word_r0(1024 + marker_word)
             if marker[0] != 1 or marker[1] != 72340172838076673:
                 return [0; 5]
             marker_word = marker_word + 1
@@ -2275,14 +2359,396 @@ FrameProgram v1 renderer=0 digest=0a7fc58099c96800b43ddb3d69198d3afdccb42f71a1bd
         return false
 
     pub fn __wrela_pixels_p7_telemetry_charge(renderer: usize, worker: u32, counter: usize, amount: u64) -> bool:
-        if counter >= 142:
+        if counter >= 150:
             return false
         return false
 
     pub fn __wrela_pixels_p7_telemetry_counter(renderer: usize, worker: u32, counter: usize) -> [u64; 2]:
-        if counter >= 142:
+        if counter >= 150:
             return [0; 2]
         return [0; 2]
+
+    pub fn __wrela_pixels_p8_raster_evidence_store(renderer: usize, pixel: usize, q: u64, derivatives: u64, bounds: u64, class: u8) -> bool:
+        if renderer == 0 and pixel.to[u64]() < 256:
+            return true
+        return false
+
+    pub fn __wrela_pixels_p8_raster_evidence_word(renderer: usize, word: usize) -> [u64; 2]:
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_list_store_word_r0(byte: usize, value: u64) -> bool:
+        if byte % 8 != 0:
+            return false
+        if byte.to[u64]() >= 0 and byte.to[u64]() + 8 <= 368:
+            R0_DISPLAY_LIST_CHUNK_0.words[(byte.to[u64]() - 0).to[usize]() / 8] = value
+            return true
+        return false
+
+    pub fn __wrela_pixels_p8_list_load_word_r0(byte: usize) -> [u64; 2]:
+        if byte % 8 != 0:
+            return [0; 2]
+        if byte.to[u64]() >= 0 and byte.to[u64]() + 8 <= 368:
+            return [1, R0_DISPLAY_LIST_CHUNK_0.words[(byte.to[u64]() - 0).to[usize]() / 8]]
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_initialize_r0() -> bool:
+        if R0_SCANOUT_STATE.words[0] == 6292167823205619768:
+            return true
+        if R0_SCANOUT_STATE.words[0] != 0:
+            return false
+        # Both complete generations are zero-initialized image statics.
+        # Initialization seals that one-time boot clear; later frames overwrite
+        # visible pixels and never touch padding.
+        R0_SCANOUT_STATE.words[0] = 6292167823205619768
+        R0_SCANOUT_STATE.words[1] = 0
+        R0_SCANOUT_STATE.words[2] = 0
+        R0_SCANOUT_STATE.words[3] = 0
+        return true
+
+    pub fn __wrela_pixels_p8_begin_r0() -> [u64; 3]:
+        if not __wrela_pixels_p8_initialize_r0() or R0_SCANOUT_STATE.words[3] != 0:
+            return [0; 3]
+        generation: u64 = 0
+        if R0_SCANOUT_STATE.words[1] == 1:
+            generation = 1
+        elif R0_SCANOUT_STATE.words[1] > 2:
+            return [0; 3]
+        R0_SCANOUT_STATE.words[3] = generation + 1
+        return [1, generation, R0_SCANOUT_STATE.words[2]]
+
+    pub fn __wrela_pixels_p8_visible_byte_r0(byte: usize) -> [u64; 2]:
+        owner = R0_SCANOUT_STATE.words[3]
+        if owner == 0:
+            owner = R0_SCANOUT_STATE.words[1]
+        if byte.to[u64]() >= 1024 or owner == 0:
+            return [0; 2]
+        pixel = byte.to[u64]() / 4
+        x = pixel % 16
+        y = pixel / 16
+        tile = (y / 32) * 1 + x / 64
+        local = (y % 32) * 256 + (x % 64) * 4 + byte.to[u64]() % 4
+        generation = owner - 1
+        offset = generation * 8192 + tile * 8192 + local
+        return __wrela_pixels_p7_framebuffer_load_byte(0, offset.to[usize]())
+
+    pub fn __wrela_pixels_p8_visible_word_r0(word: usize) -> [u64; 2]:
+        if word.to[u64]() * 8 >= 1024:
+            return [0; 2]
+        value: u64 = 0
+        octet: usize = 0
+        @budget(bound=8)
+        while octet < 8 and word.to[u64]() * 8 + octet.to[u64]() < 1024:
+            loaded = __wrela_pixels_p8_visible_byte_r0(word * 8 + octet)
+            if loaded[0] != 1:
+                return [0; 2]
+            value = value | (loaded[1] << (octet * 8).to[u64]())
+            octet = octet + 1
+        return [1, value]
+
+    pub fn __wrela_pixels_p8_load_u32_r0(byte: usize) -> [u64; 2]:
+        if byte % 4 != 0:
+            return [0; 2]
+        shift = (byte % 8).to[u64]() * 8
+        if byte.to[u64]() >= 0 and byte.to[u64]() + 4 <= 16384:
+            word = (byte.to[u64]() - 0).to[usize]() / 8
+            return [1, (R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] >> shift) & 4294967295]
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_store_u32_r0(byte: usize, value: u64) -> bool:
+        if byte % 4 != 0:
+            return false
+        shift = (byte % 8).to[u64]() * 8
+        mask = 4294967295.to[u64]() << shift
+        if byte.to[u64]() >= 0 and byte.to[u64]() + 4 <= 16384:
+            word = (byte.to[u64]() - 0).to[usize]() / 8
+            old = R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word]
+            R0_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] = (old & (mask ^ 18446744073709551615)) | ((value & 4294967295) << shift)
+            return true
+        return false
+
+    pub fn __wrela_pixels_p8_cancel_r0() -> bool:
+        if R0_SCANOUT_STATE.words[3] == 0:
+            return false
+        R0_SCANOUT_STATE.words[3] = 0
+        return true
+
+    pub fn __wrela_pixels_p8_write(renderer: usize, worker: u32, pixel: u32, front: u32, coverage: u8, back: u32) -> bool:
+        if renderer != 0:
+            return false
+        if pixel.to[u64]() >= 256 or R0_SCANOUT_STATE.words[3] == 0:
+            return false
+        owner_x = pixel.to[u64]() % 16
+        owner_y = pixel.to[u64]() / 16
+        owner_tile = (owner_y / 32) * 1 + owner_x / 64
+        if not ((worker == 0 and owner_tile >= 0 and owner_tile < 1)):
+            return false
+        x = pixel.to[u64]() % 16
+        y = pixel.to[u64]() / 16
+        tile = (y / 32) * 1 + x / 64
+        local = (y % 32) * 256 + (x % 64) * 4
+        generation = R0_SCANOUT_STATE.words[3] - 1
+        byte = generation * 8192 + tile * 8192 + local
+        front_weight = coverage.to[u32]()
+        back_weight = 255.to[u32]() - front_weight
+        red = ((front & 255) * front_weight + (back & 255) * back_weight + 127) / 255
+        green = (((front >> 8) & 255) * front_weight + ((back >> 8) & 255) * back_weight + 127) / 255
+        blue = (((front >> 16) & 255) * front_weight + ((back >> 16) & 255) * back_weight + 127) / 255
+        value = blue.to[u64]() | (green.to[u64]() << 8) | (red.to[u64]() << 16) | (255.to[u64]() << 24)
+        return __wrela_pixels_p8_store_u32_r0(byte.to[usize](), value)
+
+    pub fn __wrela_pixels_p8_write4(renderer: usize, worker: u32, pixel: u32, r: u8, g: u8, b: u8) -> bool:
+        if (
+            renderer != 0
+            or R0_SCANOUT_STATE.words[3] == 0
+            or pixel.to[u64]() + 4 > 256
+            or pixel.to[u64]() % 16 + 4 > 16
+            or (pixel.to[u64]() % 16) % 4 != 0
+        ):
+            return false
+        owner_x = pixel.to[u64]() % 16
+        owner_y = pixel.to[u64]() / 16
+        owner_tile = (owner_y / 32) * 1 + owner_x / 64
+        if not ((worker == 0 and owner_tile >= 0 and owner_tile < 1)):
+            return false
+        if owner_x % 64 + 4 > 64:
+            return false
+        x = pixel.to[u64]() % 16
+        y = pixel.to[u64]() / 16
+        tile = (y / 32) * 1 + x / 64
+        local = (y % 32) * 256 + (x % 64) * 4
+        generation = R0_SCANOUT_STATE.words[3] - 1
+        byte = generation * 8192 + tile * 8192 + local
+        value = b.to[u64]() | (g.to[u64]() << 8) | (r.to[u64]() << 16) | (255.to[u64]() << 24)
+        packed = value | (value << 32)
+        return (
+            __wrela_pixels_p8_store_u32_r0(byte.to[usize](), value)
+            and __wrela_pixels_p8_store_u32_r0(byte.to[usize]() + 4, value)
+            and __wrela_pixels_p8_store_u32_r0(byte.to[usize]() + 8, value)
+            and __wrela_pixels_p8_store_u32_r0(byte.to[usize]() + 12, value)
+        )
+
+    pub fn __wrela_pixels_p8_digest_r0() -> [u64; 5]:
+        if R0_SCANOUT_STATE.words[3] == 0 and R0_SCANOUT_STATE.words[1] == 0:
+            return [0; 5]
+        h0: u64 = 1469598103934665603
+        h1: u64 = 1099511628211
+        h2: u64 = 7809847782465536322
+        h3: u64 = 1609587929392839161
+        pixel: usize = 0
+        @budget(bound=256)
+        while pixel < 256:
+            x = pixel.to[u64]() % 16
+            y = pixel.to[u64]() / 16
+            tile = (y / 32) * 1 + x / 64
+            local = (y % 32) * 256 + (x % 64) * 4
+            owner = R0_SCANOUT_STATE.words[3]
+            if owner == 0:
+                owner = R0_SCANOUT_STATE.words[1]
+            if owner == 0:
+                return [0; 5]
+            offset = (owner - 1) * 8192 + tile * 8192 + local
+            loaded = __wrela_pixels_p8_load_u32_r0(offset.to[usize]())
+            if loaded[0] != 1:
+                return [0; 5]
+            packed = loaded[1]
+            octet: usize = 0
+            @budget(bound=4)
+            while octet < 4:
+                byte = pixel * 4 + octet
+                value = packed & 255
+                h0 = (h0 ^ value) *% 1099511628211
+                h1 = (h1 ^ (value +% byte.to[u64]())) *% 14029467366897019727
+                h2 = (h2 +% value) *% 11400714785074694791
+                h3 = (h3 ^ (value << (byte % 8).to[u64]())) *% 9650029242287828579
+                packed = packed >> 8
+                octet = octet + 1
+            pixel = pixel + 1
+        return [1, h0, h1, h2, h3]
+
+    pub fn __wrela_pixels_p8_guest_digest_r0(kind: u8) -> [u64; 5]:
+        owner = R0_SCANOUT_STATE.words[3]
+        if owner == 0 and kind == 0:
+            owner = R0_SCANOUT_STATE.words[1]
+        if owner == 0 or kind > 1:
+            return [0; 5]
+        length: usize = 8192.to[usize]()
+        base = (owner - 1) * 8192
+        if kind == 1:
+            length = 24
+            base = (owner - 1) * 184 + 160
+        h0: u64 = 1469598103934665603
+        h1: u64 = 1099511628211
+        h2: u64 = 7809847782465536322
+        h3: u64 = 1609587929392839161
+        byte: usize = 0
+        @budget(bound=8192)
+        while byte < length:
+            value: u64 = 0
+            if kind == 1:
+                listed = __wrela_pixels_p8_list_load_word_r0(base.to[usize]() + (byte / 8) * 8)
+                if listed[0] != 1:
+                    return [0; 5]
+                value = (listed[1] >> ((byte % 8).to[u64]() * 8)) & 255
+            else:
+                loaded = __wrela_pixels_p7_framebuffer_load_byte(0, (base + byte.to[u64]()).to[usize]())
+                if loaded[0] != 1:
+                    return [0; 5]
+                value = loaded[1]
+            h0 = (h0 ^ value) *% 1099511628211
+            h1 = (h1 ^ (value +% byte.to[u64]())) *% 14029467366897019727
+            h2 = (h2 +% value) *% 11400714785074694791
+            h3 = (h3 ^ (value << (byte % 8).to[u64]())) *% 9650029242287828579
+            byte = byte + 1
+        offset: usize = 8
+        if kind == 1:
+            offset = 12
+        R0_SCANOUT_STATE.words[offset] = h0
+        R0_SCANOUT_STATE.words[offset + 1] = h1
+        R0_SCANOUT_STATE.words[offset + 2] = h2
+        R0_SCANOUT_STATE.words[offset + 3] = h3
+        return [1, h0, h1, h2, h3]
+
+    pub fn __wrela_pixels_p8_raw_digest_r0() -> [u64; 5]:
+        return __wrela_pixels_p8_guest_digest_r0(0)
+
+    pub fn __wrela_pixels_p8_descriptor_digest_r0() -> [u64; 5]:
+        return __wrela_pixels_p8_guest_digest_r0(1)
+
+    pub fn __wrela_pixels_p8_present_r0(frame_index: u64) -> [u64; 3]:
+        active = R0_SCANOUT_STATE.words[3]
+        if active == 0:
+            return [0; 3]
+        generation = active - 1
+        sequence = R0_SCANOUT_STATE.words[2]
+        list_offset = generation.to[usize]() * 184
+        tiles_addr = 1084535040 + generation * 184 + 160
+        if (
+            not __wrela_pixels_p8_list_store_word_r0(list_offset, 2.to[u64]() | (1.to[u64]() << 32) | (generation << 40) | (0.to[u64]() << 48))
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 8, 16.to[u64]() | (16.to[u64]() << 32))
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 16, 60.to[u64]() | (1.to[u64]() << 32))
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 24, sequence)
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 32, tiles_addr)
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 40, frame_index)
+            or not __wrela_pixels_p8_list_store_word_r0(list_offset + 48, frame_index)
+        ):
+            R0_SCANOUT_STATE.words[3] = 0
+            return [0, 3, sequence]
+        tile: u64 = 0
+        @budget(bound=1)
+        while tile < 1:
+            x = (tile % 1) * 64
+            y = (tile / 1) * 32
+            visible_width: u64 = 64
+            visible_height: u64 = 32
+            if x + visible_width > 16:
+                visible_width = 16 - x
+            if y + visible_height > 16:
+                visible_height = 16 - y
+            descriptor = list_offset + 160 + tile.to[usize]() * 24
+            pixels_addr = 1084518400 + generation * 8192 + tile * 8192
+            if (
+                not __wrela_pixels_p8_list_store_word_r0(descriptor, pixels_addr)
+                or not __wrela_pixels_p8_list_store_word_r0(descriptor + 8, x | (y << 16) | (visible_width << 32) | (visible_height << 48))
+                or not __wrela_pixels_p8_list_store_word_r0(descriptor + 16, 256.to[u64]() | (1.to[u64]() << 16))
+            ):
+                R0_SCANOUT_STATE.words[3] = 0
+                return [0, 3, sequence]
+            tile = tile + 1
+        visible = __wrela_pixels_p8_digest_r0()
+        raw = __wrela_pixels_p8_raw_digest_r0()
+        descriptors = __wrela_pixels_p8_descriptor_digest_r0()
+        if visible[0] != 1 or raw[0] != 1 or descriptors[0] != 1:
+            R0_SCANOUT_STATE.words[3] = 0
+            return [0, 3, sequence]
+        digest_word: usize = 0
+        @budget(bound=4)
+        while digest_word < 4:
+            if (
+                not __wrela_pixels_p8_list_store_word_r0(list_offset + 56 + digest_word * 8, visible[digest_word + 1])
+                or not __wrela_pixels_p8_list_store_word_r0(list_offset + 88 + digest_word * 8, raw[digest_word + 1])
+                or not __wrela_pixels_p8_list_store_word_r0(list_offset + 120 + digest_word * 8, descriptors[digest_word + 1])
+            ):
+                R0_SCANOUT_STATE.words[3] = 0
+                return [0, 3, sequence]
+            digest_word = digest_word + 1
+        if not __wrela_pixels_p8_list_store_word_r0(list_offset + 152, 0):
+            R0_SCANOUT_STATE.words[3] = 0
+            return [0, 3, sequence]
+        return [2, 1084535040 + generation * 184, sequence]
+
+    pub fn __wrela_pixels_p8_complete_r0() -> [u64; 3]:
+        active = R0_SCANOUT_STATE.words[3]
+        if active == 0:
+            return [0; 3]
+        generation = active - 1
+        sequence = R0_SCANOUT_STATE.words[2]
+        list_offset = generation.to[usize]() * 184
+        status = R0_DISPLAY_LIST_CHUNK_0.words[generation.to[usize]() * 23 + 19] & 4294967295
+        if status != 1:
+            R0_SCANOUT_STATE.words[3] = 0
+            return [0, status, sequence]
+        R0_SCANOUT_STATE.words[1] = active
+        R0_SCANOUT_STATE.words[2] = sequence + 1
+        R0_SCANOUT_STATE.words[3] = 0
+        return [1, sequence, 0]
+
+    pub fn __wrela_pixels_p8_initialize(renderer: usize) -> bool:
+        if renderer == 0:
+            return __wrela_pixels_p8_initialize_r0()
+        return false
+
+    pub fn __wrela_pixels_p8_begin(renderer: usize) -> [u64; 3]:
+        if renderer == 0:
+            return __wrela_pixels_p8_begin_r0()
+        return [0; 3]
+
+    pub fn __wrela_pixels_p8_complete(renderer: usize) -> [u64; 3]:
+        if renderer == 0:
+            return __wrela_pixels_p8_complete_r0()
+        return [0; 3]
+
+    pub fn __wrela_pixels_p8_cancel(renderer: usize) -> bool:
+        if renderer == 0:
+            return __wrela_pixels_p8_cancel_r0()
+        return false
+
+    pub fn __wrela_pixels_p8_visible_byte(renderer: usize, byte: usize) -> [u64; 2]:
+        if renderer == 0:
+            return __wrela_pixels_p8_visible_byte_r0(byte)
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_visible_word(renderer: usize, word: usize) -> [u64; 2]:
+        if renderer == 0:
+            return __wrela_pixels_p8_visible_word_r0(word)
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_digest(renderer: usize) -> [u64; 5]:
+        if renderer == 0:
+            return __wrela_pixels_p8_digest_r0()
+        return [0; 5]
+
+    pub fn __wrela_pixels_p8_raw_digest(renderer: usize) -> [u64; 5]:
+        if renderer == 0:
+            return __wrela_pixels_p8_raw_digest_r0()
+        return [0; 5]
+
+    pub fn __wrela_pixels_p8_descriptor_digest(renderer: usize) -> [u64; 5]:
+        if renderer == 0:
+            return __wrela_pixels_p8_descriptor_digest_r0()
+        return [0; 5]
+
+    pub fn __wrela_pixels_p8_present(renderer: usize, frame_index: u64) -> [u64; 3]:
+        if renderer == 0:
+            return __wrela_pixels_p8_present_r0(frame_index)
+        return [0; 3]
+
+    pub fn __wrela_pixels_p8_display_doorbell(renderer: usize) -> [u64; 2]:
+        if renderer == 0:
+            return [1, 134242304]
+        return [0; 2]
+
+    pub fn __wrela_pixels_p8_submit(doorbell_addr: u64, control_addr: u64) -> unit:
+        return unit
   GeneratedModule end
-  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=bootstrap families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,scalar]
-  Execution from_scratch_sweep=true presentation=false bounded_local_rebuild=true dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true
+  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,scalar]
+  Execution from_scratch_sweep=true raster=scalar+i32x4-asimd coverage=analytic-exact presentation=machine-v1-bgra8-srgb bounded_local_rebuild=true dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true

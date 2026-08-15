@@ -130,6 +130,163 @@ const STANDARD_TORUS_DISCRIMINANT_TERMS: [(u8, u8, u8, i32); 106] = [
 // integrator. This lives in the generated image module (rather than
 // `core.render`) because injected renderer bodies are evaluated in that module
 // and cannot reach private helpers from their source module.
+const ALIGNED_DEFORMATION_DEPTH_MISS_SOURCE: &str = r#"
+pub fn __wrela_pixels_p7_aligned_deformation_depth_miss(
+    read cell: [f32; 4],
+    t_lo: f32,
+    t_hi: f32,
+    phase: f32,
+    read model: [f32; 26],
+    read camera: [f32; 12],
+) -> bool:
+    u0 = cell[0]
+    v0 = cell[1]
+    u1 = cell[2]
+    v1 = cell[3]
+    if (
+        model[21] != 1.0 or not model[25] > 0.0 or not model[18] > 0.0
+        or camera[0] != model[22] or camera[1] != model[23]
+        or camera[3] != 0.0 or camera[4] != 0.0 or camera[5] != 1.0
+        or camera[6] != 1.0 or camera[7] != 0.0 or camera[8] != 0.0
+        or camera[9] != 0.0 or camera[10] != 1.0 or camera[11] != 0.0
+        or not t_hi > t_lo or t_lo < 0.0
+    ):
+        return false
+    direct_z = model[24] - camera[2]
+    if not direct_z > 0.0 or not __wrela_pixels_p5_finite(direct_z):
+        return false
+    if not __wrela_pixels_p5_finite(t_lo) or not __wrela_pixels_p5_finite(t_hi):
+        return false
+    window_pad = (
+        __wrela_pixels_p7_abs(t_lo) + __wrela_pixels_p7_abs(t_hi)
+        + direct_z + 1.0
+    ) * 0.0000038147118175957395
+    window_lo = t_lo - window_pad
+    if window_lo < 0.0:
+        window_lo = 0.0
+    window_hi = t_hi + window_pad
+    window_width = window_hi - window_lo
+    if not window_width > 0.0 or not __wrela_pixels_p5_finite(window_width):
+        return false
+    u_abs_min = __wrela_pixels_p7_abs(u0)
+    if __wrela_pixels_p7_abs(u1) < u_abs_min:
+        u_abs_min = __wrela_pixels_p7_abs(u1)
+    if u0 <= 0.0 and u1 >= 0.0:
+        u_abs_min = 0.0
+    v_abs_min = __wrela_pixels_p7_abs(v0)
+    if __wrela_pixels_p7_abs(v1) < v_abs_min:
+        v_abs_min = __wrela_pixels_p7_abs(v1)
+    if v0 <= 0.0 and v1 >= 0.0:
+        v_abs_min = 0.0
+    u_abs_max = __wrela_pixels_p7_abs(u0)
+    if __wrela_pixels_p7_abs(u1) > u_abs_max:
+        u_abs_max = __wrela_pixels_p7_abs(u1)
+    v_abs_max = __wrela_pixels_p7_abs(v0)
+    if __wrela_pixels_p7_abs(v1) > v_abs_max:
+        v_abs_max = __wrela_pixels_p7_abs(v1)
+    s_lo = (u_abs_min * u_abs_min + v_abs_min * v_abs_min) * 0.9999990463247741274971
+    s_hi = (u_abs_max * u_abs_max + v_abs_max * v_abs_max) * 1.0000009536752258725029
+    if not s_lo >= 0.0 or not s_hi >= s_lo:
+        return false
+    a_lo = (1.0 + s_lo) * 0.9999997615813639327412
+    a_hi = (1.0 + s_hi) * 1.0000002384186360672588
+    z_squared_lo = direct_z * direct_z * 0.999999523162614423249
+    radial_min_squared = (
+        z_squared_lo * s_lo / a_hi
+    ) * 0.9999990463247741274971
+    closest_lo = direct_z / a_hi
+    closest_hi = direct_z / a_lo
+    closest_pad = (
+        __wrela_pixels_p7_abs(closest_lo) + __wrela_pixels_p7_abs(closest_hi)
+    ) * 0.000000476837385576751
+    closest_lo = closest_lo - closest_pad
+    closest_hi = closest_hi + closest_pad
+    if not radial_min_squared >= 0.0 or not closest_hi >= closest_lo:
+        return false
+    segment: u8 = 0
+    @budget(bound=16)
+    while segment < 16:
+        ta = window_lo + window_width * segment.to[f32]() * 0.0625
+        tb = window_lo + window_width * (segment + 1).to[f32]() * 0.0625
+        if segment == 15:
+            tb = window_hi
+        if not tb >= ta:
+            return false
+        x_lo = u0 * ta
+        x_hi = x_lo
+        product: u8 = 1
+        @budget(bound=4)
+        while product < 4:
+            product_u = u0
+            if product % 2 == 1:
+                product_u = u1
+            product_t = ta
+            if product >= 2:
+                product_t = tb
+            candidate_x = product_u * product_t
+            if candidate_x < x_lo:
+                x_lo = candidate_x
+            if candidate_x > x_hi:
+                x_hi = candidate_x
+            product = product + 1
+        x_pad = (
+            __wrela_pixels_p7_abs(x_lo) + __wrela_pixels_p7_abs(x_hi)
+        ) * 0.000000476837385576751
+        x_lo = x_lo - x_pad
+        x_hi = x_hi + x_pad
+        depth_delta: f32 = 0.0
+        if tb < closest_lo:
+            depth_delta = closest_lo - tb
+        elif ta > closest_hi:
+            depth_delta = ta - closest_hi
+        distance_squared = radial_min_squared + a_lo * depth_delta * depth_delta
+        distance_squared = distance_squared * 0.999999523162614423249
+        distance_lo = sqrt_scalar(distance_squared) * 0.9999997615813639327412
+        world_x_lo = model[22] + x_lo
+        world_x_hi = model[22] + x_hi
+        argument_lo = model[19] * world_x_lo + phase
+        argument_hi = model[19] * world_x_hi + phase
+        if argument_hi < argument_lo:
+            argument_swap = argument_lo
+            argument_lo = argument_hi
+            argument_hi = argument_swap
+        argument_pad = (
+            __wrela_pixels_p7_abs(argument_lo)
+            + __wrela_pixels_p7_abs(argument_hi)
+            + __wrela_pixels_p7_abs(model[19] * world_x_lo)
+            + __wrela_pixels_p7_abs(model[19] * world_x_hi)
+            + __wrela_pixels_p7_abs(phase)
+        ) * 0.0000009536752258725029
+        sine = __wrela_pixels_p7_interval_sin(
+            argument_lo - argument_pad, argument_hi + argument_pad,
+        )
+        displacement_lo = model[25] * sine[0]
+        displacement_lo = displacement_lo - (
+            __wrela_pixels_p7_abs(displacement_lo) + model[25]
+        ) * 0.0000002384186360672588
+        field_lo = distance_lo - model[18] + displacement_lo
+        field_magnitude = (
+            __wrela_pixels_p7_abs(distance_lo) + model[18]
+            + __wrela_pixels_p7_abs(displacement_lo)
+        )
+        if not field_lo - field_magnitude * 0.000000476837385576751 > 0.0:
+            return false
+        segment = segment + 1
+    return true
+"#;
+
+const ALIGNED_DEFORMATION_DEPTH_MISS_STUB: &str = r#"
+pub fn __wrela_pixels_p7_aligned_deformation_depth_miss(
+    read cell: [f32; 4],
+    t_lo: f32,
+    t_hi: f32,
+    phase: f32,
+    read model: [f32; 26],
+    read camera: [f32; 12],
+) -> bool:
+    return false
+"#;
+
 const STANDARD_TORUS_ROOT_CLASSIFIER_SOURCE: &str = r#"
 pub fn __wrela_pixels_p7_standard_torus_positive_hit(u: f32, v: f32, eye: f32) -> [i64; 2]:
     x = u * u
@@ -1606,6 +1763,13 @@ pub(crate) struct DeformationMissModel {
     /// Parameter slot holding the phase at runtime, or `-1` when the phase is
     /// not a plain parameter read.
     pub phase_slot: i32,
+    /// World-space sphere center for the direct local coefficient evaluator.
+    /// Present only when the occurrence path contains no transform and every
+    /// center component is a singleton exactly representable as f32.
+    pub direct_center: Option<[f32; 3]>,
+    /// Exact positive source amplitude for the direct local classifier. Zero
+    /// means the residual shape/value was not a singleton supported form.
+    pub direct_amplitude: f32,
 }
 
 /// Derive the miss model for a bounded-displacement silhouette over a sphere.
@@ -1691,7 +1855,8 @@ pub(crate) fn deformation_sphere_miss_model(
     };
     // Only the exact sphere distance gives `|H| = |(r - d)^2 - r^2|`. Any other
     // predicate has a different value-to-predictor relation, so it stays out.
-    let [AnalyticPredicate::Sphere { radius, .. }] = record.validity.constraints.as_slice() else {
+    let [AnalyticPredicate::Sphere { center, radius }] = record.validity.constraints.as_slice()
+    else {
         return Ok(None);
     };
     if !matches!(
@@ -1706,12 +1871,14 @@ pub(crate) fn deformation_sphere_miss_model(
     // without moving coordinates, which changes the effective amplitude. A
     // smooth blend replaces the feature's own zero set outright.
     let mut displacements = 0_u32;
+    let mut transforms = 0_u32;
     for step in record.occurrence_path.iter().skip(1) {
         match &renderer.symbolic.fields.get(step.field)?.kind {
             FieldKind::Transform { transform, .. } => {
                 if !is_rigid_transform(transform) {
                     return Ok(None);
                 }
+                transforms += 1;
             }
             FieldKind::BoundedDisplace { .. } => displacements += 1,
             FieldKind::Mark { .. }
@@ -1930,6 +2097,47 @@ pub(crate) fn deformation_sphere_miss_model(
         Err(_) => -1,
     };
     let localizable = frequency != 0.0 && frequency.is_finite() && coordinate_is_world_x;
+    let direct_center = if transforms == 0 {
+        let mut values = [0.0_f32; 3];
+        let mut exact = true;
+        for (slot, id) in values.iter_mut().zip(center) {
+            let interval = structural.values.get(*id)?;
+            let value = interval.lo as f32;
+            if interval.lo != interval.hi || f64::from(value) != interval.lo {
+                exact = false;
+                break;
+            }
+            *slot = value;
+        }
+        exact.then_some(values)
+    } else {
+        None
+    };
+    let direct_amplitude = {
+        let mut source = deformation.residual;
+        let mut sign = 1.0_f32;
+        while let super::scalar::ScalarOp::Neg(inner) = renderer.symbolic.scalar.get(source)?.op {
+            source = inner;
+            sign = -sign;
+        }
+        let amplitude = match renderer.symbolic.scalar.get(source)?.op {
+            super::scalar::ScalarOp::Mul(amplitude, wave)
+                if matches!(
+                    renderer.symbolic.scalar.get(wave)?.op,
+                    super::scalar::ScalarOp::SinRestricted(_, _)
+                ) =>
+            {
+                Some(amplitude)
+            }
+            _ => None,
+        };
+        amplitude
+            .and_then(|id| structural.values.get(id).ok())
+            .filter(|value| value.lo == value.hi)
+            .map(|value| value.lo as f32 * sign)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(0.0)
+    };
     Ok(Some(DeformationMissModel {
         feature: feature_id,
         band,
@@ -1941,6 +2149,8 @@ pub(crate) fn deformation_sphere_miss_model(
         radius: radius_abs as f32,
         frequency: if localizable { frequency } else { 0.0 },
         phase_slot: if localizable { phase_slot } else { -1 },
+        direct_center,
+        direct_amplitude,
     }))
 }
 
@@ -2384,6 +2594,58 @@ fn write_visibility_polynomial_accessors(
          \x20       return -value\n\
          \x20   return value\n\
          \n\
+         # Exact rounded byte of `a*s + b*t + c >= 0` over the unit square.\n\
+         # Evaluating the final rational directly avoids the one-byte\n\
+         # enclosure introduced by an intermediate 512th-scale area.\n\
+         pub fn __wrela_pixels_p7_half_plane_byte(a: i32, b: i32, c: i32) -> [i64; 2]:\n\
+         \x20   if a < -1000000 or a > 1000000 or b < -1000000 or b > 1000000 or c < -1000000 or c > 1000000:\n\
+         \x20       return [0, 0]\n\
+         \x20   aa = a.to[i64]()\n\
+         \x20   bb = b.to[i64]()\n\
+         \x20   cc = c.to[i64]()\n\
+         \x20   if aa < 0:\n\
+         \x20       cc = cc + aa\n\
+         \x20       aa = -aa\n\
+         \x20   if bb < 0:\n\
+         \x20       cc = cc + bb\n\
+         \x20       bb = -bb\n\
+         \x20   threshold = -cc\n\
+         \x20   if threshold <= 0:\n\
+         \x20       return [1, 255]\n\
+         \x20   if threshold >= aa + bb:\n\
+         \x20       return [1, 0]\n\
+         \x20   numerator: i64 = 0\n\
+         \x20   denominator: i64 = 0\n\
+         \x20   if aa == 0:\n\
+         \x20       numerator = (bb - threshold) * 255\n\
+         \x20       denominator = bb\n\
+         \x20   elif bb == 0:\n\
+         \x20       numerator = (aa - threshold) * 255\n\
+         \x20       denominator = aa\n\
+         \x20   else:\n\
+         \x20       h0 = threshold * threshold\n\
+         \x20       h1: i64 = 0\n\
+         \x20       h2: i64 = 0\n\
+         \x20       if threshold > aa:\n\
+         \x20           h1 = (threshold - aa) * (threshold - aa)\n\
+         \x20       if threshold > bb:\n\
+         \x20           h2 = (threshold - bb) * (threshold - bb)\n\
+         \x20       denominator = 2 * aa * bb\n\
+         \x20       foreground = denominator - (h0 - h1 - h2)\n\
+         \x20       if foreground < 0:\n\
+         \x20           foreground = 0\n\
+         \x20       if foreground > denominator:\n\
+         \x20           foreground = denominator\n\
+         \x20       numerator = foreground * 255\n\
+         \x20   if not denominator > 0:\n\
+         \x20       return [0, 0]\n\
+         \x20   return [1, (2 * numerator + denominator) / (2 * denominator)]\n\
+         \n\
+         pub fn __wrela_pixels_p7_round_i32(value: f32) -> i32:\n\
+         \x20   if value < 0.0:\n\
+         \x20       return -((-value + 0.5).to[i32]())\n\
+         \x20   return (value + 0.5).to[i32]()\n\
+         \n\
          pub fn __wrela_pixels_p7_min(a: f32, b: f32) -> f32:\n\
          \x20   if a < b:\n\
          \x20       return a\n\
@@ -2714,13 +2976,17 @@ fn write_visibility_polynomial_accessors(
     }
     output.push_str("    return [0.0, 0.0]\n");
     output.push_str(
-        "\npub fn __wrela_pixels_p7_deformation_miss_model(renderer: usize, event: u32) -> [f32; 21]:\n",
+        "\npub fn __wrela_pixels_p7_deformation_miss_model(renderer: usize, event: u32) -> [f32; 26]:\n",
     );
+    let mut has_aligned_deformation = false;
     for (renderer_index, renderer) in compiled.iter().enumerate() {
         for event in &renderer.projective.program().events.generators {
             let Some(model) = deformation_sphere_miss_model(renderer, event)? else {
                 continue;
             };
+            if model.direct_center.is_some() && model.direct_amplitude > 0.0 {
+                has_aligned_deformation = true;
+            }
             let mut values = vec![
                 format!("{}.0", model.feature.0),
                 wrela_f32_literal(model.band)?,
@@ -2739,6 +3005,20 @@ fn write_visibility_polynomial_accessors(
             values.push(wrela_f32_literal(model.radius)?);
             values.push(wrela_f32_literal(model.frequency)?);
             values.push(format!("{}.0", model.phase_slot));
+            if let Some(center) = model.direct_center {
+                values.push("1.0".to_string());
+                for value in center {
+                    values.push(wrela_f32_literal(value)?);
+                }
+            } else {
+                values.extend([
+                    "0.0".to_string(),
+                    "0.0".to_string(),
+                    "0.0".to_string(),
+                    "0.0".to_string(),
+                ]);
+            }
+            values.push(wrela_f32_literal(model.direct_amplitude)?);
             writeln!(
                 output,
                 "    if renderer == {renderer_index} and event == {}:\n\
@@ -2749,7 +3029,12 @@ fn write_visibility_polynomial_accessors(
             .expect("String writes cannot fail");
         }
     }
-    output.push_str("    return [0.0; 21]\n");
+    output.push_str("    return [0.0; 26]\n");
+    if has_aligned_deformation {
+        output.push_str(ALIGNED_DEFORMATION_DEPTH_MISS_SOURCE);
+    } else {
+        output.push_str(ALIGNED_DEFORMATION_DEPTH_MISS_STUB);
+    }
     output.push_str(
         "\npub fn __wrela_pixels_p7_standard_torus_event(renderer: usize, event: u32) -> bool:\n",
     );
@@ -3533,6 +3818,187 @@ fn write_visibility_polynomial_accessors(
         }
     }
     output.push_str("    return 0\n");
+    // A constant axis-aligned box under a pure-union object admits a compact
+    // exact projected-rectangle tier for the canonical axis camera. Emit the
+    // source constants, not widened world bounds; runtime code still performs
+    // outward arithmetic and declines for every other camera/composition.
+    output.push_str("\npub fn __wrela_pixels_p8_axis_box(renderer: usize) -> [f32; 9]:\n");
+    let mut has_axis_box = false;
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        use super::primitive::AnalyticPredicate;
+
+        let features = &renderer.structural.program().features;
+        if features.len() != 6 {
+            continue;
+        }
+        let Some(AnalyticPredicate::BoxFace { center, half, .. }) =
+            features[0].validity.constraints.first()
+        else {
+            continue;
+        };
+        let object = features[0].object;
+        let identity = features[0].identity_set;
+        let mut faces = [[false; 2]; 3];
+        let mut exact_set = true;
+        for feature in features {
+            let Some(AnalyticPredicate::BoxFace {
+                axis,
+                sign,
+                center: candidate_center,
+                half: candidate_half,
+            }) = feature.validity.constraints.first()
+            else {
+                exact_set = false;
+                break;
+            };
+            if feature.object != object
+                || feature.identity_set != identity
+                || candidate_center != center
+                || candidate_half != half
+                || *axis >= 3
+                || !matches!(*sign, -1 | 1)
+            {
+                exact_set = false;
+                break;
+            }
+            faces[usize::from(*axis)][usize::from(*sign == 1)] = true;
+        }
+        let csg = &renderer.structural.program().csg;
+        let union_only = csg.constant.is_none()
+            && !csg.instructions.is_empty()
+            && csg.instructions.iter().all(|instruction| {
+                matches!(
+                    instruction,
+                    super::csg::CsgInst::Push(_) | super::csg::CsgInst::Or
+                )
+            });
+        if !exact_set || !faces.into_iter().flatten().all(|present| present) || !union_only {
+            continue;
+        }
+        let mut center_values = [0.0_f32; 3];
+        let mut half_values = [0.0_f32; 3];
+        let mut constants = true;
+        for axis in 0..3 {
+            let Some(center_value) =
+                super::scalar::constant_value(&renderer.symbolic.scalar, center[axis])
+            else {
+                constants = false;
+                break;
+            };
+            let Some(half_value) =
+                super::scalar::constant_value(&renderer.symbolic.scalar, half[axis])
+            else {
+                constants = false;
+                break;
+            };
+            if !center_value.is_finite() || !half_value.is_finite() || half_value <= 0.0 {
+                constants = false;
+                break;
+            }
+            center_values[axis] = center_value;
+            half_values[axis] = half_value;
+        }
+        if !constants {
+            continue;
+        }
+        has_axis_box = true;
+        let mut slots = vec![
+            "1.0".to_string(),
+            wrela_f32_literal(object.0 as f32)?,
+            wrela_f32_literal(identity as f32)?,
+        ];
+        for axis in 0..3 {
+            slots.push(wrela_f32_literal(center_values[axis] - half_values[axis])?);
+        }
+        for axis in 0..3 {
+            slots.push(wrela_f32_literal(center_values[axis] + half_values[axis])?);
+        }
+        writeln!(
+            output,
+            "    if renderer == {renderer_index}:\n        return [{}]",
+            slots.join(", "),
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0.0; 9]\n");
+    if has_axis_box {
+        output.push_str(
+            r#"
+pub fn __wrela_pixels_p8_ratio_bounds(numerator_lo: f32, numerator_hi: f32, denominator_lo: f32, denominator_hi: f32) -> [f32; 2]:
+    if not denominator_lo > 0.0 or numerator_lo > numerator_hi or denominator_lo > denominator_hi:
+        return [1.0, -1.0]
+    a = numerator_lo / denominator_lo
+    b = numerator_lo / denominator_hi
+    c = numerator_hi / denominator_lo
+    d = numerator_hi / denominator_hi
+    lo = __wrela_pixels_p7_min(__wrela_pixels_p7_min(a, b), __wrela_pixels_p7_min(c, d))
+    hi = __wrela_pixels_p7_max(__wrela_pixels_p7_max(a, b), __wrela_pixels_p7_max(c, d))
+    return [__wrela_pixels_p7_outward_low(lo), __wrela_pixels_p7_outward_high(hi)]
+
+pub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read camera: [f32; 12]) -> [i64; 4]:
+    box = __wrela_pixels_p8_axis_box(renderer)
+    if box[0] != 1.0 or camera[3] != 0.0 or camera[4] != 0.0 or camera[5] != 1.0 or camera[6] != 1.0 or camera[7] != 0.0 or camera[8] != 0.0 or camera[9] != 0.0 or camera[10] != 1.0 or camera[11] != 0.0 or not camera[2] < box[5]:
+        return [0; 4]
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
+        return [0; 4]
+    width = config[1].to[f32]()
+    height = config[2].to[f32]()
+    aspect = width / height
+    pixel_u0 = ((x.to[f32]() / width) * 2.0 - 1.0) * aspect
+    pixel_u1 = (((x + 1).to[f32]() / width) * 2.0 - 1.0) * aspect
+    pixel_v1 = 1.0 - (y.to[f32]() / height) * 2.0
+    pixel_v0 = 1.0 - ((y + 1).to[f32]() / height) * 2.0
+    depth_lo = __wrela_pixels_p7_outward_low(box[5] - camera[2])
+    depth_hi = __wrela_pixels_p7_outward_high(box[5] - camera[2])
+    u_min = __wrela_pixels_p8_ratio_bounds(__wrela_pixels_p7_outward_low(box[3] - camera[0]), __wrela_pixels_p7_outward_high(box[3] - camera[0]), depth_lo, depth_hi)
+    u_max = __wrela_pixels_p8_ratio_bounds(__wrela_pixels_p7_outward_low(box[6] - camera[0]), __wrela_pixels_p7_outward_high(box[6] - camera[0]), depth_lo, depth_hi)
+    v_min = __wrela_pixels_p8_ratio_bounds(__wrela_pixels_p7_outward_low(box[4] - camera[1]), __wrela_pixels_p7_outward_high(box[4] - camera[1]), depth_lo, depth_hi)
+    v_max = __wrela_pixels_p8_ratio_bounds(__wrela_pixels_p7_outward_low(box[7] - camera[1]), __wrela_pixels_p7_outward_high(box[7] - camera[1]), depth_lo, depth_hi)
+    if u_min[0] > u_min[1] or u_max[0] > u_max[1] or v_min[0] > v_min[1] or v_max[0] > v_max[1]:
+        return [0; 4]
+    width_lo = __wrela_pixels_p7_min(pixel_u1, u_max[0]) - __wrela_pixels_p7_max(pixel_u0, u_min[1])
+    width_hi = __wrela_pixels_p7_min(pixel_u1, u_max[1]) - __wrela_pixels_p7_max(pixel_u0, u_min[0])
+    height_lo = __wrela_pixels_p7_min(pixel_v1, v_max[0]) - __wrela_pixels_p7_max(pixel_v0, v_min[1])
+    height_hi = __wrela_pixels_p7_min(pixel_v1, v_max[1]) - __wrela_pixels_p7_max(pixel_v0, v_min[0])
+    if width_lo < 0.0:
+        width_lo = 0.0
+    if width_hi < 0.0:
+        width_hi = 0.0
+    if height_lo < 0.0:
+        height_lo = 0.0
+    if height_hi < 0.0:
+        height_hi = 0.0
+    pixel_area = (pixel_u1 - pixel_u0) * (pixel_v1 - pixel_v0)
+    if not pixel_area > 0.0:
+        return [0; 4]
+    area_lo = __wrela_pixels_p7_outward_low(width_lo * height_lo)
+    area_hi = __wrela_pixels_p7_outward_high(width_hi * height_hi)
+    coverage_lo = __wrela_pixels_p7_outward_low(area_lo / pixel_area * 255.0)
+    coverage_hi = __wrela_pixels_p7_outward_high(area_hi / pixel_area * 255.0)
+    if coverage_lo < 0.0:
+        coverage_lo = 0.0
+    if coverage_hi > 255.0:
+        coverage_hi = 255.0
+    byte_lo = (coverage_lo + 0.5).to[i64]()
+    byte_hi = (coverage_hi + 0.5).to[i64]()
+    if byte_lo != byte_hi:
+        return [0; 4]
+    return [1, 1, byte_lo, 8589934592 + box[1].to[i64]()]
+"#,
+        );
+    } else {
+        // Keep the injected surface total, but do not make a renderer that
+        // has no eligible box carry the entire analytic rectangle tier in
+        // branchable text. This is a compile-time scene fact, not a runtime
+        // shortcut: both stubs fail closed.
+        output.push_str(
+            "\npub fn __wrela_pixels_p8_ratio_bounds(numerator_lo: f32, numerator_hi: f32, denominator_lo: f32, denominator_hi: f32) -> [f32; 2]:\n\
+             \x20   return [1.0, -1.0]\n\
+             \npub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read camera: [f32; 12]) -> [i64; 4]:\n\
+             \x20   return [0; 4]\n",
+        );
+    }
     output.push_str(
         "\npub fn __wrela_pixels_p7_feature_normal(renderer: usize, feature: u32, u: f32, v: f32, q: f32, read params: [f32; 16], read camera: [f32; 12]) -> [f32; 4]:\n\
          \x20   if not q > 0.0:\n\
@@ -3841,27 +4307,25 @@ fn write_visibility_polynomial_accessors(
              \x20   if not magnitude > 0.0:\n\
              \x20       return [0; 3]\n\
              \x20   scale = 262144.0 / magnitude\n\
-             \x20   c = (f00[1] * scale).to[i32]()\n\
-             \x20   a = ((f10[1] - f00[1]) * scale).to[i32]()\n\
-             \x20   b = ((f01[1] - f00[1]) * scale).to[i32]()\n\
+             \x20   c = __wrela_pixels_p7_round_i32(f00[1] * scale)\n\
+             \x20   a = __wrela_pixels_p7_round_i32((f10[1] - f00[1]) * scale)\n\
+             \x20   b = __wrela_pixels_p7_round_i32((f01[1] - f00[1]) * scale)\n\
              \x20   corner_residual = __wrela_pixels_p7_abs(f11[1] - f10[1] - f01[1] + f00[1])\n\
              \x20   center_residual = __wrela_pixels_p7_abs(fc[1] - (f00[1] + f10[1] + f01[1] + f11[1]) * 0.25)\n\
              \x20   if corner_residual * scale > 0.5 or center_residual * scale > 0.5:\n\
              \x20       return [0; 3]\n\
-             \x20   match coverage_line_twice_area(a, b, c):\n\
-             \x20       case .Value(area):\n\
-             \x20           lo = area.lower().to[i64]() * 255 / 512\n\
-             \x20           hi = (area.upper().to[i64]() * 255 + 511) / 512\n\
-             \x20           center_positive = fc[1] >= 0.0\n\
-             \x20           if hit != center_positive:\n\
-             \x20               old_lo = lo\n\
-             \x20               lo = 255 - hi\n\
-             \x20               hi = 255 - old_lo\n\
-             \x20           if lo != hi:\n\
-             \x20               return [0; 3]\n\
-             \x20           return [1, 1, lo]\n\
-             \x20       case .Error:\n\
-             \x20           return [0; 3]",
+             \x20   # Nearest-integer coefficient error is at most 1.5 over\n\
+             \x20   # the unit square; the accepted affine residual adds 0.5.\n\
+             \x20   # Both extrema must therefore round to the same byte.\n\
+             \x20   exact_lo = __wrela_pixels_p7_half_plane_byte(a, b, c - 2)\n\
+             \x20   exact_hi = __wrela_pixels_p7_half_plane_byte(a, b, c + 2)\n\
+             \x20   if exact_lo[0] != 1 or exact_hi[0] != 1 or exact_lo[1] != exact_hi[1]:\n\
+             \x20       return [0; 3]\n\
+             \x20   coverage = exact_lo[1]\n\
+             \x20   center_positive = fc[1] >= 0.0\n\
+             \x20   if hit != center_positive:\n\
+             \x20       coverage = 255 - coverage\n\
+             \x20   return [1, 1, coverage]",
             renderer.config.width,
             renderer.config.height,
         )
@@ -5030,8 +5494,12 @@ pub fn generate(
     if workers == 0 {
         return Err("pixels::glue: renderer has zero workers".to_string());
     }
-    let tiles_x = config.width.div_ceil(TILE_WIDTH_V1);
-    let tiles_y = config.height.div_ceil(TILE_HEIGHT_V1);
+    let tiles_x = config
+        .width
+        .div_ceil(u32::from(wrela_machine::pixels::TILE_WIDTH));
+    let tiles_y = config
+        .height
+        .div_ceil(u32::from(wrela_machine::pixels::TILE_HEIGHT));
     let tile_count = tiles_x
         .checked_mul(tiles_y)
         .ok_or_else(|| "P015: renderer tile count overflow".to_string())?;
@@ -5041,8 +5509,15 @@ pub fn generate(
         .map(|worker| {
             let worker_u32 =
                 u32::try_from(worker).map_err(|_| "pixels::glue: worker index overflow")?;
-            let start = u64::from(tile_count) * u64::from(worker_u32) / u64::from(workers_u32);
-            let end = u64::from(tile_count) * u64::from(worker_u32 + 1) / u64::from(workers_u32);
+            // Ceil-partition complete 64x32 scanout tiles. With fewer tiles
+            // than workers this assigns the first tile to worker zero and
+            // leaves later workers empty; no scanout allocation is shared.
+            let start = (u64::from(tile_count) * u64::from(worker_u32)
+                + u64::from(workers_u32 - 1))
+                / u64::from(workers_u32);
+            let end = (u64::from(tile_count) * u64::from(worker_u32 + 1)
+                + u64::from(workers_u32 - 1))
+                / u64::from(workers_u32);
             Ok(GeneratedWorker {
                 actor: format!("__wrela_renderer_{renderer_index}_worker_{worker}"),
                 core: worker,
@@ -5063,7 +5538,6 @@ pub fn generate(
     let mut rooted_functions = vec![
         format!("{renderer_key}.init"),
         "__wrela_pixels_bootstrap_dispatch".to_string(),
-        "__wrela_pixels_display_present".to_string(),
         "__wrela_pixels_program_validate".to_string(),
         "__wrela_abort_val".to_string(),
     ];
@@ -6067,8 +6541,8 @@ fn write_p7_runtime_storage_accessors(
                      \x20           R{renderer_index}_WORKER_{worker_index}_TELEMETRY.counters[counter] = 0\n\
                      \x20           counter = counter + 1\n\
                      \x20       return true",
-                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
-                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
+                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
                 )
                 .expect("String writes cannot fail");
             }
@@ -6080,7 +6554,7 @@ fn write_p7_runtime_storage_accessors(
         "\npub fn __wrela_pixels_p7_telemetry_charge(renderer: usize, worker: u32, counter: usize, amount: u64) -> bool:\n\
          \x20   if counter >= {}:\n\
          \x20       return false\n",
-        super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+        super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
     ));
     if instrumented {
         for placement in placements {
@@ -6107,7 +6581,7 @@ fn write_p7_runtime_storage_accessors(
         "\npub fn __wrela_pixels_p7_telemetry_counter(renderer: usize, worker: u32, counter: usize) -> [u64; 2]:\n\
          \x20   if counter >= {}:\n\
          \x20       return [0; 2]\n",
-        super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+        super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
     ));
     if instrumented {
         for placement in placements {
@@ -6124,6 +6598,935 @@ fn write_p7_runtime_storage_accessors(
         }
     }
     output.push_str("    return [0; 2]\n");
+
+    output.push_str(
+        "\npub fn __wrela_pixels_p8_raster_evidence_store(renderer: usize, pixel: usize, q: u64, derivatives: u64, bounds: u64, class: u8) -> bool:\n",
+    );
+    if instrumented {
+        output.push_str(
+            "    if class < 1 or class > 3 or bounds >> 62 != 0:\n\
+             \x20       return false\n\
+             \x20   word0 = q\n\
+             \x20   word1 = derivatives\n\
+             \x20   word2 = bounds | (class.to[u64]() << 62)\n",
+        );
+    }
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        let renderer_index = placement.index;
+        let pixel_count = u64::from(renderer.config.width) * u64::from(renderer.config.height);
+        if instrumented {
+            let records_per_chunk = WORKSPACE_VIEW_CHUNK_BYTES / 24;
+            let mut first = 0_u64;
+            let mut chunk = 0_usize;
+            while first < pixel_count {
+                let count = (pixel_count - first).min(records_per_chunk);
+                writeln!(
+                    output,
+                    "    if renderer == {renderer_index} and pixel.to[u64]() >= {first} and pixel.to[u64]() < {}:\n\
+                     \x20       base = (pixel - {first}.to[usize]()) * 3\n\
+                     \x20       R{renderer_index}_RASTER_EVIDENCE_CHUNK_{chunk}.words[base] = word0\n\
+                     \x20       R{renderer_index}_RASTER_EVIDENCE_CHUNK_{chunk}.words[base + 1] = word1\n\
+                     \x20       R{renderer_index}_RASTER_EVIDENCE_CHUNK_{chunk}.words[base + 2] = word2\n\
+                     \x20       return true",
+                    first + count,
+                )
+                .expect("String writes cannot fail");
+                first += count;
+                chunk += 1;
+            }
+        } else {
+            writeln!(
+                output,
+                "    if renderer == {renderer_index} and pixel.to[u64]() < {pixel_count}:\n\
+                 \x20       return true"
+            )
+            .expect("String writes cannot fail");
+        }
+    }
+    output.push_str("    return false\n");
+
+    output.push_str(
+        "\npub fn __wrela_pixels_p8_raster_evidence_word(renderer: usize, word: usize) -> [u64; 2]:\n",
+    );
+    if instrumented {
+        for (placement, renderer) in placements.iter().zip(compiled) {
+            let renderer_index = placement.index;
+            let evidence_words =
+                u64::from(renderer.config.width) * u64::from(renderer.config.height) * 3;
+            let words_per_chunk = WORKSPACE_VIEW_CHUNK_BYTES / 8;
+            let mut first = 0_u64;
+            let mut chunk = 0_usize;
+            while first < evidence_words {
+                let count = (evidence_words - first).min(words_per_chunk);
+                writeln!(
+                    output,
+                    "    if renderer == {renderer_index} and word.to[u64]() >= {first} and word.to[u64]() < {}:\n\
+                     \x20       return [1, R{renderer_index}_RASTER_EVIDENCE_CHUNK_{chunk}.words[word - {first}.to[usize]()]]",
+                    first + count,
+                )
+                .expect("String writes cannot fail");
+                first += count;
+                chunk += 1;
+            }
+        }
+    }
+    output.push_str("    return [0; 2]\n");
+
+    Ok(())
+}
+
+fn write_p8_scanout_accessors(
+    output: &mut String,
+    placements: &[crate::layout::RendererPlacement],
+    compiled: &[super::CompiledRenderer],
+) -> Result<(), String> {
+    const INITIALIZED: u64 = 0x5752_454c_4150_5838;
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        let index = placement.index;
+        let width = u64::from(renderer.config.width);
+        let height = u64::from(renderer.config.height);
+        let pixel_count = width
+            .checked_mul(height)
+            .ok_or_else(|| "P015: P8 visible pixel count overflow".to_string())?;
+        let tile_columns = width.div_ceil(u64::from(wrela_machine::pixels::TILE_WIDTH));
+        let tile_rows = height.div_ceil(u64::from(wrela_machine::pixels::TILE_HEIGHT));
+        let tile_count = tile_columns
+            .checked_mul(tile_rows)
+            .ok_or_else(|| "P015: P8 scanout tile count overflow".to_string())?;
+        let generation_bytes = tile_count
+            .checked_mul(wrela_machine::pixels::TILE_ALLOCATION_BYTES as u64)
+            .ok_or_else(|| "P015: P8 scanout generation bytes overflow".to_string())?;
+        if placement.framebuffer_bytes != generation_bytes * 2 {
+            return Err(format!(
+                "pixels::glue: renderer {index} framebuffer does not contain two exact scanout generations"
+            ));
+        }
+        let list = &renderer.mutable_layout.tile_descriptors;
+        let control_bytes = wrela_machine::pixels::CONTROL_BYTES as u64;
+        let per_generation_list_bytes = control_bytes
+            .checked_add(
+                tile_count
+                    .checked_mul(24)
+                    .ok_or_else(|| "P015: P8 descriptor-list bytes overflow".to_string())?,
+            )
+            .ok_or_else(|| "P015: P8 control/list bytes overflow".to_string())?;
+        if list.bytes != per_generation_list_bytes * 2 {
+            return Err(format!(
+                "pixels::glue: renderer {index} display-list storage is not two exact generations"
+            ));
+        }
+        let list_base = placement
+            .state_base
+            .checked_add(list.offset)
+            .ok_or_else(|| "P025: P8 display-list base overflow".to_string())?;
+        let full_single_tile = width == u64::from(wrela_machine::pixels::TILE_WIDTH)
+            && height == u64::from(wrela_machine::pixels::TILE_HEIGHT);
+        let mut descriptor_digests = [[0_u64; 4]; 2];
+        for generation in 0..2_u64 {
+            let mut bytes = Vec::with_capacity(tile_count as usize * 24);
+            for tile in 0..tile_count {
+                let x = (tile % tile_columns) * 64;
+                let y = (tile / tile_columns) * 32;
+                let guest_addr = placement
+                    .framebuffer_base
+                    .checked_add(generation * generation_bytes)
+                    .and_then(|base| {
+                        base.checked_add(tile * wrela_machine::pixels::TILE_ALLOCATION_BYTES as u64)
+                    })
+                    .ok_or_else(|| "P025: P8 descriptor tile address overflow".to_string())?;
+                let descriptor = wrela_machine::pixels::DisplayTileDescV1 {
+                    guest_addr,
+                    x: u16::try_from(x)
+                        .map_err(|_| "P015: P8 descriptor x exceeds u16".to_string())?,
+                    y: u16::try_from(y)
+                        .map_err(|_| "P015: P8 descriptor y exceeds u16".to_string())?,
+                    width: u16::try_from((width - x).min(64))
+                        .map_err(|_| "P015: P8 descriptor width exceeds u16".to_string())?,
+                    height: u16::try_from((height - y).min(32))
+                        .map_err(|_| "P015: P8 descriptor height exceeds u16".to_string())?,
+                    stride_bytes: wrela_machine::pixels::TILE_STRIDE_BYTES as u16,
+                    format: wrela_machine::pixels::FORMAT_BGRA8_SRGB,
+                    reserved: [0; 5],
+                };
+                bytes.extend_from_slice(&descriptor.encode());
+            }
+            descriptor_digests[generation as usize] =
+                wrela_machine::pixels::guest_bounded_digest(&bytes);
+        }
+
+        let mut offset = 0_u64;
+        let mut chunk = 0_usize;
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_list_store_word_r{index}(byte: usize, value: u64) -> bool:\n\
+             \x20   if byte % 8 != 0:\n\
+             \x20       return false"
+        )
+        .expect("String writes cannot fail");
+        while offset < list.bytes {
+            let chunk_bytes = (list.bytes - offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(
+                output,
+                "    if byte.to[u64]() >= {offset} and byte.to[u64]() + 8 <= {}:\n\
+                 \x20       R{index}_DISPLAY_LIST_CHUNK_{chunk}.words[(byte.to[u64]() - {offset}).to[usize]() / 8] = value\n\
+                 \x20       return true",
+                offset + chunk_bytes,
+            )
+            .expect("String writes cannot fail");
+            offset += chunk_bytes;
+            chunk += 1;
+        }
+        output.push_str("    return false\n");
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_list_load_word_r{index}(byte: usize) -> [u64; 2]:\n\
+             \x20   if byte % 8 != 0:\n\
+             \x20       return [0; 2]"
+        )
+        .expect("String writes cannot fail");
+        offset = 0;
+        chunk = 0;
+        while offset < list.bytes {
+            let chunk_bytes = (list.bytes - offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(
+                output,
+                "    if byte.to[u64]() >= {offset} and byte.to[u64]() + 8 <= {}:\n\
+                 \x20       return [1, R{index}_DISPLAY_LIST_CHUNK_{chunk}.words[(byte.to[u64]() - {offset}).to[usize]() / 8]]",
+                offset + chunk_bytes,
+            )
+            .expect("String writes cannot fail");
+            offset += chunk_bytes;
+            chunk += 1;
+        }
+        output.push_str("    return [0; 2]\n");
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_initialize_r{index}() -> bool:\n\
+             \x20   if R{index}_SCANOUT_STATE.words[0] == {INITIALIZED}:\n\
+             \x20       return true\n\
+             \x20   if R{index}_SCANOUT_STATE.words[0] != 0:\n\
+             \x20       return false"
+        )
+        .expect("String writes cannot fail");
+        writeln!(
+            output,
+            "    # Both complete generations are zero-initialized image statics.\n\
+             \x20   # Initialization seals that one-time boot clear; later frames overwrite\n\
+             \x20   # visible pixels and never touch padding.\n\
+             \x20   R{index}_SCANOUT_STATE.words[0] = {INITIALIZED}\n\
+             \x20   R{index}_SCANOUT_STATE.words[1] = 0\n\
+             \x20   R{index}_SCANOUT_STATE.words[2] = 0\n\
+             \x20   R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20   return true"
+        )
+        .expect("String writes cannot fail");
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_begin_r{index}() -> [u64; 3]:\n\
+             \x20   if not __wrela_pixels_p8_initialize_r{index}() or R{index}_SCANOUT_STATE.words[3] != 0:\n\
+             \x20       return [0; 3]\n\
+             \x20   generation: u64 = 0\n\
+             \x20   if R{index}_SCANOUT_STATE.words[1] == 1:\n\
+             \x20       generation = 1\n\
+             \x20   elif R{index}_SCANOUT_STATE.words[1] > 2:\n\
+             \x20       return [0; 3]\n\
+             \x20   R{index}_SCANOUT_STATE.words[3] = generation + 1\n\
+             \x20   return [1, generation, R{index}_SCANOUT_STATE.words[2]]"
+        )
+        .expect("String writes cannot fail");
+
+        let visible_address = if full_single_tile {
+            format!(
+                "    generation = owner - 1\n\
+                 \x20   offset = generation * {generation_bytes} + byte.to[u64]()"
+            )
+        } else {
+            format!(
+                "    pixel = byte.to[u64]() / 4\n\
+                 \x20   x = pixel % {width}\n\
+                 \x20   y = pixel / {width}\n\
+                 \x20   tile = (y / 32) * {tile_columns} + x / 64\n\
+                 \x20   local = (y % 32) * 256 + (x % 64) * 4 + byte.to[u64]() % 4\n\
+                 \x20   generation = owner - 1\n\
+                 \x20   offset = generation * {generation_bytes} + tile * 8192 + local"
+            )
+        };
+        let visible_return = if full_single_tile {
+            format!(
+                "    word = offset.to[usize]() / 8\n\
+                 \x20   shift = (offset % 8) * 8\n\
+                 \x20   return [1, (R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] >> shift) & 255]"
+            )
+        } else {
+            format!(
+                "    return __wrela_pixels_p7_framebuffer_load_byte({index}, offset.to[usize]())"
+            )
+        };
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_visible_byte_r{index}(byte: usize) -> [u64; 2]:\n\
+             \x20   owner = R{index}_SCANOUT_STATE.words[3]\n\
+             \x20   if owner == 0:\n\
+             \x20       owner = R{index}_SCANOUT_STATE.words[1]\n\
+             \x20   if byte.to[u64]() >= {} or owner == 0:\n\
+             \x20       return [0; 2]\n\
+             {visible_address}\n\
+             {visible_return}",
+            pixel_count * 4,
+        )
+        .expect("String writes cannot fail");
+
+        if full_single_tile {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p8_visible_word_r{index}(word: usize) -> [u64; 2]:\n\
+                 \x20   owner = R{index}_SCANOUT_STATE.words[3]\n\
+                 \x20   if owner == 0:\n\
+                 \x20       owner = R{index}_SCANOUT_STATE.words[1]\n\
+                 \x20   if owner == 0 or word >= 1024:\n\
+                 \x20       return [0; 2]\n\
+                 \x20   return [1, R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[(owner - 1).to[usize]() * 1024 + word]]"
+            )
+            .expect("String writes cannot fail");
+        } else {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p8_visible_word_r{index}(word: usize) -> [u64; 2]:\n\
+                 \x20   if word.to[u64]() * 8 >= {}:\n\
+                 \x20       return [0; 2]\n\
+                 \x20   value: u64 = 0\n\
+                 \x20   octet: usize = 0\n\
+                 \x20   @budget(bound=8)\n\
+                 \x20   while octet < 8 and word.to[u64]() * 8 + octet.to[u64]() < {}:\n\
+                 \x20       loaded = __wrela_pixels_p8_visible_byte_r{index}(word * 8 + octet)\n\
+                 \x20       if loaded[0] != 1:\n\
+                 \x20           return [0; 2]\n\
+                 \x20       value = value | (loaded[1] << (octet * 8).to[u64]())\n\
+                 \x20       octet = octet + 1\n\
+                 \x20   return [1, value]",
+                pixel_count * 4,
+                pixel_count * 4,
+            )
+            .expect("String writes cannot fail");
+        }
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_load_u32_r{index}(byte: usize) -> [u64; 2]:\n\
+             \x20   if byte % 4 != 0:\n\
+             \x20       return [0; 2]\n\
+             \x20   shift = (byte % 8).to[u64]() * 8"
+        )
+        .expect("String writes cannot fail");
+        let mut framebuffer_offset = 0;
+        let mut framebuffer_chunk = 0;
+        while framebuffer_offset < placement.framebuffer_bytes {
+            let chunk_bytes =
+                (placement.framebuffer_bytes - framebuffer_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(
+                output,
+                "    if byte.to[u64]() >= {framebuffer_offset} and byte.to[u64]() + 4 <= {}:\n\
+                 \x20       word = (byte.to[u64]() - {framebuffer_offset}).to[usize]() / 8\n\
+                 \x20       return [1, (R{index}_DEBUG_FRAMEBUFFER_CHUNK_{framebuffer_chunk}.words[word] >> shift) & 4294967295]",
+                framebuffer_offset + chunk_bytes,
+            )
+            .expect("String writes cannot fail");
+            framebuffer_offset += chunk_bytes;
+            framebuffer_chunk += 1;
+        }
+        output.push_str("    return [0; 2]\n");
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_store_u32_r{index}(byte: usize, value: u64) -> bool:\n\
+             \x20   if byte % 4 != 0:\n\
+             \x20       return false\n\
+             \x20   shift = (byte % 8).to[u64]() * 8\n\
+             \x20   mask = 4294967295.to[u64]() << shift"
+        )
+        .expect("String writes cannot fail");
+        framebuffer_offset = 0;
+        framebuffer_chunk = 0;
+        while framebuffer_offset < placement.framebuffer_bytes {
+            let chunk_bytes =
+                (placement.framebuffer_bytes - framebuffer_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(
+                output,
+                "    if byte.to[u64]() >= {framebuffer_offset} and byte.to[u64]() + 4 <= {}:\n\
+                 \x20       word = (byte.to[u64]() - {framebuffer_offset}).to[usize]() / 8\n\
+                 \x20       old = R{index}_DEBUG_FRAMEBUFFER_CHUNK_{framebuffer_chunk}.words[word]\n\
+                 \x20       R{index}_DEBUG_FRAMEBUFFER_CHUNK_{framebuffer_chunk}.words[word] = (old & (mask ^ 18446744073709551615)) | ((value & 4294967295) << shift)\n\
+                 \x20       return true",
+                framebuffer_offset + chunk_bytes,
+            )
+            .expect("String writes cannot fail");
+            framebuffer_offset += chunk_bytes;
+            framebuffer_chunk += 1;
+        }
+        output.push_str("    return false\n");
+
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_cancel_r{index}() -> bool:\n\
+             \x20   if R{index}_SCANOUT_STATE.words[3] == 0:\n\
+             \x20       return false\n\
+             \x20   R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20   return true"
+        )
+        .expect("String writes cannot fail");
+
+        let owner_clauses = placement
+            .per_core
+            .iter()
+            .map(|assignment| {
+                format!(
+                    "(worker == {} and owner_tile >= {} and owner_tile < {})",
+                    assignment.worker_index, assignment.tiles_start, assignment.tiles_end,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let ownership_check = format!(
+            "    owner_x = pixel.to[u64]() % {width}\n\
+             \x20   owner_y = pixel.to[u64]() / {width}\n\
+             \x20   owner_tile = (owner_y / 32) * {tile_columns} + owner_x / 64\n\
+             \x20   if not ({owner_clauses}):\n\
+             \x20       return false"
+        );
+        let write_address = if full_single_tile {
+            format!(
+                "    generation = R{index}_SCANOUT_STATE.words[3] - 1\n\
+                 \x20   byte = generation * {generation_bytes} + pixel.to[u64]() * 4"
+            )
+        } else {
+            format!(
+                "    x = pixel.to[u64]() % {width}\n\
+                 \x20   y = pixel.to[u64]() / {width}\n\
+                 \x20   tile = (y / 32) * {tile_columns} + x / 64\n\
+                 \x20   local = (y % 32) * 256 + (x % 64) * 4\n\
+                 \x20   generation = R{index}_SCANOUT_STATE.words[3] - 1\n\
+                 \x20   byte = generation * {generation_bytes} + tile * 8192 + local"
+            )
+        };
+        let write_store = if full_single_tile {
+            format!(
+                "    value = blue.to[u64]() | (green.to[u64]() << 8) | (red.to[u64]() << 16) | (255.to[u64]() << 24)\n\
+                 \x20   word = (byte / 8).to[usize]()\n\
+                 \x20   shift = (byte % 8) * 8\n\
+                 \x20   mask = 4294967295.to[u64]() << shift\n\
+                 \x20   old = R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[word]\n\
+                 \x20   R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] = (old & (mask ^ 18446744073709551615)) | (value << shift)\n\
+                 \x20   return true"
+            )
+        } else {
+            format!(
+                "    value = blue.to[u64]() | (green.to[u64]() << 8) | (red.to[u64]() << 16) | (255.to[u64]() << 24)\n\
+                 \x20   return __wrela_pixels_p8_store_u32_r{index}(byte.to[usize](), value)"
+            )
+        };
+        let write_function = if placements.len() == 1 {
+            "__wrela_pixels_p8_write".to_string()
+        } else {
+            format!("__wrela_pixels_p8_write_r{index}")
+        };
+        writeln!(
+            output,
+            "\npub fn {write_function}(renderer: usize, worker: u32, pixel: u32, front: u32, coverage: u8, back: u32) -> bool:\n\
+             \x20   if renderer != {index}:\n\
+             \x20       return false\n\
+             \x20   if pixel.to[u64]() >= {pixel_count} or R{index}_SCANOUT_STATE.words[3] == 0:\n\
+             \x20       return false\n\
+             {ownership_check}\n\
+             {write_address}\n\
+             \x20   front_weight = coverage.to[u32]()\n\
+             \x20   back_weight = 255.to[u32]() - front_weight\n\
+             \x20   red = ((front & 255) * front_weight + (back & 255) * back_weight + 127) / 255\n\
+             \x20   green = (((front >> 8) & 255) * front_weight + ((back >> 8) & 255) * back_weight + 127) / 255\n\
+             \x20   blue = (((front >> 16) & 255) * front_weight + ((back >> 16) & 255) * back_weight + 127) / 255\n\
+             {write_store}"
+        )
+        .expect("String writes cannot fail");
+
+        let write4_function = if placements.len() == 1 {
+            "__wrela_pixels_p8_write4".to_string()
+        } else {
+            format!("__wrela_pixels_p8_write4_r{index}")
+        };
+        let write4_address = if full_single_tile {
+            format!(
+                "    generation = R{index}_SCANOUT_STATE.words[3] - 1\n\
+                 \x20   byte = generation * {generation_bytes} + pixel.to[u64]() * 4"
+            )
+        } else {
+            format!(
+                "    x = pixel.to[u64]() % {width}\n\
+                 \x20   y = pixel.to[u64]() / {width}\n\
+                 \x20   tile = (y / 32) * {tile_columns} + x / 64\n\
+                 \x20   local = (y % 32) * 256 + (x % 64) * 4\n\
+                 \x20   generation = R{index}_SCANOUT_STATE.words[3] - 1\n\
+                 \x20   byte = generation * {generation_bytes} + tile * 8192 + local"
+            )
+        };
+        let write4_store = if full_single_tile {
+            format!(
+                "    word = (byte / 8).to[usize]()\n\
+                 \x20   R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[word] = packed\n\
+                 \x20   R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[word + 1] = packed\n\
+                 \x20   return true"
+            )
+        } else {
+            format!(
+                "    return (\n\
+                 \x20       __wrela_pixels_p8_store_u32_r{index}(byte.to[usize](), value)\n\
+                 \x20       and __wrela_pixels_p8_store_u32_r{index}(byte.to[usize]() + 4, value)\n\
+                 \x20       and __wrela_pixels_p8_store_u32_r{index}(byte.to[usize]() + 8, value)\n\
+                 \x20       and __wrela_pixels_p8_store_u32_r{index}(byte.to[usize]() + 12, value)\n\
+                 \x20   )"
+            )
+        };
+        writeln!(
+            output,
+            "\npub fn {write4_function}(renderer: usize, worker: u32, pixel: u32, r: u8, g: u8, b: u8) -> bool:\n\
+             \x20   if (\n\
+             \x20       renderer != {index}\n\
+             \x20       or R{index}_SCANOUT_STATE.words[3] == 0\n\
+             \x20       or pixel.to[u64]() + 4 > {pixel_count}\n\
+             \x20       or pixel.to[u64]() % {width} + 4 > {width}\n\
+             \x20       or (pixel.to[u64]() % {width}) % 4 != 0\n\
+             \x20   ):\n\
+             \x20       return false\n\
+             {ownership_check}\n\
+             \x20   if owner_x % 64 + 4 > 64:\n\
+             \x20       return false\n\
+             {write4_address}\n\
+             \x20   value = b.to[u64]() | (g.to[u64]() << 8) | (r.to[u64]() << 16) | (255.to[u64]() << 24)\n\
+             \x20   packed = value | (value << 32)\n\
+             {write4_store}"
+        )
+        .expect("String writes cannot fail");
+
+        if full_single_tile {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p8_digest_r{index}() -> [u64; 5]:\n\
+                 \x20   owner = R{index}_SCANOUT_STATE.words[3]\n\
+                 \x20   if owner == 0:\n\
+                 \x20       owner = R{index}_SCANOUT_STATE.words[1]\n\
+                 \x20   if owner == 0:\n\
+                 \x20       return [0; 5]\n\
+                 \x20   base_word = (owner - 1).to[usize]() * 1024\n\
+                 \x20   h0: u64 = 1469598103934665603\n\
+                 \x20   h1: u64 = 1099511628211\n\
+                 \x20   h2: u64 = 7809847782465536322\n\
+                 \x20   h3: u64 = 1609587929392839161\n\
+                 \x20   word: usize = 0\n\
+                 \x20   @budget(bound=1024)\n\
+                 \x20   while word < 1024:\n\
+                 \x20       packed = R{index}_DEBUG_FRAMEBUFFER_CHUNK_0.words[base_word + word]\n\
+                 \x20       octet: usize = 0\n\
+                 \x20       @budget(bound=8)\n\
+                 \x20       while octet < 8:\n\
+                 \x20           byte = word * 8 + octet\n\
+                 \x20           value = packed & 255\n\
+                 \x20           h0 = (h0 ^ value) *% 1099511628211\n\
+                 \x20           h1 = (h1 ^ (value +% byte.to[u64]())) *% 14029467366897019727\n\
+                 \x20           h2 = (h2 +% value) *% 11400714785074694791\n\
+                 \x20           h3 = (h3 ^ (value << octet.to[u64]())) *% 9650029242287828579\n\
+                 \x20           packed = packed >> 8\n\
+                 \x20           octet = octet + 1\n\
+                 \x20       word = word + 1\n\
+                 \x20   return [1, h0, h1, h2, h3]"
+            )
+            .expect("String writes cannot fail");
+        } else {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p8_digest_r{index}() -> [u64; 5]:\n\
+                 \x20   if R{index}_SCANOUT_STATE.words[3] == 0 and R{index}_SCANOUT_STATE.words[1] == 0:\n\
+                 \x20       return [0; 5]\n\
+                 \x20   h0: u64 = 1469598103934665603\n\
+                 \x20   h1: u64 = 1099511628211\n\
+                 \x20   h2: u64 = 7809847782465536322\n\
+                 \x20   h3: u64 = 1609587929392839161\n\
+                 \x20   pixel: usize = 0\n\
+                 \x20   @budget(bound={})\n\
+                 \x20   while pixel < {}:\n\
+                 \x20       x = pixel.to[u64]() % {width}\n\
+                 \x20       y = pixel.to[u64]() / {width}\n\
+                 \x20       tile = (y / 32) * {tile_columns} + x / 64\n\
+                 \x20       local = (y % 32) * 256 + (x % 64) * 4\n\
+                 \x20       owner = R{index}_SCANOUT_STATE.words[3]\n\
+                 \x20       if owner == 0:\n\
+                 \x20           owner = R{index}_SCANOUT_STATE.words[1]\n\
+                 \x20       if owner == 0:\n\
+                 \x20           return [0; 5]\n\
+                 \x20       offset = (owner - 1) * {generation_bytes} + tile * 8192 + local\n\
+                 \x20       loaded = __wrela_pixels_p8_load_u32_r{index}(offset.to[usize]())\n\
+                 \x20       if loaded[0] != 1:\n\
+                 \x20           return [0; 5]\n\
+                 \x20       packed = loaded[1]\n\
+                 \x20       octet: usize = 0\n\
+                 \x20       @budget(bound=4)\n\
+                 \x20       while octet < 4:\n\
+                 \x20           byte = pixel * 4 + octet\n\
+                 \x20           value = packed & 255\n\
+                 \x20           h0 = (h0 ^ value) *% 1099511628211\n\
+                 \x20           h1 = (h1 ^ (value +% byte.to[u64]())) *% 14029467366897019727\n\
+                 \x20           h2 = (h2 +% value) *% 11400714785074694791\n\
+                 \x20           h3 = (h3 ^ (value << (byte % 8).to[u64]())) *% 9650029242287828579\n\
+                 \x20           packed = packed >> 8\n\
+                 \x20           octet = octet + 1\n\
+                 \x20       pixel = pixel + 1\n\
+                 \x20   return [1, h0, h1, h2, h3]",
+                pixel_count,
+                pixel_count,
+            )
+            .expect("String writes cannot fail");
+        }
+
+        if full_single_tile {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p8_descriptor_digest_r{index}() -> [u64; 5]:\n\
+                 \x20   active = R{index}_SCANOUT_STATE.words[3]\n\
+                 \x20   if active == 1:\n\
+                 \x20       return [1, {}, {}, {}, {}]\n\
+                 \x20   if active == 2:\n\
+                 \x20       return [1, {}, {}, {}, {}]\n\
+                 \x20   return [0; 5]",
+                descriptor_digests[0][0],
+                descriptor_digests[0][1],
+                descriptor_digests[0][2],
+                descriptor_digests[0][3],
+                descriptor_digests[1][0],
+                descriptor_digests[1][1],
+                descriptor_digests[1][2],
+                descriptor_digests[1][3],
+            )
+            .expect("String writes cannot fail");
+        } else {
+            writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_guest_digest_r{index}(kind: u8) -> [u64; 5]:\n\
+             \x20   owner = R{index}_SCANOUT_STATE.words[3]\n\
+             \x20   if owner == 0 and kind == 0:\n\
+             \x20       owner = R{index}_SCANOUT_STATE.words[1]\n\
+             \x20   if owner == 0 or kind > 1:\n\
+             \x20       return [0; 5]\n\
+             \x20   length: usize = {generation_bytes}.to[usize]()\n\
+             \x20   base = (owner - 1) * {generation_bytes}\n\
+             \x20   if kind == 1:\n\
+             \x20       length = {}\n\
+             \x20       base = (owner - 1) * {per_generation_list_bytes} + {control_bytes}\n\
+             \x20   h0: u64 = 1469598103934665603\n\
+             \x20   h1: u64 = 1099511628211\n\
+             \x20   h2: u64 = 7809847782465536322\n\
+             \x20   h3: u64 = 1609587929392839161\n\
+             \x20   byte: usize = 0\n\
+             \x20   @budget(bound={})\n\
+             \x20   while byte < length:\n\
+             \x20       value: u64 = 0\n\
+             \x20       if kind == 1:\n\
+             \x20           listed = __wrela_pixels_p8_list_load_word_r{index}(base.to[usize]() + (byte / 8) * 8)\n\
+             \x20           if listed[0] != 1:\n\
+             \x20               return [0; 5]\n\
+             \x20           value = (listed[1] >> ((byte % 8).to[u64]() * 8)) & 255\n\
+             \x20       else:\n\
+             \x20           loaded = __wrela_pixels_p7_framebuffer_load_byte({index}, (base + byte.to[u64]()).to[usize]())\n\
+             \x20           if loaded[0] != 1:\n\
+             \x20               return [0; 5]\n\
+             \x20           value = loaded[1]\n\
+             \x20       h0 = (h0 ^ value) *% 1099511628211\n\
+             \x20       h1 = (h1 ^ (value +% byte.to[u64]())) *% 14029467366897019727\n\
+             \x20       h2 = (h2 +% value) *% 11400714785074694791\n\
+             \x20       h3 = (h3 ^ (value << (byte % 8).to[u64]())) *% 9650029242287828579\n\
+             \x20       byte = byte + 1\n\
+             \x20   offset: usize = 8\n\
+             \x20   if kind == 1:\n\
+             \x20       offset = 12\n\
+             \x20   R{index}_SCANOUT_STATE.words[offset] = h0\n\
+             \x20   R{index}_SCANOUT_STATE.words[offset + 1] = h1\n\
+             \x20   R{index}_SCANOUT_STATE.words[offset + 2] = h2\n\
+             \x20   R{index}_SCANOUT_STATE.words[offset + 3] = h3\n\
+             \x20   return [1, h0, h1, h2, h3]\n\
+             \n\
+             pub fn __wrela_pixels_p8_raw_digest_r{index}() -> [u64; 5]:\n\
+             \x20   return __wrela_pixels_p8_guest_digest_r{index}(0)\n\
+             \n\
+             pub fn __wrela_pixels_p8_descriptor_digest_r{index}() -> [u64; 5]:\n\
+             \x20   return __wrela_pixels_p8_guest_digest_r{index}(1)",
+            tile_count * 24,
+            generation_bytes.max(tile_count * 24),
+            )
+            .expect("String writes cannot fail");
+        }
+
+        let raw_digest_function = if full_single_tile {
+            "digest"
+        } else {
+            "raw_digest"
+        };
+        // Descriptor construction stays loop-shaped at every resolution.
+        // Unrolling one store triplet per tile makes ordinary 1080p images
+        // exceed the compiler's own frame limit and scales generated source
+        // with display area despite the fixed tile algorithm.
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_present_r{index}(frame_index: u64) -> [u64; 3]:\n\
+             \x20   active = R{index}_SCANOUT_STATE.words[3]\n\
+             \x20   if active == 0:\n\
+             \x20       return [0; 3]\n\
+             \x20   generation = active - 1\n\
+             \x20   sequence = R{index}_SCANOUT_STATE.words[2]\n\
+             \x20   list_offset = generation.to[usize]() * {per_generation_list_bytes}\n\
+             \x20   tiles_addr = {list_base} + generation * {per_generation_list_bytes} + {control_bytes}\n\
+             \x20   if (\n\
+             \x20       not __wrela_pixels_p8_list_store_word_r{index}(list_offset, {}.to[u64]() | (1.to[u64]() << 32) | (generation << 40) | ({index}.to[u64]() << 48))\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 8, {width}.to[u64]() | ({height}.to[u64]() << 32))\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 16, {}.to[u64]() | ({tile_count}.to[u64]() << 32))\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 24, sequence)\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 32, tiles_addr)\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 40, frame_index)\n\
+             \x20       or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 48, frame_index)\n\
+             \x20   ):\n\
+             \x20       R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20       return [0, 3, sequence]\n\
+             \x20   tile: u64 = 0\n\
+             \x20   @budget(bound={tile_count})\n\
+             \x20   while tile < {tile_count}:\n\
+             \x20       x = (tile % {tile_columns}) * 64\n\
+             \x20       y = (tile / {tile_columns}) * 32\n\
+             \x20       visible_width: u64 = 64\n\
+             \x20       visible_height: u64 = 32\n\
+             \x20       if x + visible_width > {width}:\n\
+             \x20           visible_width = {width} - x\n\
+             \x20       if y + visible_height > {height}:\n\
+             \x20           visible_height = {height} - y\n\
+             \x20       descriptor = list_offset + {control_bytes} + tile.to[usize]() * 24\n\
+             \x20       pixels_addr = {} + generation * {generation_bytes} + tile * 8192\n\
+             \x20       if (\n\
+             \x20           not __wrela_pixels_p8_list_store_word_r{index}(descriptor, pixels_addr)\n\
+             \x20           or not __wrela_pixels_p8_list_store_word_r{index}(descriptor + 8, x | (y << 16) | (visible_width << 32) | (visible_height << 48))\n\
+             \x20           or not __wrela_pixels_p8_list_store_word_r{index}(descriptor + 16, 256.to[u64]() | (1.to[u64]() << 16))\n\
+             \x20       ):\n\
+             \x20           R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20           return [0, 3, sequence]\n\
+             \x20       tile = tile + 1\n\
+             \x20   visible = __wrela_pixels_p8_digest_r{index}()\n\
+             \x20   raw = __wrela_pixels_p8_{raw_digest_function}_r{index}()\n\
+             \x20   descriptors = __wrela_pixels_p8_descriptor_digest_r{index}()\n\
+             \x20   if visible[0] != 1 or raw[0] != 1 or descriptors[0] != 1:\n\
+             \x20       R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20       return [0, 3, sequence]\n\
+             \x20   digest_word: usize = 0\n\
+             \x20   @budget(bound=4)\n\
+             \x20   while digest_word < 4:\n\
+             \x20       if (\n\
+             \x20           not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 56 + digest_word * 8, visible[digest_word + 1])\n\
+             \x20           or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 88 + digest_word * 8, raw[digest_word + 1])\n\
+             \x20           or not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 120 + digest_word * 8, descriptors[digest_word + 1])\n\
+             \x20       ):\n\
+             \x20           R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20           return [0, 3, sequence]\n\
+             \x20       digest_word = digest_word + 1\n\
+             \x20   if not __wrela_pixels_p8_list_store_word_r{index}(list_offset + 152, 0):\n\
+             \x20       R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20       return [0, 3, sequence]\n\
+             \x20   return [2, {list_base} + generation * {per_generation_list_bytes}, sequence]",
+            wrela_machine::pixels::ABI_VERSION,
+            renderer.config.refresh_hz,
+            placement.framebuffer_base,
+        )
+        .expect("String writes cannot fail");
+
+        let status_load = if list.bytes <= WORKSPACE_VIEW_CHUNK_BYTES {
+            format!(
+                "    status = R{index}_DISPLAY_LIST_CHUNK_0.words[generation.to[usize]() * {} + 19] & 4294967295",
+                per_generation_list_bytes / 8,
+            )
+        } else {
+            format!(
+                "    loaded = __wrela_pixels_p8_list_load_word_r{index}(list_offset + 152)\n\
+                 \x20   if loaded[0] != 1:\n\
+                 \x20       R{index}_SCANOUT_STATE.words[3] = 0\n\
+                 \x20       return [0, 3, sequence]\n\
+                 \x20   status = loaded[1] & 4294967295"
+            )
+        };
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p8_complete_r{index}() -> [u64; 3]:\n\
+             \x20   active = R{index}_SCANOUT_STATE.words[3]\n\
+             \x20   if active == 0:\n\
+             \x20       return [0; 3]\n\
+             \x20   generation = active - 1\n\
+             \x20   sequence = R{index}_SCANOUT_STATE.words[2]\n\
+             \x20   list_offset = generation.to[usize]() * {per_generation_list_bytes}\n\
+             {status_load}\n\
+             \x20   if status != 1:\n\
+             \x20       R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20       return [0, status, sequence]\n\
+             \x20   R{index}_SCANOUT_STATE.words[1] = active\n\
+             \x20   R{index}_SCANOUT_STATE.words[2] = sequence + 1\n\
+             \x20   R{index}_SCANOUT_STATE.words[3] = 0\n\
+             \x20   return [1, sequence, 0]"
+        )
+        .expect("String writes cannot fail");
+    }
+
+    output.push_str("\npub fn __wrela_pixels_p8_initialize(renderer: usize) -> bool:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_initialize_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return false\n");
+    output.push_str("\npub fn __wrela_pixels_p8_begin(renderer: usize) -> [u64; 3]:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_begin_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 3]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_complete(renderer: usize) -> [u64; 3]:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_complete_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 3]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_cancel(renderer: usize) -> bool:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_cancel_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return false\n");
+    if placements.len() != 1 {
+        output.push_str("\npub fn __wrela_pixels_p8_write(renderer: usize, worker: u32, pixel: u32, front: u32, coverage: u8, back: u32) -> bool:\n");
+        for placement in placements {
+            writeln!(
+                output,
+                "    if renderer == {}:\n\x20       return __wrela_pixels_p8_write_r{}(renderer, worker, pixel, front, coverage, back)",
+                placement.index, placement.index,
+            )
+            .expect("String writes cannot fail");
+        }
+        output.push_str("    return false\n");
+        output.push_str("\npub fn __wrela_pixels_p8_write4(renderer: usize, worker: u32, pixel: u32, r: u8, g: u8, b: u8) -> bool:\n");
+        for placement in placements {
+            writeln!(
+                output,
+                "    if renderer == {}:\n\x20       return __wrela_pixels_p8_write4_r{}(renderer, worker, pixel, r, g, b)",
+                placement.index, placement.index,
+            )
+            .expect("String writes cannot fail");
+        }
+        output.push_str("    return false\n");
+    }
+    output.push_str(
+        "\npub fn __wrela_pixels_p8_visible_byte(renderer: usize, byte: usize) -> [u64; 2]:\n",
+    );
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_visible_byte_r{}(byte)",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 2]\n");
+    output.push_str(
+        "\npub fn __wrela_pixels_p8_visible_word(renderer: usize, word: usize) -> [u64; 2]:\n",
+    );
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_visible_word_r{}(word)",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 2]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_digest(renderer: usize) -> [u64; 5]:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_digest_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 5]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_raw_digest(renderer: usize) -> [u64; 5]:\n");
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        let raw_function = if renderer.config.width == wrela_machine::pixels::TILE_WIDTH
+            && renderer.config.height == wrela_machine::pixels::TILE_HEIGHT
+        {
+            "digest"
+        } else {
+            "raw_digest"
+        };
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_{raw_function}_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 5]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_descriptor_digest(renderer: usize) -> [u64; 5]:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_descriptor_digest_r{}()",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 5]\n");
+    output.push_str(
+        "\npub fn __wrela_pixels_p8_present(renderer: usize, frame_index: u64) -> [u64; 3]:\n",
+    );
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return __wrela_pixels_p8_present_r{}(frame_index)",
+            placement.index, placement.index,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 3]\n");
+    output.push_str("\npub fn __wrela_pixels_p8_display_doorbell(renderer: usize) -> [u64; 2]:\n");
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        writeln!(
+            output,
+            "    if renderer == {}:\n\x20       return [1, {}]",
+            placement.index, renderer.config.display_doorbell_addr,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str(
+        "    return [0; 2]\n\
+         \n\
+         pub fn __wrela_pixels_p8_submit(doorbell_addr: u64, control_addr: u64) -> unit:\n\
+         \x20   return unit\n",
+    );
     Ok(())
 }
 
@@ -6138,8 +7541,8 @@ pub fn configuration_source(
     let mut output = String::from(
         "module __image_pixels\n\n\
          from core.field import cos_scalar, rsqrt_scalar, sin_scalar, sqrt_scalar\n\n\
-         from core.render_coverage import CoverageOutcome, coverage_line_twice_area\n\n\
          from core.render_interval import FixedDomain, Iv32, interval_add, interval_from_f32_bits, interval_mul\n\n\
+         from core.render_raster import AffineRunSetup, EventId, EventPixel, I32x4, IdSlice, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, QRunScalar, RasterGeometryLane, RasterRun, RunId, pixels_i32x4_backend_add, raster_geometry_lane_valid, raster_run4\n\n\
          from core.render_certificate import certify_quadratic_discriminant\n\n\
          from core.render_program import polynomial_horner9\n\n\
          # These declarations are emitted mechanically from core.render_program,\n\
@@ -6196,6 +7599,10 @@ pub fn configuration_source(
                     "DISPLAY_INDEX",
                     u64::try_from(renderer.config.display_index)
                         .map_err(|_| "P025: display index exceeds u64".to_string())?,
+                ),
+                (
+                    "DISPLAY_DOORBELL_ADDR",
+                    renderer.config.display_doorbell_addr,
                 ),
                 ("REFRESH_HZ", u64::from(renderer.config.refresh_hz)),
                 ("SHADE_HZ", u64::from(renderer.config.shade_hz)),
@@ -6542,6 +7949,59 @@ pub fn configuration_source(
                 .checked_add(1)
                 .ok_or_else(|| "P015: framebuffer chunk count overflow".to_string())?;
         }
+        let state_header_base = placement
+            .state_base
+            .checked_add(state.header.offset)
+            .ok_or_else(|| "P025: P8 state-header address overflow".to_string())?;
+        if state.header.bytes != super::capacities::RENDERER_STATE_HEADER_BYTES_V1 {
+            return Err(format!(
+                "pixels::glue: renderer {index} has a noncanonical state header"
+            ));
+        }
+        writeln!(
+            output,
+            "@layout(runtime, endian=little)\n\
+             struct R{index}ScanoutStateView:\n\
+             \x20   words: [u64; {}]\n\
+             @placed({state_header_base:#x})\n\
+             static R{index}_SCANOUT_STATE: R{index}ScanoutStateView",
+            state.header.bytes / 8,
+        )
+        .expect("String writes cannot fail");
+        if state.tile_descriptors.bytes % 8 != 0 {
+            return Err(format!(
+                "pixels::glue: renderer {index} display-list storage is not word aligned"
+            ));
+        }
+        let display_list_base = placement
+            .state_base
+            .checked_add(state.tile_descriptors.offset)
+            .ok_or_else(|| "P025: P8 display-list address overflow".to_string())?;
+        let mut list_offset = 0_u64;
+        let mut list_chunk = 0_usize;
+        while list_offset < state.tile_descriptors.bytes {
+            let chunk_bytes =
+                (state.tile_descriptors.bytes - list_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(
+                output,
+                "@layout(runtime, endian=little)\n\
+                 struct R{index}DisplayListChunk{list_chunk}View:\n\
+                 \x20   words: [u64; {}]\n\
+                 @placed({:#x})\n\
+                 static R{index}_DISPLAY_LIST_CHUNK_{list_chunk}: R{index}DisplayListChunk{list_chunk}View",
+                chunk_bytes / 8,
+                display_list_base
+                    .checked_add(list_offset)
+                    .ok_or_else(|| "P025: P8 display-list chunk address overflow".to_string())?,
+            )
+            .expect("String writes cannot fail");
+            list_offset = list_offset
+                .checked_add(chunk_bytes)
+                .ok_or_else(|| "P025: P8 display-list chunk offset overflow".to_string())?;
+            list_chunk = list_chunk
+                .checked_add(1)
+                .ok_or_else(|| "P015: P8 display-list chunk count overflow".to_string())?;
+        }
         if state.frame_snapshots.bytes < 688 {
             return Err(format!(
                 "pixels::glue: renderer {index} frame snapshot region is smaller than the P7 visibility snapshot"
@@ -6643,7 +8103,7 @@ pub fn configuration_source(
                     .and_then(|base| {
                         u64::try_from(worker_index)
                             .ok()
-                            .and_then(|worker| worker.checked_mul(8 * super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1))
+                            .and_then(|worker| worker.checked_mul(8 * super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2))
                             .and_then(|offset| base.checked_add(offset))
                     })
                     .ok_or_else(|| "P025: worker telemetry address overflow".to_string())?;
@@ -6654,9 +8114,48 @@ pub fn configuration_source(
                      \x20   counters: [u64; {}]\n\
                      @placed({telemetry_base:#x})\n\
                      static R{index}_WORKER_{worker_index}_TELEMETRY: R{index}Worker{worker_index}TelemetryView",
-                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+                    super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
                 )
                 .expect("String writes cannot fail");
+            }
+        }
+        if instrumented {
+            let counter_bytes = u64::from(renderer.config.worker_count)
+                .checked_mul(8 * super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2)
+                .ok_or_else(|| "P025: renderer telemetry counter size overflow".to_string())?;
+            let evidence_base = placement
+                .state_base
+                .checked_add(state.telemetry.offset)
+                .and_then(|base| base.checked_add(counter_bytes))
+                .ok_or_else(|| "P025: raster evidence address overflow".to_string())?;
+            let evidence_bytes = u64::from(renderer.config.width)
+                .checked_mul(u64::from(renderer.config.height))
+                .and_then(|pixels| pixels.checked_mul(24))
+                .ok_or_else(|| "P025: raster evidence size overflow".to_string())?;
+            let mut chunk_offset = 0_u64;
+            let mut chunk = 0_usize;
+            while chunk_offset < evidence_bytes {
+                let chunk_bytes =
+                    (evidence_bytes - chunk_offset).min(WORKSPACE_VIEW_CHUNK_BYTES / 24 * 24);
+                let words = chunk_bytes / 8;
+                let chunk_base = evidence_base
+                    .checked_add(chunk_offset)
+                    .ok_or_else(|| "P025: raster evidence chunk address overflow".to_string())?;
+                writeln!(
+                    output,
+                    "@layout(runtime, endian=little)\n\
+                     struct R{index}RasterEvidenceChunk{chunk}View:\n\
+                     \x20   words: [u64; {words}]\n\
+                     @placed({chunk_base:#x})\n\
+                     static R{index}_RASTER_EVIDENCE_CHUNK_{chunk}: R{index}RasterEvidenceChunk{chunk}View"
+                )
+                .expect("String writes cannot fail");
+                chunk_offset = chunk_offset
+                    .checked_add(chunk_bytes)
+                    .ok_or_else(|| "P025: raster evidence chunk offset overflow".to_string())?;
+                chunk = chunk
+                    .checked_add(1)
+                    .ok_or_else(|| "P015: raster evidence chunk count overflow".to_string())?;
             }
         }
         let tables = super::binary_verify::verify_envelope(&renderer.encoded).map_err(|error| {
@@ -6735,6 +8234,7 @@ pub fn configuration_source(
     write_program_accessors(&mut output, placements, compiled)?;
     write_visibility_polynomial_accessors(&mut output, compiled)?;
     write_p7_runtime_storage_accessors(&mut output, placements, compiled, instrumented)?;
+    write_p8_scanout_accessors(&mut output, placements, compiled)?;
     Ok(output)
 }
 
@@ -7538,14 +9038,22 @@ mod tests {
         let ranges = (0..workers)
             .map(|worker| {
                 (
-                    u64::from(tile_count) * u64::from(worker) / u64::from(workers),
-                    u64::from(tile_count) * u64::from(worker + 1) / u64::from(workers),
+                    (u64::from(tile_count) * u64::from(worker) + u64::from(workers - 1))
+                        / u64::from(workers),
+                    (u64::from(tile_count) * u64::from(worker + 1) + u64::from(workers - 1))
+                        / u64::from(workers),
                 )
             })
             .collect::<Vec<_>>();
         assert_eq!(ranges.first().unwrap().0, 0);
         assert_eq!(ranges.last().unwrap().1, u64::from(tile_count));
         assert!(ranges.windows(2).all(|pair| pair[0].1 == pair[1].0));
+        assert_eq!(
+            (0..4)
+                .map(|worker| { ((worker + 3) / 4, ((worker + 1) + 3) / 4,) })
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (1, 1), (1, 1), (1, 1)],
+        );
     }
 
     #[test]

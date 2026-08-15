@@ -850,6 +850,22 @@ fn round_up_16(n: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
+fn i32x4_aligned_temps(f: &MwirFn) -> BTreeSet<Temp> {
+    let mut aligned = BTreeSet::new();
+    for inst in &f.body {
+        match inst {
+            Inst::I32x4Add { dst, lhs, rhs } => {
+                aligned.extend([*dst, *lhs, *rhs]);
+            }
+            Inst::I32x4FromLanes { dst, lanes } => {
+                aligned.extend([*dst, *lanes]);
+            }
+            _ => {}
+        }
+    }
+    aligned
+}
+
 fn build_frame(
     f: &MwirFn,
     layout: &LayoutCtx,
@@ -860,6 +876,7 @@ fn build_frame(
     save_lr: bool,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
+    let i32x4_aligned = i32x4_aligned_temps(f);
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
     let mut temp_size = Vec::with_capacity(f.temp_types.len());
     let mut virt_to_reg: BTreeMap<usize, u8> = BTreeMap::new();
@@ -874,6 +891,9 @@ fn build_frame(
                 temp_size.push(sz);
             }
             None => {
+                if i32x4_aligned.contains(&Temp(t)) {
+                    offset = round_up_16(offset);
+                }
                 temp_offset.push(offset);
                 temp_size.push(sz);
                 offset += sz;
@@ -1687,7 +1707,22 @@ impl<'a> FnCtx<'a> {
         }
     }
 
+    /// Word count above which an aggregate copy becomes a counted loop rather
+    /// than an unrolled load/store pair per word.
+    ///
+    /// The renderer moves multi-kilobyte certificate records between frame
+    /// slots, and unrolling every one of those words dominated the emitted
+    /// text: a single 5 KiB record copy is over a thousand instructions, and
+    /// the Pixels sweep functions perform dozens of them. The threshold is set
+    /// well above the small aggregates (vectors, intervals, samples) that
+    /// genuinely benefit from straight-line copies, so ordinary code keeps its
+    /// existing shape and only the large records pay for a loop.
+    const COPY_LOOP_MIN_WORDS: usize = 16;
+
     fn copy_slot_to_slot(&mut self, dst_off: usize, src_off: usize, size: usize) {
+        if self.try_copy_slots_with_loop(dst_off, src_off, size) {
+            return;
+        }
         let mut w = 0;
         while w < size {
             match self.frame.reg_at(dst_off + w) {
@@ -1703,6 +1738,82 @@ impl<'a> FnCtx<'a> {
             }
             w += 8;
         }
+    }
+
+    /// Copy a large frame-resident aggregate with a counted loop.
+    ///
+    /// Returns false when the copy must stay unrolled: a short copy, a partial
+    /// final word, or any word that the register allocator homed in a register
+    /// or parked as a stray virtual. Those cases still need the per-word path
+    /// because the loop only moves memory to memory.
+    fn try_copy_slots_with_loop(&mut self, dst_off: usize, src_off: usize, size: usize) -> bool {
+        if size % 8 != 0 || size / 8 < Self::COPY_LOOP_MIN_WORDS {
+            return false;
+        }
+        let words = size / 8;
+        for word in 0..words {
+            let (dst, src) = (dst_off + word * 8, src_off + word * 8);
+            if self.frame.reg_at(dst).is_some()
+                || self.frame.reg_at(src).is_some()
+                || self.flow_reg_at(dst).is_some()
+                || self.flow_reg_at(src).is_some()
+                || self.frame.is_stray_virtual(dst)
+                || self.frame.is_stray_virtual(src)
+            {
+                return false;
+            }
+        }
+        // Ranges that overlap forwards would read a word this loop has already
+        // overwritten. Distinct temps never alias, but refuse rather than
+        // depend on that.
+        if dst_off.abs_diff(src_off) < size {
+            return false;
+        }
+        self.materialize_slot_address(X_A, dst_off);
+        self.materialize_slot_address(X_B, src_off);
+        self.load_imm(X_C, words as i64);
+        let top = self.words.len();
+        self.push_mem(
+            encode::enc_ldr_x_imm(X_D, X_B, 0),
+            format!("ldr {}, [{}, #0]", reg_name(X_D), reg_name(X_B)),
+            CostRule::Load,
+            Some(X_D),
+            &[X_B],
+            Some(MemRef::flow_frame(0, src_off as u64, X_B)),
+        );
+        self.push_mem(
+            encode::enc_str_x_imm(X_D, X_A, 0),
+            format!("str {}, [{}, #0]", reg_name(X_D), reg_name(X_A)),
+            CostRule::Store,
+            None,
+            &[X_A, X_D],
+            Some(MemRef::flow_frame(0, dst_off as u64, X_A)),
+        );
+        for reg in [X_A, X_B] {
+            self.push(
+                encode::enc_add_imm(reg, reg, 8, true),
+                format!("add {}, {}, #8", reg_name(reg), reg_name(reg)),
+                CostRule::Alu,
+                Some(reg),
+                &[reg],
+            );
+        }
+        self.push(
+            encode::enc_sub_imm(X_C, X_C, 1, true),
+            format!("sub {}, {}, #1", reg_name(X_C), reg_name(X_C)),
+            CostRule::Alu,
+            Some(X_C),
+            &[X_C],
+        );
+        let back = (top as i64 - self.words.len() as i64) as i32 * 4;
+        self.push(
+            encode::enc_cbnz(X_C, back, true),
+            format!("cbnz {}, #{back}", reg_name(X_C)),
+            CostRule::Branch,
+            None,
+            &[X_C],
+        );
+        true
     }
 
     fn narrow_to_width(&mut self, reg: u8, bits: u32, signed: bool) {
@@ -2564,6 +2675,70 @@ impl FnCtx<'_> {
     }
 }
 
+fn emit_i32x4_add(ctx: &mut FnCtx, dst_off: usize, lhs_off: usize, rhs_off: usize) {
+    for (address, offset, vector) in [(X_A, lhs_off, 0_u8), (X_B, rhs_off, 1_u8)] {
+        ctx.materialize_slot_address(address, offset);
+        ctx.push_mem(
+            encode::enc_ldr_q_imm(vector, address, 0),
+            format!("ldr q{vector}, [{}, #0]", reg_name(address)),
+            CostRule::Load,
+            Some(vector),
+            &[address],
+            Some(MemRef::flow_frame(0, offset as u64, address)),
+        );
+    }
+    ctx.push(
+        encode::enc_add_v4s(2, 0, 1),
+        "add v2.4s, v0.4s, v1.4s".to_string(),
+        CostRule::Neon,
+        Some(2),
+        &[0, 1],
+    );
+    ctx.materialize_slot_address(X_C, dst_off);
+    ctx.push_mem(
+        encode::enc_str_q_imm(2, X_C, 0),
+        format!("str q2, [{}, #0]", reg_name(X_C)),
+        CostRule::Store,
+        None,
+        &[X_C, 2],
+        Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
+    );
+}
+
+fn emit_i32x4_from_lanes(ctx: &mut FnCtx, dst_off: usize, lanes_off: usize) {
+    ctx.materialize_slot_address(X_A, lanes_off);
+    for (immediate, vector) in [(0_u16, 0_u8), (16_u16, 1_u8)] {
+        ctx.push_mem(
+            encode::enc_ldr_q_imm(vector, X_A, immediate),
+            format!("ldr q{vector}, [{}, #{immediate}]", reg_name(X_A)),
+            CostRule::Load,
+            Some(vector),
+            &[X_A],
+            Some(MemRef::flow_frame(
+                0,
+                (lanes_off + usize::from(immediate)) as u64,
+                X_A,
+            )),
+        );
+    }
+    ctx.push(
+        encode::enc_uzp1_v4s(0, 0, 1),
+        "uzp1 v0.4s, v0.4s, v1.4s".to_string(),
+        CostRule::Neon,
+        Some(0),
+        &[0, 1],
+    );
+    ctx.materialize_slot_address(X_C, dst_off);
+    ctx.push_mem(
+        encode::enc_str_q_imm(0, X_C, 0),
+        format!("str q0, [{}, #0]", reg_name(X_C)),
+        CostRule::Store,
+        None,
+        &[X_C, 0],
+        Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
+    );
+}
+
 fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     match inst {
         Inst::ConstInt { dst, ty, value } => {
@@ -2613,6 +2788,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         Inst::Copy { dst, src } => {
             let size = ctx.frame.size_of_temp(*dst);
             ctx.copy_slot_to_slot(ctx.frame.off(*dst), ctx.frame.off(*src), size);
+        }
+        Inst::I32x4Add { dst, lhs, rhs } => {
+            emit_i32x4_add(
+                ctx,
+                ctx.frame.off(*dst),
+                ctx.frame.off(*lhs),
+                ctx.frame.off(*rhs),
+            );
+        }
+        Inst::I32x4FromLanes { dst, lanes } => {
+            emit_i32x4_from_lanes(ctx, ctx.frame.off(*dst), ctx.frame.off(*lanes));
         }
         Inst::MakeAggregate { dst, elems } => {
             let dst_off = ctx.frame.off(*dst);
@@ -9767,6 +9953,7 @@ pub fn codegen_program_with_async(
         conventions,
         origin_spans: block_spans(),
     };
+    validate_pixels_i32x4_raster_a64(&out)?;
     verify_conventions(&out).map_err(CodegenError::internal)?;
     crate::cost::audit::audit_program(&out).map_err(CodegenError::internal)?;
     Ok(out)
@@ -9806,9 +9993,65 @@ pub fn codegen_program(
         conventions,
         origin_spans: block_spans(),
     };
+    validate_pixels_i32x4_raster_a64(&out)?;
     verify_conventions(&out).map_err(CodegenError::internal)?;
     crate::cost::audit::audit_program(&out).map_err(CodegenError::internal)?;
     Ok(out)
+}
+
+fn validate_pixels_i32x4_raster_a64(program: &CodegenProgram) -> Result<(), CodegenError> {
+    const RASTER: &str = "__wrela_pixels_p8_raster_regular";
+    let Some(raster) = program.fns.get(RASTER) else {
+        return Ok(());
+    };
+    let vector_adds = raster
+        .code
+        .iter()
+        .filter(|word| {
+            word.word == encode::enc_add_v4s(2, 0, 1)
+                && word.text == "add v2.4s, v0.4s, v1.4s"
+                && word.rule == CostRule::Neon
+        })
+        .count();
+    let vector_loads = raster
+        .code
+        .iter()
+        .filter(|word| {
+            word.text.starts_with("ldr q")
+                && word.rule == CostRule::Load
+                && word.access_bytes == 16
+                && word.mem.is_some()
+        })
+        .count();
+    let vector_stores = raster
+        .code
+        .iter()
+        .filter(|word| {
+            word.text.starts_with("str q")
+                && word.rule == CostRule::Store
+                && word.access_bytes == 16
+                && word.mem.is_some()
+        })
+        .count();
+    let lane_packs = raster
+        .code
+        .iter()
+        .filter(|word| {
+            word.word == encode::enc_uzp1_v4s(0, 0, 1)
+                && word.text == "uzp1 v0.4s, v0.4s, v1.4s"
+                && word.rule == CostRule::Neon
+        })
+        .count();
+    // Three from-lanes constructions establish q/q-advance state and two
+    // vector additions advance it in the one packet loop. Their explicit
+    // frame loads/stores are part of the locked cost contract; this audit
+    // intentionally records rather than assumes that stack traffic.
+    if (vector_adds, lane_packs, vector_loads, vector_stores) != (2, 3, 10, 5) {
+        return Err(CodegenError::internal(format!(
+            "Pixels production raster ASIMD audit failed: adds={vector_adds} packs={lane_packs} loads={vector_loads} stores={vector_stores}"
+        )));
+    }
+    Ok(())
 }
 
 pub fn dump(program: &CodegenProgram) -> String {
@@ -10203,6 +10446,113 @@ mod tests {
         assert_eq!(frame.ret_ptr_off, None);
         assert_eq!(frame.lr_off, 24);
         assert_eq!(frame.size, 32);
+    }
+
+    #[test]
+    fn i32x4_intrinsic_slots_are_sixteen_byte_aligned() {
+        let lanes = Type::Array(
+            Type::I32.into(),
+            crate::syntax::ast::Expr::Int(crate::syntax::ast::Span::default(), "4".to_string())
+                .into(),
+        );
+        let vector = Type::Named("I32x4".to_string(), vec![]);
+        let f = MwirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::Unit,
+            temp_types: vec![Type::U8, lanes, vector.clone(), vector.clone(), vector],
+            body: vec![
+                Inst::I32x4FromLanes {
+                    dst: Temp(2),
+                    lanes: Temp(1),
+                },
+                Inst::I32x4Add {
+                    dst: Temp(4),
+                    lhs: Temp(2),
+                    rhs: Temp(3),
+                },
+                Inst::Return { value: None },
+            ],
+        };
+        let mut layout = LayoutCtx::default();
+        layout
+            .structs
+            .insert("I32x4".to_string(), vec![Type::I64, Type::I64]);
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
+            .expect("build_frame");
+        assert_eq!(frame.temp_offset, vec![0, 16, 48, 64, 80]);
+        for temp in [Temp(1), Temp(2), Temp(3), Temp(4)] {
+            assert_eq!(frame.off(temp) % 16, 0);
+        }
+    }
+
+    #[test]
+    fn pixels_raster_a64_audit_rejects_scalarization_or_missing_stack_traffic() {
+        let vector_load = |vector: u8| {
+            EmittedWord::new(
+                encode::enc_ldr_q_imm(vector, X_A, 0),
+                format!("ldr q{vector}, [x9, #0]"),
+                CostRule::Load,
+                Some(vector),
+                &[X_A],
+            )
+            .with_mem(MemRef::flow_frame(0, 0, X_A))
+        };
+        let vector_store = |vector: u8| {
+            EmittedWord::new(
+                encode::enc_str_q_imm(vector, X_C, 0),
+                format!("str q{vector}, [x11, #0]"),
+                CostRule::Store,
+                None,
+                &[X_C, vector],
+            )
+            .with_mem(MemRef::flow_frame(0, 0, X_C))
+        };
+        let mut code = Vec::new();
+        for _ in 0..3 {
+            code.push(vector_load(0));
+            code.push(vector_load(1));
+            code.push(EmittedWord::new(
+                encode::enc_uzp1_v4s(0, 0, 1),
+                "uzp1 v0.4s, v0.4s, v1.4s".to_string(),
+                CostRule::Neon,
+                Some(0),
+                &[0, 1],
+            ));
+            code.push(vector_store(0));
+        }
+        for _ in 0..2 {
+            code.push(vector_load(0));
+            code.push(vector_load(1));
+            code.push(EmittedWord::new(
+                encode::enc_add_v4s(2, 0, 1),
+                "add v2.4s, v0.4s, v1.4s".to_string(),
+                CostRule::Neon,
+                Some(2),
+                &[0, 1],
+            ));
+            code.push(vector_store(2));
+        }
+        let mut program = CodegenProgram::default();
+        program.fns.insert(
+            "__wrela_pixels_p8_raster_regular".to_string(),
+            CodegenFn {
+                frame_size: 16,
+                code,
+                relocs: Vec::new(),
+            },
+        );
+        validate_pixels_i32x4_raster_a64(&program).expect("canonical emitted packet raster");
+
+        program
+            .fns
+            .get_mut("__wrela_pixels_p8_raster_regular")
+            .expect("fixture raster")
+            .code
+            .retain(|word| word.word != encode::enc_add_v4s(2, 0, 1));
+        let error = validate_pixels_i32x4_raster_a64(&program)
+            .expect_err("scalarized emitted raster must fail closed");
+        assert!(error.message.contains("adds=0"));
     }
 
     #[test]

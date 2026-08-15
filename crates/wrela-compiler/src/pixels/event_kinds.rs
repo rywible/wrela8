@@ -201,25 +201,45 @@ pub mod event_class {
     /// restate this as `(kind >= 1 and kind <= 10) or kind == 12`, a third
     /// independent copy of the vocabulary.
     pub const LOCAL_ARRANGEMENT: u64 = 1024;
+    /// A smooth-combiner band boundary. It bounds occupancy (the composite
+    /// surface deviates from the members inside the band — a smooth union
+    /// bulges beyond the members' union), but it is not a curve any analytic
+    /// tier can track as a member. A coverage tier that reasons from tracked
+    /// member curves must not decline its whole conservative span; it must
+    /// instead stop trusting member-structural occupancy conclusions and
+    /// corroborate them against composite occupancy itself.
+    pub const SMOOTH_BAND: u64 = 2048;
 }
 
 /// Can this kind bound where a surface is visible?
 ///
-/// `MaterialBoundary` and `SmoothBandEnter`/`SmoothCenterTie` change which
-/// material or blend branch is displayed, not whether the ray hits anything,
-/// and are charged by their own tiers. `DepthSwap` likewise changes which of
-/// two surfaces is in front without changing occupancy.
+/// `MaterialBoundary` and `SmoothCenterTie` change which material or blend
+/// branch is displayed, not whether the ray hits anything, and are charged
+/// by their own tiers. `DepthSwap` likewise changes which of two surfaces is
+/// in front without changing occupancy.
+///
+/// `SmoothBandEnter` DOES bound occupancy. Inside the band a smooth
+/// combiner's composite surface deviates from the member surfaces — a smooth
+/// union bulges beyond the members' union (the bridge at a blend neck) — so
+/// the composite silhouette inside the band is no member's silhouette, and
+/// any tier that reasons "the tracked member curves are the complete set of
+/// visibility boundaries in this pixel" must treat the band boundary as one
+/// of those boundaries. Classifying it as non-occupancy let the analytic
+/// coverage tiers integrate member silhouettes alone across the band:
+/// measured on `check-pixels-smooth-csg`, the four neck-saddle pixels
+/// displayed the member-union coverage 218 where the blended surface truly
+/// covers 237.
 pub fn kind_bounds_occupancy(kind: EventKind) -> bool {
     match kind {
         EventKind::ProjectedBoundEnter
         | EventKind::ProjectedBoundExit
         | EventKind::Silhouette
+        | EventKind::SmoothBandEnter
         | EventKind::FeatureBoundary
         | EventKind::RepeatBoundary
         | EventKind::NearClip
         | EventKind::FarClip => true,
-        EventKind::SmoothBandEnter
-        | EventKind::SmoothCenterTie
+        EventKind::SmoothCenterTie
         | EventKind::MaterialBoundary
         | EventKind::FixedPointResetOnly
         | EventKind::DepthSwap => false,
@@ -254,6 +274,7 @@ pub fn event_class(representation: RepresentationTag, kind: EventKind) -> u64 {
             event_class::PROJECTED_BOUNDARY
         }
         (R::RepeatAffineBoundary, K::RepeatBoundary) => event_class::REPARAMETERIZATION,
+        (R::SmoothBandTaylorPredicate, K::SmoothBandEnter) => event_class::SMOOTH_BAND,
         _ => 0,
     };
     class

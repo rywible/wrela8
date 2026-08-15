@@ -77,6 +77,8 @@ pub struct ReportRendererPlacement {
     pub index: usize,
     pub frameprog_base: u64,
     pub frameprog_size: u64,
+    pub state_base: u64,
+    pub state_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +331,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 .map_err(|_| "`RendererPlacement index=` exceeds usize".to_string())?;
             let frameprog_base = report_u64("RendererPlacement", &fields, "frameprog_base")?;
             let frameprog_size = report_u64("RendererPlacement", &fields, "frameprog_bytes")?;
+            let state_base = report_u64("RendererPlacement", &fields, "state_base")?;
+            let state_size = report_u64("RendererPlacement", &fields, "state_bytes")?;
             if frameprog_size == 0 {
                 return Err(format!(
                     "`RendererPlacement index={index}` has zero frameprog bytes"
@@ -338,6 +342,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 index,
                 frameprog_base,
                 frameprog_size,
+                state_base,
+                state_size,
             });
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let rest = rest.trim();
@@ -1418,8 +1424,12 @@ pub fn render(parsed: &ParsedReport) -> String {
     for placement in &parsed.renderer_placements {
         let _ = writeln!(
             out,
-            "RendererPlacement index={} frameprog_base={:#x} frameprog_bytes={}",
-            placement.index, placement.frameprog_base, placement.frameprog_size
+            "RendererPlacement index={} frameprog_base={:#x} frameprog_bytes={} state_base={:#x} state_bytes={}",
+            placement.index,
+            placement.frameprog_base,
+            placement.frameprog_size,
+            placement.state_base,
+            placement.state_size,
         );
     }
     out.push_str(&line_entry(parsed.entry));

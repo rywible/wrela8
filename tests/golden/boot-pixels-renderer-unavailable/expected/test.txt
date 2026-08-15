@@ -2,3 +2,5 @@ test renderer_returns_deterministic_debug_frame: ok
 1 passed, 0 failed
 lane1 turns=27 run_one=67 messages=27
 lane1 hits=0:14,1:2,2:2,3:10,4:11,5:2,6:2,7:2,8:2
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2cff79b96a88e8496ef8ef20c0ec1efaf610c9c5de9bcaee39baf11a06d77512 visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=7 checkpoint=7
+display v1 renderer=0 frame=1 generation=1 released=0 mode=64x32@60 format=1 descriptor=04aac8ec7b67cfb39ce25e3c5e728caf74524c9ca4ba183094669e71efc7c01d visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=7 checkpoint=7

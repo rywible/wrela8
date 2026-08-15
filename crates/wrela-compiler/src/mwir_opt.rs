@@ -175,6 +175,10 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
                 f(e);
             }
         }
+        Inst::I32x4FromLanes { dst, lanes } => {
+            f(dst);
+            f(lanes);
+        }
         Inst::MakeEnum { dst, payload, .. } => {
             f(dst);
             for p in payload {
@@ -182,6 +186,7 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
             }
         }
         Inst::StringConcat { dst, lhs, rhs, .. }
+        | Inst::I32x4Add { dst, lhs, rhs }
         | Inst::ArithChecked { dst, lhs, rhs, .. }
         | Inst::ArithWrapping { dst, lhs, rhs, .. }
         | Inst::DivRem { dst, lhs, rhs, .. }

@@ -33,6 +33,21 @@ fn golden_case(path: &Path) -> Option<String> {
     components.next()?.as_os_str().to_str().map(str::to_string)
 }
 
+/// Representative Pixels cases whose compile-time dumps `dev` checks.
+///
+/// Chosen to span the distinct generated-code shapes rather than to be a
+/// sample: a baseline single-renderer scene, hard CSG, the multi-renderer
+/// placement path, the largest image in the corpus (closest to the 2 MiB
+/// branch-region limit), a multi-tile scanout mode, and one diagnostic path.
+const DEV_PIXELS_DUMP_SLICE: [&str; 6] = [
+    "check-pixels-plane",
+    "check-pixels-hard-csg",
+    "check-pixels-two-renderers",
+    "check-pixels-field-ops",
+    "boot-pixels-partial-mode",
+    "err-pixels-capacity",
+];
+
 pub(crate) fn dev(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
         return Err("usage: cargo xtask dev".to_string());
@@ -112,9 +127,13 @@ pub(crate) fn dev(args: &[String]) -> Result<(), String> {
     }
 
     let mut cases: BTreeSet<String> = paths.iter().filter_map(|path| golden_case(path)).collect();
+    let edited_pixels_cases: Vec<String> = cases
+        .iter()
+        .filter(|case| case.contains("pixels"))
+        .cloned()
+        .collect();
     if pixels {
         cases.retain(|case| !case.contains("pixels"));
-        cases.insert("pixels".to_string());
     }
     for filter in cases {
         golden(&GoldenOpts {
@@ -122,6 +141,58 @@ pub(crate) fn dev(args: &[String]) -> Result<(), String> {
             boot: BootSel::All,
             ..GoldenOpts::default()
         })?;
+    }
+    if pixels {
+        // Every compile-time Pixels expectation, but only the boots that cost
+        // seconds. A `check-pixels-*` boot is a full certified sweep — minutes
+        // apiece, and there are ten of them — so booting the whole family here
+        // made this focused lane an order of magnitude slower than the gate it
+        // is supposed to precede. The `boot-pixels-*` family still exercises
+        // compile -> image -> guest -> scanout end to end, including the
+        // multi-tile and partial-mode display paths, and any Pixels fixture the
+        // developer actually edited is booted below. `cargo xtask verify` owns
+        // the adversarial sweeps.
+        // Compile-time expectations for a representative slice rather than all
+        // ~44 Pixels cases. Every case here is a genuine full compile (~4.4s
+        // each; measured `check`/`typed` are only ~0.54s of that, so there is
+        // no meaningful duplicate work to remove), and a stdlib or compiler
+        // edit — the common reason this lane runs — perturbs every case
+        // near-identically, so a slice catches it. What a slice can miss is
+        // drift specific to one scene's generated code; `cargo xtask verify`
+        // checks the whole corpus and is the gate that must pass.
+        let mut slice: BTreeSet<String> = DEV_PIXELS_DUMP_SLICE
+            .iter()
+            .map(|case| (*case).to_string())
+            .collect();
+        slice.extend(edited_pixels_cases.iter().cloned());
+        golden(&GoldenOpts {
+            cases: Some(slice.into_iter().collect()),
+            boot: BootSel::None,
+            ..GoldenOpts::default()
+        })?;
+        golden(&GoldenOpts {
+            filter: Some("boot-pixels-".to_string()),
+            boot: BootSel::Only,
+            ..GoldenOpts::default()
+        })?;
+        if !edited_pixels_cases.is_empty() {
+            golden(&GoldenOpts {
+                cases: Some(edited_pixels_cases.clone()),
+                boot: BootSel::Only,
+                ..GoldenOpts::default()
+            })?;
+        }
+        println!(
+            "dev: Pixels dumps checked for {} representative case(s); boots covered \
+             `boot-pixels-*`{} — the full corpus and the adversarial \
+             `check-pixels-*` sweeps run in `cargo xtask verify`",
+            DEV_PIXELS_DUMP_SLICE.len() + edited_pixels_cases.len(),
+            if edited_pixels_cases.is_empty() {
+                String::new()
+            } else {
+                format!(" plus edited {}", edited_pixels_cases.join(", "))
+            }
+        );
     }
     if docs {
         crate::corpus(&[])?;

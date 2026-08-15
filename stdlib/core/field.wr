@@ -66,11 +66,30 @@ pub fn sqrt_scalar(x: f32) -> f32:
     i: u32 = 0
     # Starting at x (or one for subunit inputs), 128 halvings cover the full
     # finite f32 exponent range before Newton convergence reaches its fixed
-    # point. This is intentionally simple source semantics, not a fast kernel.
+    # point. The sealed result is the 128th iterate, and this returns exactly
+    # that value — it just stops as soon as the remaining iterates are already
+    # determined, because this is the most-called primitive in the renderer
+    # (every `length3`, `normalize3`, `rsqrt_scalar`, and sphere/capsule/torus
+    # distance) and running a float divide 128 times per call dominated the
+    # sweep. Newton settles in roughly five to thirty steps, so the sealed
+    # answer is usually known an order of magnitude early.
+    previous = guess
     @budget(bound=128)
     while i < 128:
-        guess = 0.5 * (guess + x / guess)
+        next = 0.5 * (guess + x / guess)
         i = i + 1
+        if next == guess:
+            # A true fixed point: every remaining halving reproduces it.
+            return next
+        if next == previous:
+            # A two-cycle between adjacent floats, which is the other way this
+            # recurrence settles. Both members are already known, so pick the
+            # one the 128th iterate lands on by the parity of what remains.
+            if (128 - i) % 2 == 0:
+                return next
+            return guess
+        previous = guess
+        guess = next
     return guess
 
 pub fn rsqrt_scalar(x: f32) -> f32:

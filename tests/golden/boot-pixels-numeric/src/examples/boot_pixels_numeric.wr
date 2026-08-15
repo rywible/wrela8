@@ -79,6 +79,9 @@ pub fn pixels_numeric_vectors():
     match coverage_line_twice_area(1, 1, -1):
         case .Value(line):
             assert line.lower() == 256 and line.upper() == 256, "line coverage"
+            # A high-contrast diagonal through opposite unit-square corners
+            # covers exactly one half of the pixel and rounds to byte 128.
+            assert (line.lower().to[u32]() * 255 + 256) / 512 == 128, "diagonal coverage byte"
         case .Error:
             assert false, "line coverage must decide"
     curve = coverage_quadratic(Iv32.point(128), 3)

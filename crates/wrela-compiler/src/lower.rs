@@ -92,6 +92,17 @@ pub fn guest_reachable_keys_closure(
     guest_reachable_keys_over(&progs, opts)
 }
 
+pub fn guest_reachable_keys_closure_from_roots(
+    programs: &BTreeMap<String, TypedProgram>,
+    opts: &LowerOpts,
+    roots: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
+    let progs: Vec<&TypedProgram> = programs.values().collect();
+    let mut work = roots.into_iter().collect::<BTreeSet<_>>();
+    seed_runtime_force_roots(&progs, &mut work);
+    guest_reachable_keys_from_work(&progs, opts, work, false)
+}
+
 pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_runtime_probe",
     "__wrela_line_begin",
@@ -102,6 +113,9 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_abort",
     "__wrela_abort_val",
 ];
+
+const PIXELS_DISPLAY_RAW_FN: &str = "__wrela_pixels_p8_submit";
+const PIXELS_DISPLAY_DRIVER_FN: &str = "__wrela_pixels_display_submit_and_wait";
 
 pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_deadline_poll",
@@ -314,12 +328,25 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
     for p in programs {
         seed_entry_points(p, opts, &mut work);
     }
+    seed_runtime_force_roots(programs, &mut work);
+    guest_reachable_keys_from_work(programs, opts, work, true)
+}
+
+fn seed_runtime_force_roots(programs: &[&TypedProgram], work: &mut BTreeSet<String>) {
     for key in RUNTIME_FORCE_ROOT_KEYS {
         if programs.iter().any(|p| lookup_typed_fn(p, key).is_some()) {
             work.insert((*key).to_string());
         }
     }
-    if work.is_empty() {
+}
+
+fn guest_reachable_keys_from_work(
+    programs: &[&TypedProgram],
+    opts: &LowerOpts,
+    mut work: BTreeSet<String>,
+    fall_back_to_all: bool,
+) -> BTreeSet<String> {
+    if work.is_empty() && fall_back_to_all {
         for p in programs {
             for key in all_candidate_keys(p, opts) {
                 work.insert(key);
@@ -331,6 +358,9 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
     while let Some(key) = work.pop_first() {
         if !reachable.insert(key.clone()) {
             continue;
+        }
+        if key == PIXELS_DISPLAY_RAW_FN {
+            work.insert(PIXELS_DISPLAY_DRIVER_FN.to_string());
         }
         for p in programs {
             if let Some(f) = lookup_typed_fn(p, &key) {
@@ -789,6 +819,7 @@ fn env_insert(env: &mut LEnv, name: String, t: Temp) {
 
 struct Lowerer<'p> {
     prog: &'p TypedProgram,
+    blk_capacity_sectors: Option<u64>,
     rodata: Vec<Vec<u8>>,
     rodata_index: BTreeMap<Vec<u8>, usize>,
 }
@@ -807,7 +838,7 @@ impl<'p, 'l> FnBuilder<'p, 'l> {
     }
 
     fn blk_capacity_sectors(&self) -> Option<u64> {
-        self.lw.prog.blk_capacity_sectors
+        self.lw.blk_capacity_sectors
     }
 
     fn fresh(&mut self, ty: Type) -> Temp {
@@ -1021,6 +1052,14 @@ pub fn lower_program_with(
     program: &TypedProgram,
     opts: &LowerOpts,
 ) -> Result<MwirProgram, LowerError> {
+    lower_program_with_capacity(program, opts, program.blk_capacity_sectors)
+}
+
+pub fn lower_program_with_capacity(
+    program: &TypedProgram,
+    opts: &LowerOpts,
+    blk_capacity_sectors: Option<u64>,
+) -> Result<MwirProgram, LowerError> {
     let computed;
     let reachable: &BTreeSet<String> = match &opts.only {
         Some(set) => set,
@@ -1031,6 +1070,7 @@ pub fn lower_program_with(
     };
     let mut lw = Lowerer {
         prog: program,
+        blk_capacity_sectors,
         rodata: Vec::new(),
         rodata_index: BTreeMap::new(),
     };
@@ -1112,10 +1152,310 @@ pub fn lower_program_with(
             TypedInstantiation::Enum(_) => {}
         }
     }
+    install_pixels_i32x4_intrinsics(program, &mut fns)?;
+    install_pixels_display_driver_bridge(program, &mut fns)?;
     Ok(MwirProgram {
         fns,
         rodata: lw.rodata,
     })
+}
+
+fn install_pixels_display_driver_bridge(
+    program: &TypedProgram,
+    fns: &mut BTreeMap<String, MwirFn>,
+) -> Result<(), LowerError> {
+    if let Some(driver) = fns.get(PIXELS_DISPLAY_DRIVER_FN) {
+        if driver.receiver.is_some()
+            || driver.params.len() != 2
+            || driver
+                .params
+                .iter()
+                .any(|(temp, _)| driver.temp_types.get(temp.0) != Some(&Type::U64))
+            || driver.ret != Type::Unit
+        {
+            return Err(LowerError::internal(
+                "Pixels display driver bridge target has a noncanonical signature",
+            ));
+        }
+        let driver = fns
+            .get_mut(PIXELS_DISPLAY_DRIVER_FN)
+            .expect("validated above");
+        let doorbell = driver.params[0].0;
+        let control = driver.params[1].0;
+        let result = Temp(driver.temp_types.len());
+        driver.temp_types.push(Type::Unit);
+        driver.body = vec![
+            Inst::Dmb {
+                option: "ishst".to_string(),
+            },
+            Inst::MmioWrite {
+                base: doorbell,
+                offset: 0,
+                ty: Type::U64,
+                value: control,
+            },
+            Inst::Dmb {
+                option: "ishld".to_string(),
+            },
+            Inst::ConstUnit { dst: result },
+            Inst::Return {
+                value: Some(result),
+            },
+        ];
+    }
+    let Some(submit) = fns.get(PIXELS_DISPLAY_RAW_FN) else {
+        return Ok(());
+    };
+    let module = program
+        .fn_decl_modules
+        .get(PIXELS_DISPLAY_RAW_FN)
+        .map(String::as_str);
+    if !matches!(module, Some("core.__image_pixels" | "__image_pixels"))
+        || submit.receiver.is_some()
+        || submit.params.len() != 2
+        || submit
+            .params
+            .first()
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit
+            .params
+            .get(1)
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit.ret != Type::Unit
+    {
+        return Err(LowerError::internal(
+            "Pixels display driver bridge has a noncanonical signature",
+        ));
+    }
+    let submit = fns.get_mut(PIXELS_DISPLAY_RAW_FN).expect("validated above");
+    let result = Temp(submit.temp_types.len());
+    submit.temp_types.push(Type::Unit);
+    submit.body = vec![
+        Inst::Call {
+            dst: result,
+            write_backs: Vec::new(),
+            key: PIXELS_DISPLAY_DRIVER_FN.to_string(),
+            args: vec![submit.params[0].0, submit.params[1].0],
+        },
+        Inst::Return {
+            value: Some(result),
+        },
+    ];
+    Ok(())
+}
+
+pub(crate) fn validate_pixels_display_driver_bridge_target(
+    program: &MwirProgram,
+) -> Result<(), LowerError> {
+    let Some(submit) = program.fns.get(PIXELS_DISPLAY_RAW_FN) else {
+        return Ok(());
+    };
+    let driver = program.fns.get(PIXELS_DISPLAY_DRIVER_FN).ok_or_else(|| {
+        LowerError::internal("Pixels display driver bridge target is missing from the closure")
+    })?;
+    if submit.receiver.is_some()
+        || submit.params.len() != 2
+        || submit
+            .params
+            .first()
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit
+            .params
+            .get(1)
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit.ret != Type::Unit
+    {
+        return Err(LowerError::internal(
+            "Pixels display driver bridge has a noncanonical merged signature",
+        ));
+    }
+    if !matches!(
+        submit.body.as_slice(),
+        [
+            Inst::Call { key, args, write_backs, .. },
+            Inst::Return { .. },
+        ] if key == PIXELS_DISPLAY_DRIVER_FN
+            && args == &[submit.params[0].0, submit.params[1].0]
+            && write_backs.is_empty()
+    ) || !matches!(
+        driver.body.as_slice(),
+        [
+            Inst::Dmb { option: before },
+            Inst::MmioWrite { base, offset: 0, ty: Type::U64, value },
+            Inst::Dmb { option: after },
+            Inst::ConstUnit { .. },
+            Inst::Return { .. },
+        ] if before == "ishst"
+            && after == "ishld"
+            && *base == driver.params[0].0
+            && *value == driver.params[1].0
+    ) {
+        return Err(LowerError::internal(
+            "Pixels display driver bridge was not installed canonically",
+        ));
+    }
+    Ok(())
+}
+
+fn install_pixels_i32x4_intrinsics(
+    program: &TypedProgram,
+    fns: &mut BTreeMap<String, MwirFn>,
+) -> Result<(), LowerError> {
+    let Some(function) = fns.get("pixels_i32x4_backend_add") else {
+        return Ok(());
+    };
+    let canonical_module = program
+        .fn_decl_modules
+        .get("pixels_i32x4_backend_add")
+        .map(String::as_str);
+    let is_i32x4 =
+        |ty: &Type| matches!(ty, Type::Named(name, args) if name == "I32x4" && args.is_empty());
+    let is_i32x4_lanes = |ty: &Type| {
+        matches!(
+            ty,
+            Type::Array(elem, len)
+                if **elem == Type::I32
+                    && crate::sema::bodies::literal_array_len(len) == Some(4)
+        )
+    };
+    if !matches!(
+        canonical_module,
+        Some("core.render_raster" | "render_raster")
+    ) || function.receiver.is_some()
+        || function.params.len() != 2
+        || !function
+            .params
+            .iter()
+            .all(|(temp, _)| function.temp_types.get(temp.0).is_some_and(&is_i32x4))
+        || !is_i32x4(&function.ret)
+    {
+        return Err(LowerError::internal(
+            "Pixels i32x4 add intrinsic has a noncanonical signature",
+        ));
+    }
+    let from_lanes = fns
+        .get("I32x4.from_lanes")
+        .ok_or_else(|| LowerError::internal("Pixels i32x4 closure omitted I32x4.from_lanes"))?;
+    if from_lanes.receiver.is_some()
+        || from_lanes.params.len() != 1
+        || !from_lanes
+            .params
+            .first()
+            .and_then(|(temp, _)| from_lanes.temp_types.get(temp.0))
+            .is_some_and(&is_i32x4_lanes)
+        || !is_i32x4(&from_lanes.ret)
+    {
+        return Err(LowerError::internal(
+            "Pixels I32x4.from_lanes has a noncanonical signature",
+        ));
+    }
+    let function = fns
+        .get_mut("pixels_i32x4_backend_add")
+        .expect("validated above");
+    let lhs = function.params[0].0;
+    let rhs = function.params[1].0;
+    let dst = Temp(function.temp_types.len());
+    function.temp_types.push(function.ret.clone());
+    function.body = vec![
+        Inst::I32x4Add { dst, lhs, rhs },
+        Inst::Return { value: Some(dst) },
+    ];
+    for function in fns.values_mut() {
+        for inst in &mut function.body {
+            let Inst::Call {
+                dst,
+                write_backs,
+                key,
+                args,
+            } = inst
+            else {
+                continue;
+            };
+            if key == "I32x4.from_lanes" {
+                if !write_backs.is_empty()
+                    || args.len() != 1
+                    || !function
+                        .temp_types
+                        .get(args[0].0)
+                        .is_some_and(&is_i32x4_lanes)
+                    || !function.temp_types.get(dst.0).is_some_and(&is_i32x4)
+                {
+                    return Err(LowerError::internal(
+                        "Pixels I32x4.from_lanes has a noncanonical call site",
+                    ));
+                }
+                *inst = Inst::I32x4FromLanes {
+                    dst: *dst,
+                    lanes: args[0],
+                };
+            } else if key == "pixels_i32x4_backend_add" {
+                if !write_backs.is_empty()
+                    || args.len() != 2
+                    || !function.temp_types.get(args[0].0).is_some_and(&is_i32x4)
+                    || !function.temp_types.get(args[1].0).is_some_and(&is_i32x4)
+                    || !function.temp_types.get(dst.0).is_some_and(&is_i32x4)
+                {
+                    return Err(LowerError::internal(
+                        "Pixels i32x4 add intrinsic has a noncanonical call site",
+                    ));
+                }
+                *inst = Inst::I32x4Add {
+                    dst: *dst,
+                    lhs: args[0],
+                    rhs: args[1],
+                };
+            }
+        }
+    }
+    validate_pixels_i32x4_raster_mwir(fns)?;
+    Ok(())
+}
+
+fn validate_pixels_i32x4_raster_mwir(fns: &BTreeMap<String, MwirFn>) -> Result<(), LowerError> {
+    const RASTER: &str = "__wrela_pixels_p8_raster_regular";
+    let Some(raster) = fns.get(RASTER) else {
+        return Err(LowerError::internal(
+            "Pixels i32x4 intrinsic is reachable without the production raster loop",
+        ));
+    };
+    let additions = raster
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, inst)| matches!(inst, Inst::I32x4Add { .. }).then_some(index))
+        .collect::<Vec<_>>();
+    if additions.len() != 2 {
+        return Err(LowerError::internal(format!(
+            "Pixels production raster has {} i32x4 additions, expected 2",
+            additions.len()
+        )));
+    }
+    let backward_loops = raster
+        .body
+        .iter()
+        .enumerate()
+        .filter_map(|(index, inst)| match inst {
+            Inst::Jump { target } | Inst::JumpIfFalse { target, .. } if *target < index => {
+                Some((*target, index))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let vector_loops = backward_loops
+        .iter()
+        .filter(|(start, end)| additions.iter().all(|index| start <= index && index < end))
+        .count();
+    if backward_loops.len() != 3 || vector_loops != 1 {
+        return Err(LowerError::internal(format!(
+            "Pixels production raster loop shape drifted: backward_loops={} vector_loops={vector_loops}",
+            backward_loops.len()
+        )));
+    }
+    Ok(())
 }
 
 fn lower_struct_members(
@@ -4357,6 +4697,7 @@ mod builder_tests {
     fn new_lowerer(prog: &TypedProgram) -> Lowerer<'_> {
         Lowerer {
             prog,
+            blk_capacity_sectors: prog.blk_capacity_sectors,
             rodata: Vec::new(),
             rodata_index: BTreeMap::new(),
         }
@@ -4425,6 +4766,94 @@ mod integration_tests {
         let tokens = lexer::lex(src).expect("test source must lex");
         let module = parser::parse(tokens).expect("test source must parse");
         sema::check_typed(&module, "<test>").expect("test source must check")
+    }
+
+    #[test]
+    fn pixels_raster_mwir_audit_requires_one_live_packet_loop_and_scalar_edges() {
+        let mut fns = BTreeMap::new();
+        let body = vec![
+            Inst::ConstUnit { dst: Temp(0) },
+            Inst::Jump { target: 0 },
+            Inst::I32x4Add {
+                dst: Temp(0),
+                lhs: Temp(0),
+                rhs: Temp(0),
+            },
+            Inst::I32x4Add {
+                dst: Temp(0),
+                lhs: Temp(0),
+                rhs: Temp(0),
+            },
+            Inst::Jump { target: 2 },
+            Inst::ConstUnit { dst: Temp(0) },
+            Inst::Jump { target: 5 },
+        ];
+        fns.insert(
+            "__wrela_pixels_p8_raster_regular".to_string(),
+            MwirFn {
+                receiver: None,
+                params: Vec::new(),
+                ret: Type::Unit,
+                temp_types: vec![Type::Named("I32x4".to_string(), Vec::new())],
+                body,
+            },
+        );
+        validate_pixels_i32x4_raster_mwir(&fns).expect("canonical packet loop");
+
+        fns.get_mut("__wrela_pixels_p8_raster_regular")
+            .expect("fixture raster")
+            .body
+            .remove(2);
+        let error = validate_pixels_i32x4_raster_mwir(&fns)
+            .expect_err("scalarized packet recurrence must fail closed");
+        assert!(error.message.contains("expected 2"));
+    }
+
+    #[test]
+    fn pixels_submission_bridge_writes_the_sealed_dynamic_doorbell() {
+        let mut program = TypedProgram::default();
+        program.fn_decl_modules.insert(
+            PIXELS_DISPLAY_RAW_FN.to_string(),
+            "core.__image_pixels".to_string(),
+        );
+        let canonical_fn = MwirFn {
+            receiver: None,
+            params: vec![(Temp(0), AccessMode::Read), (Temp(1), AccessMode::Read)],
+            ret: Type::Unit,
+            temp_types: vec![Type::U64, Type::U64],
+            body: Vec::new(),
+        };
+        let mut functions = BTreeMap::from([
+            (PIXELS_DISPLAY_RAW_FN.to_string(), canonical_fn.clone()),
+            (PIXELS_DISPLAY_DRIVER_FN.to_string(), canonical_fn),
+        ]);
+        install_pixels_display_driver_bridge(&program, &mut functions).unwrap();
+        validate_pixels_display_driver_bridge_target(&MwirProgram {
+            fns: functions.clone(),
+            rodata: Vec::new(),
+        })
+        .unwrap();
+        let bridge = &functions[PIXELS_DISPLAY_RAW_FN];
+        assert!(matches!(
+            bridge.body.as_slice(),
+            [
+                Inst::Call { key, args, write_backs, .. },
+                Inst::Return { .. },
+            ] if key == PIXELS_DISPLAY_DRIVER_FN
+                && args == &[Temp(0), Temp(1)]
+                && write_backs.is_empty()
+        ));
+        let driver = &functions[PIXELS_DISPLAY_DRIVER_FN];
+        assert!(matches!(
+            driver.body.as_slice(),
+            [
+                Inst::Dmb { option: before },
+                Inst::MmioWrite { base: Temp(0), offset: 0, ty: Type::U64, value: Temp(1) },
+                Inst::Dmb { option: after },
+                Inst::ConstUnit { .. },
+                Inst::Return { .. },
+            ] if before == "ishst" && after == "ishld"
+        ));
     }
 
     #[test]

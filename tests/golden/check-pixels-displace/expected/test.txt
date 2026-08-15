@@ -1,15 +1,16 @@
 test pinned_scene_contract: ok
-p7 0000000000000092
-p7 000000000000008a
+p7 000000000000008c
+p7 0000000000000090
 p7 0000000000000078
 p7 503753414d504c45
-p7 000000000000ffff
+p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 8afbf88dba9375a3
-p7 f1b9553f133a2ccb
-p7 04d92e9b119c50d0
-p7 2b5e7dc48614aff9
+p7 a36c242e28f78a33
+p7 9deaf42cb198fa03
+p7 7e230d58f3b8b9d4
+p7 9291f5d9043e73b9
 test displaced_surface_renders_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6148b70b282b413da9ff888bf92cb2ae67eead5e1e78492fe07318e70e17271e visible=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 raw=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 vsync=5 checkpoint=5

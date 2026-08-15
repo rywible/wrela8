@@ -1,0 +1,87 @@
+module pixels_raster
+
+from core.field import Vec3, rsqrt_scalar, sqrt_scalar
+from core.render_raster import I32x4, ScalarRasterOutcome, i32x4_add_checked, pixels_i32x4_backend_add, raster_rsqrt, raster_run4, raster_run_scalar, reconstruct_packet_normal, reconstruct_packet_world_normal, reconstruct_packet_world_position
+
+@test
+fn packet_recurrence_has_exact_lane_order():
+    match raster_run4(10, 3, 2):
+        case .Value(packet):
+            match raster_run_scalar(10, 3, 2, 4):
+                case .Value(scalar):
+                    lane: usize = 0
+                    @budget(bound=4)
+                    while lane < 4:
+                        assert packet.lane(lane) == scalar.value(lane)
+                        lane = lane + 1
+                case _:
+                    assert false
+        case _:
+            assert false
+
+@test
+fn packet_add_fails_closed_before_asimd_overflow():
+    match raster_run4(2147483647, 1, 0):
+        case .Error:
+            pass
+        case _:
+            assert false
+
+@test
+fn packet_normal_skips_or_applies_normalization_by_dependency():
+    raw = reconstruct_packet_normal(2.0, 0.0, 0.0, 0.25, -0.5, false)
+    assert raw.x == 0.0 and raw.y == 0.0 and raw.z == 2.0
+    normalized = reconstruct_packet_normal(2.0, 0.0, 0.0, 0.25, -0.5, true)
+    assert normalized.x == 0.0 and normalized.y == 0.0 and normalized.z == 1.0
+    assert raster_rsqrt(4.0) == 0.5
+    world = reconstruct_packet_world_normal(
+        2.0, 0.0, 0.0, 0.25, -0.5,
+        Vec3(x=1.0, y=0.0, z=0.0),
+        Vec3(x=0.0, y=1.0, z=0.0),
+        Vec3(x=0.0, y=0.0, z=1.0),
+        true,
+    )
+    assert world.x == 0.0 and world.y == 0.0 and world.z == 1.0
+
+@test
+fn packet_rsqrt_matches_the_inverse_square_root_oracle():
+    # Every input here is a power of four, so the sealed seed-plus-two-Newton
+    # sequence sits exactly on its own fixed point and must reproduce the
+    # representable power-of-two result bit for bit, not merely land near it.
+    exact_inputs: [f32; 6] = [0.015625, 0.25, 1.0, 4.0, 16.0, 64.0]
+    exact_outputs: [f32; 6] = [8.0, 2.0, 1.0, 0.5, 0.25, 0.125]
+    index: usize = 0
+    @budget(bound=6)
+    while index < 6:
+        assert raster_rsqrt(exact_inputs[index]) == exact_outputs[index]
+        index = index + 1
+    # Differential check against the mathematical definition on inputs with no
+    # representable inverse square root. Bounding the residual of e*e*v - 1
+    # tests the sequence against 1/sqrt(v) itself rather than against a second
+    # copy of the same Newton steps, so a reassociated or truncated sequence
+    # fails here instead of agreeing with its own restatement.
+    sweep: [f32; 8] = [0.1, 0.5, 2.0, 3.0, 5.0, 7.0, 123.0, 1000000.0]
+    index = 0
+    @budget(bound=8)
+    while index < 8:
+        value = sweep[index]
+        estimate = raster_rsqrt(value)
+        residual = estimate * estimate * value - 1.0
+        assert residual < 0.0001 and residual > -0.0001
+        index = index + 1
+    # The guard is total at and below zero: normalization never consumes a
+    # non-positive squared norm, and the sequence must not emit an infinity.
+    assert raster_rsqrt(0.0) == 0.0
+    assert raster_rsqrt(-1.0) == 0.0
+    assert raster_rsqrt(-1000000.0) == 0.0
+
+@test
+fn packet_world_position_uses_one_projective_reciprocal():
+    position = reconstruct_packet_world_position(
+        0.5, 0.25, -0.5,
+        Vec3(x=1.0, y=2.0, z=3.0),
+        Vec3(x=1.0, y=0.0, z=0.0),
+        Vec3(x=0.0, y=1.0, z=0.0),
+        Vec3(x=0.0, y=0.0, z=1.0),
+    )
+    assert position.x == 1.5 and position.y == 1.0 and position.z == 5.0

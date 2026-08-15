@@ -791,14 +791,34 @@ fn lint_display_contract(repo: &Path) -> Result<(), String> {
             "@placed(0x{:08x})\nstatic DISPLAY_MEMORY",
             wrela_machine::pixels::CONTROL_BASE
         ),
+        "pub fn __wrela_pixels_display_submit_and_wait(doorbell_addr: u64, control_addr: u64) -> unit:"
+            .to_string(),
         format!(
-            "@placed(0x{:08x})\nstatic DISPLAY_DOORBELL",
-            wrela_machine::pixels::DOORBELL_ADDR
-        ),
-        format!(
-            "@offset({:#06x}) tile_id",
+            "@offset({:#06x}) tile_pixels_addr: u64",
             wrela_machine::pixels::TILES_BASE - wrela_machine::pixels::CONTROL_BASE
         ),
+        "@offset(0x0004) format: u8".to_string(),
+        "@offset(0x0005) generation: u8".to_string(),
+        "@offset(0x0006) renderer_index: u16".to_string(),
+        format!(
+            "@offset({:#06x}) guest_visible_digest: [u64; 4]",
+            wrela_machine::pixels::GUEST_VISIBLE_DIGEST_OFFSET
+        ),
+        format!(
+            "@offset({:#06x}) guest_raw_tile_digest: [u64; 4]",
+            wrela_machine::pixels::GUEST_RAW_TILE_DIGEST_OFFSET
+        ),
+        format!(
+            "@offset({:#06x}) guest_tile_descriptor_digest: [u64; 4]",
+            wrela_machine::pixels::GUEST_TILE_DESCRIPTOR_DIGEST_OFFSET
+        ),
+        format!(
+            "@offset({:#06x}) completion_status: u32",
+            wrela_machine::pixels::COMPLETION_STATUS_OFFSET
+        ),
+        "@offset(0x0110) tile_stride_bytes: u16".to_string(),
+        "@offset(0x0112) tile_format: u8".to_string(),
+        "@offset(0x0113) tile_reserved: [u8; 5]".to_string(),
         format!(
             "@offset({:#06x}) pixels",
             wrela_machine::pixels::FRAMEBUFFER_BASE - wrela_machine::pixels::CONTROL_BASE

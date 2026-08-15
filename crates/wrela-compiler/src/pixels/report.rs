@@ -344,7 +344,7 @@ pub fn append_program_set(
                 compiled.mutable_layout.telemetry.bytes,
             ));
             output.push_str(&format!(
-                "    Generated coordinator={} workers={} mailbox_capacity={} execution={} presentation=none palette=debug-identity-q families=[{}]\n",
+                "    Generated coordinator={} workers={} mailbox_capacity={} execution={} presentation=machine-v1-bgra8-srgb palette=debug-identity-fixed-q families=[{}]\n",
                 compiled.generated.coordinator,
                 compiled.generated.workers.len(),
                 compiled.generated.workers.len() + 2,
@@ -472,7 +472,7 @@ pub fn append_layout(
             "  Renderer index={} profile={} frameprog_base={:#x} frameprog_bytes={} frameprog_blob_digest={} \
              state_base={:#x} state_reservation_bytes={} framebuffer_base={:#x} \
              framebuffer_bytes={} probe_base={:#x} probe_bytes={} coordinator={}@core{} \
-             execution={} presentation=none\n",
+             execution={} presentation=machine-v1-bgra8-srgb\n",
             placement.index,
             config.profile,
             placement.frameprog_base,
@@ -496,7 +496,13 @@ pub fn append_layout(
              \x20   Formal contract={} numeric_revision={} formal_revision={}\n\
              \x20   Execution from_scratch_sweep=true bounded_local_rebuild=true \
              dense_frame=false previous_state=false oracle_runtime=false \
-             debug_visibility=true presentation=false\n\
+             debug_visibility=true raster=scalar+i32x4-asimd coverage=analytic-exact \
+             presentation=true front_swap=successful-completion-only\n\
+             \x20   Scanout format=Bgra8Srgb tile_width=64 tile_height=32 \
+             tile_stride=256 tile_bytes=8192 descriptor_bytes=24 generations=2 \
+             clear=boot-only\n\
+             \x20   DisplayReplay revision=1 digests=tile-descriptor,visible,raw-tile \
+             vsync_checkpoint=true failed_output_logged=false\n\
              \x20   BuildIdentity frame_program_digest={} tone_transfer_digest={} \
              profile_revision={} numeric_revision={} formal_theorem_set={} \
              renderer_layout_digest={}\n",
@@ -546,9 +552,10 @@ pub fn append_layout(
              margin_owners=[0:root,1:feature,2:order,3:csg,4:branch,5:numeric,6:fixed-q,7:event]\n\
              \x20     Schema density_bins=8 subdivision_bins=16 \
              rebuild_reasons=[0:none,1:x-split,2:q-split,3:feature-split,4:branch-split,5:event-arrangement,6:pixel-cell,7:subpixel-integration,8:exhausted] \
-             numeric_failure_bins=8 pixel_classes=[regular,corridor]\n",
+             numeric_failure_bins=8 pixel_classes=[regular,corridor] \
+             raster_evidence=[packets,scalar-edges,q-checked,normal-checked,world-positions,background,event,failures]\n",
             super::reference::telemetry::CERTIFICATE_TELEMETRY_VERSION,
-            super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V1,
+            super::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2,
             compiled.mutable_layout.telemetry.bytes,
         ));
     }

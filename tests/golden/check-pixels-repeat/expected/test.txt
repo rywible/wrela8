@@ -3,13 +3,14 @@ p7 0000000000000098
 p7 0000000000000060
 p7 000000000000019c
 p7 503753414d504c45
-p7 0000000000caffff
+p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 63078c5dc663d5db
-p7 a73069a28082d713
-p7 02c6e11d95d4c60e
-p7 450cc1fec650af89
+p7 7a59ea7d7774d5bb
+p7 0d8aa448ae2f19ab
+p7 c60ad4b6d6efefd2
+p7 b98e58e390218519
 test repeat_events_resolve_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=d909f7144681e6ec62e6aec30f18142b8761a430aded2913fe4e1750c0552629 visible=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 raw=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 vsync=4 checkpoint=4

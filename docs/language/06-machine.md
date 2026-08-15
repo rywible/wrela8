@@ -206,6 +206,37 @@ and submit the complete display list. The VMM validates and scans out those
 bytes without rendering or modifying a pixel. A renderer failure leaves the
 previous complete framebuffer visible and submits no partial frame.
 
+Machine v1 accepts exactly `PixelFormat.Bgra8Srgb` for Pixels output. Memory
+byte order is blue, green, red, alpha; RGB bytes have already passed the
+sealed sRGB transfer function and alpha is always 255. A scanout tile is
+64×32 pixels, has a 256-byte row stride, and always occupies 8192 bytes.
+Right and bottom edge descriptors carry their smaller visible extent, while
+all bytes outside that extent remain zero. Tile descriptors are 24-byte,
+little-endian records in row-major tile-ID order:
+
+```text
+guest_addr:u64, x:u16, y:u16, width:u16, height:u16,
+stride_bytes:u16, format:u8, reserved:[u8;5]
+```
+
+The guest release-publishes one version-2, 160-byte control record and its
+descriptor chain before ringing one doorbell. The record carries separate
+guest-computed bounded digests for the visible image, complete raw tile
+allocations (including padding), and exact descriptor bytes. The VMM
+recomputes and compares all three before presentation. Completion status is
+synchronously replaced with `presented` or `rejected`; only `presented`
+advances the sequence and releases the old front generation. Malformed
+controls, descriptors, guest ranges, alpha, padding, or digest evidence are
+rejected before presentation. Back-end upload declares sRGB interpretation
+but does not transform bytes.
+
+Machine-v1 display transports occupy page-aligned MMIO doorbell slots from
+`0x08006000` through `0x0800f000`. Each sealed renderer resolves the slot of
+its bound `DisplayDevice`; a slot binds to exactly one renderer on its first
+successful submission. Mode negotiation, sequence, and front-generation
+ownership are independent per binding, so interleaved displays cannot consume
+one another's state.
+
 ## 8. Record/replay boundary
 
 The VMM is the recorder. It logs: every device completion and DMA-written
@@ -216,6 +247,13 @@ packets, frames, audio periods). Replay feeds the log from virtual device
 models, suppresses real outputs, and diagnoses any divergence. This
 implements chapter [04 §9](04-compiler.md) natively rather than as an
 optional profile.
+
+Display replay revision 1 records renderer index, successful frame sequence,
+mode and format, generation ownership, descriptor digest, visible-image
+digest, raw full-tile digest (including padding), and vsync/checkpoint
+association. Rejected submissions are diagnostic events, not displayed-frame
+records. Replay suppresses a real presentation and reports the first divergent
+frame and digest class.
 
 ## 9. Hosts, packaging, trust
 

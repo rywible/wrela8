@@ -1303,6 +1303,40 @@ fn verify_capacities(graph: &SymbolicGraph, program: &StructuralProgram) -> Resu
     {
         return Err("pixels::verify: output double-buffer derivation is inconsistent".to_string());
     }
+    let scanout_tile_bytes = wrela_machine::pixels::TILE_ALLOCATION_BYTES as u64;
+    if capacities.output_tile_bytes % scanout_tile_bytes != 0 {
+        return Err("pixels::verify: scanout generation is not a whole tile list".to_string());
+    }
+    let scanout_tiles = capacities.output_tile_bytes / scanout_tile_bytes;
+    let expected_output_bytes = checked_mul(
+        scanout_tiles,
+        scanout_tile_bytes,
+        "scanout generation bytes",
+    )?;
+    let expected_descriptor_bytes = if scanout_tiles == 0 {
+        0
+    } else {
+        checked_mul(
+            (wrela_machine::pixels::CONTROL_BYTES as u64)
+                .checked_add(checked_mul(
+                    scanout_tiles,
+                    wrela_machine::pixels::DISPLAY_TILE_DESC_BYTES_V1 as u64,
+                    "scanout descriptors",
+                )?)
+                .ok_or_else(|| "pixels::verify: scanout descriptor bytes overflow".to_string())?,
+            2,
+            "scanout descriptor generations",
+        )?
+    };
+    if capacities.output_tile_bytes != expected_output_bytes
+        || capacities.tile_descriptor_bytes != expected_descriptor_bytes
+        || capacities.tile_ownership_bytes
+            != checked_mul(scanout_tiles, 2, "scanout ownership bytes")?
+    {
+        return Err(
+            "pixels::verify: scanout tile/list/ownership derivation is inconsistent".to_string(),
+        );
+    }
     let pre_framebuffer = checked_sum(
         &[
             capacities.state_header_bytes,
@@ -1365,6 +1399,9 @@ fn verify_capacities(graph: &SymbolicGraph, program: &StructuralProgram) -> Resu
     }
     if capacities.total_renderer_state_bytes_instrumented
         != expected_state
+            .checked_add(7)
+            .map(|value| value & !7)
+            .ok_or_else(|| "pixels::verify: telemetry alignment overflow".to_string())?
             .checked_add(capacities.telemetry_bytes_instrumented)
             .ok_or_else(|| "pixels::verify: instrumented state arithmetic overflow".to_string())?
     {
@@ -1577,6 +1614,31 @@ fn verify_report(program: &StructuralProgram) -> Result<(), String> {
     Ok(())
 }
 
+/// The exact re-derivation ratchets (`verify_exact_derivation`,
+/// `verify_exact_projective_derivation`) re-run the entire structural (P3)
+/// and projective (P4) pipelines and deep-compare every table, doubling the
+/// cost of each renderer compile. The per-table verifiers stay on
+/// unconditionally; the full re-derivation is opt-in via
+/// `WRELA_PIXELS_EXACT_VERIFY=1`, which the deep verification lanes set.
+/// Environment switch that turns the exact re-derivation ratchets on.
+///
+/// The deep lane names this constant rather than repeating the string, so the
+/// ratchet cannot be silently disabled by a rename on one side: a drift becomes
+/// a compile error instead of a lane that quietly stops verifying anything.
+pub const EXACT_VERIFY_ENV: &str = "WRELA_PIXELS_EXACT_VERIFY";
+
+/// The switch is opt-in and fails closed: only an exact `1` enables it, so a
+/// stray empty or misspelled value cannot half-enable the ratchet.
+fn exact_verification_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn exact_derivation_verification_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED
+        .get_or_init(|| exact_verification_requested(std::env::var_os(EXACT_VERIFY_ENV).as_deref()))
+}
+
 fn verify_exact_derivation(
     graph: &SymbolicGraph,
     config: &super::config::RendererConfig,
@@ -1688,7 +1750,9 @@ pub fn check(
     verify_capacities(graph, &program)?;
     verify_report(&program)?;
     verify_deformations(graph, &program)?;
-    verify_exact_derivation(graph, config, &program)?;
+    if exact_derivation_verification_enabled() {
+        verify_exact_derivation(graph, config, &program)?;
+    }
     Ok(VerifiedStructuralProgram(program))
 }
 
@@ -3409,7 +3473,9 @@ pub fn check_projective(
     verify_accounting(structural.program(), &program)?;
     verify_indexes(structural.program(), &program)?;
     verify_projective_capacities(structural.program(), &program)?;
-    verify_exact_projective_derivation(graph, config, structural, &program)?;
+    if exact_derivation_verification_enabled() {
+        verify_exact_projective_derivation(graph, config, structural, &program)?;
+    }
     Ok(VerifiedProjectiveProgram(program))
 }
 
@@ -3775,6 +3841,7 @@ mod tests {
             material: "test::shade".to_string(),
             material_type: Type::Unit,
             display_index: 0,
+            display_doorbell_addr: wrela_machine::pixels::DOORBELL_ADDR,
             width: 8,
             height: 8,
             refresh_hz: 60,
@@ -5990,5 +6057,21 @@ mod tests {
             verify_capacities(&graph, &program).unwrap_err(),
             "pixels::verify: candidate storage bytes 1 differ from derived 0"
         );
+    }
+
+    #[test]
+    fn the_exact_derivation_switch_fails_closed_on_anything_but_one() {
+        use std::ffi::OsStr;
+        assert!(exact_verification_requested(Some(OsStr::new("1"))));
+        for declined in ["", "0", "true", "yes", "1 ", "01"] {
+            assert!(
+                !exact_verification_requested(Some(OsStr::new(declined))),
+                "`{declined}` must not enable the exact re-derivation ratchet"
+            );
+        }
+        assert!(!exact_verification_requested(None));
+        // The deep lane sets this exact name; keeping it a shared constant is
+        // what stops a rename from silently disabling the ratchet.
+        assert_eq!(EXACT_VERIFY_ENV, "WRELA_PIXELS_EXACT_VERIFY");
     }
 }

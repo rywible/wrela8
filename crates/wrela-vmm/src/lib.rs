@@ -4,6 +4,33 @@ use std::time::Duration;
 pub mod hv;
 
 pub const WALL_CAP: Duration = Duration::from_secs(30);
+/// Hang detector for images carrying a Pixels renderer.
+///
+/// This is a liveness bound, not a performance bound: a from-scratch certified
+/// sweep is legitimately minutes before P12 adds performance admission, and the
+/// watchdog is a single total-wall deadline with no progress signal to consult
+/// (the guest makes no MMIO exit during the sweep, so an idle-timeout would
+/// need a guest-side heartbeat and would perturb the sealed transcripts).
+///
+/// The bound therefore has to clear the slowest legitimate scene by a wide
+/// margin on a *loaded* machine. `check-pixels-hard-csg` measured ~5-9 minutes
+/// idle and blew straight through the previous 600s bound once other work was
+/// competing for the host, failing with "no core reported the guest exit
+/// protocol" — a false hang report, not a real one, and one that would hit any
+/// slower runner even unloaded. `check-pixels-tile-boundary` is heavier still
+/// (twice the pixels and the highest per-pixel fallback count in the corpus).
+/// 1800s keeps roughly a 3x margin over the worst observed case while still
+/// bounding a genuinely wedged guest. Bring it back down when P12 lands
+/// performance admission and the sweeps get cheap.
+pub const PIXELS_WALL_CAP: Duration = Duration::from_secs(1800);
+
+pub(crate) const fn boot_wall_cap(has_pixels_renderer: bool) -> Duration {
+    if has_pixels_renderer {
+        PIXELS_WALL_CAP
+    } else {
+        WALL_CAP
+    }
+}
 
 pub(crate) fn capped_park_deadline_ns(now_ns: u64, deadline_ns: u64) -> u64 {
     let wall_cap_ns = WALL_CAP.as_nanos() as u64;
@@ -108,6 +135,9 @@ pub struct BootOutcome {
     pub core_marks: Vec<u64>,
     pub lane2_hits: Vec<(u32, u64)>,
     pub frames: Vec<wrela_machine::pixels::PresentedFrame>,
+    /// Digest recomputed from the bytes staged by the selected host backend,
+    /// one per successfully presented frame.
+    pub frame_buffer_digests: Vec<[u8; 32]>,
 }
 
 pub use wrela_machine::report::{
@@ -566,10 +596,10 @@ mod exit_loop;
 pub mod lane3;
 pub mod replay;
 
-pub use boot::boot_image;
 pub(crate) use boot::boot_image_core;
 #[cfg(test)]
 pub(crate) use boot::host_cores_refuse;
+pub use boot::{boot_image, boot_image_with_display};
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use boot::{
     boot_image_core_with_delayed_raise, core_sp_tops_from_report,
@@ -578,8 +608,10 @@ pub(crate) use boot::{
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use exit_loop::check_core_marks;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use exit_loop::drain_console;
 #[cfg(test)]
-pub(crate) use exit_loop::{AdmissionWitness, check_vector_in_range, drain_console};
+pub(crate) use exit_loop::{AdmissionWitness, check_vector_in_range};
 
 #[cfg(target_os = "linux")]
 pub mod kvm {}
@@ -610,6 +642,22 @@ mod tests {
             capped_park_deadline_ns(now, now.saturating_add(wall_ns).saturating_add(1)),
             now.saturating_add(wall_ns),
             "anything past WALL_CAP is capped"
+        );
+    }
+
+    #[test]
+    fn pixels_boot_watchdog_is_not_a_pre_p12_performance_gate() {
+        assert_eq!(boot_wall_cap(false), WALL_CAP);
+        assert_eq!(boot_wall_cap(true), PIXELS_WALL_CAP);
+        assert!(PIXELS_WALL_CAP > WALL_CAP);
+        // The slowest conformance scene measured ~9-10 minutes on a loaded
+        // host, and a watchdog that a legitimate workload can reach reports a
+        // hang that did not happen. Keep a multiple of that worst case rather
+        // than trimming to whatever the current corpus happens to need.
+        assert!(
+            PIXELS_WALL_CAP >= Duration::from_secs(1800),
+            "the Pixels hang detector must keep a wide margin over the slowest \
+             legitimate certified sweep until P12 gates performance"
         );
     }
 
@@ -707,7 +755,7 @@ mod tests {
         let report = format!(
             "{}Section name=entry base={:#x} size=1\n\
              Section name={section_name} base={section_base:#x} size={}\n\
-             RendererPlacement index=0 frameprog_base={placement_base:#x} frameprog_bytes={}\n\
+             RendererPlacement index=0 frameprog_base={placement_base:#x} frameprog_bytes={} state_base=0x0 state_bytes=0\n\
              Entry base={:#x}\n",
             report_identity("renderer.wr", &image),
             wrela_machine::layout::IMAGE_BASE,

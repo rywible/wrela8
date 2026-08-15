@@ -3224,6 +3224,11 @@ pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
     let mut source_rejected = 0_u64;
     let mut first_source_rejection = None;
     let source_result = (|| {
+        // Mutations draw from the shared RNG, so they are generated in
+        // iteration order; the expensive compiles are order-independent and
+        // run through a small worker pool. Two concurrent in-process pixels
+        // compiles bound the arena memory peak.
+        let mut prepared = Vec::new();
         for iteration in 0..source_iters {
             let seed_name = source_seeds[usize::try_from(iteration).unwrap() % source_seeds.len()];
             let case_dir = source_scratch.join(format!("case-{iteration}"));
@@ -3238,30 +3243,73 @@ pub(crate) fn fuzz_pixels(iters: u64, seed: u64) -> Result<(), String> {
             let mutated = mutate_pixels_source(&source, iteration, &mut rng)?;
             std::fs::write(&source_target, mutated)
                 .map_err(|error| format!("fuzz pixels: write source mutation: {error}"))?;
-            let source_outcome = std::panic::catch_unwind(|| {
-                crate::produce_report_and_image_with_discovery_order(&source_target, false, false)
-            });
-            match source_outcome {
-                Err(_) => {
+            prepared.push((iteration, seed_name, source_target));
+        }
+        enum Outcome {
+            Panicked,
+            Accepted,
+            Rejected(String),
+        }
+        const COMPILE_WORKERS: usize = 2;
+        let cursor = std::sync::atomic::AtomicUsize::new(0);
+        let outcomes: Vec<std::sync::Mutex<Option<Outcome>>> = prepared
+            .iter()
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        let prepared_ref = &prepared;
+        let cursor_ref = &cursor;
+        let outcomes_ref = &outcomes;
+        std::thread::scope(|scope| {
+            for _ in 0..COMPILE_WORKERS.min(prepared_ref.len()) {
+                scope.spawn(move || {
+                    // Opt selection is thread-local: pin the same release set
+                    // the surrounding lane pinned on the invoking thread.
+                    let _mode =
+                        crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
+                    loop {
+                        let index = cursor_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((_, _, source_target)) = prepared_ref.get(index) else {
+                            return;
+                        };
+                        let source_outcome = std::panic::catch_unwind(|| {
+                            crate::produce_report_and_image_with_discovery_order(
+                                source_target,
+                                false,
+                                false,
+                            )
+                        });
+                        let outcome = match source_outcome {
+                            Err(_) => Outcome::Panicked,
+                            Ok(Ok((_, Some(_)))) => Outcome::Accepted,
+                            Ok(Ok((report, None))) => Outcome::Rejected(
+                                report
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("empty diagnostic")
+                                    .to_string(),
+                            ),
+                            Ok(Err(error)) => Outcome::Rejected(error),
+                        };
+                        *outcomes_ref[index]
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+                    }
+                });
+            }
+        });
+        for ((iteration, seed_name, _), slot) in prepared.iter().zip(outcomes) {
+            match slot.into_inner().unwrap_or_else(|e| e.into_inner()) {
+                None => return Err("fuzz pixels: source outcome missing".to_string()),
+                Some(Outcome::Panicked) => {
                     return Err(format!(
                         "fuzz pixels: compiler panicked on source iteration {iteration}, \
                          seed {seed}, fixture {seed_name}"
                     ));
                 }
-                Ok(Ok((_, Some(_)))) => source_accepted += 1,
-                Ok(Ok((report, None))) => {
+                Some(Outcome::Accepted) => source_accepted += 1,
+                Some(Outcome::Rejected(rejection)) => {
                     source_rejected += 1;
-                    first_source_rejection.get_or_insert_with(|| {
-                        report
-                            .lines()
-                            .next()
-                            .unwrap_or("empty diagnostic")
-                            .to_string()
-                    });
-                }
-                Ok(Err(error)) => {
-                    source_rejected += 1;
-                    first_source_rejection.get_or_insert(error);
+                    first_source_rejection.get_or_insert(rejection);
                 }
             }
         }

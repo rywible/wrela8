@@ -91,6 +91,12 @@ fn generated_framebuffer_root(suffix: &str) -> bool {
         .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+fn generated_display_list_root(suffix: &str) -> bool {
+    suffix
+        .strip_prefix("DISPLAY_LIST_CHUNK_")
+        .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 pub fn classify(name: &str) -> Class {
     if fixed_core_names().iter().any(|n| n == name) {
         return Class::Fixed;
@@ -119,7 +125,9 @@ pub fn classify(name: &str) -> Class {
             || suffix == "FRAME_PROGRAM_HEADER"
             || suffix == "FRAME_PROGRAM_DIRECTORY"
             || suffix == "FRAME_SNAPSHOT"
+            || suffix == "SCANOUT_STATE"
             || generated_framebuffer_root(suffix)
+            || generated_display_list_root(suffix)
             || generated_worker_root(suffix)
             || matches!(
                 suffix,

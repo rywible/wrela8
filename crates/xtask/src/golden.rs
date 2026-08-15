@@ -229,6 +229,13 @@ pub(crate) struct GoldenOpts {
     pub(crate) jobs: usize,
     pub(crate) boot_jobs: usize,
     pub(crate) pixels_telemetry: bool,
+    /// Run accepted Pixels artifact bundles in one exact-case child process
+    /// apiece. Their compiler arenas are intentionally large; process
+    /// isolation returns those arenas to the OS between cases.
+    pub(crate) isolate_pixels_bundles: bool,
+    /// Skip the `cargo build` preflight. Set by isolated child invocations,
+    /// whose parent already built the compiler binary.
+    pub(crate) assume_built: bool,
 }
 
 pub(crate) fn default_jobs() -> usize {
@@ -239,7 +246,90 @@ pub(crate) fn default_jobs() -> usize {
 // throttled: four concurrent HVF guests intermittently starve multicore
 // quiescence long enough to produce a false `quiesce=timeout` transcript.
 pub(crate) const DEFAULT_BOOT_JOBS: usize = 2;
-pub(crate) const VMM_HVF_TESTS: usize = 24;
+pub(crate) const VMM_HVF_TESTS: usize = 25;
+
+// Renderer-bearing pixels work (in-process bundle compiles, isolated child
+// processes, renderer dump subprocesses, and pixels guest-boot compiles)
+// retains large compiler arenas. This process-wide gate bounds how many run
+// concurrently so the ordinary worker pool can stay as wide as the host
+// without risking memory pressure on a 16 GiB machine; cheap stages
+// (check/typed/...) never take a permit.
+//
+// The bound is memory, not CPU: one renderer-bearing compile peaks at ~1.2 GiB
+// resident (measured on `check-pixels-displace`), so four concurrent permits
+// hold ~5 GiB and leave a 16 GiB host comfortable headroom even while a second
+// worktree builds. Hosts that run several agent worktrees at once — or a
+// smaller machine — can dial this down through the environment rather than by
+// editing a constant.
+pub(crate) const HEAVY_PIXELS_JOBS: usize = 4;
+
+pub(crate) fn heavy_pixels_jobs() -> usize {
+    std::env::var("WRELA_HEAVY_PIXELS_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|jobs| *jobs >= 1)
+        .unwrap_or(HEAVY_PIXELS_JOBS)
+        .min(default_jobs().max(1))
+}
+
+struct HeavyGate {
+    permits: std::sync::Mutex<usize>,
+    available: std::sync::Condvar,
+}
+
+struct HeavyPermit<'a>(&'a HeavyGate);
+
+impl HeavyGate {
+    fn acquire(&self) -> HeavyPermit<'_> {
+        let mut permits = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        while *permits == 0 {
+            permits = self
+                .available
+                .wait(permits)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        *permits -= 1;
+        HeavyPermit(self)
+    }
+}
+
+impl Drop for HeavyPermit<'_> {
+    fn drop(&mut self) {
+        let mut permits = self.0.permits.lock().unwrap_or_else(|e| e.into_inner());
+        *permits += 1;
+        self.0.available.notify_one();
+    }
+}
+
+fn heavy_gate() -> &'static HeavyGate {
+    static GATE: std::sync::OnceLock<HeavyGate> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| HeavyGate {
+        permits: std::sync::Mutex::new(heavy_pixels_jobs()),
+        available: std::sync::Condvar::new(),
+    })
+}
+
+fn heavy_pixels_stage(case_name: &str, command_stage: &str) -> bool {
+    case_name.contains("pixels")
+        && matches!(
+            command_stage,
+            "report"
+                | "image"
+                | "field-graph"
+                | "frame-program"
+                | "render-layout"
+                | "asm"
+                | "mwir"
+                | "test"
+                | "test-omit-dmb"
+        )
+}
+
+fn scheduling_sensitive_boot_case(case: &Path) -> bool {
+    case.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("boot-cross-core-"))
+}
 
 impl Default for GoldenOpts {
     fn default() -> Self {
@@ -251,6 +341,8 @@ impl Default for GoldenOpts {
             jobs: default_jobs(),
             boot_jobs: DEFAULT_BOOT_JOBS,
             pixels_telemetry: false,
+            isolate_pixels_bundles: false,
+            assume_built: false,
         }
     }
 }
@@ -278,6 +370,37 @@ fn stage_selected(stage: &str, boot: BootSel) -> bool {
         BootSel::Only => stage_boots(stage),
         BootSel::None => !stage_boots(stage),
     }
+}
+
+fn accepted_pixels_case(case: &Path) -> bool {
+    case.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("check-pixels-"))
+        && case.join("expected/image.txt").is_file()
+}
+
+fn expected_files_need_pixels_bundle(expected_files: &[PathBuf], boot: BootSel) -> bool {
+    expected_files.iter().any(|path| {
+        let stage = path
+            .file_stem()
+            .and_then(|stage| stage.to_str())
+            .unwrap_or("");
+        let (base, _) = renderer_dump_stage(stage).unwrap_or((stage, None));
+        matches!(
+            base,
+            "field-graph" | "frame-program" | "render-layout" | "report" | "image"
+        ) && stage_selected(stage, boot)
+    })
+}
+
+fn case_needs_pixels_bundle(case: &Path, boot: BootSel) -> Result<bool, String> {
+    if !accepted_pixels_case(case) {
+        return Ok(false);
+    }
+    let expected_dir = case.join("expected");
+    let mut expected_files = read_dir_paths(&expected_dir)?;
+    expected_files.sort();
+    Ok(expected_files_need_pixels_bundle(&expected_files, boot))
 }
 
 fn case_has_selected_stage(case: &Path, boot: BootSel) -> Result<(bool, bool), String> {
@@ -363,24 +486,16 @@ fn run_case(
             );
         }
         expected_files.sort();
-        let accepted_pixels = case
+        let case_name = case
             .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("check-pixels-"))
-            && expected_dir.join("image.txt").is_file();
-        let bundle_needed = accepted_pixels
-            && expected_files.iter().any(|path| {
-                let stage = path
-                    .file_stem()
-                    .and_then(|stage| stage.to_str())
-                    .unwrap_or("");
-                let (base, _) = renderer_dump_stage(stage).unwrap_or((stage, None));
-                matches!(
-                    base,
-                    "field-graph" | "frame-program" | "render-layout" | "report" | "image"
-                ) && stage_selected(stage, boot)
-            });
+            .and_then(|n| n.to_str())
+            .unwrap_or("case")
+            .to_string();
+        let accepted_pixels = accepted_pixels_case(case);
+        let bundle_needed =
+            accepted_pixels && expected_files_need_pixels_bundle(&expected_files, boot);
         let pixels_bundle = if bundle_needed {
+            let _heavy = heavy_gate().acquire();
             Some(crate::produce_image_artifacts(&input)?)
         } else {
             None
@@ -396,11 +511,6 @@ fn run_case(
                 continue;
             }
             let rel_input = input.strip_prefix(root()).unwrap_or(&input);
-            let case_name = case
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("case")
-                .to_string();
             let build_out_dir_rel = format!("target/golden-build-tmp/{case_name}");
             let build_out_dir_abs = root().join(&build_out_dir_rel);
             if stage == "build" || stage == "build-err" {
@@ -501,6 +611,11 @@ fn run_case(
                 }
                 continue;
             }
+            let _heavy = if heavy_pixels_stage(&case_name, command_stage) {
+                Some(heavy_gate().acquire())
+            } else {
+                None
+            };
             let out = if stage == "test" || stage == "test-omit-dmb" {
                 let vmm = vmm.ok_or_else(|| {
                     format!(
@@ -673,11 +788,6 @@ fn run_case(
                 }
             }
         }
-        let case_name = case
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("case")
-            .to_string();
         let build_out_dir_abs = root().join(format!("target/golden-build-tmp/{case_name}"));
         if build_out_dir_abs.exists() {
             std::fs::remove_dir_all(&build_out_dir_abs)
@@ -751,11 +861,119 @@ fn run_cases_parallel(
     Ok((total, failures))
 }
 
+fn isolated_pixels_child_args(case_name: &str, update: bool) -> Vec<String> {
+    let mut args = vec![
+        "golden".to_string(),
+        "--case".to_string(),
+        case_name.to_string(),
+        "--no-boot".to_string(),
+        "--jobs".to_string(),
+        "1".to_string(),
+        "--assume-built".to_string(),
+    ];
+    if update {
+        args.push("--update".to_string());
+    }
+    args
+}
+
+fn isolated_golden_expectation_count(output: &str) -> Result<usize, String> {
+    let counts: Vec<usize> = output
+        .lines()
+        .filter_map(|line| line.strip_prefix("golden: "))
+        .filter_map(|rest| {
+            let mut words = rest.split_whitespace();
+            let first = words.next()?;
+            if first == "updated" {
+                words.next()?.parse::<usize>().ok()
+            } else {
+                first.parse::<usize>().ok()
+            }
+        })
+        .collect();
+    match counts.as_slice() {
+        [count] if *count > 0 => Ok(*count),
+        _ => Err(format!(
+            "isolated golden child emitted no unique positive expectation count:\n{output}"
+        )),
+    }
+}
+
+fn run_isolated_pixels_cases(cases: &[PathBuf], update: bool) -> Result<usize, String> {
+    if cases.is_empty() {
+        return Ok(0);
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("locate current xtask executable: {error}"))?;
+    let run_one = |case: &Path| -> Result<usize, String> {
+        let name = case
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("bad golden case path: {}", case.display()))?;
+        // Each child compiles one renderer bundle in-process; a heavy permit
+        // bounds how many such children run at once.
+        let _heavy = heavy_gate().acquire();
+        let output = Command::new(&executable)
+            .current_dir(root())
+            .args(isolated_pixels_child_args(name, update))
+            .output()
+            .map_err(|error| format!("run isolated golden case `{name}`: {error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() {
+            return Err(format!(
+                "isolated golden case `{name}` failed (status {}):\n{stdout}{stderr}",
+                output
+                    .status
+                    .code()
+                    .map_or_else(|| "signal".to_string(), |code| code.to_string()),
+            ));
+        }
+        isolated_golden_expectation_count(&stdout)
+            .map_err(|error| format!("isolated golden case `{name}`: {error}"))
+    };
+    let workers = heavy_pixels_jobs().min(cases.len());
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<Result<usize, String>>>> =
+        cases.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(case) = cases.get(index) else {
+                        return;
+                    };
+                    let run = run_one(case);
+                    *results[index].lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
+                }
+            });
+        }
+    });
+    let mut expectations = 0usize;
+    for slot in results {
+        expectations += slot
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|| Err("isolated golden case result missing".to_string()))?;
+    }
+    Ok(expectations)
+}
+
 pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
-    run(
-        Command::new("cargo").args(["build", "--quiet", "-p", "wrela-compiler", "--bin", "wrela"]),
-        "cargo build wrela",
-    )?;
+    if !opts.assume_built {
+        run(
+            Command::new("cargo").args([
+                "build",
+                "--quiet",
+                "-p",
+                "wrela-compiler",
+                "--bin",
+                "wrela",
+            ]),
+            "cargo build wrela",
+        )?;
+    }
     let wrela = root().join("target/debug/wrela");
     let golden_dir = root().join("tests/golden");
 
@@ -810,13 +1028,54 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
             None => "golden: no expectations selected".to_string(),
         });
     }
+    let scan_cases: Vec<PathBuf> = dump_cases
+        .iter()
+        .chain(boot_cases.iter())
+        .cloned()
+        .collect();
+    // Cross-core scheduler fixtures deliberately fail closed when host
+    // contention prevents their secondary vCPUs from reaching quiescence.
+    // P8's sustained multi-vCPU Pixels guests can otherwise overlap them for
+    // minutes. Run this small group after the ordinary guest pool, one at a
+    // time, without giving up parallelism for the rest of the boot corpus.
+    let mut scheduling_sensitive_boot_cases = Vec::new();
+    boot_cases.retain(|case| {
+        if scheduling_sensitive_boot_case(case) {
+            scheduling_sensitive_boot_cases.push(case.clone());
+            false
+        } else {
+            true
+        }
+    });
 
-    let vmm = if boot_cases.is_empty() {
+    let isolated_dump_cases = if opts.isolate_pixels_bundles {
+        if opts.pixels_telemetry || opts.boot != BootSel::None {
+            return Err(
+                "golden: Pixels bundle isolation only supports non-telemetry, non-boot runs"
+                    .to_string(),
+            );
+        }
+        let mut isolated = Vec::new();
+        let mut ordinary = Vec::new();
+        for case in dump_cases {
+            if case_needs_pixels_bundle(&case, opts.boot)? {
+                isolated.push(case);
+            } else {
+                ordinary.push(case);
+            }
+        }
+        dump_cases = ordinary;
+        isolated
+    } else {
+        Vec::new()
+    };
+
+    let vmm = if boot_cases.is_empty() && scheduling_sensitive_boot_cases.is_empty() {
         None
     } else {
         Some(build_and_sign_vmm()?)
     };
-    let vmm_slot_dir = if boot_cases.is_empty() {
+    let vmm_slot_dir = if boot_cases.is_empty() && scheduling_sensitive_boot_cases.is_empty() {
         None
     } else {
         let dir = root().join(format!("target/golden-vmm-slots-{}", std::process::id()));
@@ -832,16 +1091,27 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         }
         Some(dir)
     };
-    let (n1, mut failures) = run_cases_parallel(
-        &dump_cases,
-        &wrela,
-        vmm.as_deref(),
-        None,
-        opts.update,
-        opts.boot,
-        opts.jobs,
-        opts.pixels_telemetry,
-    )?;
+    // Isolated pixels children and the ordinary dump pool share the heavy
+    // gate, so running them concurrently cannot exceed the memory envelope.
+    let (isolated_result, dump_result) = std::thread::scope(|scope| {
+        let isolated = scope.spawn(|| run_isolated_pixels_cases(&isolated_dump_cases, opts.update));
+        let dump = run_cases_parallel(
+            &dump_cases,
+            &wrela,
+            vmm.as_deref(),
+            None,
+            opts.update,
+            opts.boot,
+            opts.jobs,
+            opts.pixels_telemetry,
+        );
+        let isolated = isolated
+            .join()
+            .unwrap_or_else(|_| Err("golden: isolated pixels worker panicked".to_string()));
+        (isolated, dump)
+    });
+    let isolated_expectations = isolated_result?;
+    let (n1, mut failures) = dump_result?;
     let (n2, boot_failures) = run_cases_parallel(
         &boot_cases,
         &wrela,
@@ -852,12 +1122,23 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         opts.jobs,
         opts.pixels_telemetry,
     )?;
+    let (n3, scheduling_sensitive_failures) = run_cases_parallel(
+        &scheduling_sensitive_boot_cases,
+        &wrela,
+        vmm.as_deref(),
+        vmm_slot_dir.as_deref(),
+        opts.update,
+        opts.boot,
+        1,
+        opts.pixels_telemetry,
+    )?;
     if let Some(dir) = &vmm_slot_dir {
         std::fs::remove_dir_all(dir)
             .map_err(|error| format!("remove {}: {error}", dir.display()))?;
     }
     failures.extend(boot_failures);
-    let cases = n1 + n2;
+    failures.extend(scheduling_sensitive_failures);
+    let cases = isolated_expectations + n1 + n2 + n3;
 
     if !failures.is_empty() {
         for f in &failures {
@@ -865,7 +1146,7 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         }
         return Err(format!("golden: {} failure(s)", failures.len()));
     }
-    assert_no_internal_error_in_goldens(&golden_dir)?;
+    assert_no_internal_error_in_goldens(&scan_cases)?;
     if opts.update {
         println!("golden: updated {cases} expectation(s) — review the diff before committing");
         return Ok(());
@@ -890,10 +1171,10 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn assert_no_internal_error_in_goldens(golden_dir: &Path) -> Result<(), String> {
+pub(crate) fn assert_no_internal_error_in_goldens(cases: &[PathBuf]) -> Result<(), String> {
     const PREFIX: &str = "internal error: ";
     let mut hits = Vec::new();
-    for case in golden_case_dirs(golden_dir)? {
+    for case in cases {
         let expected_dir = case.join("expected");
         if !expected_dir.is_dir() {
             continue;
@@ -958,5 +1239,62 @@ mod tests {
         assert!(!pixels_test_report_green("0 passed, 0 failed\n"));
         assert!(!pixels_test_report_green("1 passed, 1 failed\n"));
         assert!(!pixels_test_report_green("not passed, 0 failed\n"));
+    }
+
+    #[test]
+    fn isolated_pixels_child_selects_one_exact_non_boot_case() {
+        assert_eq!(
+            isolated_pixels_child_args("check-pixels-repeat", false),
+            [
+                "golden",
+                "--case",
+                "check-pixels-repeat",
+                "--no-boot",
+                "--jobs",
+                "1",
+                "--assume-built",
+            ]
+        );
+        assert_eq!(
+            isolated_pixels_child_args("check-pixels-repeat", true).last(),
+            Some(&"--update".to_string())
+        );
+    }
+
+    #[test]
+    fn isolated_pixels_child_count_fails_closed() {
+        assert_eq!(
+            isolated_golden_expectation_count(
+                "golden: 7 expectation(s) ok (1 case(s), boot stages skipped)\n"
+            ),
+            Ok(7)
+        );
+        assert_eq!(
+            isolated_golden_expectation_count(
+                "golden: updated 7 expectation(s) — review the diff before committing\n"
+            ),
+            Ok(7)
+        );
+        assert!(isolated_golden_expectation_count("golden: 0 expectation(s) ok\n").is_err());
+        assert!(isolated_golden_expectation_count("unrelated output\n").is_err());
+        assert!(
+            isolated_golden_expectation_count(
+                "golden: 2 expectation(s) ok\ngolden: 3 expectation(s) ok\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn only_cross_core_boot_cases_use_the_scheduling_sensitive_lane() {
+        assert!(scheduling_sensitive_boot_case(Path::new(
+            "tests/golden/boot-cross-core-ring-full"
+        )));
+        assert!(!scheduling_sensitive_boot_case(Path::new(
+            "tests/golden/check-pixels-hard-csg"
+        )));
+        assert!(!scheduling_sensitive_boot_case(Path::new(
+            "tests/golden/boot-async"
+        )));
     }
 }

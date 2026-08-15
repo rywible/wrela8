@@ -67,6 +67,20 @@ pub enum Inst {
         src: Temp,
     },
 
+    /// Exact four-lane wrapping add used only after Pixels fixed-q range
+    /// verification proves that signed lane addition cannot overflow.
+    I32x4Add {
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+    },
+    /// Pack the low i32 word from each machine-v1 scalar slot into one
+    /// contiguous nominal I32x4 value.
+    I32x4FromLanes {
+        dst: Temp,
+        lanes: Temp,
+    },
+
     MakeAggregate {
         dst: Temp,
         elems: Vec<Temp>,
@@ -1079,6 +1093,12 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         Inst::ConstUnit { dst } => format!("ConstUnit dst={dst}"),
         Inst::ConstText { dst, data } => format!("ConstText dst={dst} data={data}"),
         Inst::Copy { dst, src } => format!("Copy dst={dst} src={src}"),
+        Inst::I32x4Add { dst, lhs, rhs } => {
+            format!("I32x4Add dst={dst} lhs={lhs} rhs={rhs} lanes=4x32")
+        }
+        Inst::I32x4FromLanes { dst, lanes } => {
+            format!("I32x4FromLanes dst={dst} lanes={lanes} order=0,1,2,3")
+        }
         Inst::MmioRead {
             dst,
             base,

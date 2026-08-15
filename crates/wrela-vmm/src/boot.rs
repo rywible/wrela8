@@ -1,9 +1,13 @@
 use std::path::Path;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::time::Duration;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use wrela_machine::report::{CoreEntry, CoreStack, ParsedReport, ReportSection};
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::devices;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::exit_loop::{
     AdmissionWitness, BlkState, advance_pc, apply_entropy_read, check_core_marks,
     check_vector_in_range, commit_admissions, commit_completions, drain_console,
@@ -13,8 +17,15 @@ use crate::exit_loop::{
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::hv;
 use crate::record;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+use crate::{BootOutcome, VmmError};
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+#[path = "boot_kvm.rs"]
+mod kvm_boot;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::{
-    BootOutcome, VmmError, WALL_CAP, capped_park_deadline_ns, guest_dram_offset, parse_report,
+    BootOutcome, VmmError, capped_park_deadline_ns, guest_dram_offset, parse_report,
     validate_report_digests,
 };
 
@@ -108,7 +119,21 @@ fn apply_wx_exec_protections(exec_sections: &[ReportSection]) -> Result<(), VmmE
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
-    boot_image_core(report_path, img_path, None).map(|(outcome, _divergences)| outcome)
+    boot_image_with_display(
+        report_path,
+        img_path,
+        crate::display::DisplayBackendSelection::Headless,
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub fn boot_image_with_display(
+    report_path: &Path,
+    img_path: &Path,
+    display: crate::display::DisplayBackendSelection,
+) -> Result<BootOutcome, VmmError> {
+    boot_image_core_inner(report_path, img_path, None, None, display)
+        .map(|(outcome, _divergences)| outcome)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -117,7 +142,13 @@ pub(crate) fn boot_image_core(
     img_path: &Path,
     replay_choices: Option<Vec<record::ChoiceEntry>>,
 ) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
-    boot_image_core_inner(report_path, img_path, replay_choices, None)
+    boot_image_core_inner(
+        report_path,
+        img_path,
+        replay_choices,
+        None,
+        crate::display::DisplayBackendSelection::Headless,
+    )
 }
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
@@ -127,7 +158,13 @@ pub(crate) fn boot_image_core_with_delayed_raise(
     replay_choices: Option<Vec<record::ChoiceEntry>>,
     test_delayed_raise: Option<(Duration, u64)>,
 ) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
-    boot_image_core_inner(report_path, img_path, replay_choices, test_delayed_raise)
+    boot_image_core_inner(
+        report_path,
+        img_path,
+        replay_choices,
+        test_delayed_raise,
+        crate::display::DisplayBackendSelection::Headless,
+    )
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -136,6 +173,7 @@ fn boot_image_core_inner(
     img_path: &Path,
     replay_choices: Option<Vec<record::ChoiceEntry>>,
     test_delayed_raise: Option<(Duration, u64)>,
+    display_selection: crate::display::DisplayBackendSelection,
 ) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
     use hv::*;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -329,7 +367,7 @@ fn boot_image_core_inner(
         released: bool,
         admission: AdmissionWitness,
         admission_buf: [Vec<(String, String)>; CORE_SLOTS],
-        display: crate::display::HeadlessDisplay,
+        display: crate::display::RuntimeDisplay,
     }
     unsafe impl Send for Shared {}
 
@@ -375,6 +413,7 @@ fn boot_image_core_inner(
             "`Cores count={cores_declared}` must satisfy 1..=CORE_SLOTS ({CORE_SLOTS})"
         )));
     }
+    let display = crate::display::runtime_display(display_selection)?;
     let shared = std::sync::Mutex::new(Shared {
         sched: Sched {
             current: 0,
@@ -397,7 +436,7 @@ fn boot_image_core_inner(
         vcpus: [0; CORE_SLOTS],
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
         admission_buf: std::array::from_fn(|_| Vec::new()),
-        display: crate::display::HeadlessDisplay::default(),
+        display,
     });
     let wake = std::sync::Condvar::new();
 
@@ -561,22 +600,32 @@ fn boot_image_core_inner(
                     }
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
-                } else if ipa == wrela_machine::pixels::DOORBELL_ADDR {
+                } else if wrela_machine::pixels::is_display_doorbell_addr(ipa) {
                     let da = mmio_access(esr, core, "DISPLAY_DOORBELL_ADDR", "display", true)?;
                     let control_addr = mmio_src_value(vcpu, &da)?;
                     let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                     // SAFETY: `host_ram` is the live DRAM mapping for this
                     // boot. The display doorbell synchronously transfers the
                     // referenced records to the host display model.
-                    let frame = unsafe {
-                        g.display.consume_volatile(
+                    let submission = unsafe {
+                        g.display.consume_volatile_from(
+                            ipa,
                             host_ram,
                             machine_layout::DRAM_SIZE as usize,
                             control_addr,
-                        )?
+                        )
                     };
-                    g.chooser
-                        .check_frame_present(frame.sequence, frame.digest.clone())?;
+                    if matches!(submission, Err(VmmError::Io(_))) {
+                        return submission.map(|_| Step::Keep);
+                    }
+                    let status = g.display.last_completion_status();
+                    // SAFETY: `host_ram` is the live DRAM mapping for this boot.
+                    unsafe {
+                        crate::display::publish_completion_status(host_ram, control_addr, status)?;
+                    }
+                    if let Ok(frame) = submission {
+                        g.chooser.check_frame_output(&frame)?;
+                    }
                     drop(g);
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
@@ -1143,8 +1192,13 @@ fn boot_image_core_inner(
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let watchdog_shared = &shared;
         let watchdog_wake = &wake;
+        // Exact Pixels proof workloads are intentionally not a
+        // performance-admission gate before P12. Keep the ordinary boot hang
+        // detector tight while allowing a finite from-scratch visibility
+        // proof to complete on slower signed runners.
+        let watchdog_cap = crate::boot_wall_cap(!parsed.renderer_placements.is_empty());
         let watchdog = scope.spawn(move || {
-            if done_rx.recv_timeout(WALL_CAP).is_err() {
+            if done_rx.recv_timeout(watchdog_cap).is_err() {
                 let mut g = watchdog_shared.lock().unwrap_or_else(|e| e.into_inner());
                 let mut live: Vec<u64> = g.vcpus.iter().copied().filter(|v| *v != 0).collect();
                 if !live.is_empty() {
@@ -1188,9 +1242,32 @@ fn boot_image_core_inner(
     if shared.released {
         check_core_marks(host_ram, cores_declared)?;
     }
+    if let Some(path) = std::env::var_os("WRELA_P8_STATE_DUMP") {
+        let placement = parsed.renderer_placements.first().ok_or_else(|| {
+            VmmError::MalformedReport("P8 state dump requested without a renderer".into())
+        })?;
+        let offset = usize::try_from(placement.state_base - machine_layout::DRAM_BASE)
+            .map_err(|_| VmmError::BadImage("renderer state offset does not fit usize".into()))?;
+        let len = usize::try_from(placement.state_size)
+            .map_err(|_| VmmError::BadImage("renderer state size does not fit usize".into()))?;
+        let end = offset
+            .checked_add(len)
+            .filter(|end| *end <= dram_size)
+            .ok_or_else(|| VmmError::BadImage("renderer state range exceeds DRAM".into()))?;
+        let bytes = unsafe { std::slice::from_raw_parts(host_ram.add(offset), end - offset) };
+        std::fs::write(&path, bytes).map_err(|error| {
+            VmmError::Io(format!(
+                "write requested P8 renderer-state dump {}: {error}",
+                std::path::Path::new(&path).display()
+            ))
+        })?;
+    }
 
     let mut transcript = drain_console(host_ram);
     transcript.extend_from_slice(&crate::replay::frame_log_bytes(shared.display.frames()));
+    transcript.extend_from_slice(&crate::replay::rejected_display_event_log_bytes(
+        shared.display.events(),
+    ));
     let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
@@ -1205,19 +1282,72 @@ fn boot_image_core_inner(
             core_marks,
             lane2_hits,
             frames: shared.display.frames().to_vec(),
+            frame_buffer_digests: shared.display.backend_digests().to_vec(),
         },
         divergences,
     ))
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
+    boot_image_with_display(
+        report_path,
+        img_path,
+        crate::display::DisplayBackendSelection::Headless,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn boot_image_with_display(
+    report_path: &Path,
+    img_path: &Path,
+    display: crate::display::DisplayBackendSelection,
+) -> Result<BootOutcome, VmmError> {
+    Ok(kvm_boot::boot(report_path, img_path, display, None)?.0)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn boot_image_core(
+    report_path: &Path,
+    img_path: &Path,
+    replay_choices: Option<Vec<record::ChoiceEntry>>,
+) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
+    kvm_boot::boot(
+        report_path,
+        img_path,
+        crate::display::DisplayBackendSelection::Headless,
+        replay_choices,
+    )
+}
+
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "aarch64")
+)))]
 pub fn boot_image(_report_path: &Path, _img_path: &Path) -> Result<BootOutcome, VmmError> {
     Err(VmmError::Unsupported(
         "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
     ))
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "aarch64")
+)))]
+pub fn boot_image_with_display(
+    _report_path: &Path,
+    _img_path: &Path,
+    _display: crate::display::DisplayBackendSelection,
+) -> Result<BootOutcome, VmmError> {
+    Err(VmmError::Unsupported(
+        "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
+    ))
+}
+
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "aarch64")
+)))]
 pub(crate) fn boot_image_core(
     _report_path: &Path,
     _img_path: &Path,
