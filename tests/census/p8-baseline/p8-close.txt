@@ -1,0 +1,28 @@
+# Pixels P8-close frozen census
+schema = 1
+phase = P8-close
+basis_commit = 44bcfcdce7d55ba062227dc96de3c49d9e3d91db
+case = check-pixels-normal-moments
+
+## [M] emitted facts
+
+# P8 predates region markers, so this immutable historical checkpoint is
+# function-granular. Word digests hash ordered encoded AArch64 words.
+fn.__wrela_pixels_p7_collect_roots_box frame_size=29472 words=7239 calls=131 word_sha256=018d73af051e0efaf5422926a7ad7f32d5bfe4eac49d27612e648cd4c814f4b8
+fn.__wrela_pixels_p7_isolate_smooth_object frame_size=10160 words=3649 calls=42 word_sha256=e082f5cc79c3bb2c83544a1b1257c526163a2580799cb8182087af7ddb037a74
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack frame_size=46272 words=47041 calls=170 word_sha256=d0de7745adff797b13254382e11a4c49eac4c5f8b21ac6dde18fd29c0f60b369
+fn.__wrela_pixels_p8_raster_regular frame_size=1584 words=1049 calls=35 word_sha256=ea3980b121ded09713263d9dec39419967585ce26f26b75dad37eec585fb275e
+
+## [I] legacy P8 model snapshot
+
+# These scores are reproduced by the P8-close binary and its P8 table. They
+# are historical context, not the bank-aware P8R optimization baseline.
+fn.__wrela_pixels_p7_collect_roots_box.proxy_cycles = 5433
+fn.__wrela_pixels_p7_isolate_smooth_object.proxy_cycles = 2483
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.proxy_cycles = 21604
+fn.__wrela_pixels_p8_geometry_lane_valid.proxy_cycles = 391
+fn.__wrela_pixels_p8_geometry_packet_valid.proxy_cycles = 134
+fn.__wrela_pixels_p8_raster_regular.proxy_cycles = 770
+fn.__wrela_pixels_p8_write.proxy_cycles = 588
+fn.__wrela_pixels_p8_write4.proxy_cycles = 476
+fn.sqrt_scalar.proxy_cycles = 176

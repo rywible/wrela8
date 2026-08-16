@@ -189,6 +189,91 @@ own gate.
 pixels P8R.0: seal the P8R decision ledger and reconcile contracts
 ```
 
+## P8R.0 record — sealed decisions, follow-ups, and discharged claims
+
+This section is the work product of Task P8R.0. The two decisions this plan
+itself owns are defined here; the rest are defined in the normative document
+that owns them, and the registry check in `pixels_plan_lint.rs` proves every
+`D-P8R-nn` referenced anywhere resolves to exactly one definition.
+
+> **D-P8R-01** (sealed 2026-08-15) — This interstitial milestone is named
+> P8R (reconciliation), because the canonical implementation plan already
+> owns the name Task P8.5. P8R contains no shading, no temporal reuse, and
+> no new field operations. It adds no renderer feature and changes no
+> displayed byte.
+
+> **D-P8R-06** (sealed 2026-08-15) — P8R adds no external Cargo
+> dependency, per the standing dependency policy in `AGENTS.md`. Every tool
+> this milestone or its research appendix needs — kernel search, census
+> emission, cache keying, doc linting — is in-house. The pinned Lean project
+> under `formal/pixels/` remains the one approved non-Cargo proof tool, and
+> it is outside the shipped image and the Cargo dependency graph.
+
+### Decision index
+
+```text
+D-P8R-01  this document (above)          milestone name and scope
+D-P8R-02  docs/language/06-machine.md §1 flagship worker topology profile
+D-P8R-03  docs/language/07-pixels.md §1.3 camera-cut budget not relaxed
+D-P8R-04  docs/language/06-machine.md §1  no implicit FMA contraction
+D-P8R-05  docs/language/06-machine.md §1  no fp16 lanes on the ISA surface
+D-P8R-06  this document (above)          no external Cargo dependencies
+D-P8R-07  docs/language/07-pixels.md §1.5 packet substrate is internal
+D-P8R-08  docs/language/07-pixels.md §1.5 formal-claim phrasing
+D-P8R-09  docs/language/06-machine.md §2  RTDATA_BASE is IMAGE_BASE + 4 MiB
+```
+
+### Named follow-ups (owned, not P8R tasks)
+
+**F-P8R-01 — reconcile the generated worker count with `pi5-3worker`.**
+The generated renderer emits four workers while D-P8R-02 seals a
+three-worker flagship profile. Reconciling them changes generated code and
+therefore image bytes, which P8R's stop conditions forbid. File inventory:
+`crates/wrela-compiler/src/pixels/glue.rs`, `stdlib/core/render.wr`,
+`tests/census/p8-baseline/`. Owner: the P9 task that next regenerates worker
+placement. Gate: `cargo xtask verify`.
+
+**F-P8R-02 — stop materializing the `RTDATA_BASE` packing hole in the image
+blob.** Verified real at P8R.0, against the corrected D-P8R-09 contract:
+`layout.rs`'s `pad_to` resizes the image blob from the packed end of
+`entry`/`code`/`rodata`/`abort`/`checkpoint` all the way to `RTDATA_BASE`,
+so every sealed image carries the whole `IMAGE_BASE + 4 MiB` window as
+literal zero bytes before `rtdata` begins — a floor of about 4 MiB per
+image, paid on every write, digest, and guest load in every golden boot.
+This is a real, reproducible cost, not a circulating rumor, and it is not
+part of any P8R task: removing the padding changes the sealed image blob's
+bytes and its section-table arithmetic. File inventory:
+`crates/wrela-compiler/src/layout.rs`, `crates/wrela-machine/src/lib.rs`,
+`crates/wrela-vmm/src/lib.rs`. Owner: the milestone that next opens image
+packing. Gate: `cargo xtask verify`.
+
+### Debt ledger corrections [S]
+
+Struck from open-debt lists — both are implemented, and the source says so:
+
+- `MaterialIntrinsic` classifies all four material constructors
+  (`crates/wrela-compiler/src/pixels/material_intrinsics.rs::classify`:
+  `standard`, `clay`, `porcelain`, `textured`; anything else fails closed).
+- `.to[f64]` produces `SymValue::F64`
+  (`crates/wrela-compiler/src/pixels/symbolic.rs`, the `key.ends_with(".to")`
+  conversion arm).
+
+Remaining audited debt, each with an owner:
+
+- The residual string-suffix classification site
+  `name.ends_with(".subtract")` in
+  `crates/wrela-compiler/src/pixels/symbolic.rs` decides Vec3 add versus
+  subtract by member-name suffix rather than a classified intrinsic. Owner:
+  the P9 task that next opens Vec3 symbolic lowering.
+- Product-tier optimization exception 1: `NarrowImm` falls at every point of
+  every borrowed program in the corpus and is justified by the appliance
+  rather than by the corpus. Owner: `opts::win`'s pinned product-tier
+  verdict set (decision 1785).
+- Product-tier optimization exception 2: `BoundsElide` is parked — in the
+  tree, out of the shipped list — because it measured byte-identical to
+  `dev` on all four product cases. Owner: `opts::PARKED_OPTS`
+  (decisions 1970/1911).
+
 ## Task P8R.1 — bank-aware cost-model prerequisites
 
 **Requires:** P8R.0.

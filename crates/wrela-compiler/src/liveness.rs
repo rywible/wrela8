@@ -215,6 +215,7 @@ mod tests {
         let p = MwirProgram {
             fns: BTreeMap::from([("f".to_string(), diamond())]),
             rodata: Vec::new(),
+            direct_fp_fns: BTreeSet::new(),
         };
         let a = dump_program(&p).expect("dump");
         assert_eq!(a, dump_program(&p).expect("dump"));

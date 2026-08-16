@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::sema::generics;
 use crate::sema::typed::{
@@ -51,7 +52,7 @@ pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 #[derive(Clone)]
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
-    pub(crate) ast_members: Vec<Member>,
+    pub(crate) ast_members: Arc<Vec<Member>>,
     pub(crate) deferred_comptime_members: Vec<Member>,
 }
 
@@ -111,7 +112,7 @@ impl StructInfo {
 #[derive(Clone)]
 pub(crate) struct EnumInfo {
     pub(crate) decl: types::DeclEnum,
-    pub(crate) ast_members: Vec<Member>,
+    pub(crate) ast_members: Arc<Vec<Member>>,
 }
 
 impl EnumInfo {
@@ -160,7 +161,7 @@ impl std::ops::DerefMut for EnumInfo {
 
 #[derive(Clone)]
 pub(crate) struct FnInfo {
-    pub(crate) ast: ast::FnItem,
+    pub(crate) ast: Arc<ast::FnItem>,
     pub(crate) decl: types::DeclFn,
 }
 
@@ -299,7 +300,7 @@ pub(crate) fn build_module_ctx(
                     s.name.clone(),
                     StructInfo {
                         decl: d.clone(),
-                        ast_members,
+                        ast_members: Arc::new(ast_members),
                         deferred_comptime_members,
                     },
                 );
@@ -336,7 +337,7 @@ pub(crate) fn build_module_ctx(
                     e.name.clone(),
                     EnumInfo {
                         decl: d.clone(),
-                        ast_members,
+                        ast_members: Arc::new(ast_members),
                     },
                 );
             }
@@ -346,7 +347,7 @@ pub(crate) fn build_module_ctx(
                 fns.insert(
                     f.name.clone(),
                     FnInfo {
-                        ast: f.clone(),
+                        ast: Arc::new(f.clone()),
                         decl: d.clone(),
                     },
                 );
@@ -622,6 +623,7 @@ pub(crate) fn check(
         .collect();
     let mut program = TypedProgram::default();
     program.module_path = mctx.module_path.clone();
+    program.module_key = mctx.loader_key.join(".");
     program.declared_pools = mctx.module_pools.clone();
     program.const_decl_modules = mctx.const_decl_module.clone();
     program.const_decl_names = mctx.const_decl_name.clone();

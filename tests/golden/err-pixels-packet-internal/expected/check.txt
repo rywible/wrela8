@@ -1,0 +1,1 @@
+error[name]: `F32x4` is in a compiler-reserved namespace and cannot be defined or referenced by user modules at 6:32

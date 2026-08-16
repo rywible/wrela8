@@ -1422,7 +1422,7 @@ pub(crate) fn instantiate_struct(
     bodies::enqueue_instantiation(mctx, InstKind::Struct, name, args, call_span)?;
     Ok(StructInfo {
         decl,
-        ast_members: expanded,
+        ast_members: std::sync::Arc::new(expanded),
         deferred_comptime_members: Vec::new(),
     })
 }
@@ -1500,13 +1500,16 @@ pub(crate) fn instantiate_fn(
     check_arity(&orig.decl.generics, args, name, call_span)?;
     let subst = build_subst(&orig.decl.generics, args, mctx, call_span)?;
     let decl = subst_decl_fn_direct(&orig.decl, &subst);
-    let mut ast = orig.ast.clone();
+    let mut ast = (*orig.ast).clone();
     ast.generics = Vec::new();
     if let Some(body) = ast.body.as_mut() {
         *body = body.iter().map(|s| subst_stmt(s, &subst)).collect();
     }
     bodies::enqueue_instantiation(mctx, InstKind::Fn, name, args, call_span)?;
-    Ok(FnInfo { ast, decl })
+    Ok(FnInfo {
+        ast: std::sync::Arc::new(ast),
+        decl,
+    })
 }
 
 pub(crate) fn instantiate_method(
@@ -2053,7 +2056,7 @@ fn method_instantiation_struct_info(
                 classes: e.classes,
                 classes_assigned: e.classes_assigned,
             },
-            ast_members: vec![Member::Fn(ast.clone())],
+            ast_members: std::sync::Arc::new(vec![Member::Fn(ast.clone())]),
             deferred_comptime_members: Vec::new(),
         });
     } else {
@@ -2064,7 +2067,7 @@ fn method_instantiation_struct_info(
         ));
     };
     base.decl.members = vec![DeclMember::Fn(decl.clone())];
-    base.ast_members = vec![Member::Fn(ast.clone())];
+    base.ast_members = std::sync::Arc::new(vec![Member::Fn(ast.clone())]);
     base.deferred_comptime_members = Vec::new();
     Ok(base)
 }

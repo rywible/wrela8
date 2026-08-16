@@ -1,9 +1,257 @@
 use std::process::Command;
 
-use crate::golden::{BootSel, GoldenOpts, build_and_sign_vmm, golden};
+use crate::golden::{BootSel, GoldenOpts, build_and_sign_vmm, golden, heavy_pixels_jobs};
+use crate::pixels_cache::{Cache, file_digest, is_sha256_hex, key_of, tree_digest};
 use crate::root;
 
 const EXPECTED: &str = "tests/pixels_truth/p8-visibility.txt";
+const OUTPUT_DIR_ENV: &str = "WRELA_P8_CONFORMANCE_OUTPUT_DIR";
+
+/// Version of the recorded truth schema and the numeric contract the scorer
+/// enforces. It keys the score cache, so a truth-format or numeric-contract
+/// change invalidates every cached score even when the evidence bytes are
+/// unchanged. Move it with `GuestVisibilityExecution version=`.
+const TRUTH_SCHEMA_VERSION: u32 = 2;
+const CONFORMANCE_FIXTURE_VERSION: u32 = 2;
+
+/// The compiler options both cached stages hold fixed. Naming them in the key
+/// means a future flag cannot silently reuse a value derived under different
+/// options.
+const INSTRUMENTED_COMPILER_OPTIONS: &str = "--pixels-telemetry --image-digest-only";
+
+fn compile_cache_key(sources: &str, compiler: &str, options: &str) -> String {
+    key_of(&[
+        ("sources", sources.to_string()),
+        ("compiler", compiler.to_string()),
+        ("options", options.to_string()),
+    ])
+}
+
+struct ScoreKey<'a> {
+    case: &'a str,
+    fixture_version: u32,
+    sources: &'a str,
+    compiler: &'a str,
+    options: &'a str,
+    evidence: &'a str,
+    scorer: &'a str,
+    scorer_options: &'a str,
+    numeric_contract: u32,
+}
+
+fn score_cache_key(parts: &ScoreKey<'_>) -> String {
+    key_of(&[
+        ("case", parts.case.to_string()),
+        ("fixture_version", parts.fixture_version.to_string()),
+        ("sources", parts.sources.to_string()),
+        ("compiler", parts.compiler.to_string()),
+        ("options", parts.options.to_string()),
+        ("evidence", parts.evidence.to_string()),
+        ("scorer", parts.scorer.to_string()),
+        ("scorer_options", parts.scorer_options.to_string()),
+        ("numeric_contract", parts.numeric_contract.to_string()),
+    ])
+}
+
+fn boot_cache_key(image_digest: &str, vmm_digest: &str) -> String {
+    key_of(&[
+        ("image", image_digest.to_string()),
+        ("vmm", vmm_digest.to_string()),
+    ])
+}
+
+fn read_complete_raw_cache(paths: &[std::path::PathBuf; 3]) -> Option<Vec<Vec<u8>>> {
+    paths.iter().map(|path| std::fs::read(path).ok()).collect()
+}
+
+fn read_raw_boot_cache(
+    current: &[std::path::PathBuf; 3],
+    legacy: Option<&[std::path::PathBuf; 3]>,
+) -> (Option<Vec<Vec<u8>>>, bool) {
+    if let Some(blobs) = read_complete_raw_cache(current) {
+        return (Some(blobs), false);
+    }
+    let legacy = legacy.and_then(read_complete_raw_cache);
+    let promote = legacy.is_some();
+    (legacy, promote)
+}
+
+/// Concurrent instrumented guest boots.
+///
+/// Two by default: that matches the golden runner's HVF throttle, and more
+/// intermittently starves multicore quiescence. `WRELA_P8_BOOT_WORKERS=3` is
+/// an opt-in experiment, not a promotion — a third worker becomes the default
+/// only with a recorded stability result behind it. Anything outside 1..=3 is
+/// refused rather than clamped, so a typo does not quietly change the shape
+/// of the run.
+fn boot_workers() -> usize {
+    match std::env::var("WRELA_P8_BOOT_WORKERS").ok().as_deref() {
+        None => 2,
+        Some(value) => match value.parse::<usize>() {
+            Ok(workers @ 1..=3) => {
+                if workers != 2 {
+                    println!(
+                        "pixels-conformance: experiment: {workers} boot worker(s)                          (WRELA_P8_BOOT_WORKERS); the default remains 2"
+                    );
+                }
+                workers
+            }
+            _ => {
+                println!(
+                    "pixels-conformance: ignoring WRELA_P8_BOOT_WORKERS=`{value}`                      (expected 1..=3); using 2"
+                );
+                2
+            }
+        },
+    }
+}
+
+/// The compiler entry source for one fixture case.
+fn case_target(case: &str) -> Result<std::path::PathBuf, String> {
+    let dir = root().join("tests/golden").join(case);
+    let root_file = dir.join("root");
+    if root_file.is_file() {
+        let relative = std::fs::read_to_string(&root_file).map_err(|error| {
+            format!("pixels conformance: read {}: {error}", root_file.display())
+        })?;
+        Ok(dir.join(relative.trim()))
+    } else {
+        Ok(dir.join("input.wr"))
+    }
+}
+
+/// Digest of every Wrela source the instrumented image can possibly close
+/// over: the whole stdlib plus the case's own fixture tree.
+///
+/// Deliberately a superset of the real closure. Over-covering costs a cache
+/// miss when an unrelated stdlib file changes; under-covering would serve a
+/// digest derived from source that no longer exists.
+fn source_closure_digest(case: &str, target: &std::path::Path) -> Result<String, String> {
+    let fixture = root().join("tests/golden").join(case);
+    Ok(key_of(&[
+        ("stdlib", tree_digest(&root().join("stdlib"), &["wr"])?),
+        ("fixture", tree_digest(&fixture, &["wr", "txt"])?),
+        (
+            "target",
+            target
+                .strip_prefix(root())
+                .unwrap_or(target)
+                .display()
+                .to_string(),
+        ),
+        ("target_content", file_digest(target)),
+    ]))
+}
+
+/// Fingerprint of the scorer itself: the reference implementation the
+/// `FrameScore` comes out of, plus the conformance driver in this file.
+fn scorer_fingerprint() -> Result<String, String> {
+    Ok(key_of(&[
+        (
+            "reference",
+            tree_digest(
+                &root().join("crates/wrela-compiler/src/pixels/reference"),
+                &["rs"],
+            )?,
+        ),
+        (
+            "driver",
+            file_digest(&root().join("crates/xtask/src/pixels_conformance.rs")),
+        ),
+        ("truth_schema", TRUTH_SCHEMA_VERSION.to_string()),
+    ]))
+}
+
+/// Serialize a `FrameScore` as the score cache's body.
+///
+/// An explicit field-by-field format rather than a derived encoding: a field
+/// added to `FrameScore` without a line here fails
+/// `score_cache_body_round_trips_every_field` instead of being silently
+/// dropped from cached results.
+fn render_score(score: &wrela_compiler::pixels::reference::conformance::FrameScore) -> String {
+    let issue = match score.first_issue {
+        Some([x, y, kind]) => format!("{x},{y},{kind}"),
+        None => "none".to_string(),
+    };
+    format!(
+        "checked_interior {}\ninterior_mismatches {}\nedge_center_violations {}\n\
+         ambiguous_identity {}\nunresolved {}\nskipped_unproven {}\nphantom_surface {}\n\
+         q_checked {}\nnormal_checked {}\nevent_bytes_checked {}\n\
+         boundary_limited_event_bytes {}\nraster_evidence_failures {}\nfirst_issue {issue}\n",
+        score.checked_interior,
+        score.interior_mismatches,
+        score.edge_center_violations,
+        score.ambiguous_identity,
+        score.unresolved,
+        score.skipped_unproven,
+        score.phantom_surface,
+        score.q_checked,
+        score.normal_checked,
+        score.event_bytes_checked,
+        score.boundary_limited_event_bytes,
+        score.raster_evidence_failures,
+    )
+}
+
+fn parse_score(body: &str) -> Option<wrela_compiler::pixels::reference::conformance::FrameScore> {
+    let mut score = wrela_compiler::pixels::reference::conformance::FrameScore::default();
+    let mut seen = 0usize;
+    for line in body.lines() {
+        let (name, value) = line.split_once(' ')?;
+        seen += 1;
+        let field: &mut u32 = match name {
+            "checked_interior" => &mut score.checked_interior,
+            "interior_mismatches" => &mut score.interior_mismatches,
+            "edge_center_violations" => &mut score.edge_center_violations,
+            "ambiguous_identity" => &mut score.ambiguous_identity,
+            "unresolved" => &mut score.unresolved,
+            "skipped_unproven" => &mut score.skipped_unproven,
+            "phantom_surface" => &mut score.phantom_surface,
+            "q_checked" => &mut score.q_checked,
+            "normal_checked" => &mut score.normal_checked,
+            "event_bytes_checked" => &mut score.event_bytes_checked,
+            "boundary_limited_event_bytes" => &mut score.boundary_limited_event_bytes,
+            "raster_evidence_failures" => &mut score.raster_evidence_failures,
+            "first_issue" => {
+                score.first_issue = if value == "none" {
+                    None
+                } else {
+                    let mut parts = value.split(',');
+                    let mut next = || parts.next().and_then(|part| part.parse::<u16>().ok());
+                    Some([next()?, next()?, next()?])
+                };
+                continue;
+            }
+            _ => return None,
+        };
+        *field = value.parse().ok()?;
+    }
+    (seen == 13).then_some(score)
+}
+
+fn score_passes(score: &wrela_compiler::pixels::reference::conformance::FrameScore) -> bool {
+    score.interior_mismatches == 0
+        && score.edge_center_violations == 0
+        && score.unresolved == 0
+        && score.skipped_unproven == 0
+        && score.phantom_surface == 0
+        && score.raster_evidence_failures == 0
+}
+
+fn write_actual_report(actual: &str) -> Result<(), String> {
+    let Some(dir) = std::env::var_os(OUTPUT_DIR_ENV) else {
+        return Ok(());
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("pixels conformance: create {}: {error}", dir.display()))?;
+    let path = dir.join("p8-visibility.txt");
+    let staged = dir.join(format!("p8-visibility.{}.tmp", std::process::id()));
+    std::fs::write(&staged, actual)
+        .map_err(|error| format!("pixels conformance: write {}: {error}", staged.display()))?;
+    std::fs::rename(&staged, &path)
+        .map_err(|error| format!("pixels conformance: publish {}: {error}", path.display()))
+}
 const GUEST_FRAME_DIGEST_MARKER: u64 = 4_922_225_244_575_680_596;
 const GUEST_ALPHA_SAMPLE_MARKER: u64 = 5_780_180_186_688_408_645;
 const GUEST_CERTIFIED_RUN_MARKER: u64 = 4_847_371_096_046_259_761;
@@ -435,6 +683,7 @@ pub fn pixels_conformance(
     };
     #[derive(Clone)]
     struct InstrumentedRun {
+        transcript: Vec<u8>,
         telemetry: [u64; 4],
         evidence: Option<[u64; 16]>,
         frame_digest: Option<[u64; 4]>,
@@ -464,10 +713,10 @@ pub fn pixels_conformance(
         &std::fs::read(&vmm)
             .map_err(|error| format!("pixels conformance: read VMM binary for digest: {error}"))?,
     );
-    let boot_cache_dir = root().join("target/p8-boot-cache");
-    let boot_cache_enabled = std::env::var("WRELA_P8_BOOT_CACHE")
-        .map(|value| value != "0")
-        .unwrap_or(true);
+    let boot = Cache::boot();
+    let boot_cache_dir = boot.dir().to_path_buf();
+    let legacy_boot_cache_dir = boot.legacy_dir().map(std::path::Path::to_path_buf);
+    let boot_cache_enabled = boot.enabled();
     if boot_cache_enabled {
         std::fs::create_dir_all(&boot_cache_dir).map_err(|error| {
             format!(
@@ -478,6 +727,18 @@ pub fn pixels_conformance(
     }
     let vmm_digest = &vmm_digest;
     let boot_cache_dir = &boot_cache_dir;
+    let legacy_boot_cache_dir = legacy_boot_cache_dir.as_deref();
+    // The compiler binary fingerprint keys the compile-closure cache. The VMM
+    // binary digest deliberately does *not*: it keys the boot cache only, and
+    // an image digest is a function of the compiler and its sources.
+    let compiler_fingerprint = file_digest(&root().join("target/debug/wrela"));
+    let compile_cache = Cache::compile_closure();
+    let score_cache = Cache::score();
+    let scorer = scorer_fingerprint()?;
+    let compiler_fingerprint = &compiler_fingerprint;
+    let compile_cache = &compile_cache;
+    let score_cache = &score_cache;
+    let scorer = &scorer;
     static FRAME_DUMP_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let instrumented = |case: &str,
                         target_override: Option<&std::path::Path>|
@@ -497,40 +758,62 @@ pub fn pixels_conformance(
                 }
             }
         };
-        let digest_output = Command::new(&wrela)
-            .current_dir(root())
-            .arg("test")
-            .arg(&target)
-            .arg("--pixels-telemetry")
-            .arg("--image-digest-only")
-            .arg("--vmm")
-            .arg(&vmm)
-            .output()
-            .map_err(|error| {
-                format!("pixels conformance: digest instrumented `{case}`: {error}")
-            })?;
-        if !digest_output.status.success() {
-            return Err(format!(
-                "pixels conformance: instrumented `{case}` image digest failed:\n{}{}",
-                String::from_utf8_lossy(&digest_output.stdout),
-                String::from_utf8_lossy(&digest_output.stderr),
-            ));
-        }
-        let image_digest = String::from_utf8_lossy(&digest_output.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("p8-image-digest ").map(str::to_string))
-            .ok_or_else(|| {
-                format!("pixels conformance: instrumented `{case}` omitted its image digest")
-            })?;
+        // Compile-closure cache. The cached value is exactly one thing: the
+        // mapping from source closure to instrumented image digest. It
+        // stores no image and makes no claim past that step — when the VMM
+        // changed and a fresh boot is required, the boot below still runs,
+        // and every assertion downstream of the raw bytes always runs.
+        let sources = source_closure_digest(case, &target)?;
+        let compile_key = compile_cache_key(
+            &sources,
+            compiler_fingerprint,
+            INSTRUMENTED_COMPILER_OPTIONS,
+        );
+        let image_digest = match compile_cache.get(&compile_key) {
+            Some(digest) if is_sha256_hex(digest.trim()) => digest.trim().to_string(),
+            _ => {
+                let digest_output = Command::new(&wrela)
+                    .current_dir(root())
+                    .arg("test")
+                    .arg(&target)
+                    .arg("--pixels-telemetry")
+                    .arg("--image-digest-only")
+                    .arg("--vmm")
+                    .arg(&vmm)
+                    .output()
+                    .map_err(|error| {
+                        format!("pixels conformance: digest instrumented `{case}`: {error}")
+                    })?;
+                if !digest_output.status.success() {
+                    // A failed compile is never cached.
+                    return Err(format!(
+                        "pixels conformance: instrumented `{case}` image digest failed:\n{}{}",
+                        String::from_utf8_lossy(&digest_output.stdout),
+                        String::from_utf8_lossy(&digest_output.stderr),
+                    ));
+                }
+                let digest = String::from_utf8_lossy(&digest_output.stdout)
+                    .lines()
+                    .find_map(|line| line.strip_prefix("p8-image-digest ").map(str::to_string))
+                    .ok_or_else(|| {
+                        format!(
+                            "pixels conformance: instrumented `{case}` omitted its image digest"
+                        )
+                    })?;
+                compile_cache.put(&compile_key, &digest);
+                digest
+            }
+        };
+        let boot_key = boot_cache_key(&image_digest, vmm_digest);
         let cache_paths = ["stdout", "frame", "state"]
-            .map(|kind| boot_cache_dir.join(format!("{image_digest}-{vmm_digest}.{kind}")));
-        let cached: Option<Vec<Vec<u8>>> = if boot_cache_enabled {
-            cache_paths
-                .iter()
-                .map(|path| std::fs::read(path).ok())
-                .collect()
+            .map(|kind| boot_cache_dir.join(format!("{boot_key}.{kind}")));
+        let legacy_cache_paths = legacy_boot_cache_dir.map(|dir| {
+            ["stdout", "frame", "state"].map(|kind| dir.join(format!("{boot_key}.{kind}")))
+        });
+        let (cached, promote_legacy): (Option<Vec<Vec<u8>>>, bool) = if boot_cache_enabled {
+            read_raw_boot_cache(&cache_paths, legacy_cache_paths.as_ref())
         } else {
-            None
+            (None, false)
         };
         let (stdout_bytes, frame_bytes, state) = if let Some(mut blobs) = cached {
             println!("pixels-conformance: boot cache hit for `{case}`");
@@ -539,6 +822,8 @@ pub fn pixels_conformance(
             let stdout = blobs.pop().expect("three cached blobs");
             (stdout, frame, state)
         } else {
+            println!("pixels-conformance: boot cache miss for `{case}`; running signed guest");
+            let boot_started = std::time::Instant::now();
             let frame_dump_path = std::env::temp_dir().join(format!(
                 "wrela-p8-frame-{}-{}.bgra",
                 std::process::id(),
@@ -601,8 +886,13 @@ pub fn pixels_conformance(
                         })?;
                 }
             }
+            println!(
+                "pixels-conformance: booted `{case}` in {:.1}s",
+                boot_started.elapsed().as_secs_f64()
+            );
             (output.stdout, frame_bytes, state)
         };
+        let raw_frame_bytes = frame_bytes.clone();
         let values = String::from_utf8_lossy(&stdout_bytes)
             .lines()
             .filter_map(|line| line.strip_prefix("p7 "))
@@ -674,7 +964,24 @@ pub fn pixels_conformance(
                 "pixels conformance: instrumented `{case}` omitted run evidence"
             ));
         }
+        if promote_legacy {
+            for (path, bytes) in cache_paths
+                .iter()
+                .zip([&stdout_bytes, &raw_frame_bytes, &state])
+            {
+                let staged = path.with_extension(format!("tmp-{}", std::process::id()));
+                std::fs::write(&staged, bytes)
+                    .and_then(|()| std::fs::rename(&staged, path))
+                    .map_err(|error| {
+                        format!(
+                            "pixels conformance: promote boot cache {}: {error}",
+                            path.display()
+                        )
+                    })?;
+            }
+        }
         Ok(InstrumentedRun {
+            transcript: stdout_bytes,
             telemetry,
             evidence,
             frame_digest,
@@ -736,6 +1043,89 @@ pub fn pixels_conformance(
             .collect();
         Ok(())
     };
+    // Case-level score cache. The key covers everything `score_frame`
+    // actually consumes, without leaning on the image digest to stand in for
+    // compiler internals: the source closure, the compiler fingerprint and
+    // its options, the case identity and fixture version, the complete
+    // recorded evidence (transcript-derived frame dump, raster evidence, and
+    // state dump), the scorer's own source fingerprint, and the truth-schema
+    // / numeric-contract version. The VMM binary digest keys the boot cache
+    // and is explicitly *not* part of this key: it does not enter the score.
+    let cached_score = |case: &str,
+                        renderer: &wrela_compiler::pixels::CompiledRenderer,
+                        run: &InstrumentedRun|
+     -> Result<
+        Option<wrela_compiler::pixels::reference::conformance::FrameScore>,
+        String,
+    > {
+        let target = case_target(case)?;
+        let evidence = key_of(&[
+            (
+                "stdout_transcript",
+                wrela_compiler::report::sha256_hex(&run.transcript),
+            ),
+            (
+                "frame_bytes",
+                wrela_compiler::report::sha256_hex(&run.frame_dump.bytes),
+            ),
+            (
+                "raster_evidence",
+                wrela_compiler::report::sha256_hex(
+                    run.frame_dump
+                        .raster_evidence
+                        .iter()
+                        .flat_map(|words| words.iter().flat_map(|word| word.to_le_bytes()))
+                        .collect::<Vec<u8>>()
+                        .as_slice(),
+                ),
+            ),
+            ("state", wrela_compiler::report::sha256_hex(&run.state)),
+            (
+                "telemetry",
+                wrela_compiler::report::sha256_hex(
+                    run.telemetry_counters
+                        .iter()
+                        .flat_map(|counter| counter.to_le_bytes())
+                        .collect::<Vec<u8>>()
+                        .as_slice(),
+                ),
+            ),
+        ]);
+        let sources = source_closure_digest(case, &target)?;
+        let key = score_cache_key(&ScoreKey {
+            case,
+            fixture_version: CONFORMANCE_FIXTURE_VERSION,
+            sources: &sources,
+            compiler: compiler_fingerprint,
+            options: INSTRUMENTED_COMPILER_OPTIONS,
+            evidence: &evidence,
+            scorer,
+            scorer_options: "full-frame",
+            numeric_contract: TRUTH_SCHEMA_VERSION,
+        });
+        if let Some(body) = score_cache.get(&key) {
+            if let Some(score) = parse_score(&body).filter(score_passes) {
+                return Ok(Some(score));
+            }
+            println!(
+                "pixels-conformance: unreadable or failing cached score for `{case}`; rescoring"
+            );
+        }
+        let score = wrela_compiler::pixels::reference::conformance::score_frame(
+            case,
+            renderer,
+            &run.frame_dump,
+        )
+        .map_err(|error| format!("`{case}` frame scoring failed: {error}"))?;
+        // A derived mismatch is still a failed score even though scoring
+        // returned normally; cache only the same passing shape `run_scored`
+        // accepts.
+        if score_passes(&score) {
+            score_cache.put(&key, &render_score(&score));
+        }
+        Ok(Some(score))
+    };
+    let cached_score = &cached_score;
     // Instrumented guest runs (VMM-bound) and semantic reference compiles
     // (CPU-bound) are independent per case: run both through small worker
     // pools concurrently. Two concurrent guests match the golden runner's
@@ -800,7 +1190,7 @@ pub fn pixels_conformance(
         let semantic_targets_ref = &semantic_targets;
         let active_opts_ref = &active_opts;
         std::thread::scope(|scope| {
-            for _ in 0..2 {
+            for _ in 0..boot_workers() {
                 let score_sender = score_sender.clone();
                 scope.spawn(move || {
                     loop {
@@ -821,7 +1211,7 @@ pub fn pixels_conformance(
                     }
                 });
             }
-            for _ in 0..2 {
+            for _ in 0..heavy_pixels_jobs().min(guest_cases.len()) {
                 let score_sender = score_sender.clone();
                 scope.spawn(move || {
                     wrela_compiler::opts::apply_opts(active_opts_ref);
@@ -856,12 +1246,13 @@ pub fn pixels_conformance(
                 });
             }
             // Close the scope's own sender so the scoring workers' receive
-            // loops end once the boot and compile workers have retired. Two
-            // scoring workers: the heavy cases arrive in bursts as their
-            // boots land, and one worker leaves the second-heaviest case
-            // stranded behind the heaviest.
+            // loops end once the boot and compile workers have retired. Four
+            // scoring workers keep the adversarial tail from serializing
+            // behind smooth-CSG/repeated-clutter without materially changing
+            // memory use: compiled renderers already live in `semantic_slots`
+            // and a score owns only its small frame/reference scratch.
             drop(score_sender);
-            for _ in 0..2 {
+            for _ in 0..4.min(crate::golden::default_jobs()).min(guest_cases.len()) {
                 scope.spawn(move || {
                     loop {
                         let received = score_receiver_ref
@@ -882,17 +1273,7 @@ pub fn pixels_conformance(
                         let score = match (boot_guard.as_mut(), semantic_guard.as_ref()) {
                             (Some(Ok(run)), Some(Ok(renderer))) => {
                                 match extract_raster_evidence(case, renderer, run) {
-                                    Ok(()) => {
-                                        wrela_compiler::pixels::reference::conformance::score_frame(
-                                            case,
-                                            renderer,
-                                            &run.frame_dump,
-                                        )
-                                        .map(Some)
-                                        .map_err(|error| {
-                                            format!("`{case}` frame scoring failed: {error}")
-                                        })
-                                    }
+                                    Ok(()) => cached_score(case, renderer, run),
                                     // The strict serial pass below re-runs the
                                     // extraction and surfaces this same error
                                     // before any score is consumed.
@@ -1562,6 +1943,7 @@ pub fn pixels_conformance(
         instrumented_four[2],
         instrumented_four[3],
     );
+    write_actual_report(&actual)?;
     let path = root().join(EXPECTED);
     let expected = std::fs::read_to_string(&path)
         .map_err(|error| format!("pixels conformance: read {}: {error}", path.display()))?;
@@ -1584,6 +1966,276 @@ pub fn pixels_conformance(
 
 #[cfg(test)]
 mod tests {
+
+    use wrela_compiler::pixels::reference::conformance::FrameScore;
+
+    #[test]
+    fn raw_boot_cache_migration_requires_a_complete_generation() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "wrela-raw-boot-migration-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let current_dir = root.join("current");
+        let legacy_dir = root.join("legacy");
+        std::fs::create_dir_all(&current_dir).expect("current dir");
+        std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
+        let paths = |dir: &std::path::Path| ["stdout", "frame", "state"].map(|kind| dir.join(kind));
+        let current = paths(&current_dir);
+        let legacy = paths(&legacy_dir);
+        for (index, path) in legacy.iter().enumerate() {
+            std::fs::write(path, [index as u8]).expect("legacy artifact");
+        }
+
+        let (blobs, promote) = super::read_raw_boot_cache(&current, Some(&legacy));
+        assert!(promote);
+        assert_eq!(blobs.expect("complete legacy generation").len(), 3);
+
+        std::fs::remove_file(&legacy[2]).expect("truncate generation");
+        let (blobs, promote) = super::read_raw_boot_cache(&current, Some(&legacy));
+        assert!(blobs.is_none(), "partial generations are always a miss");
+        assert!(!promote);
+
+        for (index, path) in current.iter().enumerate() {
+            std::fs::write(path, [9 + index as u8]).expect("current artifact");
+        }
+        let (blobs, promote) = super::read_raw_boot_cache(&current, Some(&legacy));
+        assert!(!promote, "the current generation wins");
+        assert_eq!(blobs.expect("current generation")[0], vec![9]);
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    fn sample_score() -> FrameScore {
+        FrameScore {
+            checked_interior: 11,
+            interior_mismatches: 0,
+            edge_center_violations: 1,
+            ambiguous_identity: 2,
+            unresolved: 3,
+            skipped_unproven: 4,
+            phantom_surface: 5,
+            q_checked: 6,
+            normal_checked: 7,
+            event_bytes_checked: 8,
+            boundary_limited_event_bytes: 9,
+            raster_evidence_failures: 10,
+            first_issue: Some([12, 13, 4]),
+        }
+    }
+
+    /// Every field survives the cache body, in both directions.
+    ///
+    /// A field added to `FrameScore` without a line in `render_score` would
+    /// silently read back as its default from a cached hit — a wrong result,
+    /// which is the one thing a cache may never produce. The field-count
+    /// assertion in `parse_score` plus this round trip catch that.
+    #[test]
+    fn score_cache_body_round_trips_every_field() {
+        let score = sample_score();
+        let body = super::render_score(&score);
+        assert_eq!(super::parse_score(&body), Some(score));
+
+        // No field is a no-op: perturbing each one changes the body.
+        let mut fields = 0usize;
+        for line in body.lines() {
+            fields += 1;
+            let (name, _) = line.split_once(' ').expect("field line");
+            assert!(
+                body.matches(&format!("\n{name} ")).count() + usize::from(body.starts_with(name))
+                    == 1,
+                "field `{name}` appears more than once"
+            );
+        }
+        assert_eq!(fields, 13, "every FrameScore field is serialized");
+
+        let mut without_issue = score;
+        without_issue.first_issue = None;
+        let body = super::render_score(&without_issue);
+        assert_eq!(super::parse_score(&body), Some(without_issue));
+    }
+
+    #[test]
+    fn a_malformed_or_short_score_body_is_a_miss_rather_than_a_default() {
+        assert_eq!(super::parse_score(""), None, "an empty body is a miss");
+        assert_eq!(
+            super::parse_score("checked_interior 11\n"),
+            None,
+            "a truncated body must not read back as mostly-default"
+        );
+        let body = super::render_score(&sample_score());
+        assert_eq!(
+            super::parse_score(&body.replace("unresolved 3", "unresolved x")),
+            None,
+            "a non-numeric field is a miss"
+        );
+        assert_eq!(
+            super::parse_score(&body.replace("unresolved 3", "unknown_field 3")),
+            None,
+            "an unknown field is a miss"
+        );
+        assert_eq!(
+            super::parse_score(&body.replace("first_issue 12,13,4", "first_issue 12,13")),
+            None,
+            "a short first_issue is a miss"
+        );
+    }
+
+    #[test]
+    fn only_passing_scores_are_cacheable() {
+        let mut passing = FrameScore::default();
+        passing.checked_interior = 1;
+        assert!(super::score_passes(&passing));
+        for mutate in [
+            |score: &mut FrameScore| score.interior_mismatches = 1,
+            |score: &mut FrameScore| score.edge_center_violations = 1,
+            |score: &mut FrameScore| score.unresolved = 1,
+            |score: &mut FrameScore| score.skipped_unproven = 1,
+            |score: &mut FrameScore| score.phantom_surface = 1,
+            |score: &mut FrameScore| score.raster_evidence_failures = 1,
+        ] {
+            let mut failed = passing;
+            mutate(&mut failed);
+            assert!(!super::score_passes(&failed));
+        }
+    }
+
+    /// Each key component, perturbed, invalidates exactly its dependents.
+    ///
+    /// The compile-closure key must not depend on the evidence or the scorer;
+    /// the score key must depend on both, and on neither the VMM binary.
+    #[test]
+    fn the_key_perturbation_matrix_holds() {
+        let compile = |sources: &str, compiler: &str, options: &str| {
+            super::compile_cache_key(sources, compiler, options)
+        };
+        let score = |case: &str,
+                     fixture_version: u32,
+                     sources: &str,
+                     compiler: &str,
+                     options: &str,
+                     evidence: &str,
+                     scorer: &str,
+                     scorer_options: &str,
+                     numeric_contract: u32| {
+            super::score_cache_key(&super::ScoreKey {
+                case,
+                fixture_version,
+                sources,
+                compiler,
+                options,
+                evidence,
+                scorer,
+                scorer_options,
+                numeric_contract,
+            })
+        };
+        let boot = |image: &str, vmm: &str| super::boot_cache_key(image, vmm);
+        let compile_base = compile("s", "c", "o");
+        let score_base = score("k", 2, "s", "c", "o", "e", "r", "so", 2);
+        let boot_base = boot("i", "v");
+
+        // (component, compile changes, score changes, boot changes)
+        let matrix = [
+            (
+                "sources",
+                compile("s!", "c", "o") != compile_base,
+                score("k", 2, "s!", "c", "o", "e", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "compiler",
+                compile("s", "c!", "o") != compile_base,
+                score("k", 2, "s", "c!", "o", "e", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "compiler options",
+                compile("s", "c", "o!") != compile_base,
+                score("k", 2, "s", "c", "o!", "e", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "case",
+                false,
+                score("k!", 2, "s", "c", "o", "e", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "fixture version",
+                false,
+                score("k", 3, "s", "c", "o", "e", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "evidence",
+                false,
+                score("k", 2, "s", "c", "o", "e!", "r", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "scorer",
+                false,
+                score("k", 2, "s", "c", "o", "e", "r!", "so", 2) != score_base,
+                false,
+            ),
+            (
+                "scorer options",
+                false,
+                score("k", 2, "s", "c", "o", "e", "r", "so!", 2) != score_base,
+                false,
+            ),
+            (
+                "numeric contract",
+                false,
+                score("k", 2, "s", "c", "o", "e", "r", "so", 3) != score_base,
+                false,
+            ),
+            ("image", false, false, boot("i!", "v") != boot_base),
+            ("vmm", false, false, boot("i", "v!") != boot_base),
+        ];
+        for (component, compile_changed, score_changed, boot_changed) in matrix {
+            let expected = match component {
+                "sources" | "compiler" | "compiler options" => (true, true, false),
+                "case" | "fixture version" | "evidence" | "scorer" | "scorer options"
+                | "numeric contract" => (false, true, false),
+                "image" | "vmm" => (false, false, true),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                (compile_changed, score_changed, boot_changed),
+                expected,
+                "`{component}` must invalidate exactly its dependent caches"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scorer_fingerprint_covers_the_reference_and_the_truth_schema() {
+        let fingerprint = super::scorer_fingerprint().expect("scorer fingerprint");
+        assert_eq!(fingerprint.len(), 64, "a sha256 hex digest");
+        assert_eq!(
+            fingerprint,
+            super::scorer_fingerprint().expect("stable"),
+            "the fingerprint must be deterministic"
+        );
+        assert_eq!(super::TRUTH_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn boot_workers_default_to_two_and_refuse_nonsense() {
+        // SAFETY: this test owns the variable for its duration and clears it.
+        unsafe { std::env::remove_var("WRELA_P8_BOOT_WORKERS") };
+        assert_eq!(super::boot_workers(), 2);
+        unsafe { std::env::set_var("WRELA_P8_BOOT_WORKERS", "3") };
+        assert_eq!(super::boot_workers(), 3, "the third worker is opt-in");
+        unsafe { std::env::set_var("WRELA_P8_BOOT_WORKERS", "9") };
+        assert_eq!(super::boot_workers(), 2, "out-of-range falls back to two");
+        unsafe { std::env::set_var("WRELA_P8_BOOT_WORKERS", "lots") };
+        assert_eq!(super::boot_workers(), 2, "nonsense falls back to two");
+        unsafe { std::env::remove_var("WRELA_P8_BOOT_WORKERS") };
+    }
+
     #[test]
     fn tile_boundary_oracle_is_exact_and_high_contrast() {
         assert_eq!(super::exact_axis_coverage_oracle(0, -256, 207), Ok(207));

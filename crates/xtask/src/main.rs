@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Instant;
@@ -19,6 +19,14 @@ use wrela_compiler::syntax::printer;
 mod corpus_sema_census;
 mod corpus_sema_context;
 
+// Static golden subprocesses use the exact shipped CLI implementation through
+// this executable. `xtask` already links `wrela-compiler`; embedding the thin
+// argument dispatcher avoids a second cold link and prevents an alternate
+// Cargo target directory from accidentally executing `target/debug/wrela`
+// from an older build.
+#[path = "../../wrela-compiler/src/bin/wrela.rs"]
+mod wrela_cli;
+
 mod agnostic_sweep;
 mod bench;
 mod corpus;
@@ -27,6 +35,8 @@ mod diff_blk;
 mod fuzz;
 mod golden;
 mod lane2_freq;
+mod pixels_cache;
+mod pixels_census;
 mod pixels_conformance;
 mod pixels_formal;
 mod pixels_plan_lint;
@@ -57,6 +67,21 @@ pub(crate) fn root() -> PathBuf {
         .to_path_buf()
 }
 
+fn generated_internal_source_keys(paths: &BTreeMap<Vec<String>, String>) -> BTreeSet<Vec<String>> {
+    paths
+        .iter()
+        .filter_map(|(key, path)| {
+            matches!(
+                path.as_str(),
+                wrela_compiler::rtconfig::GENERATED_INPUT_PATH
+                    | loader::GENERATED_PIXELS_INPUT_PATH
+                    | loader::GENERATED_PIXELS_STUB_INPUT_PATH
+            )
+            .then(|| key.clone())
+        })
+        .collect()
+}
+
 pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let entries =
         std::fs::read_dir(golden_dir).map_err(|e| format!("read {}: {e}", golden_dir.display()))?;
@@ -73,7 +98,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]\n  cargo xtask pixels-conformance [--update] [--assume-guest-fixtures-verified] [--deep-worker-variants] [--case <name>]\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>|--case <exact>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N] [--isolate-pixels-bundles] [--assume-built]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-census [--update]\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]\n  cargo xtask pixels-conformance [--update] [--assume-guest-fixtures-verified] [--deep-worker-variants] [--clear-caches] [--case <name>]\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>|--case <exact>...] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N] [--isolate-pixels-bundles] [--assume-built] [--clear-boot-cache]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask pixels-cache-parity --full [--update]\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -88,6 +113,9 @@ fn no_args(command: &str, args: &[String]) -> Result<(), String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "__wrela") {
+        return wrela_cli::run_args(&args[1..]);
+    }
     if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         if args.len() != 1 {
             eprintln!("xtask: --help takes no arguments");
@@ -119,6 +147,7 @@ fn main() -> ExitCode {
         },
         Some("pixels-conformance") => {
             let (mut update, mut verified, mut deep) = (false, false, false);
+            let mut clear = false;
             let mut cases: Vec<String> = Vec::new();
             let mut accepted = true;
             let mut rest = args[1..].iter();
@@ -127,6 +156,7 @@ fn main() -> ExitCode {
                     "--update" if !update => update = true,
                     "--assume-guest-fixtures-verified" if !verified => verified = true,
                     "--deep-worker-variants" if !deep => deep = true,
+                    "--clear-caches" if !clear => clear = true,
                     "--case" => match rest.next() {
                         Some(case) => cases.push(case.clone()),
                         None => accepted = false,
@@ -138,16 +168,24 @@ fn main() -> ExitCode {
                 }
             }
             if accepted {
-                pixels_conformance(
-                    update,
-                    verified,
-                    deep,
-                    (!cases.is_empty()).then_some(cases.as_slice()),
-                )
+                pixels_cache::Cache::all()
+                    .into_iter()
+                    .try_for_each(|cache| if clear { cache.clear() } else { Ok(()) })
+                    .and_then(|()| {
+                        if clear {
+                            println!("pixels-conformance: cleared every conformance cache");
+                        }
+                        pixels_conformance(
+                            update,
+                            verified,
+                            deep,
+                            (!cases.is_empty()).then_some(cases.as_slice()),
+                        )
+                    })
             } else {
                 Err("usage: cargo xtask pixels-conformance [--update] \
                      [--assume-guest-fixtures-verified] [--deep-worker-variants] \
-                     [--case <name>]..."
+                     [--clear-caches] [--case <name>]..."
                     .to_string())
             }
         }
@@ -166,7 +204,15 @@ fn main() -> ExitCode {
             no_args("report-determinism", &args).and_then(|()| report_determinism())
         }
         Some("agnostic-sweep") => no_args("agnostic-sweep", &args).and_then(|()| agnostic_sweep()),
+        Some("pixels-cache-parity") => pixels_cache::cache_parity(&args[1..]),
         Some("cost-inventory") => no_args("cost-inventory", &args).and_then(|()| cost_inventory()),
+        Some("pixels-census") => match args.get(1).map(String::as_str) {
+            None => pixels_census::pixels_census(false),
+            Some("--update") if args.len() == 2 => pixels_census::pixels_census(true),
+            Some(other) => Err(format!(
+                "pixels-census: unexpected argument `{other}`\n\n{USAGE}"
+            )),
+        },
         Some("stdlib-test") => no_args("stdlib-test", &args).and_then(|()| stdlib_test()),
         Some("repro") => no_args("repro", &args).and_then(|()| repro()),
         Some("diff-eval") => diff_eval(&args[1..]),
@@ -257,11 +303,12 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
     let mut seen_update = false;
     let mut seen_boot = false;
     let mut seen_filter = false;
-    let mut seen_case = false;
     let mut seen_jobs = false;
     let mut seen_boot_jobs = false;
     let mut seen_isolate_pixels_bundles = false;
     let mut seen_assume_built = false;
+    let mut seen_isolated_child = false;
+    let mut seen_clear_boot_cache = false;
     let mut i = 0usize;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -288,9 +335,13 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
                 seen_filter = true;
                 opts.filter = Some(next(&mut i, "--filter")?.to_string());
             }
-            "--case" if !seen_case => {
-                seen_case = true;
-                opts.cases = Some(vec![next(&mut i, "--case")?.to_string()]);
+            "--case" => {
+                let value = next(&mut i, "--case")?.to_string();
+                let cases = opts.cases.get_or_insert_with(Vec::new);
+                if cases.contains(&value) {
+                    return Err(format!("golden: duplicate exact case `{value}`"));
+                }
+                cases.push(value);
             }
             "--jobs" if !seen_jobs => {
                 seen_jobs = true;
@@ -308,23 +359,36 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
                 seen_assume_built = true;
                 opts.assume_built = true;
             }
+            "--isolated-child" if !seen_isolated_child => {
+                seen_isolated_child = true;
+                opts.isolated_child = true;
+            }
+            "--clear-boot-cache" if !seen_clear_boot_cache => {
+                seen_clear_boot_cache = true;
+                opts.clear_boot_cache = true;
+            }
             other if other.starts_with("--filter=") && !seen_filter => {
                 seen_filter = true;
                 opts.filter = Some(other["--filter=".len()..].to_string());
             }
-            other if other.starts_with("--case=") && !seen_case => {
-                seen_case = true;
-                opts.cases = Some(vec![other["--case=".len()..].to_string()]);
+            other if other.starts_with("--case=") => {
+                let value = other["--case=".len()..].to_string();
+                let cases = opts.cases.get_or_insert_with(Vec::new);
+                if cases.contains(&value) {
+                    return Err(format!("golden: duplicate exact case `{value}`"));
+                }
+                cases.push(value);
             }
             "--update"
             | "--no-boot"
             | "--only-boot"
             | "--filter"
-            | "--case"
             | "--jobs"
             | "--boot-jobs"
             | "--isolate-pixels-bundles"
-            | "--assume-built" => {
+            | "--assume-built"
+            | "--isolated-child"
+            | "--clear-boot-cache" => {
                 return Err(format!("golden: duplicate or conflicting flag `{arg}`"));
             }
             other => return Err(format!("golden: unknown flag `{other}`")),
@@ -337,6 +401,21 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
 #[cfg(test)]
 mod golden_cli_tests {
     use super::*;
+
+    #[test]
+    fn golden_cli_accepts_and_rejects_duplicate_boot_cache_clear() {
+        let opts = parse_golden_opts(&["--clear-boot-cache".to_string()]).unwrap();
+        assert!(opts.clear_boot_cache);
+        assert!(
+            parse_golden_opts(&[
+                "--clear-boot-cache".to_string(),
+                "--clear-boot-cache".to_string(),
+            ])
+            .err()
+            .expect("duplicate flag must fail")
+            .contains("duplicate")
+        );
+    }
 
     #[test]
     fn partial_mode_renders_the_same_image_on_one_and_four_workers() {
@@ -404,11 +483,27 @@ mod golden_cli_tests {
         assert!(opts.boot == BootSel::None);
         assert!(opts.isolate_pixels_bundles);
 
-        assert!(parse_golden_opts(&["--case=a".to_string(), "--case=b".to_string(),]).is_err());
+        let repeated =
+            parse_golden_opts(&["--case=a".to_string(), "--case=b".to_string()]).unwrap();
+        assert_eq!(repeated.cases, Some(vec!["a".to_string(), "b".to_string()]));
+        assert!(parse_golden_opts(&["--case=a".to_string(), "--case=a".to_string()]).is_err());
         assert!(
             parse_golden_opts(&[
                 "--isolate-pixels-bundles".to_string(),
                 "--isolate-pixels-bundles".to_string(),
+            ])
+            .is_err()
+        );
+
+        let child =
+            parse_golden_opts(&["--assume-built".to_string(), "--isolated-child".to_string()])
+                .expect("the isolated child recursion guard");
+        assert!(child.assume_built);
+        assert!(child.isolated_child);
+        assert!(
+            parse_golden_opts(&[
+                "--isolated-child".to_string(),
+                "--isolated-child".to_string(),
             ])
             .is_err()
         );
@@ -497,7 +592,13 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
 
     // P8 adds portable display/frame-output record-replay tests. The
     // signed HVF-only lane remains unchanged and separately pinned below.
-    const ALL: usize = 141;
+    //
+    // Re-locked at P8R.0 from 141 to the 143 the crate actually lists: the P8
+    // close moved this constant to 141 while landing two further portable
+    // display tests, so the census tripped on every run. The HVF census is
+    // unchanged. P8R.4 adds one portable architectural FP/SIMD system-register
+    // encoding pin, bringing the portable lane to 144.
+    const ALL: usize = 144;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",
@@ -635,6 +736,12 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
+        "Pixels hot-path census",
+        "cargo xtask pixels-census",
+        || pixels_census::pixels_census(false),
+    )?;
+    verify_stage(
+        LANE,
         "Pixels decoder fuzz smoke",
         "cargo xtask fuzz pixels --iters 256 --seed 1",
         || fuzz_pixels(FUZZ_PIXELS_SMOKE_ITERS, FUZZ_PIXELS_DEEP_SEED),
@@ -682,11 +789,11 @@ fn verify() -> Result<(), String> {
 }
 
 fn verify_goldens_parallel() -> Result<(), String> {
-    // Memory pressure is bounded inside the golden runner rather than by the
-    // worker counts: renderer-bearing pixels work (bundle compiles, isolated
-    // children, renderer dumps, and pixels guest boots) shares
-    // golden::HEAVY_PIXELS_JOBS permits, so the pools can use the full host
-    // width for the cheap dump stages without risking a 16 GiB host.
+    // Memory pressure is bounded inside the golden runner: renderer-bearing
+    // bundle compiles, renderer dumps, and Pixels guest boots share
+    // golden::HEAVY_PIXELS_JOBS permits. Keep static bundles in-process so
+    // their immutable compiler data and parsed toolchain modules are shared;
+    // the full uncached corpus peaks below 4.5 GiB on the 16 GiB baseline.
     let boot_jobs = golden::DEFAULT_BOOT_JOBS;
     let static_jobs = golden::default_jobs();
     let (boot, static_goldens) = std::thread::scope(|scope| {
@@ -713,7 +820,6 @@ fn verify_goldens_parallel() -> Result<(), String> {
                     golden(&GoldenOpts {
                         boot: BootSel::None,
                         jobs: static_jobs,
-                        isolate_pixels_bundles: true,
                         ..GoldenOpts::default()
                     })
                 },
@@ -762,6 +868,14 @@ fn verify_deep() -> Result<(), String> {
         "report determinism",
         "cargo xtask report-determinism",
         report_determinism,
+    )?;
+    // Three complete conformance runs. This expensive whole-corpus parity
+    // proof belongs in `verify-deep`, not the required gate.
+    verify_stage(
+        LANE,
+        "Pixels cache parity",
+        "cargo xtask pixels-cache-parity --full",
+        || pixels_cache::cache_parity(&["--full".to_string()]),
     )?;
     verify_stage(
         LANE,
@@ -836,6 +950,8 @@ pub(crate) struct ProducedPixelsRenderer {
 }
 
 pub(crate) struct ProducedImageArtifacts {
+    pub(crate) check: Option<String>,
+    pub(crate) typed: Option<String>,
     pub(crate) report: String,
     pub(crate) image: Option<Vec<u8>>,
     pub(crate) image_dump: Option<String>,
@@ -845,6 +961,8 @@ pub(crate) struct ProducedImageArtifacts {
 impl ProducedImageArtifacts {
     fn diagnostic(report: String) -> Self {
         Self {
+            check: None,
+            typed: None,
             report,
             image: None,
             image_dump: None,
@@ -854,7 +972,8 @@ impl ProducedImageArtifacts {
 }
 
 pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
-    let produced = produce_image_artifacts_with_discovery_order(target, false, false)?;
+    let produced =
+        produce_image_artifacts_with_discovery_order(target, false, false, false, false)?;
     Ok((produced.report, produced.image))
 }
 
@@ -863,20 +982,46 @@ pub(crate) fn produce_report_and_image_with_discovery_order(
     reverse_imports: bool,
     include_field_graph: bool,
 ) -> Result<(String, Option<Vec<u8>>), String> {
-    let produced =
-        produce_image_artifacts_with_discovery_order(target, reverse_imports, include_field_graph)?;
+    let produced = produce_image_artifacts_with_discovery_order(
+        target,
+        reverse_imports,
+        include_field_graph,
+        false,
+        false,
+    )?;
     Ok((produced.report, produced.image))
 }
 
 pub(crate) fn produce_image_artifacts(target: &Path) -> Result<ProducedImageArtifacts, String> {
-    produce_image_artifacts_with_discovery_order(target, false, false)
+    produce_image_artifacts_with_discovery_order(target, false, false, false, false)
+}
+
+pub(crate) fn produce_image_artifacts_with_observations(
+    target: &Path,
+    check: bool,
+    typed: bool,
+) -> Result<ProducedImageArtifacts, String> {
+    produce_image_artifacts_with_discovery_order(target, false, false, check, typed)
 }
 
 fn produce_image_artifacts_with_discovery_order(
     target: &Path,
     reverse_imports: bool,
     include_field_graph: bool,
+    observe_check: bool,
+    observe_typed: bool,
 ) -> Result<ProducedImageArtifacts, String> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s artifact-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
             format!("error[{}]: {}\n", e.category, e.message)
@@ -913,14 +1058,24 @@ fn produce_image_artifacts_with_discovery_order(
             )));
         }
     };
+    timing("parse");
 
-    let (programs, file_paths, modules_by_addr): (
+    let (programs, file_paths, modules_by_addr, check_dump, typed_dump): (
         BTreeMap<String, sema::typed::TypedProgram>,
         BTreeMap<String, PathBuf>,
         BTreeMap<String, Module>,
+        Option<String>,
+        Option<String>,
     ) = if parsed.imports.is_empty() {
-        match sema::check_typed(&parsed, &target.display().to_string()) {
-            Ok(program) => {
+        let checked = if observe_check {
+            sema::check_typed_with_dump(&parsed, &target.display().to_string())
+                .map(|(program, dump)| (program, Some(dump)))
+        } else {
+            sema::check_typed(&parsed, &target.display().to_string()).map(|program| (program, None))
+        };
+        match checked {
+            Ok((program, check_dump)) => {
+                let typed_dump = observe_typed.then(|| sema::dump_typed(&program));
                 let addr = parsed.path.join(".");
                 let mut programs = BTreeMap::new();
                 let mut file_paths = BTreeMap::new();
@@ -928,7 +1083,13 @@ fn produce_image_artifacts_with_discovery_order(
                 file_paths.insert(addr.clone(), target.to_path_buf());
                 modules_by_addr.insert(addr.clone(), parsed);
                 programs.insert(addr, program);
-                (programs, file_paths, modules_by_addr)
+                (
+                    programs,
+                    file_paths,
+                    modules_by_addr,
+                    check_dump,
+                    typed_dump,
+                )
             }
             Err(e) => return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e))),
         }
@@ -954,13 +1115,74 @@ fn produce_image_artifacts_with_discovery_order(
                     .iter()
                     .map(|(k, m)| (k.join("."), m.clone()))
                     .collect();
-                match sema::check_program_typed(&modules, &paths) {
-                    Ok(programs) => {
+                let internal_sources = generated_internal_source_keys(&paths);
+                let checked = if observe_check {
+                    sema::check_program_typed_with_dump_and_internal_sources(
+                        &modules,
+                        &paths,
+                        &internal_sources,
+                    )
+                    .map(|(programs, dump)| (programs, Some(dump)))
+                } else {
+                    sema::check_program_typed_with_internal_sources(
+                        &modules,
+                        &paths,
+                        &internal_sources,
+                    )
+                    .map(|programs| (programs, None))
+                };
+                match checked {
+                    Ok((programs, check_dump)) => {
+                        let time_key: Vec<String> = loader::TIME_MODULE_KEY
+                            .iter()
+                            .map(|segment| (*segment).to_string())
+                            .collect();
+                        let time_explicit = modules.values().any(|module| {
+                            module.imports.iter().any(|import| import.path == time_key)
+                        });
+                        let runtime_key: Vec<String> = loader::RUNTIME_MODULE_KEY
+                            .iter()
+                            .map(|segment| (*segment).to_string())
+                            .collect();
+                        let runtime_explicit = modules.values().any(|module| {
+                            module
+                                .imports
+                                .iter()
+                                .any(|import| import.path == runtime_key)
+                        });
+                        let visible = programs
+                            .iter()
+                            .filter_map(|(key, program)| {
+                                if (key == &time_key && !time_explicit)
+                                    || (key == &runtime_key && !runtime_explicit)
+                                    || key.as_slice() == loader::IMAGE_RUNTIME_MODULE_KEY
+                                {
+                                    return None;
+                                }
+                                Some((modules[key].path.join("."), program))
+                            })
+                            .collect::<Vec<_>>();
+                        let typed_dump = observe_typed.then(|| {
+                            let mut typed_dump = String::new();
+                            for (label, program) in &visible {
+                                if visible.len() != 1 {
+                                    typed_dump.push_str(&format!("Module path={label}\n"));
+                                }
+                                typed_dump.push_str(&sema::dump_typed(program));
+                            }
+                            typed_dump
+                        });
                         let programs: BTreeMap<String, sema::typed::TypedProgram> = programs
                             .into_iter()
                             .map(|(k, p)| (k.join("."), p))
                             .collect();
-                        (programs, file_paths, modules_by_addr)
+                        (
+                            programs,
+                            file_paths,
+                            modules_by_addr,
+                            check_dump,
+                            typed_dump,
+                        )
                     }
                     Err(e) => {
                         return Ok(ProducedImageArtifacts::diagnostic(render_sema_error(&e)));
@@ -984,6 +1206,7 @@ fn produce_image_artifacts_with_discovery_order(
             }
         }
     };
+    timing("sema");
 
     let candidates: Vec<(&String, &String)> = programs
         .iter()
@@ -1012,6 +1235,7 @@ fn produce_image_artifacts_with_discovery_order(
                                 )));
                             }
                         };
+                        timing("pixels-compile");
                         let field_graph = if include_field_graph
                             && !checked_image.renderer_configs.renderers.is_empty()
                         {
@@ -1073,6 +1297,7 @@ fn produce_image_artifacts_with_discovery_order(
                         let mut layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
                             .map_err(|e| render_sema_error(&e))?;
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
+                        timing("inputs-layout-context");
                         let layout_result = layout::try_layout_with_codegen(
                             &programs,
                             &layout_ctx,
@@ -1083,6 +1308,7 @@ fn produce_image_artifacts_with_discovery_order(
                             false,
                         )
                         .map_err(|error| format!("error[build]: layout: {error}\n"))?;
+                        timing("image-layout");
                         let fallback_placement;
                         let (report_graph, report_placement) =
                             if let Some((_, _, generated_graph, generated_placement)) =
@@ -1101,7 +1327,13 @@ fn produce_image_artifacts_with_discovery_order(
                             };
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
                         for (key, definition) in
-                            program.enums.iter().chain(program.imported.enums.iter())
+                            program.enums.iter().map(|(key, value)| (key, value)).chain(
+                                program
+                                    .imported
+                                    .enums
+                                    .iter()
+                                    .map(|(key, value)| (key, value.as_ref())),
+                            )
                         {
                             enum_variants
                                 .entry(key.clone())
@@ -1114,51 +1346,39 @@ fn produce_image_artifacts_with_discovery_order(
                             report_placement,
                         ) {
                             Ok(mut text) => {
+                                timing("report-base");
                                 if let Some(field_graph) = &field_graph {
                                     text.push_str("\nDeterminism FieldGraph\n");
                                     text.push_str(field_graph);
                                 }
-                                wrela_compiler::pixels::report::append_program_set(
-                                    &mut text,
-                                    &pixels_programs,
-                                )?;
-                                let mut layout_types = Vec::new();
-                                for (key, module) in &modules_by_addr {
-                                    if key == wrela_compiler::rtconfig::MODULE_ADDR
-                                        || key == "__image_runtime"
-                                    {
-                                        continue;
-                                    }
-                                    let specialized = sema::specialize::specialize(module)
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    let mut layouts = sema::types::check_layouts(&specialized)
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    if let Some(p) = programs.get(key) {
-                                        sema::types::complete_layouts(
-                                            &specialized,
-                                            p,
-                                            &mut layouts,
-                                        )
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    }
-                                    layout_types.extend(layouts);
+                                if !pixels_programs.structural_programs.is_empty() {
+                                    wrela_compiler::pixels::report::append_program_set(
+                                        &mut text,
+                                        &pixels_programs,
+                                    )?;
                                 }
+                                let layout_types =
+                                    layout::report_layout_types(&modules_by_addr, &programs)?;
                                 report::render_exact_bytes_section(&mut text, &layout_types)
                                     .map_err(|e| render_sema_error(&e))?;
+                                timing("report-types");
                                 let (img, renderer_artifacts) = match layout_result {
                                     Some((image_layout, codegen, _, placement)) => {
                                         if let Some(ref tables) = image_layout.runtime {
+                                            // Live lowering already typechecked the generated
+                                            // rtconfig closure. The report needs only the stable
+                                            // base text whose digest it records; typechecking that
+                                            // report-only rendering again duplicated a full sema
+                                            // pass without strengthening the built image.
                                             let rt_text =
-                                                wrela_compiler::rtconfig::generate_and_typecheck(
-                                                    tables,
-                                                )
-                                                .map_err(|e| {
-                                                    if e.ends_with('\n') {
-                                                        e
-                                                    } else {
-                                                        format!("{e}\n")
-                                                    }
-                                                })?;
+                                                wrela_compiler::rtconfig::generate(tables)
+                                                    .map_err(|e| {
+                                                        if e.ends_with('\n') {
+                                                            e
+                                                        } else {
+                                                            format!("{e}\n")
+                                                        }
+                                                    })?;
                                             let digest = report::sha256_hex(rt_text.as_bytes());
                                             wrela_compiler::rtconfig::insert_generated_input_line(
                                                 &mut text, &digest,
@@ -1171,6 +1391,7 @@ fn produce_image_artifacts_with_discovery_order(
                                             &image_layout,
                                             false,
                                         )?;
+                                        timing("report-layout");
                                         let cost_source = file_paths
                                             .get(module.as_str())
                                             .map(|path| path.as_path());
@@ -1198,7 +1419,9 @@ fn produce_image_artifacts_with_discovery_order(
                                                 format!("error[build]: {error}\n")
                                             }
                                         })?;
+                                        timing("report-cost");
                                         report::append_convention_section(&mut text, &codegen);
+                                        timing("report-conventions");
                                         if let Err(diag) =
                                             eval::layout_assert::run(program, &graph, &image_layout)
                                         {
@@ -1234,23 +1457,27 @@ fn produce_image_artifacts_with_discovery_order(
                                                     )],
                                                     &checked_image.renderer_configs,
                                                 );
+                                            timing("renderer-field-graph");
                                             let frame_program =
                                                 wrela_compiler::pixels::dump_frame_program(
                                                     &pixels_programs.compiled_renderers[index],
                                                     placement,
                                                     &generated_source,
                                                 )?;
+                                            timing("renderer-frame-program");
                                             let render_layout =
                                                 wrela_compiler::pixels::dump_render_layout(
                                                     &pixels_programs.compiled_renderers[index],
                                                     placement,
                                                 );
+                                            timing("renderer-layout");
                                             renderer_artifacts.push(ProducedPixelsRenderer {
                                                 field_graph,
                                                 frame_program,
                                                 render_layout,
                                             });
                                         }
+                                        timing("renderer-artifacts");
                                         (Some(image_layout.blob), renderer_artifacts)
                                     }
                                     None => {
@@ -1273,7 +1500,10 @@ fn produce_image_artifacts_with_discovery_order(
                                     }
                                 };
                                 let image_dump = eval::image::dump(&enum_variants, &graph);
+                                timing("report-artifacts");
                                 Ok(ProducedImageArtifacts {
+                                    check: check_dump,
+                                    typed: typed_dump,
                                     report: text,
                                     image: img,
                                     image_dump: Some(image_dump),
@@ -2565,7 +2795,10 @@ pub(crate) fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> 
         .into_iter()
         .map(|(k, m)| (k, m.module))
         .collect();
-    let programs_by_key = sema::check_program_typed(&modules_by_key, &paths).ok()?;
+    let internal_sources = generated_internal_source_keys(&paths);
+    let programs_by_key =
+        sema::check_program_typed_with_internal_sources(&modules_by_key, &paths, &internal_sources)
+            .ok()?;
     let root_key = loaded.root.clone();
     let root_program = programs_by_key.get(&root_key)?.clone();
     let modules: BTreeMap<String, Module> = modules_by_key
@@ -2645,6 +2878,7 @@ pub(crate) fn build_runtime_test_image(
         graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
+        layouts: &compiled.layouts,
         layout_ctx: &compiled.layout_ctx,
         async_frames: &compiled.async_frames,
         group_child_index: &compiled.group_child_index,

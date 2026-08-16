@@ -1,5 +1,5 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=3dfb5d82d34a87e8
-  Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=a3fc98dfe12bd132 provenance=96e1aad226833198 ghz=2.4 workloads_digest=3dfb5d82d34a87e8
+  Provenance T1=56 T2=19 T3=0 T4=10 T5=16 rows=101
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
   Rank rank_cycles=201 schedule_cycles=201 footprint_cycles=0 total_proxy_cycles=201

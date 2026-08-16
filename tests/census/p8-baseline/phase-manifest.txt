@@ -1,0 +1,13 @@
+# P8R immutable census phase manifest
+schema = 2
+phase.P8-close = tests/census/p8-baseline/p8-close.txt
+phase.P8-close.sha256 = 010686505298854486d94f1dde8da3d6600ef2112a556e067e0421b522732bfa
+phase.P8R.2-pre-decomposition = tests/census/p8-baseline/p8r2-pre-decomposition.txt
+phase.P8R.2-pre-decomposition.sha256 = 488f740e6593f9bff0206d50189d303218b30bb534fcfd5e608fd6597d0de61b
+phase.P8R.3-post-decomposition = tests/census/p8-baseline/p8r3-post-decomposition.txt
+phase.P8R.3-post-decomposition.sha256 = ce72540151d319ba433dc355746ffa7feca73432d56438e00bc4e215b665e05f
+phase.P8R.4-direct-fp = tests/census/p8-baseline/p8r4-direct-fp.txt
+phase.P8R.4-direct-fp.sha256 = c9b31c85452769b377dafeb287981d5bed28d27e4a20bc92082365b2f5ac20ee
+phase.P8R.5-packet = tests/census/p8-baseline/p8r5-packet.txt
+phase.P8R.5-packet.sha256 = a76ebf21c54b9f71aeed76ce8c165a17898ddc3608d1f9be78dfb7cd649ba62d
+phase.P8R.7-final = tests/census/p8-baseline/check-pixels-normal-moments.txt

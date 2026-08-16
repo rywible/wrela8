@@ -186,6 +186,7 @@ pub fn compute_linked(
                     frame_size: f.frame_size as usize,
                     code: f.code.clone(),
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             )
         })
@@ -360,11 +361,11 @@ mod tests {
     }
 
     fn alu() -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Alu, Some(1), &[0, 0])
+        EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(1), &[0, 0])
     }
 
     fn load(offset: u64) -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[MEM_SP_REG])
+        EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[MEM_SP_REG])
             .with_mem(MemRef::stack(offset))
     }
 
@@ -409,6 +410,7 @@ mod tests {
             frame_size: 0,
             code: (0..words).map(|_| alu()).collect(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         }
     }
 
@@ -567,18 +569,18 @@ mod tests {
         let t = table();
         let p = point(&t);
         let code = vec![
-            EmittedWord::new(0, String::new(), CostRule::Alu, Some(1), &[0]),
-            EmittedWord::new(
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(1), &[0]),
+            EmittedWord::gpr(
                 enc_b_cond(Cond::Eq, 12),
                 String::new(),
                 CostRule::Branch,
                 None,
                 &[],
             ),
-            EmittedWord::new(0, String::new(), CostRule::Alu, Some(2), &[0]),
-            EmittedWord::new(enc_b(8), String::new(), CostRule::Branch, None, &[]),
-            EmittedWord::new(0, String::new(), CostRule::Alu, Some(3), &[0]),
-            EmittedWord::new(0, String::new(), CostRule::Alu, Some(4), &[0]),
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(2), &[0]),
+            EmittedWord::gpr(enc_b(8), String::new(), CostRule::Branch, None, &[]),
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(3), &[0]),
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(4), &[0]),
         ];
         let blocks = basic_block_ranges(&code);
         assert_eq!(blocks.len(), 4, "the fixture must have several blocks");
@@ -588,6 +590,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         )]);
         let place = PlacementTable {
@@ -624,7 +627,7 @@ mod tests {
                 frame_size: 0,
                 code: (0..32)
                     .map(|_| {
-                        EmittedWord::new(
+                        EmittedWord::gpr(
                             enc_b_cond(Cond::Eq, 4),
                             String::new(),
                             CostRule::Branch,
@@ -634,6 +637,7 @@ mod tests {
                     })
                     .collect(),
                 relocs: Vec::new(),
+                regions: Vec::new(),
             }
         };
         let prog = program(&[("A.turn", body())]);
@@ -671,19 +675,20 @@ mod tests {
         let diamond = CodegenFn {
             frame_size: 0,
             code: vec![
-                EmittedWord::new(0, String::new(), CostRule::Alu, Some(1), &[0]),
-                EmittedWord::new(
+                EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(1), &[0]),
+                EmittedWord::gpr(
                     enc_b_cond(Cond::Eq, 12),
                     String::new(),
                     CostRule::Branch,
                     None,
                     &[],
                 ),
-                EmittedWord::new(0, String::new(), CostRule::Alu, Some(2), &[0]),
-                EmittedWord::new(enc_b(8), String::new(), CostRule::Branch, None, &[]),
-                EmittedWord::new(0, String::new(), CostRule::Alu, Some(3), &[0]),
+                EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(2), &[0]),
+                EmittedWord::gpr(enc_b(8), String::new(), CostRule::Branch, None, &[]),
+                EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(3), &[0]),
             ],
             relocs: Vec::new(),
+            regions: Vec::new(),
         };
         let prog = program(&[
             ("A.turn", diamond),
@@ -777,7 +782,7 @@ mod tests {
             load(0),
             load(PAGE_BYTES),
             load(2 * PAGE_BYTES),
-            EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[0])
+            EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[0])
                 .with_mem(MemRef::cold_unique(0)),
         ];
         let prog = program(&[(
@@ -786,6 +791,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         )]);
         let b = compute(&prog, &t, &p, &place, HotBlocks::All).expect("compute");

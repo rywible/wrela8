@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use crate::codegen;
 use crate::cost::{BlockClass, LayoutClasses};
@@ -313,6 +315,7 @@ pub fn relayout_program(
         MwirProgram {
             fns,
             rodata: program.rodata.clone(),
+            direct_fp_fns: program.direct_fp_fns.clone(),
         },
         summary,
     ))
@@ -454,6 +457,7 @@ mod tests {
         let program = MwirProgram {
             fns: BTreeMap::from([("F.m".to_string(), f.clone())]),
             rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
         };
         let (out, summary) =
             relayout_program(&program, &LayoutClasses::Unmeasured).expect("relayout");

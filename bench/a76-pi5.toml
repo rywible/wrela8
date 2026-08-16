@@ -417,19 +417,215 @@ ports = "I"
 tier = "T1"
 source = "SOG §3.4 address generation (`ADR`, `ADRP`)"
 
-# Inventory row 35: FP/ASIMD data-processing is emitted only incidentally
-# (no live `CostRule::Neon` site exists today). The coarse row stays and is
-# **not** expanded into the §3.19-§3.21 group set (freeze 1630). Its value
-# is the over-cost direction for an unemitted row: the v2 table said 1,
-# which is the cheapest FP/ASIMD op there is.
-[latency.neon]
-lat = 4
-thru_num = 1
+# ---------------------------------------------------------------------------
+# FP and ASIMD groups (P8R.1).
+#
+# The single coarse `[latency.neon]` row is gone. It carried a note saying
+# "no live emit site; do not expand into per-group FP/ASIMD rows", and both
+# halves of that note were false by the P8 close: the scalar float path
+# (`emit_arith_wrapping`, `emit_convert`) emits `FADD`/`FMUL`/`FDIV`/`FCVT`
+# and bank-crossing `FMOV`s on every float expression, and the packet raster
+# emits `ADD v.4s`, `UZP1 v.4s` and `LDR`/`STR q`. All of those were tagged
+# `CostRule::Alu` or `Load`/`Store`/`Neon` — a generic integer price for
+# instructions the A76 issues on different pipes at different latencies.
+#
+# Every row below names the SOG group it prices. Where the guide states a
+# range, these rows pin the **pessimistic** end rather than adding a sweep
+# dimension, for the same reason the old coarse row over-priced itself: the
+# emitted counts are small, and the over-cost direction cannot flatter an
+# optimization. A row that acquires a materially hot emit site should be
+# re-derived with a real `[sweep.*]` bracket at that point, exactly as
+# `divide_x_latency` was.
+#
+# `ports` follows the §2.1 pipeline letters already used above: V0 is
+# pipeline 7, V1 is pipeline 8, and a group restricted to one of them says
+# so rather than claiming both.
+# ---------------------------------------------------------------------------
+
+# Inventory rows 35 + 40.
+[latency.fp_add_sub]
+lat = 2
+thru_num = 2
 thru_den = 1
 ports = "V0,V1"
 tier = "T1"
-source = "SOG §3.19-§3.21 FP/ASIMD data-processing, kept as one coarse row per dimension inventory row 35"
-note = "no live emit site; do not expand into per-group FP/ASIMD rows"
+source = "SOG FP data-processing group `FP arithmetic` (FADD/FSUB, S and D forms) — latency 2, two per cycle on either V pipe"
+
+# Inventory rows 35 + 40.
+[latency.fp_mul]
+lat = 3
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG FP data-processing group `FP multiply` (FMUL, S and D forms) — latency 3, two per cycle on either V pipe"
+
+# Inventory rows 35 + 40 + 49. No emit site exists: fused arithmetic is
+# reachable only through an explicitly sealed operation (D-P8R-04), never by
+# contraction. The accumulator-operand latency is the group's forwarded
+# path; `acc_lat` is what the scheduler charges an FMA chain.
+[latency.fp_fma]
+lat = 4
+acc_lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG FP data-processing group `FP multiply accumulate` (FMADD/FMSUB) — latency 4, accumulator-operand latency 2"
+
+# Inventory rows 35 + 41. The guide states a range across S and D forms with
+# data-dependent early termination; this row pins the pessimistic D-form end
+# and blocks its own kind, the way `[latency.sdiv]` does.
+[latency.fp_div_sqrt]
+lat = 10
+thru_num = 1
+thru_den = 6
+ports = "V0"
+m_pipe_block = 1
+tier = "T1"
+source = "SOG FP data-processing groups `FP divide` and `FP square root`, D-form pessimistic end (S-form is faster; no sweep dimension until a hot emit site exists)"
+note = "pessimistic across S/D; re-derive with a [sweep.*] bracket if a hot FP divide site appears"
+
+# Inventory rows 35 + 42. `FCMP` writes NZCV rather than a register, so it
+# is one V0 uop and cannot dual-issue with another compare.
+[latency.fp_compare]
+lat = 2
+thru_num = 1
+thru_den = 1
+ports = "V0"
+tier = "T1"
+source = "SOG FP data-processing group `FP compare` (FCMP/FCMPE) — latency 2, one per cycle, NZCV write"
+
+# Inventory rows 35 + 42. Covers FCVT (precision change), FCVTZS/FCVTZU
+# (FP to integer) and SCVTF/UCVTF (integer to FP). The bank-crossing forms
+# are the expensive ones and set this row.
+[latency.fp_convert]
+lat = 4
+thru_num = 1
+thru_den = 1
+ports = "V0"
+tier = "T1"
+source = "SOG FP data-processing group `FP convert`, including the general-register forms (FCVTZS Wd/Xd, SCVTF Sd/Dd) — pessimistic end of the group"
+
+# Inventory rows 35 + 43. This row is why P8R.4 exists: every scalar float
+# expression currently pays two of these to get its operands into the FP
+# file and one more to get the result back out.
+[latency.fp_move]
+lat = 3
+thru_num = 1
+thru_den = 1
+ports = "V0"
+tier = "T1"
+source = "SOG FP data-processing group `FP transfer, FP to general / general to FP` (FMOV register, general forms) — pessimistic end of the group"
+
+# Inventory rows 7 + 9 + 12 + 29 + 44. The address uop is an L-pipe load like
+# any other; the destination is an FP register, which is what distinguishes
+# it from `[latency.load]`.
+[latency.fp_load]
+lat = 5
+thru_num = 2
+thru_den = 1
+ports = "L"
+tier = "T1"
+source = "SOG FP load group `Load vector reg, immed` (S and D forms) — L1D-hit latency, two AGUs"
+note = "l1d hit only; L2/L3/DRAM leaves are [geometry] lat_l2 / lat_l3 / lat_dram"
+
+# Inventory rows 7 + 9 + 12 + 29 + 44.
+[latency.fp_load_q]
+lat = 6
+thru_num = 1
+thru_den = 1
+ports = "L"
+tier = "T1"
+source = "SOG FP load group `Load vector reg, immed`, Q form — the 128-bit form costs an extra cycle and does not dual-issue"
+note = "l1d hit only; L2/L3/DRAM leaves are [geometry] lat_l2 / lat_l3 / lat_dram"
+
+# Inventory rows 8 + 13 + 30 + 45. Like `[latency.store]`, an FP store splits
+# into an address uop on L and a data uop on a V pipe — except that here the
+# data uop reads the FP file directly, so the V occupancy is the whole point
+# rather than a surprise.
+[latency.fp_store]
+lat = 1
+thru_num = 2
+thru_den = 1
+ports = "L,D"
+tier = "T1"
+source = "SOG FP store group `Store vector reg, immed` (S and D forms) — buffered; address uop on L, data uop on D (a V pipe)"
+note = "store buffer, not cache; store-to-load forwarding is [sweep.store_to_load_forwarding]"
+
+# Inventory rows 8 + 13 + 30 + 45.
+[latency.fp_store_q]
+lat = 1
+thru_num = 1
+thru_den = 1
+ports = "L,D"
+tier = "T1"
+source = "SOG FP store group `Store vector reg, immed`, Q form — one 128-bit store per cycle; address uop on L, data uop on D"
+note = "store buffer, not cache; the Q form does not dual-issue"
+
+# Inventory rows 35 + 46.
+[latency.asimd_int]
+lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD arith, basic` (ADD/SUB/AND/ORR/CMGT/BSL vector) — latency 2, two per cycle"
+
+# Inventory rows 35 + 46.
+[latency.asimd_permute]
+lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD transfer, ASIMD permute` (UZP1/ZIP1/DUP/INS element) — latency 2, two per cycle"
+
+# Inventory rows 35 + 47.
+[latency.asimd_fp_add_sub]
+lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD FP arith, normal` (FADD/FSUB vector) — latency 2, two per cycle"
+
+# Inventory rows 35 + 47.
+[latency.asimd_fp_mul]
+lat = 3
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD FP multiply` (FMUL vector) — latency 3, two per cycle"
+
+# Inventory rows 35 + 47 + 49. Sealed operation only (D-P8R-04).
+[latency.asimd_fp_fma]
+lat = 4
+acc_lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD FP multiply accumulate` (FMLA vector) — latency 4, accumulator-operand latency 2"
+
+# Inventory rows 35 + 48.
+[latency.asimd_fp_cmp]
+lat = 2
+thru_num = 2
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG ASIMD groups `ASIMD FP compare` (FCMGE/FCMGT) and `ASIMD FP min/max, normal` (FMIN/FMAX) — latency 2, two per cycle"
+
+# Inventory rows 35 + 48.
+[latency.asimd_fp_cvt]
+lat = 3
+thru_num = 1
+thru_den = 1
+ports = "V0"
+tier = "T1"
+source = "SOG ASIMD group `ASIMD FP convert, other` (FCVTZS/SCVTF vector) — latency 3, one per cycle"
 
 # ---------------------------------------------------------------------------
 # [geometry] — real cache and TLB geometry, plus the pinned leaf latencies.

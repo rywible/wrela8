@@ -54,11 +54,26 @@ overflow-checks = true
 #   opt-level = 1                    35.9s       53.4s     727MB
 #   opt-level = 2                    40.3s       56.9s     717MB
 #   opt-level = 3                    39.6s       76.9s    1295MB
-#   opt-level = 2, line-tables       30.8s       44.0s     567MB   <- this
+#   opt-level = 2, line-tables       30.8s       44.0s     567MB
 #
-# Two things that measurement decided, neither of which was the guess:
-# **3 is worse than 2** (more aggressive inlining on a 125k-line crate
-# costs more than it wins, and doubles the target directory), and
+# A current whole-static-corpus measurement on 2026-08-16 revisited the two
+# viable levels after the compiler grew substantially. With the same
+# line-table setting and an empty golden-output cache, compiler level 1
+# completed the complete cold command in 93.5s versus 129s for level 2. A
+# second end-to-end sweep found that leaving the control-only `xtask` crate at
+# level 0, using 64 compiler codegen units, and returning renderer arenas via
+# isolated children reduced fresh build + fully uncached static execution to
+# 43.9s + 34.2s. The public `--assume-built` compatibility flag is included in
+# that cold-static measurement; isolation has its own recursion guard, so the
+# flag cannot silently select the slower arena-retaining path. Compiler level
+# 0 built in 21.8s but made that same corpus take 102.5s, so it merely moved
+# the wait. The VMM stays at level 2: a real cold
+# Pixels guest at level 1 exceeded 90 seconds, so applying the compile-time
+# trade globally merely moved the wait into every uncached boot. Three things
+# the measurements decide:
+# **3 is worse than 2** (more aggressive inlining on a large compiler crate
+# costs more than it wins, and doubles the target directory), and level 1 is
+# now the best end-to-end development setting. Also,
 # **dropping full DWARF is free speed** — `line-tables-only` keeps file
 # and line numbers in every panic backtrace, which is all this codebase
 # reads out of a failing `debug_assert!`, while cutting both the codegen
@@ -79,3 +94,17 @@ opt-level = 2
 debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
+
+[profile.dev.package.wrela-compiler]
+opt-level = 1
+# The default dev profile's very wide codegen partition saves less than a
+# second of frontend time but costs more in every compiler-heavy command.
+# Sixteen units lost the saved build time again; 64 is the measured cold
+# build + uncached corpus minimum on the baseline host.
+codegen-units = 64
+
+[profile.dev.package.xtask]
+# The task runner coordinates already-optimized compiler code. Optimizing its
+# own CLI/control layer adds cold codegen and link work without moving corpus
+# execution time.
+opt-level = 0

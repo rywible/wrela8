@@ -242,7 +242,7 @@ The renderer is complete only when all of these are true:
 11. The Lean project builds with no admissions and prints no unexpected axioms for the trust-boundary theorems.
 12. The Rust compiler reference, generated Wrela scalar kernels, generated Wrela SIMD kernels, and host oracle agree on all permanent differential fixtures; every hot workload satisfies its one-ISA instruction obligation with no missed or illegal idiom.
 13. The machine-v1 display conformance lane presents the exact expected frame digests.
-14. The flagship A76/Pi 5 target profile is admitted at 1080p60 by the exact sealed renderer cycle proxy, with every acceptance frame below budget, no unresolved frame, and no output divergence during the locked workload. Physical hardware execution is not a conformance input.
+14. The flagship A76/Pi 5 target profile is admitted at 1080p60 by the exact sealed renderer cycle proxy, with every acceptance frame below budget, no unresolved frame, and no output divergence during the locked workload. Physical hardware execution is not a conformance input; the proxy revision used for admission must itself carry a current passing hardware-validation report per [vmm-host-backends.md](vmm-host-backends.md) §13.4. Validation gates the proxy revision, never the conformance verdict.
 
 Items 13–14 are release conformance, not research lanes. They do not choose algorithms or tune tolerances. The algorithms and tolerances in this document are fixed before those gates run.
 
@@ -9605,15 +9605,34 @@ pixels P8.11: lock full visibility and scanout conformance
 
 Run `cargo xtask verify`. The renderer now attempts every contract-valid frame from scratch with certified geometry and analytic coverage, presents only on complete success, and returns the §2.6 error on bounded exhaustion. The locked P8 conformance workload must present with zero errors, and its versioned certificate-telemetry schema/adversarial density classes must be complete and deterministic. Telemetry is not yet a performance admission gate. Do not add temporal reuse before full AAA shading/output correctness is complete.
 
+### P8 close → P9 entry seam: milestone P8R
+
+One interstitial milestone runs between the P8 close and Task P9.1:
+**P8R (reconciliation and tightening)**, planned in
+[WRELA_PIXELS_P8R_TIGHTENING_PLAN.md](WRELA_PIXELS_P8R_TIGHTENING_PLAN.md).
+It adds no renderer feature and changes no displayed byte (D-P8R-01). It
+seals the divergences between this plan and the normative chapters under
+stable decision IDs, makes the cost model bank-aware, freezes a priced
+hot-path census, decomposes the renderer along audited seams, gives scalar
+floats a storage and location contract, seals the renderer-internal packet
+substrate P9's kernels are authored against (D-P8R-07), and publishes the
+invariant ownership matrix whose gap policy governs P9 entry. Task P9.1
+requires its close, Task P8R.7.
+
 ---
 
 # Milestone P9 — AAA material, texture, lighting, shadow, filtering, and output-byte verification
 
 Milestone result: debug identity color is replaced by deterministic physically based shading and complete output-byte certification. Every supported frame produces final `Bgra8Srgb` bytes with explicit coverage/shading/shadow/filter/post error budgets. No stochastic sampling or denoising exists.
 
+Sequencing (decided 2026-08-15): Task P9.1 does not begin until the P8R tightening milestone and the complete VMM host-backend program ([vmm-host-backends.md](vmm-host-backends.md) Tasks V0–V15) have closed. P9 therefore starts with stage-1 translation active, the accepted product host configuration, and a hardware-validated cycle proxy; its optimization and budget decisions consume that validated model.
+
 ## Task P9.1 — fix the working color and filmic-output contract
 
-**Requires:** the preceding milestone close gate.
+**Requires:** the preceding milestone close gate; Task P8R.7 (the P8R
+milestone close) in [WRELA_PIXELS_P8R_TIGHTENING_PLAN.md](WRELA_PIXELS_P8R_TIGHTENING_PLAN.md);
+and completion of [vmm-host-backends.md](vmm-host-backends.md) Tasks V0–V15,
+including the cycle-proxy validation lane.
 
 **Produces:** Give every material/light/post operation one exact color interpretation.
 
@@ -9843,6 +9862,13 @@ formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 
 **Work:**
 
+P8R packet-resolution anchors:
+
+- `[P9-PACKET-NEED:P9.4-MATERIAL-SOA:packet]` covers SoA coefficient and
+  broadcast arithmetic;
+- `[P9-PACKET-NEED:P9.4-CANDIDATE-SELECT:packet]` covers verified candidate
+  selection without exporting masks.
+
 For each material identity compile:
 
 - required surface inputs bitset;
@@ -9914,6 +9940,9 @@ formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 
 **Work:**
 
+`[P9-PACKET-NEED:P9.5-NORMAL-MOMENTS:packet]` covers first/second-moment
+accumulation over four lanes.
+
 For each filtered footprint obtain slope moments:
 
 ```text
@@ -9976,6 +10005,16 @@ crates/wrela-compiler/src/pixels/reference/light.rs # new at P-1 basis
 
 **Work:**
 
+P8R packet-resolution anchors:
+
+- `[P9-PACKET-NEED:P9.6-DIRECT-LANES:packet]` covers lane arithmetic, bound
+  clamps, and interval choices after light coefficients are available;
+- `[P9-PACKET-NEED:P9.6-POINT-ATTENUATION:scalar]` keeps point attenuation
+  and its reciprocal interval in the canonical scalar light-coefficient path,
+  then splats the bounded radiance coefficient for packet BRDF evaluation.
+  Scalar/packet agreement compares the resulting coefficient and contribution,
+  so no packet divide or reciprocal is implicit.
+
 Supported lights:
 
 - directional: normalized direction, RGB radiance;
@@ -9990,7 +10029,8 @@ Direct BRDF evaluation:
 - directional/point use one representative direction plus interval direction/radiance bounds over run;
 - area lights integrate BRDF × cosine × visibility over source domain through P9.8;
 - normal-cone tests can prove whole run unlit or front-lit;
-- distance attenuation for point is `1/max(r², radius²)` with explicit interval;
+- distance attenuation for point is `1/max(r², radius²)` with explicit interval,
+  evaluated once through the scalar coefficient path named above;
 - contribution is culled only if complete encoded impact fits assigned budget.
 
 **Tests:**
@@ -10035,6 +10075,9 @@ formal/pixels/Pixels/RootIsolation.lean # new at P-1 basis
 **Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
 
 **Work:**
+
+`[P9-PACKET-NEED:P9.7-SECONDARY-BOOKKEEPING:packet]` covers fixed-stack
+indices, signed comparisons, and lane-compaction bookkeeping.
 
 Define a secondary ray/segment:
 
@@ -10108,6 +10151,9 @@ formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 
 **Work:**
 
+`[P9-PACKET-NEED:P9.8-AREA-CHILDREN:packet]` covers four dyadic child
+contributions and certified lane selection.
+
 Integrate over normalized emitter domain:
 
 ```text
@@ -10171,6 +10217,9 @@ crates/wrela-compiler/src/pixels/reference/ao.rs # new at P-1 basis
 
 **Work:**
 
+`[P9-PACKET-NEED:P9.9-AO-CANDIDATES:packet]` covers four-at-a-time candidate
+arithmetic; the fifth of the canonical five taps remains scalar.
+
 Renderer config adds sealed `ao_radius`, `ao_strength`. V1 uses five normalized distances:
 
 ```text
@@ -10230,6 +10279,13 @@ crates/wrela-compiler/src/pixels/reference/shade.rs # new at P-1 basis
 
 **Work:**
 
+P8R packet-resolution anchors:
+
+- `[P9-PACKET-NEED:P9.10-CANDIDATE-EVAL:packet]` covers forward differences
+  and SoA candidate evaluation;
+- `[P9-PACKET-NEED:P9.10-BYTE-PACK:packet]` covers conversion and byte packing
+  after singleton proof.
+
 For each run/tile material-light pair construct the fixed summary ladder from P9.4. Summary records contain candidate coefficients plus HDR interval residual per channel.
 
 Packet pixel evaluation:
@@ -10286,6 +10342,10 @@ formal/pixels/Pixels/DisplayByte.lean # new at P-1 basis
 **Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
 
 **Work:**
+
+`[P9-PACKET-NEED:P9.11-QUEUE:scalar]` keeps the single global refinement
+choice scalar because its integer cross multiplication orders alternatives,
+not independent lanes.
 
 Each unresolved output unit (run channel/event pixel/area-light cell/transparent tail) maintains contributors:
 
@@ -12073,6 +12133,25 @@ Implement only operations used by renderer plus complete contract-required peers
 
 Amend the normative machine baseline to name `FEAT_DotProd`; there is still one emitted image and no runtime feature test or fallback. Every operation has sema, FlowWir, MachineWir, A64 encoding, a specific cost rule, diff-eval, and emitted-word tests. Do not add general arbitrary shuffle if fixed named shuffles suffice. This task permits one independently gated commit per operation family (construction/load-store, arithmetic, compare/select, lane/shuffle, widen/convert, dot/reduction/idiom closure); each commit must leave the intrinsic and emitted-instruction censuses exact and pass `cargo xtask verify`.
 
+P8R reconciliation note (required by D-P8R-07): milestone P8R already landed
+a *renderer-internal* packet substrate — sealed MachineWir `f32x4`/`i32x4`
+operations reached only through generated sealed renderer backend helpers
+over 16-byte packet structs, with scalar oracles, cost classes, decoded
+instruction obligations, and special-value semantics (`FMIN`/`FMAX` NaN and
+signed-zero ordering, `FCVTZS`/`SCVTF` conversion, an explicitly sealed
+`fma`). Those operations are *not* the public §8.1 SIMD types and do not
+discharge any part of this task. P12.3 re-plates them onto the public types
+deliberately: for every operation family above, either reuse the P8R MachineWir
+operation as the public type's lowering (and delete the renderer-internal
+duplicate in the same commit) or state why the public semantics differ.
+Reuse the existing `check_bank_shape` plus `audit_word` emission chokepoint,
+and the scheduler's per-rule `rule_free` one-operation-per-interval machinery,
+when public operations inherit these encodings; do not recreate parallel bank
+or throughput enforcement while re-plating the types.
+Reciprocal/rsqrt estimates, lane extraction, shuffles, reductions, and
+first-class mask values were explicitly left to this task and have no P8R
+counterpart to reuse.
+
 **Tests:**
 
 - SIMD scalar-lane semantics match scalar operations.
@@ -12592,7 +12671,7 @@ Run `cargo xtask verify`. The renderer must now execute as real emitted AArch64/
 
 # Milestone P13 — exact cycle-proxy conformance, language activation, and release closure
 
-Milestone result: the temporary Pixels implementation unlock is removed. Every renderer-relevant emitted word, dependency, pipeline/resource use, memory-class transition, branch path, and device charge is accounted by one exact versioned A76 cycle proxy. Every acceptance frame meets its deadline in that proxy with sealed headroom; ISA obligations prove the strongest correct machine-v1 instructions were selected; all formal and conformance gates are green; and `07-pixels.md` is active normative behavior. Physical hardware runs, counters, wall time, temperature, and board-specific observations are excluded from conformance.
+Milestone result: the temporary Pixels implementation unlock is removed. Every renderer-relevant emitted word, dependency, pipeline/resource use, memory-class transition, branch path, and device charge is accounted by one exact versioned A76 cycle proxy. Every acceptance frame meets its deadline in that proxy with sealed headroom; ISA obligations prove the strongest correct machine-v1 instructions were selected; all formal and conformance gates are green; and `07-pixels.md` is active normative behavior. Physical hardware runs, counters, wall time, temperature, and board-specific observations are excluded from conformance. They are, however, required for proxy accountability: a proxy revision may be sealed or revised only while a current, provenance-complete `wrela-proxy-validation-v1` report ([vmm-host-backends.md](vmm-host-backends.md) §13.4, Tasks V13–V15) shows no open conservatism violation against the flagship hardware. Validation gates the proxy revision; it never enters admission, never defines a transition constant, and never relaxes the published-record provenance rule.
 
 ## Task P13.1 — create the Wrela acceptance images
 
@@ -12674,7 +12753,7 @@ pixels P13.1: add production renderer acceptance images
 
 ## Task P13.2 — extend and seal the exact A76 renderer cycle proxy
 
-**Requires:** P13.1.
+**Requires:** P13.1, and the standing hardware-validation drift lock from [vmm-host-backends.md](vmm-host-backends.md) Task V15.
 
 **Produces:** Turn the current differential proxy into the exact normative cycle machine used for Pixels admission. This is model execution over emitted code and sealed workloads, never a physical-hardware measurement.
 
@@ -12717,6 +12796,8 @@ If the existing proxy cannot represent a renderer interaction precisely, extend 
 
 If an exact transition constant or state rule cannot be justified from the repository’s allowed published-record provenance, stop profile activation at this task. Do not infer it from a physical run and do not choose a convenient point from a range.
 
+Hardware validation is a falsifier, not a source. After extension and before sealing, rerun the [vmm-host-backends.md](vmm-host-backends.md) §13.4 validation lane against this proxy revision on the flagship host. A conservatism violation, overprediction-envelope breach, or rank-fidelity failure is a proxy-model defect and is closed by a published-record fact or a state/transition-model extension — never by fitting the observed number or widening an envelope in the same change.
+
 Add:
 
 ```text
@@ -12743,7 +12824,7 @@ cargo xtask pixels-cycle-proxy --self-test
 cargo xtask verify
 ```
 
-**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency. Also stop if this proxy revision would seal without a current passing `wrela-proxy-validation-v1` report, or if a validation failure would be closed by fitting an observed value.
 
 **Commit**
 

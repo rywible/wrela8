@@ -1,3 +1,4 @@
+# @wrela-compiler-internal: pins the closed renderer packet substrate.
 module pixels_raster
 
 from core.field import Vec3, rsqrt_scalar, sqrt_scalar

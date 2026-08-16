@@ -13,6 +13,181 @@ pub const TILE_HEIGHT: usize = 32;
 pub const TILE_STRIDE: usize = TILE_WIDTH * 4;
 pub const TILE_BYTES: usize = TILE_STRIDE * TILE_HEIGHT;
 
+const F32_SIGN: u32 = 0x8000_0000;
+const F32_EXP: u32 = 0x7f80_0000;
+const F32_FRAC: u32 = 0x007f_ffff;
+const F32_CANONICAL_NAN: u32 = 0x7fc0_0000;
+
+#[derive(Clone, Copy)]
+struct FiniteF32 {
+    negative: bool,
+    mantissa: u64,
+    exponent: i32,
+}
+
+fn finite_f32(bits: u32) -> FiniteF32 {
+    let exponent_bits = (bits >> 23) & 0xff;
+    let fraction = u64::from(bits & F32_FRAC);
+    if exponent_bits == 0 {
+        FiniteF32 {
+            negative: bits & F32_SIGN != 0,
+            mantissa: fraction,
+            exponent: -149,
+        }
+    } else {
+        FiniteF32 {
+            negative: bits & F32_SIGN != 0,
+            mantissa: (1 << 23) | fraction,
+            exponent: i32::try_from(exponent_bits).expect("f32 exponent fits i32") - 127 - 23,
+        }
+    }
+}
+
+fn top_bit_u128(value: u128) -> i32 {
+    debug_assert!(value != 0);
+    127 - i32::try_from(value.leading_zeros()).expect("leading-zero count fits i32")
+}
+
+fn shift_right_jam(value: u128, distance: u32) -> u128 {
+    if distance == 0 {
+        value
+    } else if distance < 128 {
+        let mask = (1_u128 << distance) - 1;
+        (value >> distance) | u128::from(value & mask != 0)
+    } else {
+        u128::from(value != 0)
+    }
+}
+
+fn scale_to(value: u128, exponent: i32, target: i32) -> u128 {
+    let distance = exponent - target;
+    if distance >= 0 {
+        value << u32::try_from(distance).expect("nonnegative exact shift")
+    } else {
+        shift_right_jam(value, distance.unsigned_abs())
+    }
+}
+
+fn round_shift_even(value: u128, distance: u32) -> u128 {
+    if distance == 0 {
+        return value;
+    }
+    if distance > 128 {
+        return 0;
+    }
+    if distance == 128 {
+        let half = 1_u128 << 127;
+        return u128::from(value > half);
+    }
+    let kept = value >> distance;
+    let discarded = value & ((1_u128 << distance) - 1);
+    let half = 1_u128 << (distance - 1);
+    kept + u128::from(discarded > half || (discarded == half && kept & 1 != 0))
+}
+
+/// Bit-exact integer-mantissa oracle for the sealed f32 packet FMA.
+///
+/// The two exact terms are aligned in a wide fixed-point accumulator, then
+/// rounded once to binary32. No host `f64` and no unfused multiply/add enter
+/// the reference path.
+pub fn f32_fma_bits(lhs_bits: u32, rhs_bits: u32, addend_bits: u32) -> u32 {
+    let is_nan = |bits: u32| bits & F32_EXP == F32_EXP && bits & F32_FRAC != 0;
+    let is_inf = |bits: u32| bits & !F32_SIGN == F32_EXP;
+    let is_zero = |bits: u32| bits & !F32_SIGN == 0;
+    if [lhs_bits, rhs_bits, addend_bits].into_iter().any(is_nan) {
+        return F32_CANONICAL_NAN;
+    }
+
+    let product_negative = (lhs_bits ^ rhs_bits) & F32_SIGN != 0;
+    if is_inf(lhs_bits) || is_inf(rhs_bits) {
+        if (is_inf(lhs_bits) && is_zero(rhs_bits)) || (is_inf(rhs_bits) && is_zero(lhs_bits)) {
+            return F32_CANONICAL_NAN;
+        }
+        if is_inf(addend_bits) && (addend_bits & F32_SIGN != 0) != product_negative {
+            return F32_CANONICAL_NAN;
+        }
+        return u32::from(product_negative) << 31 | F32_EXP;
+    }
+    if is_inf(addend_bits) {
+        return addend_bits;
+    }
+
+    let lhs = finite_f32(lhs_bits);
+    let rhs = finite_f32(rhs_bits);
+    let addend = finite_f32(addend_bits);
+    let product_mantissa = u128::from(lhs.mantissa) * u128::from(rhs.mantissa);
+    let product_exponent = lhs.exponent + rhs.exponent;
+    let addend_mantissa = u128::from(addend.mantissa);
+
+    if product_mantissa == 0 && addend_mantissa == 0 {
+        let negative = product_negative && addend.negative;
+        return u32::from(negative) << 31;
+    }
+
+    let product_top =
+        (product_mantissa != 0).then(|| product_exponent + top_bit_u128(product_mantissa));
+    let addend_top =
+        (addend_mantissa != 0).then(|| addend.exponent + top_bit_u128(addend_mantissa));
+    let top = product_top
+        .into_iter()
+        .chain(addend_top)
+        .max()
+        .expect("one nonzero term");
+    // Keeping the leading bit at 100 leaves at least 76 guard bits beyond a
+    // binary32 significand while keeping the signed sum below u128::MAX.
+    let target = top - 100;
+    let product_scaled = scale_to(product_mantissa, product_exponent, target);
+    let addend_scaled = scale_to(addend_mantissa, addend.exponent, target);
+    let (negative, magnitude) = match (product_negative, addend.negative) {
+        (a, b) if a == b => (a, product_scaled + addend_scaled),
+        _ if product_scaled > addend_scaled => (product_negative, product_scaled - addend_scaled),
+        _ if addend_scaled > product_scaled => (addend.negative, addend_scaled - product_scaled),
+        _ => (false, 0),
+    };
+    if magnitude == 0 {
+        return 0;
+    }
+
+    let mut leading = top_bit_u128(magnitude);
+    let mut unbiased = target + leading;
+    if unbiased > 127 {
+        return (u32::from(negative) << 31) | F32_EXP;
+    }
+
+    let sign = u32::from(negative) << 31;
+    if unbiased >= -126 {
+        let mut rounded = round_shift_even(
+            magnitude,
+            u32::try_from(leading - 23).expect("normal result retains 24 bits"),
+        );
+        if rounded == 1_u128 << 24 {
+            rounded >>= 1;
+            unbiased += 1;
+            leading += 1;
+            if unbiased > 127 {
+                return sign | F32_EXP;
+            }
+        }
+        debug_assert_eq!(leading + target, unbiased);
+        let exponent = u32::try_from(unbiased + 127).expect("normal exponent fits");
+        return sign | (exponent << 23) | (u32::try_from(rounded).unwrap() & F32_FRAC);
+    }
+
+    let distance = -149 - target;
+    let rounded = if distance <= 0 {
+        magnitude << distance.unsigned_abs()
+    } else {
+        round_shift_even(
+            magnitude,
+            u32::try_from(distance).expect("positive subnormal shift"),
+        )
+    };
+    if rounded >= 1_u128 << 23 {
+        return sign | (1 << 23);
+    }
+    sign | u32::try_from(rounded).expect("subnormal fraction fits u32")
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AffineRunSetup {
     pub value: i32,
@@ -863,6 +1038,59 @@ mod tests {
             assert_eq!(raster_rsqrt(value), 0.0);
         }
         assert!(raster_rsqrt(f32::MAX).is_finite());
+    }
+
+    #[test]
+    fn integer_mantissa_fma_matches_hardware_fusion_bit_for_bit() {
+        let pinned = [
+            (0x3f80_0001, 0x3f7f_ffff, 0xbf80_0000),
+            (0x0080_0000, 0x3f00_0000, 0x0000_0001),
+            (0x7f7f_ffff, 0x3f80_0001, 0xff7f_ffff),
+            (0x8000_0000, 0x3f80_0000, 0x8000_0000),
+            (0x7fc1_2345, 0x3f80_0000, 0x0000_0000),
+            (0x7f80_0001, 0x3f80_0000, 0x0000_0000),
+            (0x3f80_0000, 0x7fc1_2345, 0x0000_0000),
+            (0x3f80_0000, 0x3f80_0000, 0x7f80_0001),
+        ];
+        for (a, b, c) in pinned {
+            let expected = f32::from_bits(a).mul_add(f32::from_bits(b), f32::from_bits(c));
+            let actual = f32::from_bits(f32_fma_bits(a, b, c));
+            if expected.is_nan() {
+                assert_eq!(actual.to_bits(), F32_CANONICAL_NAN);
+            } else {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{a:08x} {b:08x} {c:08x}"
+                );
+            }
+        }
+
+        let mut state = 0x8f4d_3a29_17c6_b5e1_u64;
+        for _ in 0..100_000 {
+            let mut next = || {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                (state >> 32) as u32
+            };
+            let (a, b, c) = (next(), next(), next());
+            let expected = f32::from_bits(a).mul_add(f32::from_bits(b), f32::from_bits(c));
+            let actual = f32::from_bits(f32_fma_bits(a, b, c));
+            if expected.is_nan() {
+                assert_eq!(
+                    actual.to_bits(),
+                    F32_CANONICAL_NAN,
+                    "{a:08x} {b:08x} {c:08x}"
+                );
+            } else {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{a:08x} {b:08x} {c:08x}"
+                );
+            }
+        }
     }
 
     #[test]

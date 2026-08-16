@@ -459,15 +459,15 @@ mod tests {
     }
 
     fn alu(dst: u8) -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Alu, Some(dst), &[0, 0])
+        EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(dst), &[0, 0])
     }
 
     fn bl_rule(rule: CostRule) -> EmittedWord {
-        EmittedWord::new(encode::enc_bl(0), String::new(), rule, None, &[])
+        EmittedWord::gpr(encode::enc_bl(0), String::new(), rule, None, &[])
     }
 
     fn cbz(byte_offset: i32) -> EmittedWord {
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_cbz(0, byte_offset, true),
             String::new(),
             CostRule::Branch,
@@ -477,7 +477,7 @@ mod tests {
     }
 
     fn b(byte_offset: i32) -> EmittedWord {
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_b(byte_offset),
             String::new(),
             CostRule::Branch,
@@ -494,6 +494,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         CodegenProgram {
@@ -655,7 +656,7 @@ mod tests {
         let per_block = |_: &str, bi: usize| Some(BlockObs::new(bi as u64 + 1, bi as u64));
         let before = terms(&code, &BlockCounts::Measured(&per_block));
         let mut grown = code.clone();
-        grown.push(EmittedWord::new(
+        grown.push(EmittedWord::gpr(
             0,
             String::new(),
             CostRule::Alu,
@@ -857,7 +858,7 @@ mod tests {
         let p = point();
         let br = vec![
             alu(1),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 encode::enc_br(9),
                 String::new(),
                 CostRule::Branch,
@@ -874,7 +875,7 @@ mod tests {
 
         let ret = vec![
             alu(1),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 encode::enc_ret(30),
                 String::new(),
                 CostRule::Branch,

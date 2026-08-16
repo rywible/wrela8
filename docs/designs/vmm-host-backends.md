@@ -1,16 +1,21 @@
 # Wrela VMM host backends and Raspberry Pi execution plan
 
-**Status:** APPROVED DESIGN — implementation has not begun. This document
-defines the host-backend boundary, the Linux/KVM dependency exception, the
-Raspberry Pi development and measurement lane, and the presentation boundary.
-It does not change `wrela-machine-v1` by prose alone. Tasks V0 and V5 own the
-normative machine amendments required for stage-1 translation and protection;
-implementation may not precede those amendments.
+**Initiative boundary:** This V0–V15 program is an independent post-P8R
+roadmap. Its presence in the P8R integration tree is not implementation of a
+P8R task and must not be cited as P8R acceptance evidence.
 
-**Repository basis:** branch `pixels-impl-p7`, commit
-`a3b64435a302cab3a1947fa92c2c7f6eea9a6e52` (2026-08-09). The working tree at
-the basis contains in-progress Pixels work. Every task in this plan must
-preserve unrelated work and follow the task ordering in §15.
+**Status:** APPROVED DESIGN — normative machine amendments pending. This
+document defines the host-backend boundary, the Linux/KVM dependency
+exception, the Raspberry Pi development and measurement lane, and the
+presentation boundary. It does not change `wrela-machine-v1` by prose alone.
+Tasks V0, V4a, and V5 own the normative machine amendments required for
+stage-1 translation and protection; implementation may not precede those
+amendments.
+
+**Repository basis:** the P8R milestone close on branch `P8.5-impl`. The
+working tree at the basis contains the P8-era Linux/KVM and DRM prototype
+described in §4. Every task in this plan must preserve unrelated work and
+follow the task ordering in §15.
 
 **Authority:** [language chapter 06](../language/06-machine.md) remains the
 normative machine contract. This document owns implementation layering, host
@@ -20,6 +25,13 @@ methodology, and task ordering. The
 continues to own the display ABI and tasks P8.8a–P8.8e. If this plan and the
 machine chapter disagree about guest-visible behavior, fix the machine chapter
 first and reconcile this plan in the same commit.
+
+**Sequencing (decided 2026-08-15):** This program executes in full, Tasks
+V0–V15, between the close of the Pixels P8R tightening milestone and Pixels
+Task P9.1. Task V0 serializes behind the P8R close because both edit chapter
+06 and the Pixels plan. Tasks V13–V15 own hardware validation of the renderer
+cycle proxy and the `a76-pi5` cost profile; Pixels Task P13.2 consumes their
+standing drift lock before sealing the exact proxy.
 
 ---
 
@@ -114,6 +126,14 @@ No result is promoted from one lane into another. In particular, an M-series
 wall time is not relabeled as Pi performance, and a physical timing result does
 not replace the compiler's deterministic cycle-proxy verdict.
 
+Validation is not promotion. Lane-3 evidence never enters compiler admission
+or `cargo xtask verify`, but the cycle proxy's authority must never exceed its
+validated accuracy: every sealed proxy revision is checked against flagship
+hardware for one-sided conservatism, bounded overprediction, and rank
+fidelity (§13.4, Tasks V13–V15). A validation failure is a model defect closed
+through published-record provenance or state-model extension — never by
+fitting an observed number.
+
 ## 2. Goals
 
 This plan delivers:
@@ -135,7 +155,15 @@ This plan delivers:
 14. one compiler-emitted stage-1 translation and W^X contract shared by HVF
     and KVM;
 15. a Mac-side Linux/aarch64 cross-build in the required repository gate once
-    KVM code lands.
+    KVM code lands;
+16. a sealed cycle-proxy validation contract — one-sided conservatism, a
+    bounded overprediction envelope, and rank fidelity — with a stable
+    evidence format;
+17. single-core kernel and multi-worker full-frame validation of the renderer
+    cycle proxy and `a76-pi5` cost profile under the accepted product host
+    configuration;
+18. a standing drift lock binding every sealed proxy revision to current,
+    provenance-complete hardware-validation evidence.
 
 ## 3. Non-goals
 
@@ -160,7 +188,12 @@ This plan does not:
 - add hot reload or mutate a running sealed image;
 - render Wrela pixels on the host;
 - permit a host presenter to repair, reinterpret, or partially present a
-  failed frame.
+  failed frame;
+- make a physical measurement a conformance or admission input; hardware
+  evidence validates proxy revisions (§13.4) and physical regression locks,
+  never `cargo xtask verify` or compiler admission;
+- fit, tune, or infer a cycle-proxy transition constant from an observed
+  sample; validation falsifies, published-record provenance defines.
 
 ## 4. Current repository state
 
@@ -192,8 +225,19 @@ layering:
 - `crates/wrela-vmm/src/display.rs` already validates and digests guest-owned
   display records without rendering on the host. It is the beginning of the
   correct portable display boundary.
-- `crates/wrela-vmm/src/lib.rs` exposes an empty Linux `kvm` module and returns
-  `Unsupported` outside macOS/aarch64.
+- `crates/wrela-vmm/src/boot_kvm.rs` is a direct-UAPI KVM prototype boot path
+  with manually defined ioctl encodings and hardcoded `kvm_run` field
+  offsets, routed from `boot.rs` on Linux/aarch64. It performs no capability
+  validation and is nonconforming with §6 and §10: its manual UAPI layouts
+  are exactly what the rust-vmm exception exists to avoid. Task V0
+  inventories its observed behaviors and tests; Task V4 replaces and deletes
+  it.
+- `crates/wrela-vmm/src/display/kvm.rs` is a prototype DRM presenter; the
+  §9.2 presentation split rebuilds it as `display/drm.rs` under Pixels
+  P8.8e.
+- `cargo xtask verify` runs a Linux/aarch64 `cargo check` lane for
+  `wrela-vmm`; this plan considers `cargo check` insufficient, and Task V4
+  upgrades it to a full build.
 - `crates/wrela-vmm/src/main.rs` accepts an image report and blob plus record,
   replay, and Lane 2 output options. Its process contract is already suitable
   for a remote runner.
@@ -203,7 +247,10 @@ layering:
 
 The first implementation work is an extraction that preserves all current
 HVF behavior. KVM code must not be added by copying the whole boot loop and
-editing it until it works.
+editing it until it works. The existing KVM prototype is disposable evidence:
+its observed behaviors and tests are inventoried at V0 and survive as named
+fixtures where they matter, but the portable engine is not derived from it,
+and V4 replaces it wholesale rather than rehabilitating its manual UAPI.
 
 ## 5. Ownership and layering
 
@@ -364,6 +411,28 @@ There is no public generic get/set-register API in the portable engine. The
 backend receives `VcpuBootState`, `MmioCompletion`, and a fixed diagnostic
 request. This prevents KVM or HVF register identifiers from leaking upward.
 
+The two host modules implement one internal `HostBackend` trait consumed as
+`Engine<H>` with static dispatch. This adds no vtable, mechanically checks
+both adapters against one interface, and admits a synthetic fake backend for
+portable exit-normalization tests. An MMIO exit carries a completion token
+consumed exactly once; a dropped or doubled completion is a fail-closed
+error, never a silent skip.
+
+`VcpuBootState` is illustrative shorthand, not the whole contract. Task V2
+publishes a complete boot/visibility table covering every architecturally
+observable initial value: x0–x30, SP_EL0/SP_EL1, PSTATE/DAIF, FPCR/FPSR and
+the SIMD file, MPIDR/MIDR and every readable ID register, counter/timer and
+PMU accessibility, cache-identification registers with permitted
+cache-maintenance and `DC ZVA` behavior, and the disabled SVE, pointer
+authentication, MTE, PSCI/hypercall, and debug surfaces. A value a backend
+cannot pin must be proven unobservable by generated code through a sealed
+image certificate carrying the complete system-instruction allowlist; "the
+compiler does not emit it" is not evidence without that check. On KVM, the
+guest IPA width is selected at `KVM_CREATE_VM` through the machine type, and
+writable ID-register masking follows the kernel's documented ordering before
+any other vCPU register access. On HVF, the required minimum macOS version
+and any configurable IPA/granule APIs are recorded as host capabilities.
+
 ### 6.2 Exit normalization
 
 HVF and KVM report MMIO differently:
@@ -480,7 +549,7 @@ Development mappings may use anonymous populated memory. The product Pi lane
 must prove that the full reservation is committed before guest entry and
 cannot disappear under host overcommit. The accepted mechanism—preallocated
 huge pages, locked populated pages, or an equally explicit reservation—is
-recorded in the host capability output and product package. A lazy anonymous
+recorded in the host profile record and product package. A lazy anonymous
 mapping that can fail halfway through a frame is not product-conforming.
 
 ### 7.3 Stage-1 translation and W^X are one common machine contract
@@ -492,6 +561,18 @@ protection gap and a physical-KVM performance risk. With stage 1 disabled,
 ordinary data accesses receive the architecture's restrictive default memory
 attributes unless EL2 can override them. The magnitude on Raspberry Pi is an
 empirical question; the risk is not deferred until the final benchmark task.
+
+The protection threat model is explicit: stage-1 W^X defends a trusted,
+sealed, compiler-generated guest against its own defects — a stray store
+cannot silently rewrite text, and data cannot become executable. It is not
+hostile-guest isolation: EL1 owns `SCTLR_EL1` and its own tables, so a
+malicious guest could undo stage 1. The enforcement consequence is
+compiler-owned: generated code contains no system-register writes outside the
+sealed boot sequence, checked by the same image certificate that owns the
+system-instruction allowlist. Host stage-2 protection remains the
+defense-in-depth floor against escaped writes to text. A hostile-image threat
+model, if ever needed, is a separate design with stage-2 as the primary
+boundary; this plan does not claim it.
 
 The selected closure is compiler-emitted, sealed, identity-mapped stage-1
 tables shared by HVF and KVM. Before Task V5 implementation, chapter 06 and the
@@ -506,15 +587,26 @@ stable image report define and dump:
   exits to the VMM rather than becoming an unhandled stage-1 fault;
 - RX mappings for executable image pages and RW/NX mappings for writable data;
 - read-only mappings for the page-table pages themselves after entry;
-- the exact diagnostic path for a stage-1 permission fault, including whether
-  the existing unmapped-vector two-fault path remains normative.
+- a complete permission-class matrix covering every guest physical region —
+  text, rodata, frame programs, writable data, stacks, queue and device
+  pages, framebuffer generations, table pages, guard pages, and unused
+  gaps — with no byte left in an undeclared class;
+- the exact diagnostic path for a stage-1 permission fault. The default
+  candidate replaces the unmapped-vector two-fault path with a minimal fixed
+  exception trampoline: a mapped RX vector page, a fixed RW/NX fault record
+  capturing ESR/FAR/ELR/SPSR, and a fixed fault doorbell, normalized
+  identically on HVF and KVM; V4a either adopts it or records why the
+  two-fault path stays normative.
 
 The compiler owns table construction, section separation, and boot values. The
 VMM validates the report and mechanically installs the compiler-owned boot
 state in the backend; it does not synthesize different tables or attributes
 per host. If draft machine v1 cannot absorb the new reserved range and boot
 state, the machine revision is bumped before code lands. That is expected
-contract work, not a late stop condition.
+contract work, not a late stop condition. A revision bump must settle chapter
+06's older-revision loadability promise in the same amendment: either MMU-off
+machine-v1 images remain loadable under an explicitly diagnostic profile, or
+the promise is amended before the bump lands.
 
 Host stage-2 permissions remain defense in depth. HVF continues to protect
 text pages read/execute. KVM probes `KVM_CAP_READONLY_MEM` and, when available,
@@ -655,6 +747,14 @@ construct a shared Rust slice over guest-writable memory. Completion releases
 the prior generation back to the guest only after validation, copying, and
 digest creation finish.
 
+The Linux product presenter is KMS dumb-buffer scanout: CPU-written frames
+with no Mesa/V3D or GPU driver in the presentation TCB. A GPU-composited
+presenter, if ever wanted, is a separate design with its own dependency
+amendment. `present()` semantics are pinned per sink — for DRM, a frame is
+"presented" when the page flip for its buffer is queued and acknowledged, and
+vblank completion is reported distinctly; a sink may not report a frame
+presented while its bytes are still being copied.
+
 Pixels tasks P8.8a–P8.8c own the portable device and headless replay. P8.8d
 owns Metal presentation. P8.8e owns Linux/DRM presentation. This plan supplies
 the host and presenter seams those tasks consume; it does not create duplicate
@@ -793,9 +893,19 @@ cargo xtask pi bench rasputin <workload>
 ```
 
 `rasputin` is an explicit SSH host argument, not a hard-coded production name.
-Commands use the system `ssh` and file-copy tools through argument arrays. No
-Rust SSH dependency, shell interpolation, password storage, or privilege
-escalation is added.
+Argument arrays protect only the local exec: OpenSSH concatenates remote
+command arguments into one string that the remote shell re-interprets, so
+quoting is never accepted as a security boundary. The runner therefore
+executes exactly one constant literal remote command — the deployed
+`wrela-lab-agent` helper — and passes the run manifest and every variable
+value over stdin. Artifact transfer uses SFTP, not shell-composed copies. The
+agent validates paths against the configured lab root, creates the run
+directory, supervises the VMM under the remote deadline (so a local timeout
+cannot orphan a remote process), and emits one canonical result stream. SSH
+runs with forwarding, agent forwarding, and TTY allocation disabled and the
+host key pinned. No Rust SSH dependency, shell interpolation, password
+storage, or privilege escalation is added; the agent is cross-built, cached,
+and deployed with the same content-addressed discipline as the VMM binary.
 
 The runner refuses an empty host, option-shaped host, control characters,
 unexpected remote path, malformed result, digest mismatch, or remote command
@@ -803,9 +913,12 @@ that succeeds without producing its declared artifact.
 
 ### 12.2 Probe
 
-`pi probe` is read-only and records at least:
+`pi probe` is read-only. It populates the split host records of §12.5 —
+stable identity, declared profile, and per-run environment — and records at
+least:
 
 - architecture and kernel release;
+- EEPROM second-stage bootloader version and configuration digest;
 - KVM API version and required extension verdicts;
 - `KVM_CAP_READONLY_MEM` and every other protection capability used;
 - access to `/dev/kvm` without `sudo`;
@@ -890,11 +1003,32 @@ empty string, a wildcard, or a workspace root.
 
 ### 12.5 Stable result formats
 
-Three versioned, sorted, line-oriented formats are added. They use explicit
+Six versioned, sorted, line-oriented formats are added. They use explicit
 field encoding and existing hash utilities; they do not add a serialization
-dependency.
+dependency. Task V0 seals the shared grammar — field ordering, delimiters,
+escaping, list encoding, UTF-8 policy, maximum sizes, and unknown-field
+rejection — as format-versioned facts rather than parser conveniences.
 
-`wrela-host-capabilities-v1` records the probe and acceptance verdict.
+The host description is split so stable facts and per-run conditions never
+share a digest:
+
+`wrela-host-identity-v1` records stable facts and the acceptance verdict:
+board and CPU identity, kernel release and configuration digest, KVM/DRM
+module identity, EEPROM bootloader version and configuration digest, device
+tree digest, PMU identity, and the KVM capability verdicts.
+
+`wrela-host-profile-v1` records the declared product or diagnostic profile:
+hardening mode, CPU isolation and affinities, the memory-reservation
+mechanism, and expected governor and frequency policy.
+
+`wrela-run-environment-v1` records observed per-run conditions: temperature,
+throttle flags, available memory, online cores, actual frequencies,
+IRQ/context-switch census, and display mode. It is fresh evidence for every
+run and is never digest-bound as if stable.
+
+Build provenance — source, lockfile, toolchain, linker, flags, and binary
+digests — already rides in the binary cache key and is repeated in result
+records.
 
 `wrela-backend-conformance-v1` records, per case:
 
@@ -917,7 +1051,9 @@ frame_digest_sequence
 `wrela-pi-benchmark-v1` additionally records:
 
 ```text
-host_capabilities_sha256
+host_identity_sha256
+host_profile_sha256
+run_environment_sha256
 vmm_source_sha256
 vmm_binary_sha256
 stage1_tables_sha256
@@ -945,13 +1081,73 @@ frame_digest_sequence
 optional_counter_rows
 ```
 
-`host_capabilities_sha256` names the exact canonical
-`wrela-host-capabilities-v1` record accepted for the run. Benchmark fields may
-repeat convenient query columns, but disagreement with the referenced
-capability record is a parser error rather than silently drifting provenance.
-`stage1_tables_sha256` must match the sealed report. The protection-profile
-name must match the capability record and distinguishes diagnostic,
-development, and product-conforming runs.
+`host_identity_sha256` and `host_profile_sha256` name the exact canonical
+identity and profile records accepted for the run; `run_environment_sha256`
+names that run's observed conditions. Benchmark fields may repeat convenient
+query columns, but disagreement with a referenced record is a parser error
+rather than silently drifting provenance. `stage1_tables_sha256` must match
+the sealed report. The protection-profile name must match the profile record
+and distinguishes diagnostic, development, and product-conforming runs.
+
+Counter rows name Linux perf events under canonical Wrela keys. The named
+validation set is `cpu_cycles`, `inst_retired`, `l1d_cache_refill`,
+`l2d_cache_refill`, `br_mis_pred`, `stall_frontend`, and `stall_backend`.
+The rows remain optional for ordinary benchmarks; a §13.4 validation-class
+run refuses to produce a report without the complete named set.
+
+`wrela-proxy-validation-v1` records one validation run of a named proxy
+revision against measured hardware evidence:
+
+```text
+proxy_revision
+proxy_rules_sha256
+cost_profile_sha256
+corpus_manifest_sha256
+holdout_manifest_sha256
+host_identity_sha256
+host_profile_sha256
+run_environment_sha256
+vmm_binary_sha256
+counter_config            # raw event encodings, privilege filters, groups
+measurement_error_model   # formula identity and parameters
+per case:
+  case
+  workload_class          # kernel | frame | sequence
+  corpus_set              # calibration | holdout
+  image_sha256
+  workload_sha256
+  stage1_tables_sha256
+  cache_state             # cold | warm
+  predicted_cycles_per_core
+  sample_count
+  samples_cycles_per_vcpu
+  measured_min_cycles
+  measured_median_cycles
+  measured_max_cycles
+  measurement_error_cycles
+  counter_rows
+  conservatism_verdict
+  overprediction_ratio_milli
+per declared candidate pair:
+  pair
+  predicted_order
+  measured_order
+  discordant
+summary:
+  calibration_verdict
+  holdout_verdict
+  conservatism_violations
+  max_overprediction_ratio_milli
+  discordance_rate_milli
+  verdict
+```
+
+A validation report is evidence about a proxy revision, never a conformance
+input. Its parser applies the same fail-closed rules as the other formats and
+additionally rejects a summary verdict not derivable from its rows. Content
+digests prove integrity, not origin: operator, host, and retrieval provenance
+fields record who produced a result, and reports enter `bench/results/` only
+through review.
 
 Parsers reject unknown versions, repeated fields, missing required fields,
 unsorted case rows, noncanonical integers, inconsistent counts, digest length
@@ -980,6 +1176,13 @@ The first stable benchmark may retain whole-process boot time to compare with
 the existing Mac guest benchmark, but render and steady-state product claims
 need an in-guest or VMM-delimited interval that excludes SSH, file transfer,
 remote process startup, and result retrieval.
+
+Calibration and validation workloads delimit timed regions at existing
+machine MMIO exits — the display doorbell and completion already bound a
+frame, and kernel-family fixtures are whole-run delimited between entry and
+guest exit. No measurement marker, PMU device, or other guest-visible surface
+is added for measurement. PMU counters are read host-side on the pinned vCPU
+thread.
 
 ### 13.2 Host control
 
@@ -1016,13 +1219,91 @@ widened in the implementation commit that triggered it.
 The Mac `cargo xtask bench guest` remains a Mac/HVF algorithmic regression
 lock. Pi locks have distinct names and never share a numeric threshold with it.
 
+### 13.4 Cycle-proxy validation
+
+The compiler's renderer cycle proxy and the `a76-pi5` cost profile are
+deterministic models. Their authority inside admission and optimization
+ranking must never exceed their validated accuracy against the flagship
+hardware; this lane is where that accuracy is established. Validation output
+never enters compiler admission, `cargo xtask verify`, or a conformance
+verdict. It gates whether a proxy revision may be sealed at all.
+
+A validation run pairs, per corpus case, the proxy's predicted cycle total
+with PMU-measured cycle counts from conforming Rasputin runs, keyed by proxy
+revision, image digest, workload digest, and the accepted host identity and
+profile records. Three properties are checked:
+
+1. **One-sided conservatism (observed non-underprediction).** On the
+   declared corpus under the declared conditions, no measured guest-cycle
+   count exceeds the proxy's bound for the same case beyond the declared
+   measurement-error term. This is corpus falsification evidence, not a
+   universal physical proof; the corpus is therefore split into a
+   calibration set and a frozen holdout set, and the holdout may not inform
+   any model fix. A violation is a proxy-model defect and a stop condition;
+   it is closed by a published-record fact or a state-model extension, never
+   by fitting the observed number.
+2. **Bounded overprediction.** The predicted-to-measured ratio stays inside a
+   sealed per-workload-class envelope so proxy headroom is not fictitious. An
+   envelope breach is a named finding that demands model-precision work; it
+   does not change an admission verdict.
+3. **Rank fidelity.** For declared candidate pairs drawn from real compiler
+   selection decisions, the proxy's ordering agrees with the measured
+   ordering wherever the measured difference exceeds the noise envelope.
+
+The corpus must contain kernel-family fixtures, real renderer frames, and
+minutes-long sequences. Microkernels alone are inadmissible evidence: ranked
+decisions must survive real programs. Envelopes are sealed from repeated
+conforming-run noise measurements, not chosen aspirationally, and every
+report carries the full provenance of §12.5.
+
+Measurement mechanics are part of the evidence, not an implementation
+detail. Guest-cycle comparisons count guest execution only, using the arm64
+perf `exclude_host`/`exclude_guest` attributes; every report records raw
+event encodings, privilege filters, and pinned-group membership, and refuses
+multiplexed samples (`time_enabled` must equal `time_running`). Counters are
+collected per vCPU as vectors, and the comparison rule must match what the
+proxy predicts: a per-core worst path is compared per core, never against a
+sum. Overflow handling, PMU version, and cold/warm initial cache state are
+declared per case. Guest-cycle evidence, wall-clock frame cadence,
+presenter/vblank latency, and VMM/device service time are four separate
+streams; a proxy over guest instructions is never compared against a sample
+that includes DRM presentation or host service time.
+
+Aggregate refill and mispredict counts are falsification diagnostics; they
+cannot attribute events to particular proxy transitions. Attribution uses
+controlled differential fixtures that vary one modeled term at a time — real
+workloads falsify, fixtures attribute.
+
+Validation is a reusable lifecycle, not a one-time event:
+
+```text
+draft proxy revision
+    -> calibration runs (calibration set)
+    -> model fixes via published-record provenance
+    -> frozen holdout runs
+    -> hardware validation report
+    -> offline binding check in `cargo xtask verify`
+    -> sealed proxy revision
+```
+
+Every later proxy revision — including Pixels P13.2's exact-proxy extension —
+reruns this lifecycle; an earlier report never carries over to a new
+revision. `cargo xtask verify` never runs physical measurement and measured
+values never enter compiler admission, but it does verify the schema,
+provenance, and digest binding of the checked-in validation report against
+the active proxy revision. Without that offline check the drift lock is
+policy rather than enforcement.
+
 ## 14. Verification and conformance
 
 ### 14.1 Required repository gate
 
 `cargo xtask verify` remains the one required task and milestone gate. It stays
 local, deterministic, and macOS/aarch64. A live SSH host is never required for
-the repository to verify.
+the repository to verify. After V15, the local gate also performs the offline
+validation-report binding check of §13.4 — schema, provenance, and digest
+binding against the active proxy revision — without running any physical
+measurement.
 
 After Task V4, that local gate also performs a full pinned
 `aarch64-unknown-linux-musl` build of `wrela-vmm`. This does not execute KVM or
@@ -1093,6 +1374,8 @@ a named Rasputin regression case.
 Tasks are linear unless a task explicitly says it is coordinated with a Pixels
 task. Each task gets one commit and runs `cargo xtask verify` before closing.
 Focused checks are diagnostic evidence and do not substitute for the gate.
+The program closes with the cycle-proxy validation tasks V13–V15; the full
+V0–V15 sequence completes before Pixels Task P9.1 begins.
 
 ### Task V0 — reconcile machine, host, and dependency policy
 
@@ -1101,15 +1384,18 @@ behavior.
 
 **Produces:** a read-only preflight host inventory; exact rust-vmm dependency
 audit; updated `AGENTS.md` dependency exception; corrected machine and Pixels
-documents; a pinned Mac cross-target/linker preflight; and a stable synthetic
-host-capability schema before KVM consumes it.
+documents; a pinned Mac cross-target/linker preflight; a labeled inventory of
+the existing KVM/DRM prototype with the behaviors and tests that must survive
+as named fixtures; and stable synthetic host identity, profile, and
+run-environment schemas before KVM consumes them.
 
 **Files:** `AGENTS.md`, this document, `docs/language/06-machine.md`,
 `docs/designs/WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md`, cross-toolchain
 configuration, `crates/xtask/src/pi.rs` (new), stable parser tests/fixtures,
 and no production KVM code.
 
-**Contract/dump delta:** adds `wrela-host-capabilities-v1`; no image, report,
+**Contract/dump delta:** adds `wrela-host-identity-v1`,
+`wrela-host-profile-v1`, and `wrela-run-environment-v1`; no image, report,
 machine, or record delta.
 
 **Work:** preflight Rasputin's architecture, `/dev/kvm` access, page size,
@@ -1119,7 +1405,11 @@ ioctl-only API, target, IPA, vCPU, read-only-memory, and feature rows
 available locally; audit the exact Cargo closure and licenses; cite chapter
 06's existing rust-vmm permission; update the repository rule with only the
 approved target-gated crates and conditions; correct chapter 06's stale
-`IMAGE_BASE`/`RTDATA_BASE`; add the normative common W^X requirement; and
+`IMAGE_BASE`/`RTDATA_BASE`; add the normative common W^X requirement; correct
+chapter 06's boot-chain TCB claim to name the Pi EEPROM second-stage
+bootloader as versioned third-party boot firmware in the appliance path and
+state how it is pinned and recorded; inventory the KVM/DRM prototype and name
+the V4 removal boundary; seal the shared evidence-format grammar; and
 reconcile Pixels P8.8's `display/hvf.rs`/`display/kvm.rs` names to the
 presentation-owned `display/metal.rs`/`display/drm.rs`. Task V4 replaces
 `not-queried` with capability-checked KVM values. Task V4a fixes the exact
@@ -1188,8 +1478,11 @@ check, or changes a guest-visible result without an approved contract reason.
 **Requires:** V1.
 
 **Produces:** backend-neutral capability, boot-state, exit, MMIO completion,
-diagnostic, handle, and error types; stable synthetic exit fixtures; no KVM
-implementation.
+diagnostic, handle, and error types; the `HostBackend` trait consumed with
+static dispatch and a synthetic fake backend; the exactly-once MMIO
+completion token; the complete §6.1 boot/visibility state table and the
+system-instruction allowlist certificate schema; stable synthetic exit
+fixtures; no KVM implementation.
 
 **Files:** `crates/wrela-vmm/src/host/mod.rs` (new), portable error definitions,
 test fixtures, and this document if names differ.
@@ -1252,18 +1545,22 @@ falls.
 **Produces:** target-gated pinned KVM dependencies; a full Mac-built
 Linux/aarch64 VMM artifact in the required gate; and a one-vCPU headless KVM
 backend that boots an explicitly diagnostic MMU-off image through console and
-guest exit.
+guest exit. This task is a migration: it replaces the inventoried prototype,
+and `boot_kvm.rs` with its manual UAPI is deleted here per the V0 inventory.
 
 **Files:** workspace/Cargo lockfiles, cross-target configuration,
 `crates/wrela-vmm/Cargo.toml`, `host/kvm.rs` (new), KVM tests, xtask
 build/prepare/run support, `cargo xtask verify`, and stable conformance
 fixtures.
 
-**Contract/dump delta:** KVM appears in host capabilities and conformance
+**Contract/dump delta:** KVM appears in host identity and conformance
 records; no guest-visible delta.
 
-**Work:** create VM; register DRAM; query `KVM_CAP_READONLY_MEM` and every used
-extension; create the preferred arm64 vCPU; validate the host baseline without
+**Work:** select the machine IPA width at `KVM_CREATE_VM`; create the VM;
+register DRAM; query `KVM_CAP_READONLY_MEM` and every used extension; create
+the preferred arm64 vCPU; mask writable ID registers to the Wrela baseline in
+the kernel's documented order before any other vCPU register access; validate
+the host baseline without
 pretending HVF can mirror KVM feature masking; set the diagnostic boot
 registers; normalize MMIO; complete reads/writes; return structured errors;
 cross-build and cache the binary on the Mac; transfer and run it on Rasputin;
@@ -1285,7 +1582,7 @@ fault cases.
 validated before run; KVM completion cannot reproduce HVF MMIO semantics; no
 pinned Mac cross-target can build the real backend; the Pi cannot execute the
 cross-built artifact; or a manual Linux UAPI copy is introduced beside
-rust-vmm.
+rust-vmm or survives this task's close.
 
 ### Task V4a — measure and close the stage-1 machine decision
 
@@ -1307,7 +1604,7 @@ output does not adopt them until V5.
 
 **Work:** run fixed compute-loop and memory-copy workloads with identical
 output in MMU-off and provisional MMU-on configurations; retain raw samples,
-exit census, capability digest, page size, kernel, temperature, and throttle
+exit census, identity and profile digests, page size, kernel, temperature, and throttle
 state; verify rather than tune host state; choose the common granule and table
 placement; specify Normal-WB DRAM, Device MMIO, RX text, RW/NX data,
 read-only table pages, and `SCTLR_EL1.WXN`; decide whether the existing
@@ -1434,8 +1731,9 @@ noise without a machine-contract explanation.
 
 **Requires:** V7.
 
-**Produces:** content-addressed cross-built-binary deploy/run, validated result
-retrieval, bounded cleanup, stable local artifact directories, and a documented
+**Produces:** the productionized `wrela-lab-agent` remote helper;
+content-addressed cross-built-binary deploy/run, validated result retrieval,
+bounded cleanup, stable local artifact directories, and a documented
 remote-build fallback that is not the ordinary path.
 
 **Files:** `crates/xtask/src/pi.rs`, xtask dispatch/usage, parser tests, and
@@ -1446,7 +1744,9 @@ delta.
 
 **Work:** implement local binary caching and artifact-only deployment; unique
 remote directories; digest checks; explicit timeouts;
-stdout/stderr/result/capability retrieval; no shell-composed arguments; safe
+stdout/stderr/result/record retrieval; manifest-over-stdin lab-agent
+invocation with no shell-composed arguments; SFTP-only transfer; remote
+deadline supervision inside the agent; safe
 retain/cleanup; clear offline and stale-cache failures; and isolate the remote
 source-build fallback behind an explicit option with complete toolchain
 provenance.
@@ -1484,8 +1784,8 @@ compiler cost dump or release verdict.
 
 **Work:** delimit timed regions on the Pi; record affinity, governor,
 frequency, thermal/throttle state, samples, exits, and frame digests; bind each
-result to the exact canonical host-capability record through
-`host_capabilities_sha256`; bind it to the sealed stage-1 table digest and
+result to the exact canonical host identity, profile, and run-environment
+records through their digests; bind it to the sealed stage-1 table digest and
 named protection profile; refuse nonconforming host state; keep SSH outside
 measurement; define relock discipline before adding a numeric threshold.
 
@@ -1500,7 +1800,8 @@ from a cold host state; results remain diagnostic until V10.
 
 **Stop conditions:** network time enters a sample; the runner silently tunes
 the host; output differs across samples; temperature/throttling is unrecorded;
-the capability digest is missing or inconsistent; or a threshold is selected
+an identity, profile, or run-environment digest is missing or inconsistent;
+or a threshold is selected
 from one flattering run.
 
 ### Task V10 — close product host hardening
@@ -1509,8 +1810,8 @@ from one flattering run.
 diagnostic performance evidence.
 
 **Produces:** committed DRAM; a minimal Linux jail and resource profile; a
-signed macOS sandbox and resource profile; reproducible host-capability
-verdicts; negative package tests; and a fresh provenance-complete benchmark of
+signed macOS sandbox and resource profile; reproducible host identity and
+profile verdicts; negative package tests; and a fresh provenance-complete benchmark of
 the accepted Pi product configuration. A numeric threshold still requires
 repeated measurements and a separate lock commit.
 
@@ -1519,16 +1820,23 @@ configuration, macOS signing/entitlement/sandbox configuration, packaging
 manifests, chapter 06 if its host promises need clarification, and conformance
 fixtures.
 
-**Contract/dump delta:** no guest-visible delta; final host capability records
+**Contract/dump delta:** no guest-visible delta; final host profile records
 name the enforced Linux or macOS isolation profile and its provenance.
 
-**Work:** reserve full DRAM before entry; restrict Linux files, syscalls,
-devices, namespaces, limits, and privileges; run the signed Mac VMM/Forge child
-under the promised filesystem, device, network, and resource constraints;
+**Work:** reserve full DRAM before entry through a preallocated HugeTLB
+reservation as the single product mechanism; run the Linux VMM as a dedicated
+user on a read-only root with mount/PID namespaces, a seccomp allowlist,
+cgroup CPU/memory policy, explicit `/dev/kvm` and `/dev/dri` device access,
+and no network; run the signed Mac VMM/Forge child under App Sandbox — a
+separate control from the hypervisor entitlement, which is the only
+entitlement currently present — with the promised filesystem, device,
+network, and resource constraints;
 record kernel/XNU, configuration, signing, entitlement, and package
 provenance; distinguish explicitly labeled local diagnostic runs from
 product-conforming ones; and fail closed when either product profile cannot be
-enforced.
+enforced. This outlier task explicitly permits three commits — V10a the Linux
+jail, V10b the macOS sandbox, V10c packaging and the provenance-complete
+rerun — each passing the repository gate.
 
 **Tests:** retained write-to-text and execute-from-data regressions; missing
 memory reservation; resource-limit failure; Linux syscall/file/device escape
@@ -1609,6 +1917,126 @@ tests.
 host-only guest semantics, an unversioned IPC protocol, or in-process VMM
 failure can corrupt editor state.
 
+### Task V13 — seal the proxy-validation contract and calibration corpus
+
+**Requires:** V10's accepted product host configuration and V9's benchmark
+machinery.
+
+**Produces:** the sealed §13.4 validation contract with numeric envelopes; the
+calibration corpus manifests; `wrela-proxy-validation-v1` parsers and
+comparison tooling; the required counter set; no proxy change and no
+guest-visible delta.
+
+**Files:** this document,
+`docs/designs/WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md` (coordination
+note), `crates/xtask/src/proxy_validation.rs` (new), corpus manifests under
+`bench/`, parser tests and synthetic fixtures.
+
+**Contract/dump delta:** adds `wrela-proxy-validation-v1`; no image, report,
+machine, or record delta.
+
+**Work:** define the predicted/measured pairing keys (proxy revision, image
+digest, workload digest, host identity and profile digests); partition the
+corpus into a calibration set and a frozen holdout set and seal the holdout;
+seal per-class
+overprediction envelopes and the measurement-noise envelope from repeated
+conforming Rasputin runs; declare the kernel, frame, and sequence corpus
+classes, each containing real renderer workloads rather than microkernels
+alone; declare rank-fidelity candidate pairs from real compiler selection
+decisions; require the named counter set for validation-class runs; and
+record in the Pixels plan that P13.2 consumes this lane.
+
+**Tests:** hostile parser cases; synthetic conservatism-violation detection;
+synthetic discordant-pair computation; corpus-manifest validation; refusal of
+a report missing a required counter row; envelope-provenance fields present.
+
+**Focused checks:** dry-run comparison of a stored synthetic benchmark record
+against stored proxy predictions.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** an envelope chosen without repeated-run noise evidence; a
+corpus class without a real-workload member; any contract clause that lets a
+measured value define a proxy transition constant.
+
+### Task V14 — validate single-core kernel and frame evidence
+
+**Requires:** V13.
+
+**Produces:** the first provenance-complete `wrela-proxy-validation-v1` report
+covering the kernel and single-frame classes on one vCPU under the product
+protection profile; every discovered model defect closed or explicitly open.
+
+**Files:** xtask validation runner, `bench/results/` evidence, focused
+regression fixtures for every discovered model defect.
+
+**Contract/dump delta:** none beyond V13's format.
+
+**Work:** run the corpus single-vCPU on a conforming Rasputin host with
+stage-1 enabled and the product protection profile; collect the required
+counter rows host-side on the pinned vCPU thread; compare measured cycles and
+counter-attributable behavior — cache refills against modeled memory-class
+transitions, branch mispredicts against modeled paths — with proxy
+predictions; route every conservatism violation to a published-record or
+state-model fix and rerun; record the accepted report with full provenance.
+
+**Tests:** report round-trip; nonconforming-host refusal; digest binding
+between report, capabilities, image, and proxy revision; a permanent
+regression fixture for each closed defect.
+
+**Focused checks:** `cargo xtask pi validate-proxy rasputin --class kernel`
+and `--class frame` (final command names may differ), repeated from a cold
+conforming host.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** a conservatism violation closed by widening an envelope
+in the same change; a proxy or cost-profile constant fitted from an observed
+sample; a missing counter row silently tolerated; measured attribution that
+contradicts the model's memory-class story left unexplained.
+
+### Task V15 — validate the flagship topology and establish the drift lock
+
+**Requires:** V14 and V11's DRM presentation.
+
+**Produces:** full-frame and sequence-class validation under the sealed
+flagship worker topology with active display presentation; sustained-cadence
+and thermal evidence; the standing drift lock that gates every future proxy
+revision.
+
+**Files:** xtask validation runner, `bench/results/` evidence, this document,
+and the Pixels plan's P13.2 consumption note if wording must be reconciled.
+
+**Contract/dump delta:** none; the drift-lock rule is recorded normatively in
+this document and consumed by Pixels P13.2.
+
+**Work:** run acceptance-style frame and minutes-long sequence workloads under
+the sealed flagship topology (the Pixels D-P8R-02 profile) with DRM
+presentation active; validate the cost profile's contention and
+memory-bandwidth terms against measured multi-worker behavior; record
+temperature, throttle state, and sustained frame cadence; establish the drift
+lock: a proxy revision may be sealed or bumped only while a current passing
+report exists, a report is invalidated by any change to the referenced host
+identity or profile record (kernel, EEPROM firmware, module set, hardening
+profile) while run-environment records remain per-run evidence, the §13.4
+offline binding check is wired into `cargo xtask verify`, and the operator
+rerun policy is documented.
+
+**Tests:** multi-worker report validation; stale-report detection when the
+identity or profile digest changes; drift-lock refusal fixtures; the offline
+binding check passing and failing in `cargo xtask verify`; sequence-class
+thermal/throttle field presence.
+
+**Focused checks:** `cargo xtask pi validate-proxy rasputin --class sequence`
+under the flagship topology, repeated across thermal conditions.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** a contention-term conservatism violation waived as
+scheduling noise; a drift-lock bypass path; a validation report older than the
+identity or profile record it cites; display traffic excluded from the sequence
+class to make a result pass.
+
 ## 16. Completion criteria
 
 This plan is complete only when all of the following are true:
@@ -1631,7 +2059,8 @@ This plan is complete only when all of the following are true:
 11. Remote results are content-addressed, provenance-complete, and parsed
    fail-closed.
 12. Pi measurements exclude network time, record thermal/throttle state, and
-    reference the exact accepted host-capability record by digest.
+    reference the exact accepted host identity, profile, and run-environment
+    records by digest.
 13. W^X and committed-memory requirements are enforceable on the product Pi.
 14. Linux product execution is jailed and signed macOS product execution is
     sandboxed; diagnostic profiles are labeled nonconforming.
@@ -1645,6 +2074,17 @@ This plan is complete only when all of the following are true:
 19. Every KVM-specific discovery is promoted to permanent coverage.
 20. No dependency beyond the audited, target-gated KVM allowlist was added
     without a separate approved amendment.
+21. The §13.4 validation contract is sealed, and the active proxy revision
+    carries a current passing `wrela-proxy-validation-v1` report with zero
+    open conservatism violations across the kernel, frame, and sequence
+    classes on both the calibration and frozen holdout sets.
+22. Multi-worker validation under the flagship topology exercised the cost
+    profile's contention terms with display presentation active, and the
+    drift lock binds proxy revision, validation report, and host identity
+    and profile by digest, with the offline binding check enforced by
+    `cargo xtask verify`.
+23. The P8-era KVM/DRM prototype's manual UAPI is deleted, and every
+    surviving behavior from its V0 inventory is covered by a named fixture.
 
 The final product remains the contract already stated in chapter 06: one
 designed Wrela machine, implemented by one portable VMM with two thin host

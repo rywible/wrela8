@@ -1,0 +1,2206 @@
+module render_isolation
+
+from core.__image_pixels import __wrela_pixels_p7_abs, __wrela_pixels_p7_csg_influence, __wrela_pixels_p7_csg_occupancy, __wrela_pixels_p7_feature_filter_excludes_root, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_polynomial_uv_bounds, __wrela_pixels_p7_feature_q_span, __wrela_pixels_p7_feature_support_q_span, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_feature_world_bounds, __wrela_pixels_p7_initial_inside, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_object_composed_root, __wrela_pixels_p7_object_q_tube, __wrela_pixels_p7_standard_torus_feature, __wrela_pixels_p7_standard_torus_positive_hit, __wrela_pixels_p7_workspace_load_root, __wrela_pixels_p7_workspace_load_root_tmp, __wrela_pixels_p7_workspace_store_root, __wrela_pixels_p7_workspace_store_root_tmp, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_tile_feature, __wrela_pixels_tile_feature_count
+from core.field import sqrt_scalar
+from core.render import FrameInputSnapshot, P7BoolResult, P7RootContext, P7RootList, P7RowCandidates, P7StoredRoot, P7VisibilitySample, P7WalkTarget
+from core.render_certificate import certify_monotone_root, certify_quadratic_discriminant
+from core.render_interval import FixedDomain, Iv32, interval_add, interval_mul
+from core.render_program import polynomial_horner9
+
+pub fn __wrela_pixels_p5_finite(value: f32) -> bool:
+    max_finite: f32 = 340282346638528859811704183484516925440.0
+    return value == value and value <= max_finite and value >= -max_finite
+
+pub fn __wrela_pixels_p7_interval_from_f32(value: f32, exponent: i32) -> [i64; 3]:
+    if not __wrela_pixels_p5_finite(value):
+        return [0; 3]
+    scaled = value
+    step: i32 = 0
+    if exponent < 0:
+        @budget(bound=96)
+        while step < -exponent:
+            scaled = scaled * 2.0
+            if not __wrela_pixels_p5_finite(scaled):
+                return [0; 3]
+            step = step + 1
+    if exponent > 0:
+        @budget(bound=63)
+        while step < exponent:
+            scaled = scaled * 0.5
+            step = step + 1
+    if scaled < -2147480000.0 or scaled > 2147480000.0:
+        return [0; 3]
+    center = scaled.to[i64]()
+    lo = center
+    hi = center
+    converted = center.to[f32]()
+    if converted > scaled:
+        lo = lo - 1
+    if converted < scaled:
+        hi = hi + 1
+    magnitude = center
+    if magnitude < 0:
+        magnitude = -magnitude
+    # Account conservatively for the complete generated f32 coefficient
+    # schedule. Any value that still cannot fit the sealed Iv32 domain fails
+    # explicitly below; widening is never saturated.
+    radius = magnitude / 65536 + 64
+    lo = lo - radius
+    hi = hi + radius
+    if lo < -2147483648 or hi > 2147483647:
+        return [0; 3]
+    return [1, lo, hi]
+
+pub fn __wrela_pixels_p7_raw_to_f32(raw: i32, exponent: i32) -> f32:
+    value = raw.to[f32]()
+    step: i32 = 0
+    if exponent < 0:
+        @budget(bound=96)
+        while step < -exponent:
+            value = value * 0.5
+            step = step + 1
+    elif exponent > 0:
+        @budget(bound=63)
+        while step < exponent:
+            value = value * 2.0
+            step = step + 1
+    return value
+
+# Box-complete single-walk root isolation for one primitive feature. The
+# power coefficients are box-widened before the walk, so every cell verdict
+# — certified crossing, proven root-free, or unresolved — holds over the
+# caller's whole uv box rather than only its centre ray. All certified
+# crossings append in near-to-far order; every unresolved cell is enclosed,
+# together with everything farther, in one conservative corridor record, and
+# certified roots nearer than the corridor survive it.
+fn __wrela_pixels_p7_isolate_power_roots(
+    read roots: P7RootList,
+    capacity: u32,
+    read power: [Iv32; 9],
+    read derivative_power: [Iv32; 9],
+    read target: P7WalkTarget,
+    read context: P7RootContext,
+) -> P7RootList:
+    domain = FixedDomain.full(context.exponent)
+    degree = target.degree
+    q_lo = target.q_lo
+    q_hi = target.q_hi
+    renderer = context.renderer
+    exponent = context.exponent
+    filter: [f32; 4] = [context.u, context.v, context.ru, context.rv]
+    result = P7RootList(
+        ok=roots.ok,
+        error=roots.error,
+        renderer=roots.renderer,
+        worker=roots.worker,
+        temporary=roots.temporary,
+        count=roots.count,
+        initial_inside=roots.initial_inside,
+    )
+    if not result.ok:
+        return result
+    if degree == 0 or degree > 8 or q_lo >= q_hi:
+        result.ok = false
+        result.error = 14
+        return result
+    appended_base = result.count
+    stack_lo: [i32; 26] = [0; 26]
+    stack_hi: [i32; 26] = [0; 26]
+    stack_depth: [u8; 26] = [0; 26]
+    stack_lo[0] = q_lo
+    stack_hi[0] = q_hi
+    stack_length: i32 = 1
+    # Only the proven support region may produce verdicts. `q_lo`/`q_hi`
+    # deliberately overshoot it (see the pad at the call site) so the walk has
+    # sign-definite faces to certify against; a cell outside the support
+    # cannot hold a surface, so it neither yields a crossing nor keeps the
+    # corridor open.
+    support_lo = target.support_lo
+    support_hi = target.support_hi
+    corridor_hi: i64 = support_lo.to[i64]()
+    have_corridor = false
+    visited_cells: u32 = 0
+    visited_cap: u32 = 8192
+    if degree == 4 and context.ru == 0.0 and context.rv == 0.0:
+        # A point-sampled quartic that has not separated after 64 certified
+        # cells is handed to the event corridor/coverage ladder. The analytic
+        # event carries its owner and certified coverage, so extending this
+        # q-only walk cannot make an unresolved pixel more complete. Roots
+        # certified before the cap survive the corridor; the remainder stays
+        # enclosed, making this a fail-closed work bound rather than a root
+        # omission.
+        visited_cap = 64
+    if context.depth_cap < 24:
+        # Subpixel arrangement cells only need hit/miss/ambiguous; breadth
+        # beyond a handful of cells means the uv ladder should separate the
+        # geometry instead.
+        visited_cap = 64
+    @budget(bound=33554431)
+    while stack_length > 0:
+        stack_length = stack_length - 1
+        cell_lo = stack_lo[stack_length.to[usize]()]
+        cell_hi = stack_hi[stack_length.to[usize]()]
+        depth = stack_depth[stack_length.to[usize]()]
+        visited_cells = visited_cells + 1
+        if visited_cells > visited_cap:
+            # Graceful work cap: enclose everything not yet resolved in the
+            # corridor instead of grinding the full dyadic tree. Strictly
+            # conservative — the caller's ladder subdivides in uv instead.
+            if cell_hi >= support_lo and cell_lo <= support_hi:
+                have_corridor = true
+                if cell_hi.to[i64]() > corridor_hi:
+                    corridor_hi = cell_hi.to[i64]()
+            continue
+        # Everything at or below the growing corridor face is already
+        # enclosed by the corridor record: skipping it here is what keeps
+        # unresolved-heavy walks linear in the resolved frontier instead of
+        # exponential in the depth cap.
+        if have_corridor and cell_hi.to[i64]() <= corridor_hi:
+            continue
+        cell = Iv32.range(cell_lo, cell_hi)
+        resolved = false
+        unresolved = false
+        match polynomial_horner9(power, degree, cell, domain):
+            case .Value(cell_value):
+                if cell_value.lower() > 0 or cell_value.upper() < 0:
+                    resolved = true
+                else:
+                    # Box-widened coefficients turn each root into a sheet
+                    # with positive q-extent, so the certificate must be
+                    # attempted at every cell: the walk accepts the smallest
+                    # cell whose faces bracket the sheet, and subdividing
+                    # into a sheet could never terminate.
+                    faces_ok = true
+                    left_value = Iv32.point(0)
+                    right_value = Iv32.point(0)
+                    match polynomial_horner9(power, degree, Iv32.point(cell_lo), domain):
+                        case .Value(value):
+                            left_value = value
+                        case _:
+                            faces_ok = false
+                    match polynomial_horner9(power, degree, Iv32.point(cell_hi), domain):
+                        case .Value(value):
+                            right_value = value
+                        case _:
+                            faces_ok = false
+                    derivative_ok = faces_ok
+                    derivative = Iv32.point(0)
+                    if derivative_ok:
+                        match polynomial_horner9(derivative_power, degree - 1, cell, domain):
+                            case .Value(value):
+                                derivative = value
+                            case _:
+                                derivative_ok = false
+                    if derivative_ok:
+                        monotone = derivative.lower() > 0 or derivative.upper() < 0
+                        same_faces = (
+                            left_value.lower() > 0 and right_value.lower() > 0
+                        ) or (
+                            left_value.upper() < 0 and right_value.upper() < 0
+                        )
+                        if monotone and same_faces:
+                            # Monotone through same-sign faces: root-free.
+                            resolved = true
+                        else:
+                            certificate = certify_monotone_root(
+                                left_value,
+                                right_value,
+                                derivative,
+                            )
+                            if certificate[0] == 1 and certificate[2] > 0:
+                                # Localize before accepting. The certificate
+                                # can succeed on a wide (even whole-domain)
+                                # cell, but a wide bracket poisons everything
+                                # downstream: validity predicates evaluated
+                                # over the whole q-range go mixed, and every
+                                # root's tube overlaps every other's. Bisect
+                                # toward the certified sign change while the
+                                # midpoint evaluation stays sign-definite;
+                                # this stops exactly at the interval tube
+                                # width, which is the tightest sound bracket.
+                                bracket_lo = cell_lo
+                                bracket_hi = cell_hi
+                                bracket_left = left_value
+                                bracket_right = right_value
+                                localize: u8 = 0
+                                @budget(bound=31)
+                                while localize < 31:
+                                    bracket_mid = (
+                                        bracket_lo.to[i64]()
+                                        + (bracket_hi.to[i64]() - bracket_lo.to[i64]()) / 2
+                                    )
+                                    if bracket_mid <= bracket_lo.to[i64]() or bracket_mid >= bracket_hi.to[i64]():
+                                        localize = 31
+                                        continue
+                                    middle_ok = false
+                                    middle_value = Iv32.point(0)
+                                    match polynomial_horner9(
+                                        power,
+                                        degree,
+                                        Iv32.point(bracket_mid.to[i32]()),
+                                        domain,
+                                    ):
+                                        case .Value(value):
+                                            middle_value = value
+                                            middle_ok = true
+                                        case _:
+                                            pass
+                                    if not middle_ok:
+                                        localize = 31
+                                        continue
+                                    middle_positive = middle_value.lower() > 0
+                                    middle_negative = middle_value.upper() < 0
+                                    if not middle_positive and not middle_negative:
+                                        localize = 31
+                                        continue
+                                    keep_low = false
+                                    keep_high = false
+                                    if middle_positive:
+                                        if bracket_left.upper() < 0:
+                                            keep_low = true
+                                        elif bracket_right.upper() < 0:
+                                            keep_high = true
+                                    else:
+                                        if bracket_left.lower() > 0:
+                                            keep_low = true
+                                        elif bracket_right.lower() > 0:
+                                            keep_high = true
+                                    if keep_low:
+                                        bracket_hi = bracket_mid.to[i32]()
+                                        bracket_right = middle_value
+                                    elif keep_high:
+                                        bracket_lo = bracket_mid.to[i32]()
+                                        bracket_left = middle_value
+                                    else:
+                                        localize = 31
+                                        continue
+                                    localize = localize + 1
+                                validity = __wrela_pixels_p7_feature_valid_filter(
+                                    renderer,
+                                    target.feature,
+                                    filter,
+                                    [bracket_lo, bracket_hi],
+                                    exponent,
+                                    context.snapshot.params,
+                                    context.snapshot.camera,
+                                )
+                                if validity[0] == 0:
+                                    result.ok = false
+                                    result.error = 4
+                                    return result
+                                # A bracket that misses the support span
+                                # entirely encloses a zero of the ray
+                                # polynomial that provably is not a point of
+                                # this feature's surface — the support proof
+                                # already excludes it, which is exactly why
+                                # the walk was allowed to look there. Drop
+                                # it; the cell is resolved either way.
+                                in_support = (
+                                    bracket_hi >= support_lo
+                                    and bracket_lo <= support_hi
+                                )
+                                if not in_support:
+                                    pass
+                                elif validity[0] == 2:
+                                    # The crossing is certified but the
+                                    # feature's validity predicate is mixed
+                                    # over the query box: the validity
+                                    # boundary is a silhouette event curve
+                                    # crossing this cell, so the root exists
+                                    # on one side of it only. Record the
+                                    # certified bracket as a partial root
+                                    # (a corridor with a known-tight
+                                    # position and an unknown presence);
+                                    # the selector's side-state rules and
+                                    # the coverage tiers resolve or
+                                    # integrate it. Failing the whole
+                                    # collection here would make every
+                                    # silhouette-straddling cell ambiguous
+                                    # at every scale.
+                                    result = __wrela_pixels_p7_append_root(
+                                        result,
+                                        capacity,
+                                        P7StoredRoot(
+                                            ok=true,
+                                            lo=bracket_lo,
+                                            hi=bracket_hi,
+                                            object=target.object,
+                                            identity=target.identity,
+                                            feature=target.feature,
+                                            crossing=false,
+                                            method=3,
+                                            margin=0,
+                                        ),
+                                    )
+                                    if not result.ok:
+                                        return result
+                                elif validity[1] == 1:
+                                    margin = certificate[2]
+                                    if margin > 2147483647:
+                                        margin = 2147483647
+                                    result = __wrela_pixels_p7_append_root(
+                                        result,
+                                        capacity,
+                                        P7StoredRoot(
+                                            ok=true,
+                                            lo=bracket_lo,
+                                            hi=bracket_hi,
+                                            object=target.object,
+                                            identity=target.identity,
+                                            feature=target.feature,
+                                            crossing=true,
+                                            method=1,
+                                            margin=margin.to[i32](),
+                                        ),
+                                    )
+                                    if not result.ok:
+                                        return result
+                                resolved = true
+            case _:
+                pass
+        if not resolved:
+            if depth >= context.depth_cap:
+                unresolved = true
+            else:
+                # Split off the root sheets.
+                #
+                # Coefficients enter this walk box-widened, so a simple root
+                # of the underlying polynomial is not a point but a SHEET of
+                # positive q-extent on which no point evaluation can ever be
+                # sign-definite. A cell is only certifiable when both of its
+                # faces are strictly signed, so a split that lands inside a
+                # sheet hands both children a permanently indefinite face:
+                # every descendant that still touches that face stays
+                # indefinite, the chain shrinks to a single quantum against
+                # it, and the walk emits a corridor for a crossing that is
+                # in fact cleanly separated and monotone. Nothing deeper
+                # rescues it, which is why raising the depth or visit caps
+                # does nothing.
+                #
+                # The split point is a pure search choice: it decides which
+                # cells get visited and never enters any verdict, so biasing
+                # it away from the sheets cannot weaken a certificate. Probe
+                # the midpoint first — keeping the exact dyadic ladder
+                # wherever it already works — then successively larger
+                # offsets, and take the first strictly-signed one. Sheets
+                # are orders of magnitude narrower than any cell that has
+                # not yet certified, so an eighth of the span clears them.
+                # If no probe is clean the cell is essentially all sheet;
+                # fall back to the midpoint and behave exactly as before.
+                span = cell_hi.to[i64]() - cell_lo.to[i64]()
+                midpoint = cell_lo.to[i64]() + span / 2
+                split = midpoint
+                if span >= 8:
+                    probe: u8 = 0
+                    @budget(bound=7)
+                    while probe < 7:
+                        candidate = midpoint
+                        if probe == 1:
+                            candidate = midpoint + span / 8
+                        elif probe == 2:
+                            candidate = midpoint - span / 8
+                        elif probe == 3:
+                            candidate = midpoint + span / 4
+                        elif probe == 4:
+                            candidate = midpoint - span / 4
+                        elif probe == 5:
+                            candidate = midpoint + (span * 3) / 8
+                        elif probe == 6:
+                            candidate = midpoint - (span * 3) / 8
+                        accepted = false
+                        if candidate > cell_lo.to[i64]() and candidate < cell_hi.to[i64]():
+                            match polynomial_horner9(
+                                power,
+                                degree,
+                                Iv32.point(candidate.to[i32]()),
+                                domain,
+                            ):
+                                case .Value(value):
+                                    if value.lower() > 0 or value.upper() < 0:
+                                        accepted = true
+                                case _:
+                                    pass
+                        if accepted:
+                            split = candidate
+                            probe = 7
+                        else:
+                            probe = probe + 1
+                if split <= cell_lo.to[i64]() or split >= cell_hi.to[i64]():
+                    unresolved = true
+                elif stack_length + 2 > 26:
+                    result.ok = false
+                    result.error = 14
+                    return result
+                else:
+                    # Push the far child first so the LIFO stack visits
+                    # near/high-q cells first and roots append front-to-back.
+                    stack_lo[stack_length.to[usize]()] = cell_lo
+                    stack_hi[stack_length.to[usize]()] = split.to[i32]()
+                    stack_depth[stack_length.to[usize]()] = depth + 1
+                    stack_lo[(stack_length + 1).to[usize]()] = split.to[i32]()
+                    stack_hi[(stack_length + 1).to[usize]()] = cell_hi
+                    stack_depth[(stack_length + 1).to[usize]()] = depth + 1
+                    stack_length = stack_length + 2
+        if unresolved and cell_hi >= support_lo and cell_lo <= support_hi:
+            have_corridor = true
+            if cell_hi.to[i64]() > corridor_hi:
+                corridor_hi = cell_hi.to[i64]()
+    if have_corridor:
+        # One unresolved cell makes every farther root order-dependent:
+        # enclose the complete domain at and below the deepest unresolved
+        # face in one corridor and drop certified roots inside it. Roots
+        # entirely nearer than the corridor stay certified.
+        write_index = appended_base
+        read_index = appended_base
+        @budget(bound=1048576)
+        while read_index < result.count:
+            root = __wrela_pixels_p7_load_root(result, read_index)
+            if not root.ok:
+                result.ok = false
+                result.error = 5
+                return result
+            if root.lo.to[i64]() >= corridor_hi:
+                if not __wrela_pixels_p7_store_root(result, write_index, root):
+                    result.ok = false
+                    result.error = 5
+                    return result
+                write_index = write_index + 1
+            read_index = read_index + 1
+        result.count = write_index
+        result = __wrela_pixels_p7_append_root(
+            result,
+            capacity,
+            P7StoredRoot(
+                ok=true,
+                lo=support_lo,
+                hi=corridor_hi.to[i32](),
+                object=target.object,
+                identity=target.identity,
+                feature=target.feature,
+                crossing=false,
+                method=2,
+                margin=0,
+            ),
+        )
+        if not result.ok:
+            return result
+    return result
+
+pub fn __wrela_pixels_p7_verify_analytic_front(
+    power: [Iv32; 9],
+    degree: u8,
+    proposal: f32,
+    exponent: i32,
+    q_lo: i32,
+    q_hi: i32,
+    domain: FixedDomain,
+) -> [i64; 4]:
+    converted = __wrela_pixels_p7_interval_from_f32(proposal, exponent)
+    if converted[0] != 1:
+        return [0; 4]
+    lo = converted[1]
+    hi = converted[2]
+    attempt: u8 = 0
+    @budget(bound=9)
+    while attempt < 9:
+        if lo < q_lo.to[i64]():
+            lo = q_lo.to[i64]()
+        if hi > q_hi.to[i64]():
+            hi = q_hi.to[i64]()
+        if lo < -2147483648 or hi > 2147483647 or lo >= hi:
+            return [0; 4]
+        left_value = power[degree.to[usize]()]
+        right_value = power[degree.to[usize]()]
+        index = degree.to[i32]() - 1
+        @budget(bound=8)
+        while index >= 0:
+            match interval_mul(left_value, Iv32.point(lo.to[i32]()), domain):
+                case .Value(product):
+                    match interval_add(product, power[index.to[usize]()], domain):
+                        case .Value(sum):
+                            left_value = sum
+                        case _:
+                            return [0; 4]
+                case _:
+                    return [0; 4]
+            match interval_mul(right_value, Iv32.point(hi.to[i32]()), domain):
+                case .Value(product):
+                    match interval_add(product, power[index.to[usize]()], domain):
+                        case .Value(sum):
+                            right_value = sum
+                        case _:
+                            return [0; 4]
+                case _:
+                    return [0; 4]
+            index = index - 1
+        faces = (
+            left_value.upper() < 0 and right_value.lower() > 0
+        ) or (
+            left_value.lower() > 0 and right_value.upper() < 0
+        )
+        derivative = power[1]
+        if degree == 2:
+            match interval_add(power[2], power[2], domain):
+                case .Value(twice):
+                    match interval_mul(twice, Iv32.range(lo.to[i32](), hi.to[i32]()), domain):
+                        case .Value(product):
+                            match interval_add(product, power[1], domain):
+                                case .Value(sum):
+                                    derivative = sum
+                                case _:
+                                    return [0; 4]
+                        case _:
+                            return [0; 4]
+                case _:
+                    return [0; 4]
+        if faces and (derivative.lower() > 0 or derivative.upper() < 0):
+            return [1, 1, lo, hi]
+        radius = hi - lo
+        if radius < 64:
+            radius = 64
+        lo = lo - radius
+        hi = hi + radius
+        attempt = attempt + 1
+    return [0; 4]
+
+pub fn __wrela_pixels_p7_analytic_front(
+    polynomial: [f32; 11],
+    power: [Iv32; 9],
+    degree: u8,
+    exponent: i32,
+    q_lo: i32,
+    q_hi: i32,
+    domain: FixedDomain,
+) -> [i64; 4]:
+    proposal: f32 = 0.0
+    if degree == 1:
+        if polynomial[3] == 0.0:
+            if polynomial[2] != 0.0:
+                return [2, 0, 0, 0]
+            return [0; 4]
+        proposal = -polynomial[2] / polynomial[3]
+    elif degree == 2:
+        a = polynomial[4]
+        b = polynomial[3]
+        c = polynomial[2]
+        if a == 0.0:
+            if b == 0.0:
+                return [0; 4]
+            proposal = -c / b
+        else:
+            discriminant = b * b - 4.0 * a * c
+            if not discriminant > 0.0:
+                # A negative/tangent point proposal is not a certified miss:
+                # the interval all-root path must decide it.
+                return [0; 4]
+            root = sqrt_scalar(discriminant)
+            denominator = 2.0 * a
+            if denominator == 0.0 or not root > 0.0:
+                return [0; 4]
+            first = (-b - root) / denominator
+            second = (-b + root) / denominator
+            proposal = first
+            if second > first:
+                proposal = second
+    else:
+        return [0; 4]
+    if proposal != proposal:
+        return [0; 4]
+    if proposal < __wrela_pixels_p7_raw_to_f32(q_lo, exponent) or proposal > __wrela_pixels_p7_raw_to_f32(q_hi, exponent):
+        return [2, 0, 0, 0]
+    proposed_interval = __wrela_pixels_p7_interval_from_f32(proposal, exponent)
+    if proposed_interval[0] != 1:
+        return [0; 4]
+    if proposed_interval[2] < q_lo.to[i64]() or proposed_interval[1] > q_hi.to[i64]():
+        return [2, 0, 0, 0]
+    verified = __wrela_pixels_p7_verify_analytic_front(
+        power,
+        degree,
+        proposal,
+        exponent,
+        q_lo,
+        q_hi,
+        domain,
+    )
+    if verified[0] == 1:
+        return verified
+    if degree == 1:
+        # The compiler admits an affine seed only with a sealed nonzero
+        # denominator proof. The representation conversion already encloses
+        # every f32 schedule rounding, so it is itself the complete affine
+        # root certificate when the generic face refiner cannot sharpen it.
+        affine_lo = proposed_interval[1]
+        affine_hi = proposed_interval[2]
+        if affine_lo < q_lo.to[i64]():
+            affine_lo = q_lo.to[i64]()
+        if affine_hi > q_hi.to[i64]():
+            affine_hi = q_hi.to[i64]()
+        if affine_lo <= affine_hi:
+            return [1, 1, affine_lo, affine_hi]
+    return verified
+
+pub fn __wrela_pixels_p7_row_candidates(
+    renderer: usize,
+    tile: u32,
+    y: u32,
+    read snapshot: FrameInputSnapshot,
+) -> P7RowCandidates:
+    result = P7RowCandidates(ok=true, error=5, ids=[0; 256], count=0)
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0 or snapshot.param_count.to[i64]() != config[6]:
+        result.ok = false
+        return result
+    width = config[1].to[u32]()
+    height = config[2].to[u32]()
+    tiles_x = (width + 15) / 16
+    if tiles_x == 0:
+        result.ok = false
+        return result
+    tile_x = tile % tiles_x
+    row_x0 = tile_x * 16
+    row_x1 = row_x0 + 16
+    if row_x1 > width:
+        row_x1 = width
+    if row_x0 >= row_x1 or y >= height:
+        result.ok = false
+        return result
+    center_x = row_x0.to[f32]() + (row_x1 - row_x0).to[f32]() * 0.5
+    row_filter: [f32; 4] = [
+        ((center_x / width.to[f32]()) * 2.0 - 1.0) * width.to[f32]() / height.to[f32](),
+        1.0 - ((y.to[f32]() + 0.5) / height.to[f32]()) * 2.0,
+        (row_x1 - row_x0).to[f32]() / height.to[f32](),
+        1.0 / height.to[f32](),
+    ]
+    feature_count = __wrela_pixels_tile_feature_count(renderer, tile)
+    if feature_count == 4294967295:
+        result.ok = false
+        return result
+    if feature_count > 256:
+        result.error = 1
+        result.ok = false
+        return result
+    ordinal: u32 = 0
+    previous: u64 = 0
+    @budget(bound=256)
+    while ordinal < feature_count:
+        feature = __wrela_pixels_tile_feature(renderer, tile, ordinal)
+        if feature[0] != 1 or feature[1] > 4294967295:
+            result.ok = false
+            return result
+        if ordinal > 0 and feature[1] <= previous:
+            result.ok = false
+            return result
+        previous = feature[1]
+        feature_id = feature[1].to[u32]()
+        y0 = __wrela_pixels_program_operand(renderer, 4, feature_id, 10)
+        y1 = __wrela_pixels_program_operand(renderer, 4, feature_id, 11)
+        if y0[0] != 1 or y1[0] != 1 or y0[1] >= y1[1]:
+            result.ok = false
+            return result
+        if y.to[u64]() >= y0[1] and y.to[u64]() < y1[1]:
+            q_span = __wrela_pixels_p7_feature_q_span(renderer, feature_id)
+            if q_span[0] != 1.0:
+                result.ok = false
+                return result
+            q_lo = __wrela_pixels_p7_interval_from_f32(
+                q_span[1],
+                config[3].to[i32](),
+            )
+            q_hi = __wrela_pixels_p7_interval_from_f32(
+                q_span[2],
+                config[3].to[i32](),
+            )
+            if q_lo[0] != 1 or q_hi[0] != 1:
+                result.ok = false
+                return result
+            owner = __wrela_pixels_program_operand(renderer, 4, feature_id, 0)
+            if owner[0] != 1 or owner[1] > 4294967295:
+                result.ok = false
+                return result
+            # Row-level exclusion proves the member's *raw* leaf polynomial is
+            # strictly sign-definite over the row box. For a member of a
+            # composed (smooth) object that is the wrong predicate:
+            # completeness there needs the support sublevel
+            # {leaf <= support_budget} to be empty, not {leaf = 0}. A
+            # smooth-union root sits where every leaf is strictly positive, so
+            # a leaf that never vanishes still contributes to the object's
+            # support. Dropping it here shrinks the object's support union
+            # (which is taken over candidate members only), and if every member
+            # of an object is excluded the blend surface disappears from the
+            # row with no corridor. Composed members are pruned later by the
+            # support-shifted per-object q span instead.
+            excluded_by_filter = false
+            if not __wrela_pixels_p7_object_composed_root(renderer, owner[1].to[u32]()):
+                excluded = __wrela_pixels_p7_feature_filter_excludes_root(
+                    renderer,
+                    feature_id,
+                    row_filter,
+                    [q_lo[1].to[i32](), q_hi[2].to[i32]()],
+                    snapshot.params,
+                    snapshot.camera,
+                    config[3].to[i32](),
+                )
+                if excluded[0] != 1:
+                    result.ok = false
+                    return result
+                excluded_by_filter = excluded[1] == 1
+            if excluded_by_filter:
+                ordinal = ordinal + 1
+                continue
+            if result.count >= 256:
+                result.error = 1
+                result.ok = false
+                return result
+            result.ids[result.count.to[usize]()] = feature_id
+            result.count = result.count + 1
+        ordinal = ordinal + 1
+    return result
+
+pub fn __wrela_pixels_p7_load_root(read roots: P7RootList, index: u32) -> P7StoredRoot:
+    if not roots.ok or index >= roots.count:
+        return P7StoredRoot.failure()
+    values: [i64; 9] = [0; 9]
+    if roots.temporary:
+        values = __wrela_pixels_p7_workspace_load_root_tmp(
+            roots.renderer,
+            roots.worker,
+            index,
+        )
+    else:
+        values = __wrela_pixels_p7_workspace_load_root(
+            roots.renderer,
+            roots.worker,
+            index,
+        )
+    if values[0] != 1:
+        return P7StoredRoot.failure()
+    return P7StoredRoot(
+        ok=true,
+        lo=values[1].to[i32](),
+        hi=values[2].to[i32](),
+        object=values[3].to[u32](),
+        identity=values[4].to[u32](),
+        feature=values[5].to[u32](),
+        crossing=values[6] == 1,
+        method=values[7].to[u8](),
+        margin=values[8].to[i32](),
+    )
+
+pub fn __wrela_pixels_p7_store_root(
+    read roots: P7RootList,
+    index: u32,
+    read root: P7StoredRoot,
+) -> bool:
+    if not roots.ok or not root.ok or index >= roots.count:
+        return false
+    crossing: i64 = 0
+    if root.crossing:
+        crossing = 1
+    values = [
+        root.lo.to[i64](),
+        root.hi.to[i64](),
+        root.object.to[i64](),
+        root.identity.to[i64](),
+        root.feature.to[i64](),
+        crossing,
+        root.method.to[i64](),
+        root.margin.to[i64](),
+    ]
+    if roots.temporary:
+        return __wrela_pixels_p7_workspace_store_root_tmp(
+            roots.renderer,
+            roots.worker,
+            index,
+            values,
+        )
+    return __wrela_pixels_p7_workspace_store_root(
+        roots.renderer,
+        roots.worker,
+        index,
+        values,
+    )
+
+pub fn __wrela_pixels_p7_append_root(
+    read roots: P7RootList,
+    capacity: u32,
+    read root: P7StoredRoot,
+) -> P7RootList:
+    if not roots.ok or not root.ok:
+        return P7RootList(
+            ok=false,
+            error=5,
+            renderer=roots.renderer,
+            worker=roots.worker,
+            temporary=roots.temporary,
+            count=roots.count,
+            initial_inside=roots.initial_inside,
+        )
+    if roots.count >= capacity:
+        return P7RootList(
+            ok=false,
+            error=1,
+            renderer=roots.renderer,
+            worker=roots.worker,
+            temporary=roots.temporary,
+            count=roots.count,
+            initial_inside=roots.initial_inside,
+        )
+    appended = P7RootList(
+        ok=true,
+        error=0,
+        renderer=roots.renderer,
+        worker=roots.worker,
+        temporary=roots.temporary,
+        count=roots.count + 1,
+        initial_inside=roots.initial_inside,
+    )
+    if not __wrela_pixels_p7_store_root(appended, roots.count, root):
+        appended.ok = false
+        appended.error = 5
+    return appended
+
+pub fn __wrela_pixels_p7_csg_evaluate(renderer: usize, inside_bits: u64) -> P7BoolResult:
+    # The sealed stack program is compiled to straight-line Boolean code at
+    # image generation time; a program the old interpreter would have
+    # rejected never generates and surfaces here as the [0; 2] fallback.
+    occupancy = __wrela_pixels_p7_csg_occupancy(renderer, inside_bits)
+    if occupancy[0] != 1:
+        return P7BoolResult(ok=false, value=false)
+    return P7BoolResult(ok=true, value=occupancy[1] == 1)
+
+pub fn __wrela_pixels_p7_support_q_span(
+    renderer: usize,
+    feature: u32,
+    read filter: [f32; 4],
+    global_q_lo: i32,
+    global_q_hi: i32,
+    exponent: i32,
+    read snapshot: FrameInputSnapshot,
+) -> [i64; 3]:
+    record = __wrela_pixels_program_record(renderer, 4, feature)
+    validity_count = __wrela_pixels_program_operand(renderer, 4, feature, 20)
+    if record[0] != 1 or validity_count[0] != 1:
+        return [0; 3]
+    # Plane features are unbounded surfaces. Their projected interval is
+    # already clipped to the output, so a finite scene-envelope AABB must not
+    # be mistaken for primitive support and remove legitimate plane roots.
+    if record[2] == 1 and validity_count[1] == 0:
+        return [1, global_q_lo.to[i64](), global_q_hi.to[i64]()]
+    bounds = __wrela_pixels_p7_feature_world_bounds(renderer, feature)
+    if bounds[0] != 1.0:
+        return [0; 3]
+    ray: [f32; 3] = [
+        snapshot.camera[3] + filter[0] * snapshot.camera[6] + filter[1] * snapshot.camera[9],
+        snapshot.camera[4] + filter[0] * snapshot.camera[7] + filter[1] * snapshot.camera[10],
+        snapshot.camera[5] + filter[0] * snapshot.camera[8] + filter[1] * snapshot.camera[11],
+    ]
+    t_lo = 1.0 / __wrela_pixels_p7_raw_to_f32(global_q_hi, exponent)
+    t_hi = 1.0 / __wrela_pixels_p7_raw_to_f32(global_q_lo, exponent)
+    axis: usize = 0
+    @budget(bound=3)
+    while axis < 3:
+        eye = snapshot.camera[axis]
+        direction = ray[axis]
+        direction_radius = (
+            __wrela_pixels_p7_abs(snapshot.camera[6 + axis]) * filter[2]
+            + __wrela_pixels_p7_abs(snapshot.camera[9 + axis]) * filter[3]
+        )
+        direction_lo = direction - direction_radius
+        direction_hi = direction + direction_radius
+        minimum = bounds[axis + 1]
+        maximum = bounds[axis + 4]
+        if direction_lo <= 0.0 and direction_hi >= 0.0:
+            # The direction interval straddles zero on this axis, so the slab
+            # constrains nothing: a ray with direction exactly zero holds `eye`
+            # on this axis forever, while nearby nonzero directions can still
+            # enter the slab at any t. The axis therefore contributes no bound,
+            # and there is no slab-miss to detect here.
+            pass
+        else:
+            first = (minimum - eye) / direction_lo
+            second = (maximum - eye) / direction_lo
+            third = (minimum - eye) / direction_hi
+            fourth = (maximum - eye) / direction_hi
+            if second < first:
+                swap = first
+                first = second
+                second = swap
+            if fourth < third:
+                swap = third
+                third = fourth
+                fourth = swap
+            if third < first:
+                first = third
+            if fourth > second:
+                second = fourth
+            # Widen the f32 slab before reciprocal conversion. This is a
+            # one-sided exclusion proof, so uncertain arithmetic retains more
+            # q rather than dropping a possible support root.
+            first = first - __wrela_pixels_p7_abs(first) * 0.0000019073486328125 - 0.00000095367431640625
+            second = second + __wrela_pixels_p7_abs(second) * 0.0000019073486328125 + 0.00000095367431640625
+            if first > t_lo:
+                t_lo = first
+            if second < t_hi:
+                t_hi = second
+        axis = axis + 1
+    if t_hi <= 0.0 or t_lo > t_hi:
+        return [2, 0, 0]
+    if t_lo <= 0.0:
+        t_lo = 1.0 / __wrela_pixels_p7_raw_to_f32(global_q_hi, exponent)
+    support_lo = 1.0 / t_hi
+    support_hi = 1.0 / t_lo
+    converted_lo = __wrela_pixels_p7_interval_from_f32(support_lo, exponent)
+    converted_hi = __wrela_pixels_p7_interval_from_f32(support_hi, exponent)
+    if converted_lo[0] != 1 or converted_hi[0] != 1:
+        return [0; 3]
+    lo = converted_lo[1]
+    hi = converted_hi[2]
+    if lo < global_q_lo.to[i64]():
+        lo = global_q_lo.to[i64]()
+    if hi > global_q_hi.to[i64]():
+        hi = global_q_hi.to[i64]()
+    if lo > hi:
+        return [2, 0, 0]
+    return [1, lo, hi]
+
+pub fn __wrela_pixels_p7_smooth_object_q_span(
+    read context: P7RootContext,
+    object_id: u32,
+    global_q_lo: i32,
+    global_q_hi: i32,
+) -> [i64; 3]:
+    found = false
+    object_lo = global_q_hi
+    object_hi = global_q_lo
+    index: u16 = 0
+    @budget(bound=256)
+    while index < context.candidates.count:
+        feature = context.candidates.ids[index.to[usize]()]
+        object = __wrela_pixels_program_operand(context.renderer, 4, feature, 0)
+        if object[0] != 1 or object[1] > 4294967295:
+            return [0; 3]
+        if object[1].to[u32]() == object_id:
+            span = __wrela_pixels_p7_support_q_span(
+                context.renderer,
+                feature,
+                [context.u, context.v, context.ru, context.rv],
+                global_q_lo,
+                global_q_hi,
+                context.exponent,
+                context.snapshot,
+            )
+            if span[0] == 0:
+                return [0; 3]
+            if span[0] == 1:
+                # The generated sublevel pruning evaluates the leaf at the
+                # centre ray only, so it may narrow a span solely for point
+                # queries; over a box it would not be conservative.
+                sublevel: [i64; 3] = [3, span[1], span[2]]
+                if context.ru == 0.0 and context.rv == 0.0:
+                    sublevel = __wrela_pixels_p7_feature_support_q_span(
+                        context.renderer,
+                        feature,
+                        object_id,
+                        [context.u, context.v],
+                        [
+                            context.exponent.to[i64](),
+                            span[1],
+                            span[2],
+                        ],
+                    )
+                if sublevel[0] == 0:
+                    return [0; 3]
+                if sublevel[0] == 2:
+                    index = index + 1
+                    continue
+                if sublevel[0] == 1:
+                    span = sublevel
+                found = true
+                if span[1] < object_lo.to[i64]():
+                    object_lo = span[1].to[i32]()
+                if span[2] > object_hi.to[i64]():
+                    object_hi = span[2].to[i32]()
+        index = index + 1
+    if not found or object_lo >= object_hi:
+        return [2, 0, 0]
+    # The support slab is a one-sided inclusion bound. Widen one fixed-q
+    # certificate face so a boundary root is owned by an interior half-open cell
+    # instead of becoming an unbisectable endpoint.
+    if object_lo.to[i64]() - global_q_lo.to[i64]() > 16:
+        object_lo = object_lo - 16
+    else:
+        object_lo = global_q_lo
+    if global_q_hi.to[i64]() - object_hi.to[i64]() > 16:
+        object_hi = object_hi + 16
+    else:
+        object_hi = global_q_hi
+    return [1, object_lo.to[i64](), object_hi.to[i64]()]
+
+pub fn __wrela_pixels_p7_active_object_feature(
+    read context: P7RootContext,
+    object_id: u32,
+    q_lo: i32,
+    q_hi: i32,
+) -> [i64; 3]:
+    selected_feature: i64 = -1
+    selected_identity: i64 = -1
+    index: u16 = 0
+    @budget(bound=256)
+    while index < context.candidates.count:
+        feature = context.candidates.ids[index.to[usize]()]
+        object = __wrela_pixels_program_operand(context.renderer, 4, feature, 0)
+        identity = __wrela_pixels_program_operand(context.renderer, 4, feature, 3)
+        if object[0] != 1 or identity[0] != 1 or object[1] > 4294967295 or identity[1] > 4294967295:
+            return [0; 3]
+        if object[1].to[u32]() == object_id:
+            validity = __wrela_pixels_p7_feature_valid_filter(
+                context.renderer,
+                feature,
+                [context.u, context.v, context.ru, context.rv],
+                [q_lo, q_hi],
+                context.exponent,
+                context.snapshot.params,
+                context.snapshot.camera,
+            )
+            if validity[0] == 0 or validity[0] == 2:
+                # A predicate whose sign is not fixed over the complete root
+                # interval belongs to the feature/event rebuild tier.
+                return [0; 3]
+            if validity[1] == 1:
+                if selected_feature < 0:
+                    selected_feature = feature.to[i64]()
+                    selected_identity = identity[1].to[i64]()
+                elif selected_identity != identity[1].to[i64]():
+                    # An identity change within the root cell belongs to the
+                    # event-arrangement ladder; never select an ID owner.
+                    return [0; 3]
+        index = index + 1
+    if selected_feature < 0:
+        return [0; 3]
+    return [1, selected_feature, selected_identity]
+
+pub fn __wrela_pixels_p7_object_identity_span(
+    read context: P7RootContext,
+    object_id: u32,
+) -> [i64; 3]:
+    # Identity-only owner resolution: when every candidate feature of the
+    # object carries one shared identity, a corridor may display that
+    # identity even though the owning *feature* is mixed over the span
+    # (a silhouette crossing the cell). Validity is deliberately not
+    # consulted — feature ambiguity is exactly the case being served.
+    selected_feature: i64 = -1
+    selected_identity: i64 = -1
+    index: u16 = 0
+    @budget(bound=256)
+    while index < context.candidates.count:
+        feature = context.candidates.ids[index.to[usize]()]
+        object = __wrela_pixels_program_operand(context.renderer, 4, feature, 0)
+        identity = __wrela_pixels_program_operand(context.renderer, 4, feature, 3)
+        if object[0] != 1 or identity[0] != 1 or object[1] > 4294967295 or identity[1] > 4294967295:
+            return [0; 3]
+        if object[1].to[u32]() == object_id:
+            if selected_feature < 0:
+                selected_feature = feature.to[i64]()
+                selected_identity = identity[1].to[i64]()
+            elif selected_identity != identity[1].to[i64]():
+                return [0; 3]
+        index = index + 1
+    if selected_feature < 0:
+        return [0; 3]
+    return [1, selected_feature, selected_identity]
+
+pub fn __wrela_pixels_p7_isolate_smooth_object(
+    read roots: P7RootList,
+    read context: P7RootContext,
+    object_id: u32,
+    q_lo: i32,
+    q_hi: i32,
+    capacity: u32,
+) -> P7RootList:
+    numeric_config = __wrela_pixels_p7_numeric_config(context.renderer)
+    # Continue appending after the roots already collected for earlier features
+    # in the shared workspace array; starting at 0 would overwrite them.
+    result = P7RootList(
+        ok=roots.ok,
+        error=roots.error,
+        renderer=roots.renderer,
+        worker=roots.worker,
+        temporary=roots.temporary,
+        count=roots.count,
+        initial_inside=roots.initial_inside,
+    )
+    appended_base = roots.count
+    if not roots.ok or q_lo >= q_hi:
+        result.ok = false
+        result.error = 5
+        return result
+    if numeric_config[0] != 1 or numeric_config[12] <= 0 or numeric_config[12] > 4294967295:
+        result.ok = false
+        result.error = 5
+        return result
+    stack_capacity = numeric_config[12].to[u32]()
+    stack = P7RootList(
+        ok=true,
+        error=0,
+        renderer=roots.renderer,
+        worker=roots.worker,
+        temporary=true,
+        count=stack_capacity,
+        initial_inside=0,
+    )
+    if not __wrela_pixels_p7_store_root(
+        stack,
+        0,
+        P7StoredRoot(
+            ok=true,
+            lo=q_lo,
+            hi=q_hi,
+            object=object_id,
+            identity=0,
+            feature=0,
+            crossing=false,
+            method=0,
+            margin=0,
+        ),
+    ):
+        result.ok = false
+        result.error = 1
+        return result
+    length: u32 = 1
+    corridor_hi: i64 = q_lo.to[i64]()
+    have_corridor = false
+    visited_cells: u32 = 0
+    visited_cap: u32 = 8192
+    if context.depth_cap < 24:
+        visited_cap = 64
+    @budget(bound=2097151)
+    while length > 0:
+        length = length - 1
+        visited_cells = visited_cells + 1
+        cell = __wrela_pixels_p7_load_root(stack, length)
+        if not cell.ok or cell.lo >= cell.hi:
+            result.ok = false
+            result.error = 5
+            return result
+        cell_lo = cell.lo
+        cell_hi = cell.hi
+        depth = cell.method
+        # Everything at or below the growing corridor face is already
+        # enclosed by the corridor record appended after the walk; skipping
+        # it keeps ambiguous tubes linear in the resolved frontier instead
+        # of exponential in the subdivision depth. Corridors behind the
+        # visible boundary never reach the selector, and a corridor in front
+        # fails the sample whether it is one record or many.
+        if have_corridor and cell_hi.to[i64]() <= corridor_hi:
+            continue
+        if visited_cells > visited_cap:
+            # Graceful work cap, mirroring the primitive walk.
+            have_corridor = true
+            if cell_hi.to[i64]() > corridor_hi:
+                corridor_hi = cell_hi.to[i64]()
+            continue
+        point_uv: [f32; 4] = [context.u, context.v, context.ru, context.rv]
+        tube = __wrela_pixels_p7_object_q_tube(
+            context.renderer,
+            object_id,
+            point_uv,
+            __wrela_pixels_p7_raw_to_f32(cell_lo, context.exponent),
+            __wrela_pixels_p7_raw_to_f32(cell_hi, context.exponent),
+            context.snapshot.params,
+            context.snapshot.camera,
+        )
+        if tube[0] != 1.0:
+            result.ok = false
+            result.error = 5
+            return result
+        lower_negative = tube[2] < 0.0
+        lower_positive = tube[1] > 0.0
+        upper_negative = tube[4] < 0.0
+        upper_positive = tube[3] > 0.0
+        derivative_negative = tube[6] < 0.0
+        derivative_positive = tube[5] > 0.0
+        derivative_certified = derivative_negative or derivative_positive
+        lower_contains_zero = tube[1] <= 0.0 and tube[2] >= 0.0
+        opposite_faces = (
+            lower_negative and upper_positive
+        ) or (
+            lower_positive and upper_negative
+        )
+        owned_face_root = (
+            derivative_positive and lower_contains_zero and upper_positive
+        ) or (
+            derivative_negative and lower_contains_zero and upper_negative
+        )
+        same_faces = (
+            lower_negative and upper_negative
+        ) or (
+            lower_positive and upper_positive
+        )
+        q_width = __wrela_pixels_p7_raw_to_f32(
+            cell_hi - cell_lo,
+            context.exponent,
+        )
+        range_lo = tube[1]
+        range_hi = tube[2]
+        if tube[5] < 0.0:
+            range_lo = range_lo + tube[5] * q_width
+        if tube[6] > 0.0:
+            range_hi = range_hi + tube[6] * q_width
+        range_excludes_zero = range_hi < 0.0 or range_lo > 0.0
+        if range_excludes_zero or (derivative_certified and same_faces):
+            pass
+        elif derivative_certified and (opposite_faces or owned_face_root):
+            active = __wrela_pixels_p7_active_object_feature(
+                context,
+                object_id,
+                cell_lo,
+                cell_hi,
+            )
+            if active[0] != 1:
+                # The owning feature is mixed over this cell (a smooth
+                # silhouette/branch boundary crosses it). Mark the cell as
+                # an unresolved corridor instead of failing the collection:
+                # the corridor record and the selector's side-state rules
+                # keep silhouette-straddling cells integrable rather than
+                # ambiguous at every scale.
+                have_corridor = true
+                if cell_hi.to[i64]() > corridor_hi:
+                    corridor_hi = cell_hi.to[i64]()
+                continue
+            margin_value = __wrela_pixels_p7_abs(tube[5])
+            other_margin = __wrela_pixels_p7_abs(tube[6])
+            if other_margin < margin_value:
+                margin_value = other_margin
+            converted_margin = __wrela_pixels_p7_interval_from_f32(
+                margin_value,
+                context.exponent,
+            )
+            if converted_margin[0] != 1 or converted_margin[1] <= 0:
+                # A zero/unrepresentable proof margin cannot certify the
+                # crossing; treat the cell as unresolved rather than
+                # failing the whole collection.
+                have_corridor = true
+                if cell_hi.to[i64]() > corridor_hi:
+                    corridor_hi = cell_hi.to[i64]()
+                continue
+            result = __wrela_pixels_p7_append_root(
+                result,
+                capacity,
+                P7StoredRoot(
+                    ok=true,
+                    lo=cell_lo,
+                    hi=cell_hi,
+                    object=object_id,
+                    identity=active[2].to[u32](),
+                    feature=active[1].to[u32](),
+                    crossing=true,
+                    method=2,
+                    margin=converted_margin[1].to[i32](),
+                ),
+            )
+            if not result.ok:
+                return result
+        else:
+            if numeric_config[0] != 1 or numeric_config[13] <= 0:
+                result.ok = false
+                result.error = 5
+                return result
+            smooth_cap = numeric_config[13]
+            if context.depth_cap.to[i64]() < smooth_cap:
+                smooth_cap = context.depth_cap.to[i64]()
+            if depth.to[i64]() >= smooth_cap:
+                have_corridor = true
+                if cell_hi.to[i64]() > corridor_hi:
+                    corridor_hi = cell_hi.to[i64]()
+                continue
+            if length + 2 > stack_capacity:
+                result.ok = false
+                result.error = 1
+                return result
+            midpoint = cell_lo + (cell_hi - cell_lo) / 2
+            if midpoint <= cell_lo or midpoint >= cell_hi:
+                have_corridor = true
+                if cell_hi.to[i64]() > corridor_hi:
+                    corridor_hi = cell_hi.to[i64]()
+                continue
+            next_depth = depth + 1
+            # Higher q is nearer. Push the far cell first so the near cell is
+            # processed first by the LIFO stack.
+            if not __wrela_pixels_p7_store_root(
+                stack,
+                length,
+                P7StoredRoot(
+                    ok=true,
+                    lo=cell_lo,
+                    hi=midpoint,
+                    object=object_id,
+                    identity=0,
+                    feature=0,
+                    crossing=false,
+                    method=next_depth,
+                    margin=0,
+                ),
+            ) or not __wrela_pixels_p7_store_root(
+                stack,
+                length + 1,
+                P7StoredRoot(
+                    ok=true,
+                    lo=midpoint,
+                    hi=cell_hi,
+                    object=object_id,
+                    identity=0,
+                    feature=0,
+                    crossing=false,
+                    method=next_depth,
+                    margin=0,
+                ),
+            ):
+                result.ok = false
+                result.error = 1
+                return result
+            length = length + 2
+    if have_corridor:
+        # One corridor record encloses every unresolved cell and everything
+        # farther; certified crossings nearer than the corridor survive.
+        # Prefer the unambiguous active feature; when the owning feature is
+        # mixed over the corridor (a silhouette crossing the span), fall
+        # back to the object's unique identity so the corridor stays
+        # displayable. Only a genuine identity conflict fails.
+        active = __wrela_pixels_p7_active_object_feature(
+            context,
+            object_id,
+            q_lo,
+            corridor_hi.to[i32](),
+        )
+        if active[0] != 1:
+            active = __wrela_pixels_p7_object_identity_span(context, object_id)
+        if active[0] != 1:
+            result.ok = false
+            result.error = 4
+            return result
+        write_index = appended_base
+        read_index = appended_base
+        @budget(bound=1048576)
+        while read_index < result.count:
+            walked = __wrela_pixels_p7_load_root(result, read_index)
+            if not walked.ok:
+                result.ok = false
+                result.error = 5
+                return result
+            if walked.lo.to[i64]() >= corridor_hi:
+                if not __wrela_pixels_p7_store_root(result, write_index, walked):
+                    result.ok = false
+                    result.error = 5
+                    return result
+                write_index = write_index + 1
+            read_index = read_index + 1
+        result.count = write_index
+        result = __wrela_pixels_p7_append_root(
+            result,
+            capacity,
+            P7StoredRoot(
+                ok=true,
+                lo=q_lo,
+                hi=corridor_hi.to[i32](),
+                object=object_id,
+                identity=active[2].to[u32](),
+                feature=active[1].to[u32](),
+                crossing=false,
+                method=2,
+                margin=0,
+            ),
+        )
+        if not result.ok:
+            return result
+    return result
+
+pub fn __wrela_pixels_p7_collect_roots_box(
+    renderer: usize,
+    worker: u32,
+    x0: u32,
+    x1: u32,
+    y: u32,
+    read filter: [f32; 4],
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+) -> P7RootList:
+    result = P7RootList(
+        ok=true,
+        error=0,
+        renderer=renderer,
+        worker=worker,
+        temporary=false,
+        count=0,
+        initial_inside=0,
+    )
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if not candidates.ok or config[0] != 1 or config[7] < 0 or config[7] > 4294967295 or config[9] < 0 or config[9] > 64:
+        result.ok = false
+        result.error = 8
+        return result
+    width = config[1].to[u32]()
+    height = config[2].to[u32]()
+    if width == 0 or height == 0 or x0 >= x1 or x1 > width or y >= height or snapshot.param_count.to[i64]() != config[6]:
+        result.ok = false
+        result.error = 8
+        return result
+    exponent = config[3].to[i32]()
+    q_lo = config[4].to[i32]()
+    q_hi = config[5].to[i32]()
+    if q_lo >= q_hi:
+        result.ok = false
+        result.error = 8
+        return result
+    domain = FixedDomain.full(exponent)
+    u = filter[0]
+    v = filter[1]
+    walk_depth_cap: u8 = 24
+    if filter[2] > 0.0 and filter[2] * (height.to[f32]() * 2.0) < 1.5:
+        walk_depth_cap = 8
+    seed = __wrela_pixels_p7_initial_inside(
+        renderer,
+        u,
+        v,
+        __wrela_pixels_p7_raw_to_f32(q_hi, exponent),
+        snapshot.params,
+        snapshot.camera,
+    )
+    if seed[0] != 1:
+        result.ok = false
+        result.error = 9
+        return result
+    result.initial_inside = seed[1]
+    processed_smooth_objects: u64 = 0
+    candidate_index: u16 = 0
+    @budget(bound=256)
+    while candidate_index < candidates.count:
+        feature_id = candidates.ids[candidate_index.to[usize]()]
+        feature_x0 = __wrela_pixels_program_operand(renderer, 4, feature_id, 8)
+        feature_x1 = __wrela_pixels_program_operand(renderer, 4, feature_id, 9)
+        object = __wrela_pixels_program_operand(renderer, 4, feature_id, 0)
+        identity = __wrela_pixels_program_operand(renderer, 4, feature_id, 3)
+        validity_count = __wrela_pixels_program_operand(renderer, 4, feature_id, 20)
+        object_leaf_count: [u64; 2] = [0; 2]
+        if object[0] == 1 and object[1] <= 4294967295:
+            object_leaf_count = __wrela_pixels_program_operand(
+                renderer,
+                3,
+                object[1].to[u32](),
+                4,
+            )
+        if feature_x0[0] != 1 or feature_x1[0] != 1 or object[0] != 1 or identity[0] != 1 or validity_count[0] != 1 or object_leaf_count[0] != 1 or object[1] >= 64 or identity[1] > 4294967295 or validity_count[1] > 65514:
+            result.ok = false
+            result.error = 10
+            return result
+        # The feature participates when its sealed pixel span overlaps any
+        # pixel of the queried range, not only the range's first pixel.
+        if x1.to[u64]() > feature_x0[1] and x0.to[u64]() < feature_x1[1]:
+            orientation = __wrela_pixels_program_operand(renderer, 4, feature_id, (21 + validity_count[1]).to[u16]())
+            if orientation[0] != 1 or orientation[1] < 1 or orientation[1] > 4:
+                result.ok = false
+                result.error = 10
+                return result
+            if __wrela_pixels_p7_object_composed_root(
+                renderer,
+                object[1].to[u32](),
+            ):
+                object_mask = 1.to[u64]() << object[1]
+                if processed_smooth_objects & object_mask == 0:
+                    processed_smooth_objects = processed_smooth_objects | object_mask
+                    root_context = P7RootContext(
+                        renderer=renderer,
+                        u=u,
+                        v=v,
+                        ru=filter[2],
+                        rv=filter[3],
+                        exponent=exponent,
+                        depth_cap=walk_depth_cap,
+                        candidates=candidates,
+                        snapshot=snapshot,
+                    )
+                    object_span = __wrela_pixels_p7_smooth_object_q_span(
+                        root_context,
+                        object[1].to[u32](),
+                        q_lo,
+                        q_hi,
+                    )
+                    if object_span[0] == 0:
+                        result.ok = false
+                        result.error = 5
+                        return result
+                    if object_span[0] == 2:
+                        candidate_index = candidate_index + 1
+                        continue
+                    result = __wrela_pixels_p7_isolate_smooth_object(
+                        result,
+                        root_context,
+                        object[1].to[u32](),
+                        object_span[1].to[i32](),
+                        object_span[2].to[i32](),
+                        config[12].to[u32](),
+                    )
+                    if not result.ok:
+                        return result
+                candidate_index = candidate_index + 1
+                continue
+            polynomial = __wrela_pixels_p7_feature_polynomial(
+                renderer,
+                feature_id,
+                u,
+                v,
+                snapshot.params,
+                snapshot.camera,
+            )
+            if polynomial[0] != 1.0:
+                result.ok = false
+                result.error = 11
+                return result
+            bounds = __wrela_pixels_p7_feature_polynomial_uv_bounds(renderer, feature_id)
+            if bounds[0] != 1.0 or bounds[1] != polynomial[1]:
+                result.ok = false
+                result.error = 11
+                return result
+            degree = polynomial[1].to[u8]()
+            if degree == 0 or degree > 8:
+                result.ok = false
+                result.error = 11
+                return result
+            # The canonical point-sampled torus has a cheap, independent
+            # zero-real-root certificate. It is only a miss preflight: boxes,
+            # hits, and numerically uncertain invariant signs all continue to
+            # the complete interval walk below. The full discriminant must be
+            # strictly positive outside its forward-error envelope before the
+            # P/D invariant is allowed to classify the positive side.
+            canonical_camera = (
+                snapshot.camera[0] == 0.0
+                and snapshot.camera[1] == 0.0
+                and snapshot.camera[2] < 0.0
+                and snapshot.camera[3] == 0.0
+                and snapshot.camera[4] == 0.0
+                and snapshot.camera[5] == 1.0
+                and snapshot.camera[6] == 1.0
+                and snapshot.camera[7] == 0.0
+                and snapshot.camera[8] == 0.0
+                and snapshot.camera[9] == 0.0
+                and snapshot.camera[10] == 1.0
+                and snapshot.camera[11] == 0.0
+            )
+            if (
+                degree == 4 and filter[2] == 0.0 and filter[3] == 0.0
+                and canonical_camera
+                and __wrela_pixels_p7_standard_torus_feature(renderer, feature_id)
+            ):
+                point_discriminant = __wrela_pixels_p7_quartic_discriminant(polynomial)
+                if (
+                    point_discriminant[0] == 1.0
+                    and point_discriminant[2] > point_discriminant[3]
+                ):
+                    point_class = __wrela_pixels_p7_standard_torus_positive_hit(
+                        u, v, 0.0 - snapshot.camera[2],
+                    )
+                    if point_class[0] == 1 and point_class[1] == 0:
+                        candidate_index = candidate_index + 1
+                        continue
+            # Box-widen every coefficient by its sealed uv partial bound so
+            # the walk's verdicts hold over the whole filter box. A point
+            # filter has zero radii and reproduces the centre-ray
+            # coefficients exactly.
+            power: [Iv32; 9] = [Iv32.point(0); 9]
+            coefficient: usize = 0
+            @budget(bound=9)
+            while coefficient <= degree.to[usize]():
+                radius = bounds[2 + coefficient * 2] * filter[2] + bounds[3 + coefficient * 2] * filter[3]
+                converted_lo = __wrela_pixels_p7_interval_from_f32(
+                    polynomial[coefficient + 2] - radius,
+                    exponent,
+                )
+                converted_hi = __wrela_pixels_p7_interval_from_f32(
+                    polynomial[coefficient + 2] + radius,
+                    exponent,
+                )
+                if converted_lo[0] != 1 or converted_hi[0] != 1:
+                    result.ok = false
+                    result.error = 11
+                    return result
+                power[coefficient] = Iv32.range(
+                    converted_lo[1].to[i32](),
+                    converted_hi[2].to[i32](),
+                )
+                coefficient = coefficient + 1
+            derivative_power: [Iv32; 9] = [Iv32.point(0); 9]
+            derivative_index: usize = 1
+            @budget(bound=8)
+            while derivative_index <= degree.to[usize]():
+                term = power[derivative_index]
+                copies: usize = 1
+                @budget(bound=8)
+                while copies < derivative_index:
+                    match interval_add(term, power[derivative_index], domain):
+                        case .Value(sum):
+                            term = sum
+                        case _:
+                            result.ok = false
+                            result.error = 11
+                            return result
+                    copies = copies + 1
+                derivative_power[derivative_index - 1] = term
+                derivative_index = derivative_index + 1
+            root_q_lo = q_lo
+            root_q_hi = q_hi
+            q_span = __wrela_pixels_p7_feature_q_span(renderer, feature_id)
+            if q_span[0] != 1.0:
+                result.ok = false
+                result.error = 12
+                return result
+            span_lo = __wrela_pixels_p7_interval_from_f32(q_span[1], exponent)
+            span_hi = __wrela_pixels_p7_interval_from_f32(q_span[2], exponent)
+            if span_lo[0] != 1 or span_hi[0] != 1:
+                result.ok = false
+                result.error = 12
+                return result
+            if span_lo[1] > root_q_lo.to[i64]():
+                root_q_lo = span_lo[1].to[i32]()
+            if span_hi[2] < root_q_hi.to[i64]():
+                root_q_hi = span_hi[2].to[i32]()
+            support = __wrela_pixels_p7_support_q_span(
+                renderer,
+                feature_id,
+                filter,
+                root_q_lo,
+                root_q_hi,
+                exponent,
+                snapshot,
+            )
+            if support[0] == 0:
+                result.ok = false
+                result.error = 13
+                return result
+            if support[0] == 2:
+                candidate_index = candidate_index + 1
+                continue
+            root_q_lo = support[1].to[i32]()
+            root_q_hi = support[2].to[i32]()
+            if root_q_lo >= root_q_hi:
+                candidate_index = candidate_index + 1
+                continue
+            if degree == 2:
+                discriminant = certify_quadratic_discriminant(power, domain)
+                if discriminant[0] != 1:
+                    result.ok = false
+                    result.error = 14
+                    return result
+                if discriminant[2] < 0:
+                    # Proven no real root over the whole coefficient box.
+                    #
+                    # The mirror case — an enclosure that merely straddles
+                    # zero — used to short-circuit to a full-span corridor.
+                    # That threw away everything the walk can still prove:
+                    # a straddling discriminant only says SOME member of the
+                    # box may be rootless, while the walk routinely certifies
+                    # both crossings over the same box. It is also the common
+                    # case at pixel scale, because the coefficient box is
+                    # widened by sealed uv partials taken over the whole
+                    # image. The walk now runs instead, and emits its own
+                    # corridor when it genuinely cannot resolve.
+                    candidate_index = candidate_index + 1
+                    continue
+            # Walk a padded superset of the support span.
+            #
+            # `support_q_span` clips q to the feature's world-AABB slab, and
+            # for a primitive whose surface touches its own bounding box —
+            # every sphere, every capped solid, at every ray that enters the
+            # box near a tangent point — the clip lands within one widened
+            # root sheet of the crossing it is trying to contain. Walking
+            # exactly that span then makes the outer FACE indefinite: no
+            # subdivision moves it, so the boundary cell is unresolved at
+            # every depth and the walk corridors the whole feature, dropping
+            # the perfectly good crossing at the other end with it. Because
+            # the sheet shrinks only with the uv box, the caller's ladder
+            # cannot break the tie either — it just refines forever.
+            #
+            # Padding moves the faces off the sheets. The pad is scratch
+            # space only: `support_lo`/`support_hi` below carry the unpadded
+            # span into the walk, which ignores anything that does not meet
+            # it, so no verdict is ever taken outside the region the support
+            # proof already covers. An eighth of the span clears the sheets
+            # here and costs one extra subdivision level; where it does not,
+            # the boundary cell is unresolved exactly as before, so the
+            # change is monotone.
+            walk_pad = (root_q_hi.to[i64]() - root_q_lo.to[i64]()) / 8
+            walk_q_lo = root_q_lo.to[i64]() - walk_pad
+            walk_q_hi = root_q_hi.to[i64]() + walk_pad
+            if walk_q_lo < q_lo.to[i64]():
+                walk_q_lo = q_lo.to[i64]()
+            if walk_q_hi > q_hi.to[i64]():
+                walk_q_hi = q_hi.to[i64]()
+            walk_context = P7RootContext(
+                renderer=renderer,
+                u=u,
+                v=v,
+                ru=filter[2],
+                rv=filter[3],
+                exponent=exponent,
+                depth_cap=walk_depth_cap,
+                candidates=candidates,
+                snapshot=snapshot,
+            )
+            result = __wrela_pixels_p7_isolate_power_roots(
+                result,
+                config[7].to[u32](),
+                power,
+                derivative_power,
+                P7WalkTarget(
+                    object=object[1].to[u32](),
+                    identity=identity[1].to[u32](),
+                    feature=feature_id,
+                    q_lo=walk_q_lo.to[i32](),
+                    q_hi=walk_q_hi.to[i32](),
+                    support_lo=root_q_lo,
+                    support_hi=root_q_hi,
+                    degree=degree,
+                ),
+                walk_context,
+            )
+            if not result.ok:
+                return result
+        candidate_index = candidate_index + 1
+    # Stable front-to-back insertion sort. Overlaps remain adjacent and are
+    # resolved as one local arrangement below; IDs never decide q order.
+    index: u32 = 1
+    @budget(bound=1048576)
+    while index < result.count:
+        root = __wrela_pixels_p7_load_root(result, index)
+        if not root.ok:
+            result.ok = false
+            result.error = 5
+            return result
+        destination = index
+        moving = true
+        @budget(bound=1048576)
+        while destination > 0 and moving:
+            before = __wrela_pixels_p7_load_root(result, destination - 1)
+            if not before.ok:
+                result.ok = false
+                result.error = 5
+                return result
+            if root.hi > before.hi:
+                if not __wrela_pixels_p7_store_root(result, destination, before):
+                    result.ok = false
+                    result.error = 5
+                    return result
+                destination = destination - 1
+            else:
+                moving = false
+        if not __wrela_pixels_p7_store_root(result, destination, root):
+            result.ok = false
+            result.error = 5
+            return result
+        index = index + 1
+    # Adjacent cells may both own the same endpoint when an outward-widened
+    # smooth support slab places a certified monotone crossing on their shared
+    # face. Two overlapping unique certificates for the same object, feature,
+    # and identity prove one geometric crossing; merge them with the weaker
+    # margin. Ambiguity cells are never deduplicated.
+    read_index: u32 = 0
+    write_index: u32 = 0
+    @budget(bound=1048576)
+    while read_index < result.count:
+        root = __wrela_pixels_p7_load_root(result, read_index)
+        if not root.ok:
+            result.ok = false
+            result.error = 5
+            return result
+        merged = false
+        if write_index > 0 and root.crossing and root.margin > 0:
+            previous = __wrela_pixels_p7_load_root(result, write_index - 1)
+            if not previous.ok:
+                result.ok = false
+                result.error = 5
+                return result
+            if previous.crossing and previous.margin > 0 and previous.object == root.object and previous.identity == root.identity and previous.feature == root.feature and root.hi >= previous.lo and previous.hi >= root.lo:
+                if root.lo < previous.lo:
+                    previous.lo = root.lo
+                if root.hi > previous.hi:
+                    previous.hi = root.hi
+                if root.margin < previous.margin:
+                    previous.margin = root.margin
+                if not __wrela_pixels_p7_store_root(
+                    result,
+                    write_index - 1,
+                    previous,
+                ):
+                    result.ok = false
+                    result.error = 5
+                    return result
+                merged = true
+        if not merged:
+            if not __wrela_pixels_p7_store_root(result, write_index, root):
+                result.ok = false
+                result.error = 5
+                return result
+            write_index = write_index + 1
+        read_index = read_index + 1
+    result.count = write_index
+    return result
+
+pub fn __wrela_pixels_p7_collect_roots(
+    renderer: usize,
+    worker: u32,
+    x: u32,
+    y: u32,
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+) -> P7RootList:
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
+        return P7RootList(
+            ok=false,
+            error=5,
+            renderer=renderer,
+            worker=worker,
+            temporary=false,
+            count=0,
+            initial_inside=0,
+        )
+    width = config[1].to[u32]()
+    height = config[2].to[u32]()
+    u = (((x.to[f32]() + 0.5) / width.to[f32]()) * 2.0 - 1.0) * width.to[f32]() / height.to[f32]()
+    v = 1.0 - ((y.to[f32]() + 0.5) / height.to[f32]()) * 2.0
+    return __wrela_pixels_p7_collect_roots_box(
+        renderer,
+        worker,
+        x,
+        x + 1,
+        y,
+        [u, v, 0.0, 0.0],
+        candidates,
+        snapshot,
+    )
+
+pub fn __wrela_pixels_p7_select_visibility(renderer: usize, read roots: P7RootList) -> P7VisibilitySample:
+    if not roots.ok:
+        return P7VisibilitySample.failure_with(roots.error)
+    if roots.count > 65535:
+        return P7VisibilitySample.failure_with(5)
+    # The order margin is accumulated over the gaps the sweep actually
+    # traverses, not over the whole root list. Tubes that overlap *behind* the
+    # visible surface are never consulted by the visibility decision, so they
+    # must not zero the front sample's margin and fail an otherwise certifiable
+    # frame. Overlaps *within* a group are likewise excluded: a group is only
+    # passed through once every interleaving is proven to leave the composite
+    # constant, which makes the state after it independent of the tube order.
+    sweep_margin: i64 = 2147483647
+    previous_union_lo: i32 = 0
+    have_previous = false
+    bits = roots.initial_inside
+    initial = __wrela_pixels_p7_csg_evaluate(renderer, bits)
+    if not initial.ok:
+        return P7VisibilitySample.failure_with(5)
+    occupied = initial.value
+    index: u32 = 0
+    @budget(bound=1048576)
+    while index < roots.count:
+        first = __wrela_pixels_p7_load_root(roots, index)
+        if not first.ok or first.feature > 65535:
+            return P7VisibilitySample.failure_with(5)
+        if have_previous:
+            gap = previous_union_lo.to[i64]() - first.hi.to[i64]()
+            if gap <= 0:
+                return P7VisibilitySample.failure_with(4)
+            if gap < sweep_margin:
+                sweep_margin = gap
+        root_proof_margin = first.margin
+        if sweep_margin < root_proof_margin.to[i64]():
+            root_proof_margin = sweep_margin.to[i32]()
+        group_end = index + 1
+        union_lo = first.lo
+        union_hi = first.hi
+        same_identity = true
+        group_has_corridor = not first.crossing
+        group_has_crossing = first.crossing
+        minimum_margin = root_proof_margin
+        # The tightest proof margin over the *certified* members alone: a
+        # corridor member's zero margin reflects positional uncertainty the
+        # union span already carries, and must not zero the margin of a hit
+        # whose display is invariant across the corridor's side states.
+        minimum_certified_margin: i32 = 2147483647
+        if first.crossing and root_proof_margin < minimum_certified_margin:
+            minimum_certified_margin = root_proof_margin
+        scanning = true
+        @budget(bound=1048576)
+        while scanning and group_end < roots.count:
+            candidate = __wrela_pixels_p7_load_root(roots, group_end)
+            if not candidate.ok:
+                return P7VisibilitySample.failure_with(5)
+            # Roots are sorted front-to-back. A candidate belongs to the
+            # current transitive overlap component when its upper endpoint
+            # reaches the component's current lower frontier. Requiring it to
+            # intersect the original interval would split A-B-C chains.
+            if candidate.hi >= union_lo:
+                if not candidate.crossing:
+                    group_has_corridor = true
+                else:
+                    group_has_crossing = true
+                    if candidate.margin < minimum_certified_margin:
+                        minimum_certified_margin = candidate.margin
+                if candidate.lo < union_lo:
+                    union_lo = candidate.lo
+                if candidate.hi > union_hi:
+                    union_hi = candidate.hi
+                if candidate.identity != first.identity:
+                    same_identity = false
+                if candidate.margin < minimum_margin:
+                    minimum_margin = candidate.margin
+                group_end = group_end + 1
+            else:
+                scanning = false
+        if group_end == index + 1 and first.crossing:
+            mask = 1.to[u64]() << first.object.to[u64]()
+            # Boolean influence (P7.6 step 2): a crossing of an object the
+            # sealed CSG program never reads cannot change composite
+            # occupancy — toggle the bit and skip the transition work.
+            if (__wrela_pixels_p7_csg_influence(renderer) >> first.object.to[u64]()) & 1 == 0:
+                bits = bits ^ mask
+                previous_union_lo = first.lo
+                have_previous = true
+                index = group_end
+                continue
+            bits = bits ^ mask
+            after = __wrela_pixels_p7_csg_evaluate(renderer, bits)
+            if not after.ok:
+                return P7VisibilitySample.failure_with(5)
+            if after.value != occupied:
+                return P7VisibilitySample(
+                    ok=true,
+                    error=0,
+                    hit=true,
+                    event=false,
+                    object=first.object,
+                    identity=first.identity,
+                    q_lo=first.lo,
+                    q_hi=first.hi,
+                    root_count=(first.feature << 16) | roots.count,
+                    proof_method=first.method & 15,
+                    composition_shape=(first.method >> 4) & 15,
+                    proof_margin=root_proof_margin,
+                    coverage=255,
+                )
+            occupied = after.value
+            previous_union_lo = first.lo
+            have_previous = true
+            index = group_end
+            continue
+        if not same_identity:
+            return P7VisibilitySample(
+                ok=true,
+                error=0,
+                hit=true,
+                event=true,
+                object=first.object,
+                identity=first.identity,
+                q_lo=union_lo,
+                q_hi=union_hi,
+                root_count=(first.feature << 16) | roots.count,
+                proof_method=first.method & 15,
+                composition_shape=(first.method >> 4) & 15,
+                proof_margin=minimum_margin,
+                coverage=255,
+            )
+        # Tally how many times each distinct object *certifiably* crosses
+        # inside the group. An object crossing an even number of times (for
+        # example a near-tangent entry/exit pair whose certified tubes overlap
+        # after widening) nets to no change of its inside-bit; XORing once per
+        # distinct object would leave a phantom inside-bit that corrupts every
+        # later CSG evaluation on this ray. Corridor members register their
+        # object's presence (their toggles are reachable states) but add no
+        # certified crossing.
+        objects: [u32; 64] = [0; 64]
+        crossings: [u32; 64] = [0; 64]
+        object_count: u8 = 0
+        group_index = index
+        @budget(bound=1048576)
+        while group_index < group_end:
+            root = __wrela_pixels_p7_load_root(roots, group_index)
+            if not root.ok or root.object >= 64:
+                return P7VisibilitySample.failure_with(5)
+            certified_increment: u32 = 0
+            if root.crossing:
+                certified_increment = 1
+            object_index: u8 = 0
+            present = false
+            @budget(bound=64)
+            while object_index < object_count:
+                if objects[object_index.to[usize]()] == root.object:
+                    present = true
+                    crossings[object_index.to[usize]()] = crossings[object_index.to[usize]()] + certified_increment
+                object_index = object_index + 1
+            if not present:
+                if object_count >= 64:
+                    return P7VisibilitySample.failure_with(4)
+                objects[object_count.to[usize]()] = root.object
+                crossings[object_count.to[usize]()] = certified_increment
+                object_count = object_count + 1
+            group_index = group_index + 1
+        # Order-invariant visible boundary: when the composite is currently
+        # unoccupied and EVERY possible first toggle in the group occupies
+        # it, the first crossing is a composite boundary in every ordering
+        # of the unresolvably-close roots — and with one shared identity the
+        # displayed outcome is identical regardless of which member came
+        # first. A thin slab's enter/exit pair and a tangency's coincident
+        # surfaces resolve here instead of dissolving into event ambiguity.
+        # Corridor members widen the reachable states but cannot defeat the
+        # rule: whatever subset of their toggles fires first, that first
+        # toggle occupies the composite too. A certified crossing member is
+        # required so that *some* toggle is guaranteed to occur — with only
+        # corridors the group might contribute nothing and display the
+        # background instead.
+        if not occupied and group_has_crossing:
+            all_first_toggles_occupy = true
+            toggle_index: u8 = 0
+            @budget(bound=64)
+            while toggle_index < object_count:
+                toggled = bits ^ (1.to[u64]() << objects[toggle_index.to[usize]()].to[u64]())
+                probe_first = __wrela_pixels_p7_csg_evaluate(renderer, toggled)
+                if not probe_first.ok:
+                    return P7VisibilitySample.failure_with(5)
+                if not probe_first.value:
+                    all_first_toggles_occupy = false
+                toggle_index = toggle_index + 1
+            if all_first_toggles_occupy:
+                return P7VisibilitySample(
+                    ok=true,
+                    error=0,
+                    hit=true,
+                    event=false,
+                    object=first.object,
+                    identity=first.identity,
+                    q_lo=union_lo,
+                    q_hi=union_hi,
+                    root_count=(first.feature << 16) | roots.count,
+                    proof_method=first.method & 15,
+                    composition_shape=(first.method >> 4) & 15,
+                    proof_margin=minimum_certified_margin,
+                    coverage=255,
+                )
+        # A group still carrying corridor members past the rules above
+        # cannot be passed through: a corridor's crossing parity is
+        # unknown, so the composite state behind the group is undefined.
+        # The group is a genuine local event — report it for the coverage
+        # tiers to integrate rather than failing the sample outright.
+        if group_has_corridor:
+            return P7VisibilitySample(
+                ok=true,
+                error=0,
+                hit=true,
+                event=true,
+                object=first.object,
+                identity=first.identity,
+                q_lo=union_lo,
+                q_hi=union_hi,
+                root_count=(first.feature << 16) | roots.count,
+                proof_method=first.method & 15,
+                composition_shape=(first.method >> 4) & 15,
+                proof_margin=minimum_margin,
+                coverage=254,
+            )
+        after_bits = bits
+        object_index: u8 = 0
+        @budget(bound=64)
+        while object_index < object_count:
+            if crossings[object_index.to[usize]()] % 2 == 1:
+                after_bits = after_bits ^ (1.to[u64]() << objects[object_index.to[usize]()].to[u64]())
+            object_index = object_index + 1
+        # The order of crossings inside an overlap group is exactly what the
+        # certification failed to establish, so the group may be passed through
+        # without a boundary only when *every* interleaving leaves the composite
+        # constant. Toggles commute, so the states reachable as a prefix of some
+        # ordering are precisely the 2^object_count parity combinations over the
+        # distinct objects present; enumerating those subsets decides it exactly
+        # rather than sampling single-object toggles. Groups too wide to
+        # enumerate go to the rebuild ladder instead of guessing.
+        if object_count > 6:
+            return P7VisibilitySample.failure_with(4)
+        arrangement_constant = true
+        subset: u32 = 0
+        subset_limit = 1.to[u32]() << object_count.to[u32]()
+        @budget(bound=64)
+        while subset < subset_limit:
+            trial = bits
+            object_index = 0
+            @budget(bound=64)
+            while object_index < object_count:
+                if ((subset >> object_index.to[u32]()) & 1) == 1:
+                    trial = trial ^ (1.to[u64]() << objects[object_index.to[usize]()].to[u64]())
+                object_index = object_index + 1
+            probe = __wrela_pixels_p7_csg_evaluate(renderer, trial)
+            if not probe.ok:
+                return P7VisibilitySample.failure_with(5)
+            if probe.value != occupied:
+                arrangement_constant = false
+            subset = subset + 1
+        if not arrangement_constant:
+            return P7VisibilitySample(
+                ok=true,
+                error=0,
+                hit=true,
+                event=true,
+                object=first.object,
+                identity=first.identity,
+                q_lo=union_lo,
+                q_hi=union_hi,
+                root_count=(first.feature << 16) | roots.count,
+                proof_method=first.method & 15,
+                composition_shape=(first.method >> 4) & 15,
+                proof_margin=minimum_margin,
+                coverage=254,
+            )
+        # The parity state is one of the enumerated subsets, so the composite
+        # there is `occupied` by construction and needs no re-evaluation.
+        bits = after_bits
+        previous_union_lo = union_lo
+        have_previous = true
+        index = group_end
+    return P7VisibilitySample.background()
+
+pub fn __wrela_pixels_p7_quartic_discriminant(
+    read polynomial: [f32; 11],
+) -> [f32; 11]:
+    if polynomial[0] != 1.0 or polynomial[1] != 4.0:
+        return [0.0; 11]
+    e = polynomial[2]
+    d = polynomial[3]
+    c = polynomial[4]
+    b = polynomial[5]
+    a = polynomial[6]
+    terms: [f32; 16] = [0.0; 16]
+    terms[0] = 256.0 * a * a * a * e * e * e
+    terms[1] = 0.0 - 192.0 * a * a * b * d * e * e
+    terms[2] = 0.0 - 128.0 * a * a * c * c * e * e
+    terms[3] = 144.0 * a * a * c * d * d * e
+    terms[4] = 0.0 - 27.0 * a * a * d * d * d * d
+    terms[5] = 144.0 * a * b * b * c * e * e
+    terms[6] = 0.0 - 6.0 * a * b * b * d * d * e
+    terms[7] = 0.0 - 80.0 * a * b * c * c * d * e
+    terms[8] = 18.0 * a * b * c * d * d * d
+    terms[9] = 16.0 * a * c * c * c * c * e
+    terms[10] = 0.0 - 4.0 * a * c * c * c * d * d
+    terms[11] = 0.0 - 27.0 * b * b * b * b * e * e
+    terms[12] = 18.0 * b * b * b * c * d * e
+    terms[13] = 0.0 - 4.0 * b * b * b * d * d * d
+    terms[14] = 0.0 - 4.0 * b * b * c * c * c * e
+    terms[15] = b * b * c * c * d * d
+    value: f32 = 0.0
+    magnitude: f32 = 0.0
+    term: usize = 0
+    @budget(bound=16)
+    while term < 16:
+        value = value + terms[term]
+        magnitude = magnitude + __wrela_pixels_p7_abs(terms[term])
+        term = term + 1
+    error = magnitude * 0.00004 + 1.0e-18
+    if value != value or error != error:
+        return [0.0; 11]
+    return [
+        1.0, 0.0, value, error, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+    ]

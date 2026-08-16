@@ -35,6 +35,7 @@ pub mod features;
 pub mod field_intrinsics;
 pub mod glue;
 pub mod graph;
+pub mod hot_census;
 pub mod ids;
 pub mod index;
 pub mod legality;
@@ -526,7 +527,13 @@ pub(crate) fn root_function(
     if let Some(function) = owner
         .fns
         .get(name)
-        .or_else(|| owner.imported.fns.get(name))
+        .or_else(|| {
+            owner
+                .imported
+                .fns
+                .get(name)
+                .map(|function| function.as_ref())
+        })
         .cloned()
     {
         let module = owner
@@ -663,7 +670,12 @@ pub(crate) fn called_function(
                 function,
             });
         }
-        if let Some(function) = program.imported.fns.get(name).cloned() {
+        if let Some(function) = program
+            .imported
+            .fns
+            .get(name)
+            .map(|function| function.as_ref().clone())
+        {
             return Some(LocatedFn {
                 module: program
                     .fn_decl_modules

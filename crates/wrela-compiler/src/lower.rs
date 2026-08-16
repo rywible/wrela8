@@ -114,8 +114,8 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_abort_val",
 ];
 
-const PIXELS_DISPLAY_RAW_FN: &str = "__wrela_pixels_p8_submit";
-const PIXELS_DISPLAY_DRIVER_FN: &str = "__wrela_pixels_display_submit_and_wait";
+pub(crate) const PIXELS_DISPLAY_RAW_FN: &str = "__wrela_pixels_p8_submit";
+pub(crate) const PIXELS_DISPLAY_DRIVER_FN: &str = "__wrela_pixels_display_submit_and_wait";
 
 pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_deadline_poll",
@@ -392,7 +392,18 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
             TestKind::Comptime => {}
         }
     }
-    for (name, f) in program.fns.iter().chain(program.imported.fns.iter()) {
+    for (name, f) in program
+        .fns
+        .iter()
+        .map(|(name, function)| (name, function))
+        .chain(
+            program
+                .imported
+                .fns
+                .iter()
+                .map(|(name, function)| (name, function.as_ref())),
+        )
+    {
         let sealed_pixels_helper = name.starts_with("__wrela_pixels_p7_worker_job_")
             || ((name.starts_with("Renderer[") || name.starts_with("struct:Renderer["))
                 && name.contains(".__bootstrap_worker_path_"));
@@ -401,7 +412,11 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
         }
     }
     seed_struct_entries(&program.structs, out);
-    seed_struct_entries(&program.imported.structs, out);
+    for (name, structure) in &program.imported.structs {
+        if name != "Renderer" && name != "RendererWorker" {
+            seed_one_struct(name, structure, out);
+        }
+    }
     for (ikey, inst) in program
         .instantiations
         .iter()
@@ -462,9 +477,13 @@ fn all_candidate_keys(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<Stri
         }
     }
     add_struct_member_keys(&program.structs, &mut out);
-    add_struct_member_keys(&program.imported.structs, &mut out);
+    for (name, structure) in &program.imported.structs {
+        add_one_struct_member_keys(name, structure, &mut out);
+    }
     add_enum_member_keys(&program.enums, &mut out);
-    add_enum_member_keys(&program.imported.enums, &mut out);
+    for (name, enumeration) in &program.imported.enums {
+        add_one_enum_member_keys(name, enumeration, &mut out);
+    }
     for (ikey, inst) in program
         .instantiations
         .iter()
@@ -500,26 +519,38 @@ fn add_one_struct_member_keys(key_prefix: &str, s: &TypedStruct, out: &mut BTree
 
 fn add_enum_member_keys(enums: &BTreeMap<String, TypedEnum>, out: &mut BTreeSet<String>) {
     for (ename, e) in enums {
-        for member in e.methods.keys().chain(e.assoc_fns.keys()) {
-            out.insert(format!("{ename}.{member}"));
-        }
+        add_one_enum_member_keys(ename, e, out);
+    }
+}
+
+fn add_one_enum_member_keys(key_prefix: &str, enumeration: &TypedEnum, out: &mut BTreeSet<String>) {
+    for member in enumeration
+        .methods
+        .keys()
+        .chain(enumeration.assoc_fns.keys())
+    {
+        out.insert(format!("{key_prefix}.{member}"));
     }
 }
 
 fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a TypedFn> {
-    if let Some(f) = program
-        .fns
-        .get(key)
-        .or_else(|| program.imported.fns.get(key))
-    {
+    if let Some(f) = program.fns.get(key).or_else(|| {
+        program
+            .imported
+            .fns
+            .get(key)
+            .map(|function| function.as_ref())
+    }) {
         return Some(f);
     }
     if let Some((owner, member)) = key.split_once('.') {
-        if let Some(s) = program
-            .structs
-            .get(owner)
-            .or_else(|| program.imported.structs.get(owner))
-        {
+        if let Some(s) = program.structs.get(owner).or_else(|| {
+            program
+                .imported
+                .structs
+                .get(owner)
+                .map(|value| value.as_ref())
+        }) {
             if member == "init" {
                 return s.init.as_ref();
             }
@@ -527,11 +558,13 @@ fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a Typed
                 return Some(f);
             }
         }
-        if let Some(e) = program
-            .enums
-            .get(owner)
-            .or_else(|| program.imported.enums.get(owner))
-        {
+        if let Some(e) = program.enums.get(owner).or_else(|| {
+            program
+                .imported
+                .enums
+                .get(owner)
+                .map(|value| value.as_ref())
+        }) {
             if let Some(f) = e.methods.get(member).or_else(|| e.assoc_fns.get(member)) {
                 return Some(f);
             }
@@ -780,11 +813,13 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
             for (_, e) in fields {
                 collect_callees_from_expr(program, e, out);
             }
-            if let Some(s) = program
-                .structs
-                .get(name)
-                .or_else(|| program.imported.structs.get(name))
-            {
+            if let Some(s) = program.structs.get(name).or_else(|| {
+                program
+                    .imported
+                    .structs
+                    .get(name)
+                    .map(|value| value.as_ref())
+            }) {
                 let supplied: BTreeSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
                 for (fname, def) in &s.field_defaults {
                     if !supplied.contains(fname.as_str()) {
@@ -1152,20 +1187,247 @@ pub fn lower_program_with_capacity(
             TypedInstantiation::Enum(_) => {}
         }
     }
-    install_pixels_i32x4_intrinsics(program, &mut fns)?;
+    install_pixels_packet_intrinsics(program, &mut fns)?;
+    install_pixels_census_regions(program, &mut fns)?;
     install_pixels_display_driver_bridge(program, &mut fns)?;
+    let direct_fp_fns = fns
+        .keys()
+        .filter(|key| is_renderer_internal_function(program, key))
+        .cloned()
+        .collect();
     Ok(MwirProgram {
         fns,
         rodata: lw.rodata,
+        direct_fp_fns,
     })
+}
+
+/// Enumerate the linked symbols this module view can lower before compiler
+/// intrinsic installation. Closure lowering uses this cheap inventory to
+/// choose the same last-wins owner that `merge_mwir_programs` historically
+/// selected, without lowering identical imported bodies in every caller.
+pub fn sync_lowering_candidates(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<String> {
+    fn add_fn(
+        out: &mut BTreeSet<String>,
+        reachable: &BTreeSet<String>,
+        program: &TypedProgram,
+        opts: &LowerOpts,
+        key: String,
+        function: &TypedFn,
+        imported: bool,
+    ) {
+        if !function.is_async
+            && !function.is_layout_assert
+            && !(imported && is_host_only_comptime_test(program, &key, opts))
+            && program.image_fn.as_deref() != Some(key.as_str())
+            && reachable.contains(&key)
+        {
+            out.insert(key);
+        }
+    }
+    fn add_struct(
+        out: &mut BTreeSet<String>,
+        reachable: &BTreeSet<String>,
+        program: &TypedProgram,
+        opts: &LowerOpts,
+        prefix: &str,
+        structure: &TypedStruct,
+    ) {
+        for (member, function) in &structure.methods {
+            add_fn(
+                out,
+                reachable,
+                program,
+                opts,
+                format!("{prefix}.{member}"),
+                function,
+                false,
+            );
+        }
+        for (member, function) in &structure.assoc_fns {
+            add_fn(
+                out,
+                reachable,
+                program,
+                opts,
+                format!("{prefix}.{member}"),
+                function,
+                false,
+            );
+        }
+        if let Some(function) = &structure.init {
+            add_fn(
+                out,
+                reachable,
+                program,
+                opts,
+                format!("{prefix}.init"),
+                function,
+                false,
+            );
+        }
+    }
+
+    let computed;
+    let reachable = match &opts.only {
+        Some(keys) => keys,
+        None => {
+            computed = guest_reachable_keys(program, opts);
+            &computed
+        }
+    };
+    let mut out = BTreeSet::new();
+    for (name, function) in &program.fns {
+        add_fn(
+            &mut out,
+            reachable,
+            program,
+            opts,
+            name.clone(),
+            function,
+            false,
+        );
+    }
+    for (name, function) in &program.imported.fns {
+        add_fn(
+            &mut out,
+            reachable,
+            program,
+            opts,
+            name.clone(),
+            function,
+            true,
+        );
+    }
+    for (name, structure) in &program.structs {
+        add_struct(&mut out, reachable, program, opts, name, structure);
+    }
+    for (name, structure) in &program.imported.structs {
+        add_struct(&mut out, reachable, program, opts, name, structure);
+    }
+    for (name, enumeration) in program.enums.iter().map(|(key, value)| (key, value)).chain(
+        program
+            .imported
+            .enums
+            .iter()
+            .map(|(key, value)| (key, value.as_ref())),
+    ) {
+        for (member, function) in &enumeration.methods {
+            add_fn(
+                &mut out,
+                reachable,
+                program,
+                opts,
+                format!("{name}.{member}"),
+                function,
+                false,
+            );
+        }
+        for (member, function) in &enumeration.assoc_fns {
+            add_fn(
+                &mut out,
+                reachable,
+                program,
+                opts,
+                format!("{name}.{member}"),
+                function,
+                false,
+            );
+        }
+    }
+    for (key, instantiation) in program
+        .instantiations
+        .iter()
+        .chain(&program.imported.instantiations)
+    {
+        match instantiation {
+            TypedInstantiation::Fn(function) => add_fn(
+                &mut out,
+                reachable,
+                program,
+                opts,
+                key.clone(),
+                function,
+                false,
+            ),
+            TypedInstantiation::Struct(structure) => {
+                add_struct(&mut out, reachable, program, opts, key, structure)
+            }
+            TypedInstantiation::Enum(_) => {}
+        }
+    }
+    out
+}
+
+fn is_renderer_internal_module(module: &str) -> bool {
+    module == "core.__image_pixels"
+        || module == "core.field"
+        || module == "core.render"
+        || module
+            .strip_prefix("core.render_")
+            .is_some_and(|suffix| !suffix.is_empty())
+}
+
+/// Resolve a function's declaration through loader-owned identity. A local
+/// declaration's lexical `module` name is intentionally insufficient: a user
+/// source can spell `module render_raster`, but it cannot acquire the loader
+/// key `core.render_raster`.
+fn is_renderer_internal_function(program: &TypedProgram, key: &str) -> bool {
+    let Some(declared_module) = program.fn_decl_modules.get(key).map(String::as_str) else {
+        return false;
+    };
+    let Some(declared_name) = program.fn_decl_names.get(key).map(String::as_str) else {
+        return false;
+    };
+    if declared_name.is_empty() {
+        return false;
+    }
+    let module = if declared_module == program.module_path {
+        program.module_key.as_str()
+    } else {
+        declared_module
+    };
+    is_renderer_internal_module(module)
 }
 
 fn install_pixels_display_driver_bridge(
     program: &TypedProgram,
     fns: &mut BTreeMap<String, MwirFn>,
 ) -> Result<(), LowerError> {
+    let Some(submit) = fns.get(PIXELS_DISPLAY_RAW_FN) else {
+        return Ok(());
+    };
+    let canonical_fn = |name: &str, module: &str| {
+        program.fn_decl_modules.get(name).map(String::as_str) == Some(module)
+            && program.fn_decl_names.get(name).map(String::as_str) == Some(name)
+    };
+    if !canonical_fn(PIXELS_DISPLAY_RAW_FN, "core.__image_pixels") {
+        return Ok(());
+    }
+    if submit.receiver.is_some()
+        || submit.params.len() != 2
+        || submit
+            .params
+            .first()
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit
+            .params
+            .get(1)
+            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
+            != Some(&Type::U64)
+        || submit.ret != Type::Unit
+    {
+        return Err(LowerError::internal(
+            "Pixels display driver bridge has a noncanonical signature",
+        ));
+    }
     if let Some(driver) = fns.get(PIXELS_DISPLAY_DRIVER_FN) {
-        if driver.receiver.is_some()
+        // `stdlib/drivers/display.wr` declares its lexical module as
+        // `display`; this hook runs while that module is lowered, before the
+        // linked module key is re-qualified as `drivers.display`.
+        if !canonical_fn(PIXELS_DISPLAY_DRIVER_FN, "display")
+            || driver.receiver.is_some()
             || driver.params.len() != 2
             || driver
                 .params
@@ -1173,9 +1435,11 @@ fn install_pixels_display_driver_bridge(
                 .any(|(temp, _)| driver.temp_types.get(temp.0) != Some(&Type::U64))
             || driver.ret != Type::Unit
         {
-            return Err(LowerError::internal(
-                "Pixels display driver bridge target has a noncanonical signature",
-            ));
+            return Err(LowerError::internal(format!(
+                "Pixels display driver bridge target has a noncanonical identity or signature: module={:?} declaration={:?}",
+                program.fn_decl_modules.get(PIXELS_DISPLAY_DRIVER_FN),
+                program.fn_decl_names.get(PIXELS_DISPLAY_DRIVER_FN),
+            )));
         }
         let driver = fns
             .get_mut(PIXELS_DISPLAY_DRIVER_FN)
@@ -1202,32 +1466,6 @@ fn install_pixels_display_driver_bridge(
                 value: Some(result),
             },
         ];
-    }
-    let Some(submit) = fns.get(PIXELS_DISPLAY_RAW_FN) else {
-        return Ok(());
-    };
-    let module = program
-        .fn_decl_modules
-        .get(PIXELS_DISPLAY_RAW_FN)
-        .map(String::as_str);
-    if !matches!(module, Some("core.__image_pixels" | "__image_pixels"))
-        || submit.receiver.is_some()
-        || submit.params.len() != 2
-        || submit
-            .params
-            .first()
-            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
-            != Some(&Type::U64)
-        || submit
-            .params
-            .get(1)
-            .and_then(|(temp, _)| submit.temp_types.get(temp.0))
-            != Some(&Type::U64)
-        || submit.ret != Type::Unit
-    {
-        return Err(LowerError::internal(
-            "Pixels display driver bridge has a noncanonical signature",
-        ));
     }
     let submit = fns.get_mut(PIXELS_DISPLAY_RAW_FN).expect("validated above");
     let result = Temp(submit.temp_types.len());
@@ -1301,70 +1539,409 @@ pub(crate) fn validate_pixels_display_driver_bridge_target(
     Ok(())
 }
 
-fn install_pixels_i32x4_intrinsics(
+/// Rewrite one function's census-region calls into non-emitting markers and
+/// delete the temps the call site would otherwise have kept alive.
+///
+/// Split out so the erasure has a focused test: a marker that leaves its
+/// constant argument or its unit result in `temp_types` costs a frame slot
+/// and a `movz`/`str` pair, which would break the mechanism's one promise.
+fn install_census_regions_in_fn(key: &str, function: &mut MwirFn) -> Result<(), LowerError> {
+    // A region id must be a constant in the same function, so resolve
+    // constants before rewriting any call.
+    let mut constants: BTreeMap<usize, i128> = BTreeMap::new();
+    for inst in &function.body {
+        if let Inst::ConstInt { dst, value, .. } = inst {
+            constants.insert(dst.0, *value);
+        }
+    }
+    // `(instruction index, region, argument temp, result temp)` per call.
+    let mut rewrites: Vec<(usize, u32, Temp, Temp)> = Vec::new();
+    for (index, inst) in function.body.iter().enumerate() {
+        let Inst::Call {
+            dst,
+            write_backs,
+            key: call_key,
+            args,
+        } = inst
+        else {
+            continue;
+        };
+        if call_key != CENSUS_REGION_FN {
+            continue;
+        }
+        if !write_backs.is_empty() || args.len() != 1 {
+            return Err(LowerError::internal(
+                "Pixels census region annotation has a noncanonical call site",
+            ));
+        }
+        let Some(value) = constants.get(&args[0].0).copied() else {
+            return Err(LowerError::internal(
+                "Pixels census region id must be a compile-time constant",
+            ));
+        };
+        let region = u32::try_from(value)
+            .map_err(|_| LowerError::internal("Pixels census region id is out of range for u32"))?;
+        if !crate::pixels::hot_census::is_sealed_region(region) {
+            return Err(LowerError::internal(format!(
+                "Pixels census region {region} is not in the sealed vocabulary"
+            )));
+        }
+        rewrites.push((index, region, args[0], *dst));
+    }
+    if rewrites.is_empty() {
+        return Ok(());
+    }
+    // A marker must cost nothing. Its call lowers to a constant argument
+    // and a unit result, and both would otherwise keep a frame slot and
+    // an emitted `movz`/`str` pair — which is exactly the emitted-byte
+    // change the region mechanism promises not to make. So the constant
+    // becomes a second marker for the same region (idempotent for the
+    // census), and both temps are deleted with the function renumbered.
+    let mut erased: BTreeSet<usize> = BTreeSet::new();
+    for (index, region, arg, dst) in &rewrites {
+        let mut defined_at = None;
+        for (at, inst) in function.body.iter().enumerate() {
+            if matches!(inst, Inst::ConstInt { dst: d, .. } if d == arg) {
+                if defined_at.is_some() {
+                    return Err(LowerError::internal(
+                        "Pixels census region id has more than one definition",
+                    ));
+                }
+                defined_at = Some(at);
+            }
+        }
+        let Some(defined_at) = defined_at else {
+            return Err(LowerError::internal(
+                "Pixels census region id has no constant definition",
+            ));
+        };
+        function.body[defined_at] = Inst::RegionMarker { region: *region };
+        function.body[*index] = Inst::RegionMarker { region: *region };
+        erased.insert(arg.0);
+        erased.insert(dst.0);
+    }
+    let mut live: BTreeSet<usize> = BTreeSet::new();
+    for inst in &mut function.body {
+        crate::mwir_opt::visit_temps_mut(inst, &mut |temp| {
+            live.insert(temp.0);
+        });
+    }
+    for (temp, _) in function.params.iter().chain(function.receiver.iter()) {
+        live.insert(temp.0);
+    }
+    if let Some(shared) = erased.iter().find(|temp| live.contains(temp)) {
+        return Err(LowerError::internal(format!(
+            "`{key}` shares census-region temp t{shared} with live code; a marker must \
+             own its constant"
+        )));
+    }
+    let mut renumber = Vec::with_capacity(function.temp_types.len());
+    let mut kept_types = Vec::with_capacity(function.temp_types.len());
+    for (old, ty) in function.temp_types.iter().enumerate() {
+        if erased.contains(&old) {
+            renumber.push(None);
+        } else {
+            renumber.push(Some(kept_types.len()));
+            kept_types.push(ty.clone());
+        }
+    }
+    function.temp_types = kept_types;
+    let mut broken = None;
+    for inst in &mut function.body {
+        crate::mwir_opt::visit_temps_mut(inst, &mut |temp| match renumber[temp.0] {
+            Some(new) => temp.0 = new,
+            None => broken = Some(temp.0),
+        });
+    }
+    for (temp, _) in function
+        .params
+        .iter_mut()
+        .chain(function.receiver.iter_mut())
+    {
+        match renumber[temp.0] {
+            Some(new) => temp.0 = new,
+            None => broken = Some(temp.0),
+        }
+    }
+    if let Some(temp) = broken {
+        return Err(LowerError::internal(format!(
+            "`{key}` still names erased census temp t{temp} after renumbering"
+        )));
+    }
+
+    Ok(())
+}
+
+/// The sealed source annotation that opens a hot-path census region.
+const CENSUS_REGION_FN: &str = "pixels_census_region";
+
+/// Replace every `pixels_census_region(id)` call with a non-emitting
+/// [`Inst::RegionMarker`], then delete the annotation function itself.
+///
+/// Fail-closed properties this installer carries:
+///
+/// - the annotation's signature is checked against its canonical module and
+///   shape, so an unrelated function of the same name cannot be captured;
+/// - the region argument must be a compile-time constant naming a sealed
+///   region id — a runtime value or an unknown id is a lowering error, not a
+///   marker the census would later have to guess at;
+/// - the function is removed once every call site is rewritten, so no code is
+///   emitted for it and the image is byte-identical to one with no markers.
+fn install_pixels_census_regions(
     program: &TypedProgram,
     fns: &mut BTreeMap<String, MwirFn>,
 ) -> Result<(), LowerError> {
-    let Some(function) = fns.get("pixels_i32x4_backend_add") else {
+    let Some(function) = fns.get(CENSUS_REGION_FN) else {
+        // No renderer closure in this program: nothing to install, and no
+        // call site can exist either.
+        for function in fns.values() {
+            if function
+                .body
+                .iter()
+                .any(|inst| matches!(inst, Inst::Call { key, .. } if key == CENSUS_REGION_FN))
+            {
+                return Err(LowerError::internal(
+                    "Pixels census region annotation is called but not in the closure",
+                ));
+            }
+        }
         return Ok(());
     };
-    let canonical_module = program
+    let canonical_identity = program
         .fn_decl_modules
-        .get("pixels_i32x4_backend_add")
-        .map(String::as_str);
-    let is_i32x4 =
-        |ty: &Type| matches!(ty, Type::Named(name, args) if name == "I32x4" && args.is_empty());
-    let is_i32x4_lanes = |ty: &Type| {
-        matches!(
-            ty,
-            Type::Array(elem, len)
-                if **elem == Type::I32
-                    && crate::sema::bodies::literal_array_len(len) == Some(4)
-        )
-    };
-    if !matches!(
-        canonical_module,
-        Some("core.render_raster" | "render_raster")
-    ) || function.receiver.is_some()
-        || function.params.len() != 2
+        .get(CENSUS_REGION_FN)
+        .map(String::as_str)
+        == Some("core.render_raster")
+        && program
+            .fn_decl_names
+            .get(CENSUS_REGION_FN)
+            .map(String::as_str)
+            == Some(CENSUS_REGION_FN);
+    if !canonical_identity {
+        return Ok(());
+    }
+    if function.receiver.is_some()
+        || function.params.len() != 1
         || !function
             .params
-            .iter()
-            .all(|(temp, _)| function.temp_types.get(temp.0).is_some_and(&is_i32x4))
-        || !is_i32x4(&function.ret)
-    {
-        return Err(LowerError::internal(
-            "Pixels i32x4 add intrinsic has a noncanonical signature",
-        ));
-    }
-    let from_lanes = fns
-        .get("I32x4.from_lanes")
-        .ok_or_else(|| LowerError::internal("Pixels i32x4 closure omitted I32x4.from_lanes"))?;
-    if from_lanes.receiver.is_some()
-        || from_lanes.params.len() != 1
-        || !from_lanes
-            .params
             .first()
-            .and_then(|(temp, _)| from_lanes.temp_types.get(temp.0))
-            .is_some_and(&is_i32x4_lanes)
-        || !is_i32x4(&from_lanes.ret)
+            .and_then(|(temp, _)| function.temp_types.get(temp.0))
+            .is_some_and(|ty| *ty == Type::U32)
+        || function.ret != Type::Unit
     {
         return Err(LowerError::internal(
-            "Pixels I32x4.from_lanes has a noncanonical signature",
+            "Pixels census region annotation has a noncanonical signature",
         ));
     }
-    let function = fns
-        .get_mut("pixels_i32x4_backend_add")
-        .expect("validated above");
-    let lhs = function.params[0].0;
-    let rhs = function.params[1].0;
-    let dst = Temp(function.temp_types.len());
-    function.temp_types.push(function.ret.clone());
-    function.body = vec![
-        Inst::I32x4Add { dst, lhs, rhs },
-        Inst::Return { value: Some(dst) },
+
+    for (key, function) in fns.iter_mut() {
+        install_census_regions_in_fn(key, function)?;
+    }
+    fns.remove(CENSUS_REGION_FN);
+    Ok(())
+}
+
+fn install_pixels_packet_intrinsics(
+    program: &TypedProgram,
+    fns: &mut BTreeMap<String, MwirFn>,
+) -> Result<(), LowerError> {
+    const I32_FROM_LANES: &str = "I32x4.from_lanes";
+    const F32_FROM_LANES: &str = "F32x4.from_lanes";
+    const I32_SPLAT: &str = "pixels_i32x4_backend_splat";
+    const I32_ADD: &str = "pixels_i32x4_backend_add";
+    const I32_SUB: &str = "pixels_i32x4_backend_sub";
+    const I32_SHR: &str = "pixels_i32x4_backend_shr_arith_imm";
+    const I32_AND: &str = "pixels_i32x4_backend_and";
+    const I32_OR: &str = "pixels_i32x4_backend_or";
+    const I32_SELECT_GT: &str = "pixels_i32x4_backend_select_gt";
+    const I32_TO_F32: &str = "pixels_i32x4_backend_to_f32x4";
+    const F32_SPLAT: &str = "pixels_f32x4_backend_splat";
+    const F32_ADD: &str = "pixels_f32x4_backend_add";
+    const F32_SUB: &str = "pixels_f32x4_backend_sub";
+    const F32_MUL: &str = "pixels_f32x4_backend_mul";
+    const F32_MIN: &str = "pixels_f32x4_backend_min";
+    const F32_MAX: &str = "pixels_f32x4_backend_max";
+    const F32_SELECT_GE: &str = "pixels_f32x4_backend_select_ge";
+    const F32_SELECT_GT: &str = "pixels_f32x4_backend_select_gt";
+    const F32_FMA: &str = "pixels_f32x4_backend_fma";
+    const F32_TO_I32: &str = "pixels_f32x4_backend_to_i32x4";
+
+    const INTRINSICS: &[&str] = &[
+        I32_FROM_LANES,
+        F32_FROM_LANES,
+        I32_SPLAT,
+        I32_ADD,
+        I32_SUB,
+        I32_SHR,
+        I32_AND,
+        I32_OR,
+        I32_SELECT_GT,
+        I32_TO_F32,
+        F32_SPLAT,
+        F32_ADD,
+        F32_SUB,
+        F32_MUL,
+        F32_MIN,
+        F32_MAX,
+        F32_SELECT_GE,
+        F32_SELECT_GT,
+        F32_FMA,
+        F32_TO_I32,
     ];
+
+    let canonical_type = |visible: &str, declaration: &str| {
+        program.type_decl_modules.get(visible).map(String::as_str) == Some("core.render_raster")
+            && program.type_decl_names.get(visible).map(String::as_str) == Some(declaration)
+    };
+    let canonical_intrinsic = |name: &str| {
+        if let Some((visible_type, member)) = name.split_once('.') {
+            member == "from_lanes"
+                && matches!(visible_type, "I32x4" | "F32x4")
+                && canonical_type(visible_type, visible_type)
+        } else {
+            program.fn_decl_modules.get(name).map(String::as_str) == Some("core.render_raster")
+                && program.fn_decl_names.get(name).map(String::as_str) == Some(name)
+        }
+    };
+
+    let mut referenced = BTreeSet::new();
+    for (caller, function) in fns.iter() {
+        for intrinsic in function.body.iter().filter_map(|inst| match inst {
+            Inst::Call { key, .. }
+                if INTRINSICS.contains(&key.as_str()) && canonical_intrinsic(key) =>
+            {
+                Some(key)
+            }
+            _ => None,
+        }) {
+            if !is_renderer_internal_function(program, caller) {
+                return Err(LowerError::internal(format!(
+                    "Pixels packet intrinsic {intrinsic} is called from non-renderer function {caller}"
+                )));
+            }
+            referenced.insert(intrinsic.clone());
+        }
+    }
+    let declared = INTRINSICS
+        .iter()
+        .copied()
+        .filter(|name| fns.contains_key(*name) && canonical_intrinsic(name))
+        .collect::<BTreeSet<_>>();
+    if declared.is_empty() && referenced.is_empty() {
+        return Ok(());
+    }
+    for name in &referenced {
+        if !fns.contains_key(name) {
+            return Err(LowerError::internal(format!(
+                "Pixels packet intrinsic {name} is called without its canonical declaration"
+            )));
+        }
+    }
+
+    let signature = |name: &str| -> Option<(Vec<fn(&Type) -> bool>, fn(&Type) -> bool)> {
+        fn i32x4(ty: &Type) -> bool {
+            matches!(ty, Type::Named(name, args) if name == "I32x4" && args.is_empty())
+        }
+        fn f32x4(ty: &Type) -> bool {
+            matches!(ty, Type::Named(name, args) if name == "F32x4" && args.is_empty())
+        }
+        fn i32_lanes(ty: &Type) -> bool {
+            matches!(ty, Type::Array(elem, len) if **elem == Type::I32 && crate::sema::bodies::literal_array_len(len) == Some(4))
+        }
+        fn f32_lanes(ty: &Type) -> bool {
+            matches!(ty, Type::Array(elem, len) if **elem == Type::F32 && crate::sema::bodies::literal_array_len(len) == Some(4))
+        }
+        fn i32_scalar(ty: &Type) -> bool {
+            *ty == Type::I32
+        }
+        fn f32_scalar(ty: &Type) -> bool {
+            *ty == Type::F32
+        }
+        fn u8_scalar(ty: &Type) -> bool {
+            *ty == Type::U8
+        }
+
+        let binary_i32 = || {
+            (
+                vec![i32x4 as fn(&Type) -> bool; 2],
+                i32x4 as fn(&Type) -> bool,
+            )
+        };
+        let binary_f32 = || {
+            (
+                vec![f32x4 as fn(&Type) -> bool; 2],
+                f32x4 as fn(&Type) -> bool,
+            )
+        };
+        Some(match name {
+            I32_FROM_LANES => (vec![i32_lanes], i32x4),
+            F32_FROM_LANES => (vec![f32_lanes], f32x4),
+            I32_SPLAT => (vec![i32_scalar], i32x4),
+            I32_ADD | I32_SUB | I32_AND | I32_OR => binary_i32(),
+            I32_SHR => (vec![i32x4, u8_scalar], i32x4),
+            I32_SELECT_GT => (vec![i32x4; 4], i32x4),
+            I32_TO_F32 => (vec![i32x4], f32x4),
+            F32_SPLAT => (vec![f32_scalar], f32x4),
+            F32_ADD | F32_SUB | F32_MUL | F32_MIN | F32_MAX => binary_f32(),
+            F32_SELECT_GE | F32_SELECT_GT => (vec![f32x4; 4], f32x4),
+            F32_FMA => (vec![f32x4; 3], f32x4),
+            F32_TO_I32 => (vec![f32x4], i32x4),
+            _ => return None,
+        })
+    };
+
+    for name in &declared {
+        let Some(function) = fns.get(*name) else {
+            continue;
+        };
+        let canonical_module = program.fn_decl_modules.get(*name).map(String::as_str);
+        let (params, ret) = signature(name).expect("intrinsic table and signatures agree");
+        let packet_type_is_canonical = |ty: &Type| match ty {
+            Type::Named(visible, args)
+                if args.is_empty() && matches!(visible.as_str(), "I32x4" | "F32x4") =>
+            {
+                canonical_type(visible, visible)
+            }
+            _ => true,
+        };
+        if function.receiver.is_some()
+            || function.params.len() != params.len()
+            || function
+                .params
+                .iter()
+                .zip(&params)
+                .any(|((temp, _), accepts)| !function.temp_types.get(temp.0).is_some_and(accepts))
+            || !ret(&function.ret)
+            || function
+                .params
+                .iter()
+                .filter_map(|(temp, _)| function.temp_types.get(temp.0))
+                .chain(std::iter::once(&function.ret))
+                .any(|ty| !packet_type_is_canonical(ty))
+        {
+            return Err(LowerError::internal(format!(
+                "Pixels packet intrinsic {name} has a noncanonical signature: module={canonical_module:?} receiver={:?} params={:?} ret={:?}",
+                function.receiver,
+                function
+                    .params
+                    .iter()
+                    .map(|(temp, _)| function.temp_types.get(temp.0))
+                    .collect::<Vec<_>>(),
+                function.ret,
+            )));
+        }
+    }
+
     for function in fns.values_mut() {
+        let constant_ints = function
+            .body
+            .iter()
+            .filter_map(|inst| match inst {
+                Inst::ConstInt { dst, value, .. } => Some((*dst, *value)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let temp_types = function.temp_types.clone();
         for inst in &mut function.body {
             let Inst::Call {
                 dst,
@@ -1375,43 +1952,132 @@ fn install_pixels_i32x4_intrinsics(
             else {
                 continue;
             };
-            if key == "I32x4.from_lanes" {
-                if !write_backs.is_empty()
-                    || args.len() != 1
-                    || !function
-                        .temp_types
-                        .get(args[0].0)
-                        .is_some_and(&is_i32x4_lanes)
-                    || !function.temp_types.get(dst.0).is_some_and(&is_i32x4)
-                {
-                    return Err(LowerError::internal(
-                        "Pixels I32x4.from_lanes has a noncanonical call site",
-                    ));
-                }
-                *inst = Inst::I32x4FromLanes {
+            let Some((params, ret)) = signature(key) else {
+                continue;
+            };
+            if !canonical_intrinsic(key) {
+                continue;
+            }
+            if !write_backs.is_empty()
+                || args.len() != params.len()
+                || args
+                    .iter()
+                    .zip(&params)
+                    .any(|(arg, accepts)| !temp_types.get(arg.0).is_some_and(accepts))
+                || !temp_types.get(dst.0).is_some_and(ret)
+            {
+                return Err(LowerError::internal(format!(
+                    "Pixels packet intrinsic {key} has a noncanonical call site"
+                )));
+            }
+            let binary = |kind, op| Inst::PacketBinary {
+                kind,
+                op,
+                dst: *dst,
+                lhs: args[0],
+                rhs: args[1],
+            };
+            *inst = match key.as_str() {
+                I32_FROM_LANES => Inst::PacketFromLanes {
+                    kind: mwir::PacketKind::I32x4,
                     dst: *dst,
                     lanes: args[0],
-                };
-            } else if key == "pixels_i32x4_backend_add" {
-                if !write_backs.is_empty()
-                    || args.len() != 2
-                    || !function.temp_types.get(args[0].0).is_some_and(&is_i32x4)
-                    || !function.temp_types.get(args[1].0).is_some_and(&is_i32x4)
-                    || !function.temp_types.get(dst.0).is_some_and(&is_i32x4)
-                {
-                    return Err(LowerError::internal(
-                        "Pixels i32x4 add intrinsic has a noncanonical call site",
-                    ));
+                },
+                F32_FROM_LANES => Inst::PacketFromLanes {
+                    kind: mwir::PacketKind::F32x4,
+                    dst: *dst,
+                    lanes: args[0],
+                },
+                I32_SPLAT => Inst::PacketSplat {
+                    kind: mwir::PacketKind::I32x4,
+                    dst: *dst,
+                    scalar: args[0],
+                },
+                F32_SPLAT => Inst::PacketSplat {
+                    kind: mwir::PacketKind::F32x4,
+                    dst: *dst,
+                    scalar: args[0],
+                },
+                I32_ADD => binary(mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Add),
+                I32_SUB => binary(mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Sub),
+                I32_AND => binary(mwir::PacketKind::I32x4, mwir::PacketBinaryOp::And),
+                I32_OR => binary(mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Or),
+                F32_ADD => binary(mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Add),
+                F32_SUB => binary(mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Sub),
+                F32_MUL => binary(mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Mul),
+                F32_MIN => binary(mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Min),
+                F32_MAX => binary(mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Max),
+                I32_SHR => {
+                    let Some(value) = constant_ints.get(&args[1]) else {
+                        return Err(LowerError::internal(
+                            "Pixels i32x4 arithmetic shift requires a compile-time immediate",
+                        ));
+                    };
+                    let immediate = u8::try_from(*value)
+                        .ok()
+                        .filter(|value| (1..=31).contains(value))
+                        .ok_or_else(|| {
+                            LowerError::internal(
+                                "Pixels i32x4 arithmetic shift immediate must be in 1..=31",
+                            )
+                        })?;
+                    Inst::PacketShiftRightArithmetic {
+                        dst: *dst,
+                        src: args[0],
+                        immediate,
+                    }
                 }
-                *inst = Inst::I32x4Add {
+                I32_SELECT_GT => Inst::PacketSelect {
+                    kind: mwir::PacketKind::I32x4,
+                    op: mwir::PacketSelectOp::Gt,
                     dst: *dst,
                     lhs: args[0],
                     rhs: args[1],
-                };
-            }
+                    if_true: args[2],
+                    if_false: args[3],
+                },
+                F32_SELECT_GE | F32_SELECT_GT => Inst::PacketSelect {
+                    kind: mwir::PacketKind::F32x4,
+                    op: if key == F32_SELECT_GE {
+                        mwir::PacketSelectOp::Ge
+                    } else {
+                        mwir::PacketSelectOp::Gt
+                    },
+                    dst: *dst,
+                    lhs: args[0],
+                    rhs: args[1],
+                    if_true: args[2],
+                    if_false: args[3],
+                },
+                F32_FMA => Inst::PacketFma {
+                    dst: *dst,
+                    lhs: args[0],
+                    rhs: args[1],
+                    addend: args[2],
+                },
+                I32_TO_F32 => Inst::PacketConvert {
+                    from: mwir::PacketKind::I32x4,
+                    to: mwir::PacketKind::F32x4,
+                    dst: *dst,
+                    src: args[0],
+                },
+                F32_TO_I32 => Inst::PacketConvert {
+                    from: mwir::PacketKind::F32x4,
+                    to: mwir::PacketKind::I32x4,
+                    dst: *dst,
+                    src: args[0],
+                },
+                _ => unreachable!("signature matched an intrinsic"),
+            };
         }
     }
-    validate_pixels_i32x4_raster_mwir(fns)?;
+
+    if fns.contains_key("__wrela_pixels_p8_raster_regular") {
+        validate_pixels_i32x4_raster_mwir(fns)?;
+    }
+    for name in declared {
+        fns.remove(name);
+    }
     Ok(())
 }
 
@@ -1426,7 +2092,18 @@ fn validate_pixels_i32x4_raster_mwir(fns: &BTreeMap<String, MwirFn>) -> Result<(
         .body
         .iter()
         .enumerate()
-        .filter_map(|(index, inst)| matches!(inst, Inst::I32x4Add { .. }).then_some(index))
+        .filter_map(|(index, inst)| {
+            matches!(
+                inst,
+                Inst::I32x4Add { .. }
+                    | Inst::PacketBinary {
+                        kind: mwir::PacketKind::I32x4,
+                        op: mwir::PacketBinaryOp::Add,
+                        ..
+                    }
+            )
+            .then_some(index)
+        })
         .collect::<Vec<_>>();
     if additions.len() != 2 {
         return Err(LowerError::internal(format!(
@@ -3106,10 +3783,15 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 Ok(dst)
             } else if receiver.is_none()
-                && matches!(
+                && (matches!(
                     callee.spelling().as_str(),
                     "__wrela_pixels_f32_to_bits" | "__wrela_pixels_f32_from_bits"
-                )
+                ) || matches!(callee, CalleeKey::Fn(name)
+                    if matches!(name.as_str(), "pixels_f32_to_bits" | "pixels_f32_from_bits")
+                        && b.prog().fn_decl_modules.get(name).map(String::as_str)
+                            == Some("core.render_raster")
+                        && b.prog().fn_decl_names.get(name).map(String::as_str)
+                            == Some(name.as_str())))
                 && args.len() == 1
             {
                 let value = args[0]
@@ -4101,7 +4783,7 @@ fn emit_const_value(v: &Value, ty: &Type, b: &mut FnBuilder) -> Result<Temp, Low
 fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
     prog.structs
         .get(name)
-        .or_else(|| prog.imported.structs.get(name))
+        .or_else(|| prog.imported.structs.get(name).map(|value| value.as_ref()))
 }
 
 fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p TypedInstantiation> {
@@ -4112,7 +4794,12 @@ fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p Typ
 
 fn resolve_fn<'p>(prog: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedFn> {
     match key {
-        CalleeKey::Fn(name) => prog.fns.get(name).or_else(|| prog.imported.fns.get(name)),
+        CalleeKey::Fn(name) => prog.fns.get(name).or_else(|| {
+            prog.imported
+                .fns
+                .get(name)
+                .map(|function| function.as_ref())
+        }),
         CalleeKey::FnInstance(ikey) => match instantiation_by_key(prog, ikey) {
             Some(TypedInstantiation::Fn(f)) => Some(f),
             _ => None,
@@ -4151,7 +4838,7 @@ fn enum_by_name<'p>(
 ) -> Option<&'p crate::sema::typed::TypedEnum> {
     prog.enums
         .get(name)
-        .or_else(|| prog.imported.enums.get(name))
+        .or_else(|| prog.imported.enums.get(name).map(|value| value.as_ref()))
 }
 
 fn resolve_struct<'p>(
@@ -4172,7 +4859,7 @@ fn resolve_struct<'p>(
 
 fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
     let name = crate::eval::interp::callee_decl_name(key);
-    if let Some(note) = prog.imported.unresolvable.get(&name) {
+    if let Some(note) = prog.unresolvable_import_note(&name) {
         return LowerError::named(format!("`{name}` {note}"));
     }
     match key {
@@ -4187,7 +4874,7 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
 }
 
 fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
-    if let Some(note) = prog.imported.unresolvable.get(name) {
+    if let Some(note) = prog.unresolvable_import_note(name) {
         return LowerError::named(format!("`{name}` {note}"));
     }
     LowerError::unimplemented(format!(
@@ -4430,7 +5117,7 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
             let en = prog
                 .enums
                 .get(enum_name)
-                .or_else(|| prog.imported.enums.get(enum_name))
+                .or_else(|| prog.imported.enums.get(enum_name).map(|value| value.as_ref()))
                 .ok_or_else(|| {
                     LowerError::unimplemented(format!(
                         "constructing/matching a generic enum instantiation's variant (`{enum_name}.{variant}`) is",
@@ -4809,12 +5496,459 @@ mod integration_tests {
         assert!(error.message.contains("expected 2"));
     }
 
+    fn packet_fn(param_types: Vec<Type>, ret: Type) -> MwirFn {
+        MwirFn {
+            receiver: None,
+            params: param_types
+                .iter()
+                .enumerate()
+                .map(|(index, _)| (Temp(index), AccessMode::Read))
+                .collect(),
+            ret,
+            temp_types: param_types,
+            body: Vec::new(),
+        }
+    }
+
+    fn mark_renderer_fn(program: &mut TypedProgram, name: &str) {
+        program
+            .fn_decl_modules
+            .insert(name.to_string(), "core.render_raster".to_string());
+        program
+            .fn_decl_names
+            .insert(name.to_string(), name.to_string());
+    }
+
+    #[test]
+    fn every_sealed_packet_intrinsic_maps_to_its_exact_mwir_operation() {
+        use mwir::{PacketBinaryOp as Binary, PacketKind as Kind, PacketSelectOp as Select};
+
+        #[derive(Clone, Copy)]
+        enum Expected {
+            From(Kind),
+            Splat(Kind),
+            Binary(Kind, Binary),
+            Shift,
+            Select(Kind, Select),
+            Fma,
+            Convert(Kind, Kind),
+        }
+
+        let i32x4 = Type::Named("I32x4".to_string(), Vec::new());
+        let f32x4 = Type::Named("F32x4".to_string(), Vec::new());
+        let four = || Box::new(ast::Expr::Int(Span::default(), "4".to_string()));
+        let i32_lanes = Type::Array(Box::new(Type::I32), four());
+        let f32_lanes = Type::Array(Box::new(Type::F32), four());
+        let cases = vec![
+            (
+                "I32x4.from_lanes",
+                vec![i32_lanes],
+                i32x4.clone(),
+                Expected::From(Kind::I32x4),
+            ),
+            (
+                "F32x4.from_lanes",
+                vec![f32_lanes],
+                f32x4.clone(),
+                Expected::From(Kind::F32x4),
+            ),
+            (
+                "pixels_i32x4_backend_splat",
+                vec![Type::I32],
+                i32x4.clone(),
+                Expected::Splat(Kind::I32x4),
+            ),
+            (
+                "pixels_i32x4_backend_add",
+                vec![i32x4.clone(); 2],
+                i32x4.clone(),
+                Expected::Binary(Kind::I32x4, Binary::Add),
+            ),
+            (
+                "pixels_i32x4_backend_sub",
+                vec![i32x4.clone(); 2],
+                i32x4.clone(),
+                Expected::Binary(Kind::I32x4, Binary::Sub),
+            ),
+            (
+                "pixels_i32x4_backend_shr_arith_imm",
+                vec![i32x4.clone(), Type::U8],
+                i32x4.clone(),
+                Expected::Shift,
+            ),
+            (
+                "pixels_i32x4_backend_and",
+                vec![i32x4.clone(); 2],
+                i32x4.clone(),
+                Expected::Binary(Kind::I32x4, Binary::And),
+            ),
+            (
+                "pixels_i32x4_backend_or",
+                vec![i32x4.clone(); 2],
+                i32x4.clone(),
+                Expected::Binary(Kind::I32x4, Binary::Or),
+            ),
+            (
+                "pixels_i32x4_backend_select_gt",
+                vec![i32x4.clone(); 4],
+                i32x4.clone(),
+                Expected::Select(Kind::I32x4, Select::Gt),
+            ),
+            (
+                "pixels_i32x4_backend_to_f32x4",
+                vec![i32x4.clone()],
+                f32x4.clone(),
+                Expected::Convert(Kind::I32x4, Kind::F32x4),
+            ),
+            (
+                "pixels_f32x4_backend_splat",
+                vec![Type::F32],
+                f32x4.clone(),
+                Expected::Splat(Kind::F32x4),
+            ),
+            (
+                "pixels_f32x4_backend_add",
+                vec![f32x4.clone(); 2],
+                f32x4.clone(),
+                Expected::Binary(Kind::F32x4, Binary::Add),
+            ),
+            (
+                "pixels_f32x4_backend_sub",
+                vec![f32x4.clone(); 2],
+                f32x4.clone(),
+                Expected::Binary(Kind::F32x4, Binary::Sub),
+            ),
+            (
+                "pixels_f32x4_backend_mul",
+                vec![f32x4.clone(); 2],
+                f32x4.clone(),
+                Expected::Binary(Kind::F32x4, Binary::Mul),
+            ),
+            (
+                "pixels_f32x4_backend_min",
+                vec![f32x4.clone(); 2],
+                f32x4.clone(),
+                Expected::Binary(Kind::F32x4, Binary::Min),
+            ),
+            (
+                "pixels_f32x4_backend_max",
+                vec![f32x4.clone(); 2],
+                f32x4.clone(),
+                Expected::Binary(Kind::F32x4, Binary::Max),
+            ),
+            (
+                "pixels_f32x4_backend_select_ge",
+                vec![f32x4.clone(); 4],
+                f32x4.clone(),
+                Expected::Select(Kind::F32x4, Select::Ge),
+            ),
+            (
+                "pixels_f32x4_backend_select_gt",
+                vec![f32x4.clone(); 4],
+                f32x4.clone(),
+                Expected::Select(Kind::F32x4, Select::Gt),
+            ),
+            (
+                "pixels_f32x4_backend_fma",
+                vec![f32x4.clone(); 3],
+                f32x4.clone(),
+                Expected::Fma,
+            ),
+            (
+                "pixels_f32x4_backend_to_i32x4",
+                vec![f32x4.clone()],
+                i32x4.clone(),
+                Expected::Convert(Kind::F32x4, Kind::I32x4),
+            ),
+        ];
+
+        let mut program = TypedProgram::default();
+        for packet_type in ["I32x4", "F32x4"] {
+            program
+                .type_decl_modules
+                .insert(packet_type.to_string(), "core.render_raster".to_string());
+            program
+                .type_decl_names
+                .insert(packet_type.to_string(), packet_type.to_string());
+        }
+        let mut fns = BTreeMap::new();
+        for (index, (name, params, ret, _)) in cases.iter().enumerate() {
+            mark_renderer_fn(&mut program, name);
+            fns.insert((*name).to_string(), packet_fn(params.clone(), ret.clone()));
+
+            let mut temp_types = params.clone();
+            temp_types.push(ret.clone());
+            let dst = Temp(params.len());
+            let mut body = Vec::new();
+            if *name == "pixels_i32x4_backend_shr_arith_imm" {
+                body.push(Inst::ConstInt {
+                    dst: Temp(1),
+                    ty: Type::U8,
+                    value: 7,
+                });
+            }
+            body.push(Inst::Call {
+                dst,
+                key: (*name).to_string(),
+                args: (0..params.len()).map(Temp).collect(),
+                write_backs: Vec::new(),
+            });
+            let consumer = format!("consumer_{index}");
+            mark_renderer_fn(&mut program, &consumer);
+            fns.insert(
+                consumer,
+                MwirFn {
+                    receiver: None,
+                    params: params
+                        .iter()
+                        .enumerate()
+                        .map(|(temp, _)| (Temp(temp), AccessMode::Read))
+                        .collect(),
+                    ret: ret.clone(),
+                    temp_types,
+                    body,
+                },
+            );
+        }
+
+        install_pixels_packet_intrinsics(&program, &mut fns)
+            .expect("the complete canonical intrinsic table must lower");
+        for (index, (name, _, _, expected)) in cases.iter().enumerate() {
+            assert!(!fns.contains_key(*name), "intrinsic body `{name}` survived");
+            let inst = fns[&format!("consumer_{index}")]
+                .body
+                .last()
+                .expect("consumer operation");
+            let matches = match (expected, inst) {
+                (Expected::From(want), Inst::PacketFromLanes { kind, .. }) => want == kind,
+                (Expected::Splat(want), Inst::PacketSplat { kind, .. }) => want == kind,
+                (Expected::Binary(want_kind, want_op), Inst::PacketBinary { kind, op, .. }) => {
+                    want_kind == kind && want_op == op
+                }
+                (Expected::Shift, Inst::PacketShiftRightArithmetic { immediate: 7, .. }) => true,
+                (Expected::Select(want_kind, want_op), Inst::PacketSelect { kind, op, .. }) => {
+                    want_kind == kind && want_op == op
+                }
+                (Expected::Fma, Inst::PacketFma { .. }) => true,
+                (Expected::Convert(want_from, want_to), Inst::PacketConvert { from, to, .. }) => {
+                    want_from == from && want_to == to
+                }
+                _ => false,
+            };
+            assert!(matches, "`{name}` lowered to {inst:?}");
+        }
+    }
+
+    #[test]
+    fn packet_shift_lowering_requires_a_declared_constant_in_one_through_31() {
+        const SHIFT: &str = "pixels_i32x4_backend_shr_arith_imm";
+        let packet = Type::Named("I32x4".to_string(), Vec::new());
+        for (immediate, accepted) in [(0_i128, false), (1, true), (31, true), (32, false)] {
+            let mut program = TypedProgram::default();
+            program
+                .fn_decl_modules
+                .insert(SHIFT.to_string(), "core.render_raster".to_string());
+            program
+                .fn_decl_names
+                .insert(SHIFT.to_string(), SHIFT.to_string());
+            mark_renderer_fn(&mut program, "consumer");
+            program
+                .type_decl_modules
+                .insert("I32x4".to_string(), "core.render_raster".to_string());
+            program
+                .type_decl_names
+                .insert("I32x4".to_string(), "I32x4".to_string());
+            let mut fns = BTreeMap::new();
+            fns.insert(
+                SHIFT.to_string(),
+                packet_fn(vec![packet.clone(), Type::U8], packet.clone()),
+            );
+            fns.insert(
+                "consumer".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![(Temp(0), AccessMode::Read)],
+                    ret: packet.clone(),
+                    temp_types: vec![packet.clone(), Type::U8, packet.clone()],
+                    body: vec![
+                        Inst::ConstInt {
+                            dst: Temp(1),
+                            ty: Type::U8,
+                            value: immediate,
+                        },
+                        Inst::Call {
+                            dst: Temp(2),
+                            key: SHIFT.to_string(),
+                            args: vec![Temp(0), Temp(1)],
+                            write_backs: Vec::new(),
+                        },
+                    ],
+                },
+            );
+            let result = install_pixels_packet_intrinsics(&program, &mut fns);
+            if accepted {
+                result.expect("sealed shift immediate must lower");
+                assert!(matches!(
+                    fns["consumer"].body[1],
+                    Inst::PacketShiftRightArithmetic {
+                        immediate: value,
+                        ..
+                    } if i128::from(value) == immediate
+                ));
+                assert!(!fns.contains_key(SHIFT));
+            } else {
+                let error = result.expect_err("out-of-range shift must fail closed");
+                assert!(error.message.contains("must be in 1..=31"));
+            }
+        }
+    }
+
+    #[test]
+    fn packet_call_without_its_canonical_declaration_fails_closed() {
+        const ADD: &str = "pixels_f32x4_backend_add";
+        let packet = Type::Named("F32x4".to_string(), Vec::new());
+        let mut program = TypedProgram::default();
+        program
+            .fn_decl_modules
+            .insert(ADD.to_string(), "core.render_raster".to_string());
+        program
+            .fn_decl_names
+            .insert(ADD.to_string(), ADD.to_string());
+        mark_renderer_fn(&mut program, "consumer");
+        program
+            .type_decl_modules
+            .insert("F32x4".to_string(), "core.render_raster".to_string());
+        program
+            .type_decl_names
+            .insert("F32x4".to_string(), "F32x4".to_string());
+        let mut fns = BTreeMap::from([(
+            "consumer".to_string(),
+            MwirFn {
+                receiver: None,
+                params: vec![(Temp(0), AccessMode::Read), (Temp(1), AccessMode::Read)],
+                ret: packet.clone(),
+                temp_types: vec![packet, Type::Named("F32x4".to_string(), Vec::new())],
+                body: vec![Inst::Call {
+                    dst: Temp(0),
+                    key: ADD.to_string(),
+                    args: vec![Temp(0), Temp(1)],
+                    write_backs: Vec::new(),
+                }],
+            },
+        )]);
+        let error = install_pixels_packet_intrinsics(&program, &mut fns)
+            .expect_err("missing intrinsic declaration must fail closed");
+        assert!(error.message.contains("without its canonical declaration"));
+    }
+
+    #[test]
+    fn canonical_packet_call_from_non_renderer_function_fails_closed() {
+        const ADD: &str = "pixels_f32x4_backend_add";
+        let packet = Type::Named("F32x4".to_string(), Vec::new());
+        let mut program = TypedProgram::default();
+        mark_renderer_fn(&mut program, ADD);
+        program
+            .type_decl_modules
+            .insert("F32x4".to_string(), "core.render_raster".to_string());
+        program
+            .type_decl_names
+            .insert("F32x4".to_string(), "F32x4".to_string());
+        program
+            .fn_decl_modules
+            .insert("consumer".to_string(), "examples.consumer".to_string());
+        program
+            .fn_decl_names
+            .insert("consumer".to_string(), "consumer".to_string());
+        let mut fns = BTreeMap::from([
+            (
+                ADD.to_string(),
+                packet_fn(vec![packet.clone(), packet.clone()], packet.clone()),
+            ),
+            (
+                "consumer".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![(Temp(0), AccessMode::Read), (Temp(1), AccessMode::Read)],
+                    ret: packet.clone(),
+                    temp_types: vec![packet.clone(), packet.clone(), packet],
+                    body: vec![Inst::Call {
+                        dst: Temp(2),
+                        key: ADD.to_string(),
+                        args: vec![Temp(0), Temp(1)],
+                        write_backs: Vec::new(),
+                    }],
+                },
+            ),
+        ]);
+
+        let error = install_pixels_packet_intrinsics(&program, &mut fns)
+            .expect_err("ordinary sync code must not acquire packet instructions");
+        assert_eq!(
+            error.message,
+            "internal error: Pixels packet intrinsic pixels_f32x4_backend_add is called from non-renderer function consumer"
+        );
+    }
+
+    #[test]
+    fn user_packet_spelling_is_not_rewritten_or_removed() {
+        const ADD: &str = "pixels_f32x4_backend_add";
+        let packet = Type::Named("F32x4".to_string(), Vec::new());
+        let mut program = TypedProgram::default();
+        program
+            .fn_decl_modules
+            .insert(ADD.to_string(), "examples.packet_spoof".to_string());
+        program
+            .fn_decl_names
+            .insert(ADD.to_string(), ADD.to_string());
+        program
+            .type_decl_modules
+            .insert("F32x4".to_string(), "examples.packet_spoof".to_string());
+        program
+            .type_decl_names
+            .insert("F32x4".to_string(), "F32x4".to_string());
+        let ordinary = packet_fn(vec![packet.clone(), packet.clone()], packet.clone());
+        let mut fns = BTreeMap::from([
+            (ADD.to_string(), ordinary.clone()),
+            (
+                "consumer".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![(Temp(0), AccessMode::Read), (Temp(1), AccessMode::Read)],
+                    ret: packet.clone(),
+                    temp_types: vec![packet.clone(), packet.clone(), packet],
+                    body: vec![Inst::Call {
+                        dst: Temp(2),
+                        key: ADD.to_string(),
+                        args: vec![Temp(0), Temp(1)],
+                        write_backs: Vec::new(),
+                    }],
+                },
+            ),
+        ]);
+
+        install_pixels_packet_intrinsics(&program, &mut fns)
+            .expect("ordinary user functions are outside the sealed intrinsic set");
+        assert_eq!(fns.get(ADD), Some(&ordinary));
+        assert!(matches!(fns["consumer"].body[0], Inst::Call { .. }));
+    }
+
     #[test]
     fn pixels_submission_bridge_writes_the_sealed_dynamic_doorbell() {
         let mut program = TypedProgram::default();
         program.fn_decl_modules.insert(
             PIXELS_DISPLAY_RAW_FN.to_string(),
             "core.__image_pixels".to_string(),
+        );
+        program.fn_decl_names.insert(
+            PIXELS_DISPLAY_RAW_FN.to_string(),
+            PIXELS_DISPLAY_RAW_FN.to_string(),
+        );
+        program
+            .fn_decl_modules
+            .insert(PIXELS_DISPLAY_DRIVER_FN.to_string(), "display".to_string());
+        program.fn_decl_names.insert(
+            PIXELS_DISPLAY_DRIVER_FN.to_string(),
+            PIXELS_DISPLAY_DRIVER_FN.to_string(),
         );
         let canonical_fn = MwirFn {
             receiver: None,
@@ -4831,6 +5965,7 @@ mod integration_tests {
         validate_pixels_display_driver_bridge_target(&MwirProgram {
             fns: functions.clone(),
             rodata: Vec::new(),
+            direct_fp_fns: BTreeSet::new(),
         })
         .unwrap();
         let bridge = &functions[PIXELS_DISPLAY_RAW_FN];
@@ -4857,6 +5992,34 @@ mod integration_tests {
     }
 
     #[test]
+    fn user_display_bridge_spelling_is_not_rewritten() {
+        let mut program = TypedProgram::default();
+        for name in [PIXELS_DISPLAY_RAW_FN, PIXELS_DISPLAY_DRIVER_FN] {
+            program
+                .fn_decl_modules
+                .insert(name.to_string(), "examples.display_spoof".to_string());
+            program
+                .fn_decl_names
+                .insert(name.to_string(), name.to_string());
+        }
+        let ordinary = MwirFn {
+            receiver: None,
+            params: vec![(Temp(0), AccessMode::Read), (Temp(1), AccessMode::Read)],
+            ret: Type::Unit,
+            temp_types: vec![Type::U64, Type::U64],
+            body: vec![Inst::ConstUnit { dst: Temp(0) }],
+        };
+        let mut functions = BTreeMap::from([
+            (PIXELS_DISPLAY_RAW_FN.to_string(), ordinary.clone()),
+            (PIXELS_DISPLAY_DRIVER_FN.to_string(), ordinary.clone()),
+        ]);
+
+        install_pixels_display_driver_bridge(&program, &mut functions).unwrap();
+        assert_eq!(functions[PIXELS_DISPLAY_RAW_FN], ordinary);
+        assert_eq!(functions[PIXELS_DISPLAY_DRIVER_FN], ordinary);
+    }
+
+    #[test]
     fn quiesce_before_halt_is_a_bounded_wait() {
         let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
             Ok(v) => v,
@@ -4876,8 +6039,14 @@ mod integration_tests {
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
-        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
-        let programs = sema::check_program_typed(&modules, &paths).expect("check");
+        paths.insert(
+            gen_key.clone(),
+            crate::rtconfig::GENERATED_INPUT_PATH.to_string(),
+        );
+        let internal_sources = BTreeSet::from([gen_key]);
+        let programs =
+            sema::check_program_typed_with_internal_sources(&modules, &paths, &internal_sources)
+                .expect("check");
         let typed = programs
             .get(&runtime_key)
             .expect("core.runtime must be checked");
@@ -4951,8 +6120,14 @@ pub fn t():
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
-        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
-        let programs = sema::check_program_typed(&modules, &paths).expect("check");
+        paths.insert(
+            gen_key.clone(),
+            crate::rtconfig::GENERATED_INPUT_PATH.to_string(),
+        );
+        let internal_sources = BTreeSet::from([gen_key]);
+        let programs =
+            sema::check_program_typed_with_internal_sources(&modules, &paths, &internal_sources)
+                .expect("check");
         let by_dot: BTreeMap<String, TypedProgram> = programs
             .into_iter()
             .map(|(k, p)| (k.join("."), p))
@@ -5428,5 +6603,133 @@ pub fn check():
             "{}",
             non_lit.message
         );
+    }
+}
+
+#[cfg(test)]
+mod census_region_tests {
+    use super::*;
+
+    fn marker_fn(region_value: i128) -> MwirFn {
+        // `t0` is a live parameter, `t1` the marker's constant argument,
+        // `t2` the marker call's unit result, `t3` a live temp after it.
+        MwirFn {
+            receiver: None,
+            params: vec![(Temp(0), AccessMode::Read)],
+            ret: Type::U64,
+            temp_types: vec![Type::U64, Type::U32, Type::Unit, Type::U64],
+            body: vec![
+                Inst::ConstInt {
+                    dst: Temp(1),
+                    ty: Type::U32,
+                    value: region_value,
+                },
+                Inst::Call {
+                    dst: Temp(2),
+                    write_backs: Vec::new(),
+                    key: CENSUS_REGION_FN.to_string(),
+                    args: vec![Temp(1)],
+                },
+                Inst::Copy {
+                    dst: Temp(3),
+                    src: Temp(0),
+                },
+                Inst::Return {
+                    value: Some(Temp(3)),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_marker_leaves_no_temp_and_no_emitting_instruction() {
+        let mut f = marker_fn(2);
+        install_census_regions_in_fn("raster", &mut f).expect("install");
+        assert_eq!(
+            f.body,
+            vec![
+                Inst::RegionMarker { region: 2 },
+                Inst::RegionMarker { region: 2 },
+                Inst::Copy {
+                    dst: Temp(1),
+                    src: Temp(0)
+                },
+                Inst::Return {
+                    value: Some(Temp(1))
+                },
+            ],
+            "the constant and the call both become markers, and the live \
+             temps renumber down over the two erased ones"
+        );
+        assert_eq!(
+            f.temp_types,
+            vec![Type::U64, Type::U64],
+            "the marker's constant and unit result leave no frame slot"
+        );
+        assert_eq!(f.params, vec![(Temp(0), AccessMode::Read)]);
+    }
+
+    #[test]
+    fn an_unsealed_region_id_is_a_lowering_error() {
+        let mut f = marker_fn(4242);
+        let error = install_census_regions_in_fn("raster", &mut f).expect_err("unsealed");
+        assert!(error.message.contains("sealed vocabulary"), "{error:?}");
+    }
+
+    #[test]
+    fn a_runtime_region_id_is_a_lowering_error() {
+        let mut f = marker_fn(2);
+        // Replace the constant with a copy, so the id is no longer static.
+        f.body[0] = Inst::Copy {
+            dst: Temp(1),
+            src: Temp(0),
+        };
+        let error = install_census_regions_in_fn("raster", &mut f).expect_err("runtime id");
+        assert!(error.message.contains("compile-time constant"), "{error:?}");
+    }
+
+    #[test]
+    fn a_shared_region_constant_is_a_lowering_error() {
+        let mut f = marker_fn(2);
+        // A live consumer of the marker's constant makes the erasure unsafe.
+        f.body.insert(
+            2,
+            Inst::Copy {
+                dst: Temp(3),
+                src: Temp(1),
+            },
+        );
+        let error = install_census_regions_in_fn("raster", &mut f).expect_err("shared constant");
+        assert!(
+            error.message.contains("shares census-region temp"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_function_without_markers_is_untouched() {
+        let mut f = marker_fn(2);
+        f.body.remove(1);
+        f.body.remove(0);
+        let before = f.clone();
+        install_census_regions_in_fn("plain", &mut f).expect("no markers");
+        assert_eq!(f, before);
+    }
+
+    #[test]
+    fn user_census_annotation_spelling_is_not_rewritten_or_removed() {
+        let mut program = TypedProgram::default();
+        program.fn_decl_modules.insert(
+            CENSUS_REGION_FN.to_string(),
+            "examples.census_spoof".to_string(),
+        );
+        program
+            .fn_decl_names
+            .insert(CENSUS_REGION_FN.to_string(), CENSUS_REGION_FN.to_string());
+        let ordinary = marker_fn(2);
+        let mut functions = BTreeMap::from([(CENSUS_REGION_FN.to_string(), ordinary.clone())]);
+
+        install_pixels_census_regions(&program, &mut functions).unwrap();
+        assert_eq!(functions[CENSUS_REGION_FN], ordinary);
     }
 }

@@ -1,0 +1,288 @@
+# pixels hot-path census
+schema = 4
+profile = a76-pi5
+table_digest = a3fc98dfe12bd132
+case = p8r2-pre-decomposition
+source = tests/golden/check-pixels-normal-moments/src/examples/check_pixels_normal_moments.wr
+phase = P8R.2-pre-decomposition
+authority = immutable-emitted-kernel
+phase_backend = legacy-gpr-fp
+source_tree_sha256 = adf2bfcd58980ef27926e6d039ff48c787f436f58914336afc30aa6dc04eeaaf
+kernel_words_sha256 = f418e8e5249fac486b3a16119fc2cf664d192a14644a676efa968aba69d3e218
+codegen_dump_sha256 = e74f033ceab8aa8c113d4162ac6962acb29062f823597c696a4e32313277f6f4
+cost_provenance = 96e1aad226833198
+basis_commit = 44bcfcdce7d55ba062227dc96de3c49d9e3d91db
+image_sha256 = b606d53815bba2ff8ac649501dd40e82c5c02a1c6b903c419c9b9f313b81a281
+family.p8_write present=["__wrela_pixels_p8_write", "__wrela_pixels_p8_write4"] absent=[]
+family.sealed_numeric present=["sqrt_scalar", "rsqrt_scalar", "raster_rsqrt"] absent=[]
+
+## [M] measured counts
+
+[fn.__wrela_pixels_p8_raster_regular]
+frame_size = 1584
+word_sha256 = 7f2e0f5f96d2133743ae6be5e6970eb97061106a399228363491a7d90bd4f5d8
+region.unmarked words=225 calls=0 indirect_calls=0 frame_loads=10 frame_stores=65
+region.unmarked.class.abort = 5
+region.unmarked.class.abort_val = 2
+region.unmarked.class.adrp = 9
+region.unmarked.class.alu = 60
+region.unmarked.class.branch = 12
+region.unmarked.class.load = 50
+region.unmarked.class.mov_wide = 22
+region.unmarked.class.store = 65
+region.raster.scalar_prefix words=232 calls=5 indirect_calls=0 frame_loads=77 frame_stores=73
+region.raster.scalar_prefix.class.abort = 3
+region.raster.scalar_prefix.class.adrp = 3
+region.raster.scalar_prefix.class.alu = 40
+region.raster.scalar_prefix.class.branch = 14
+region.raster.scalar_prefix.class.call = 5
+region.raster.scalar_prefix.class.load = 77
+region.raster.scalar_prefix.class.mov_wide = 14
+region.raster.scalar_prefix.class.mul = 1
+region.raster.scalar_prefix.class.mul_w = 1
+region.raster.scalar_prefix.class.store = 73
+region.raster.scalar_prefix.class.udiv = 1
+region.raster.packet_loop words=436 calls=2 indirect_calls=0 frame_loads=95 frame_stores=91
+region.raster.packet_loop.class.abort = 13
+region.raster.packet_loop.class.adrp = 13
+region.raster.packet_loop.class.alu = 138
+region.raster.packet_loop.class.asimd_int = 2
+region.raster.packet_loop.class.asimd_permute = 3
+region.raster.packet_loop.class.branch = 26
+region.raster.packet_loop.class.call = 2
+region.raster.packet_loop.class.fp_load_q = 10
+region.raster.packet_loop.class.fp_store_q = 5
+region.raster.packet_loop.class.load = 85
+region.raster.packet_loop.class.mov_wide = 37
+region.raster.packet_loop.class.mul = 15
+region.raster.packet_loop.class.mul_w = 1
+region.raster.packet_loop.class.store = 86
+region.raster.scalar_suffix words=133 calls=2 indirect_calls=0 frame_loads=43 frame_stores=34
+region.raster.scalar_suffix.class.abort = 2
+region.raster.scalar_suffix.class.adrp = 2
+region.raster.scalar_suffix.class.alu = 28
+region.raster.scalar_suffix.class.branch = 11
+region.raster.scalar_suffix.class.call = 2
+region.raster.scalar_suffix.class.load = 43
+region.raster.scalar_suffix.class.mov_wide = 10
+region.raster.scalar_suffix.class.mul_w = 1
+region.raster.scalar_suffix.class.store = 34
+region.raster.charge words=23 calls=1 indirect_calls=0 frame_loads=7 frame_stores=1
+region.raster.charge.class.alu = 7
+region.raster.charge.class.branch = 5
+region.raster.charge.class.call = 1
+region.raster.charge.class.load = 7
+region.raster.charge.class.mov_wide = 2
+region.raster.charge.class.store = 1
+
+[fn.__wrela_pixels_p8_geometry_lane_valid]
+frame_size = 688
+word_sha256 = 12bedcdc8f27420b2df0aa71baf989c9ea8ac83b0d7659617bc791754d4904d6
+region.unmarked words=620 calls=5 indirect_calls=0 frame_loads=70 frame_stores=145
+region.unmarked.class.abort = 23
+region.unmarked.class.abort_val = 3
+region.unmarked.class.adrp = 29
+region.unmarked.class.alu = 186
+region.unmarked.class.branch = 43
+region.unmarked.class.call = 5
+region.unmarked.class.fp_convert = 4
+region.unmarked.class.fp_div_sqrt = 2
+region.unmarked.class.fp_move = 10
+region.unmarked.class.load = 110
+region.unmarked.class.mov_wide = 51
+region.unmarked.class.mul = 4
+region.unmarked.class.mul_high = 4
+region.unmarked.class.mul_w = 1
+region.unmarked.class.store = 145
+
+[fn.__wrela_pixels_p8_geometry_packet_valid]
+frame_size = 496
+word_sha256 = 6a28a78afa1bc0022e8b0e91cb8d39c6da7f5420a2851d0f445630bda4e20045
+region.unmarked words=200 calls=2 indirect_calls=0 frame_loads=23 frame_stores=71
+region.unmarked.class.abort = 4
+region.unmarked.class.adrp = 4
+region.unmarked.class.alu = 30
+region.unmarked.class.branch = 12
+region.unmarked.class.call = 2
+region.unmarked.class.load = 65
+region.unmarked.class.mov_wide = 12
+region.unmarked.class.store = 71
+
+[fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack]
+frame_size = 46272
+word_sha256 = 79c96cb7bc173b7cb110f7d8e5c9ac36b4eed9d1e4a4e3a17e531b93ccc0ed96
+region.unmarked words=910 calls=0 indirect_calls=0 frame_loads=0 frame_stores=438
+region.unmarked.class.alu = 36
+region.unmarked.class.load = 434
+region.unmarked.class.store = 440
+region.coverage.entry words=6047 calls=17 indirect_calls=0 frame_loads=1120 frame_stores=2206
+region.coverage.entry.class.abort = 14
+region.coverage.entry.class.abort_val = 3
+region.coverage.entry.class.adrp = 20
+region.coverage.entry.class.alu = 846
+region.coverage.entry.class.branch = 130
+region.coverage.entry.class.call = 17
+region.coverage.entry.class.fp_add_sub = 15
+region.coverage.entry.class.fp_compare = 10
+region.coverage.entry.class.fp_convert = 6
+region.coverage.entry.class.fp_div_sqrt = 5
+region.coverage.entry.class.fp_move = 122
+region.coverage.entry.class.fp_mul = 12
+region.coverage.entry.class.load = 1172
+region.coverage.entry.class.mov_wide = 1365
+region.coverage.entry.class.mul = 55
+region.coverage.entry.class.store = 2255
+region.coverage.cell_walk words=38732 calls=34 indirect_calls=0 frame_loads=122 frame_stores=277
+region.coverage.cell_walk.class.abort = 74
+region.coverage.cell_walk.class.abort_val = 28
+region.coverage.cell_walk.class.adrp = 130
+region.coverage.cell_walk.class.alu = 33213
+region.coverage.cell_walk.class.branch = 411
+region.coverage.cell_walk.class.call = 34
+region.coverage.cell_walk.class.fp_add_sub = 22
+region.coverage.cell_walk.class.fp_compare = 47
+region.coverage.cell_walk.class.fp_convert = 4
+region.coverage.cell_walk.class.fp_div_sqrt = 1
+region.coverage.cell_walk.class.fp_move = 210
+region.coverage.cell_walk.class.fp_mul = 17
+region.coverage.cell_walk.class.load = 1758
+region.coverage.cell_walk.class.mov_wide = 744
+region.coverage.cell_walk.class.mul = 108
+region.coverage.cell_walk.class.mul_high = 14
+region.coverage.cell_walk.class.store = 1913
+region.coverage.cell_walk.class.udiv = 4
+
+[fn.__wrela_pixels_p7_isolate_smooth_object]
+frame_size = 10160
+word_sha256 = 499ded5170790991c3b7b0ea75faae4272aad5f3c45d09bf7c276ea72f1ae85a
+region.unmarked words=3164 calls=19 indirect_calls=0 frame_loads=615 frame_stores=999
+region.unmarked.class.abort = 23
+region.unmarked.class.adrp = 23
+region.unmarked.class.alu = 429
+region.unmarked.class.branch = 176
+region.unmarked.class.call = 19
+region.unmarked.class.fp_add_sub = 2
+region.unmarked.class.fp_compare = 14
+region.unmarked.class.fp_move = 40
+region.unmarked.class.fp_mul = 2
+region.unmarked.class.load = 1084
+region.unmarked.class.mov_wide = 220
+region.unmarked.class.mul = 34
+region.unmarked.class.sdiv = 1
+region.unmarked.class.store = 1097
+
+[fn.__wrela_pixels_p7_collect_roots_box]
+frame_size = 29472
+word_sha256 = d69d9aa239403286f526bf978b7983a0384287d85869987aee5aa9c122271e0f
+region.unmarked words=6815 calls=55 indirect_calls=0 frame_loads=1396 frame_stores=1778
+region.unmarked.class.abort = 66
+region.unmarked.class.abort_val = 10
+region.unmarked.class.adrp = 86
+region.unmarked.class.alu = 1539
+region.unmarked.class.branch = 352
+region.unmarked.class.call = 55
+region.unmarked.class.fp_add_sub = 4
+region.unmarked.class.fp_compare = 24
+region.unmarked.class.fp_convert = 2
+region.unmarked.class.fp_move = 72
+region.unmarked.class.fp_mul = 4
+region.unmarked.class.load = 1927
+region.unmarked.class.mov_wide = 592
+region.unmarked.class.mul = 108
+region.unmarked.class.mul_high = 2
+region.unmarked.class.sdiv = 1
+region.unmarked.class.store = 1971
+
+[fn.__wrela_pixels_p8_write]
+frame_size = 0
+word_sha256 = eabca2c9994132661ab3aed6fdcf7e984a10977f28c5c63eb4ce859c196a0f2e
+region.unmarked words=3 calls=0 indirect_calls=0 frame_loads=0 frame_stores=0
+region.unmarked.class.branch = 2
+region.unmarked.class.mov_wide = 1
+
+[fn.__wrela_pixels_p8_write4]
+frame_size = 0
+word_sha256 = eabca2c9994132661ab3aed6fdcf7e984a10977f28c5c63eb4ce859c196a0f2e
+region.unmarked words=3 calls=0 indirect_calls=0 frame_loads=0 frame_stores=0
+region.unmarked.class.branch = 2
+region.unmarked.class.mov_wide = 1
+
+[fn.sqrt_scalar]
+frame_size = 48
+word_sha256 = 1ca6fbbbe229f38dcb6616593c3b8b86df6959c6252ff2884ba0d648091450ce
+region.unmarked words=136 calls=0 indirect_calls=0 frame_loads=10 frame_stores=13
+region.unmarked.class.abort = 4
+region.unmarked.class.adrp = 4
+region.unmarked.class.alu = 38
+region.unmarked.class.branch = 20
+region.unmarked.class.fp_add_sub = 1
+region.unmarked.class.fp_compare = 5
+region.unmarked.class.fp_div_sqrt = 1
+region.unmarked.class.fp_move = 19
+region.unmarked.class.fp_mul = 1
+region.unmarked.class.load = 10
+region.unmarked.class.mov_wide = 18
+region.unmarked.class.mul = 1
+region.unmarked.class.store = 13
+region.unmarked.class.udiv = 1
+
+[fn.rsqrt_scalar]
+frame_size = 16
+word_sha256 = 1f12c0a512e1ac1d2863b21c65f5f4c1bb6b9e798aa2056accf85b2b80f7d2f3
+region.unmarked words=19 calls=1 indirect_calls=0 frame_loads=1 frame_stores=1
+region.unmarked.class.alu = 4
+region.unmarked.class.branch = 3
+region.unmarked.class.call = 1
+region.unmarked.class.fp_compare = 1
+region.unmarked.class.fp_div_sqrt = 1
+region.unmarked.class.fp_move = 5
+region.unmarked.class.load = 1
+region.unmarked.class.mov_wide = 2
+region.unmarked.class.store = 1
+
+[fn.raster_rsqrt]
+frame_size = 48
+word_sha256 = 9149e62f1acc0f4976198a347cd7ce14f7ace4a2308edc235f3c7631a0bd0238
+region.unmarked words=57 calls=1 indirect_calls=0 frame_loads=4 frame_stores=2
+region.unmarked.class.alu = 5
+region.unmarked.class.branch = 3
+region.unmarked.class.call = 1
+region.unmarked.class.fp_add_sub = 2
+region.unmarked.class.fp_compare = 1
+region.unmarked.class.fp_move = 29
+region.unmarked.class.fp_mul = 7
+region.unmarked.class.load = 4
+region.unmarked.class.mov_wide = 3
+region.unmarked.class.store = 2
+
+## [I] modelled cycles
+# Derived from the [M] counts above through the A76 cost table.
+# Never summed with an [M] row; anything citing a cycle cites [I].
+fn.__wrela_pixels_p8_raster_regular.proxy_cycles = 796
+fn.__wrela_pixels_p8_raster_regular.region.unmarked.latency_weighted_cycles = 375
+fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_prefix.latency_weighted_cycles = 486
+fn.__wrela_pixels_p8_raster_regular.region.raster.packet_loop.latency_weighted_cycles = 792
+fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_suffix.latency_weighted_cycles = 263
+fn.__wrela_pixels_p8_raster_regular.region.raster.charge.latency_weighted_cycles = 44
+fn.__wrela_pixels_p8_geometry_lane_valid.proxy_cycles = 446
+fn.__wrela_pixels_p8_geometry_lane_valid.region.unmarked.latency_weighted_cycles = 1029
+fn.__wrela_pixels_p8_geometry_packet_valid.proxy_cycles = 138
+fn.__wrela_pixels_p8_geometry_packet_valid.region.unmarked.latency_weighted_cycles = 395
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.proxy_cycles = 21440
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.unmarked.latency_weighted_cycles = 2212
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.entry.latency_weighted_cycles = 10084
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.cell_walk.latency_weighted_cycles = 45006
+fn.__wrela_pixels_p7_isolate_smooth_object.proxy_cycles = 2481
+fn.__wrela_pixels_p7_isolate_smooth_object.region.unmarked.latency_weighted_cycles = 6637
+fn.__wrela_pixels_p7_collect_roots_box.proxy_cycles = 5544
+fn.__wrela_pixels_p7_collect_roots_box.region.unmarked.latency_weighted_cycles = 13133
+fn.__wrela_pixels_p8_write.proxy_cycles = 2
+fn.__wrela_pixels_p8_write.region.unmarked.latency_weighted_cycles = 3
+fn.__wrela_pixels_p8_write4.proxy_cycles = 2
+fn.__wrela_pixels_p8_write4.region.unmarked.latency_weighted_cycles = 3
+fn.sqrt_scalar.proxy_cycles = 166
+fn.sqrt_scalar.region.unmarked.latency_weighted_cycles = 243
+fn.rsqrt_scalar.proxy_cycles = 34
+fn.rsqrt_scalar.region.unmarked.latency_weighted_cycles = 42
+fn.raster_rsqrt.proxy_cycles = 113
+fn.raster_rsqrt.region.unmarked.latency_weighted_cycles = 144

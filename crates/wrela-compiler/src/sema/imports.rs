@@ -18,17 +18,24 @@ pub struct ImportBinding {
 
 pub type ImportBindings = BTreeMap<String, ImportBinding>;
 
-pub(crate) fn alias_subs_for_exporter(
+/// Build every alias substitution table for one importer in a single pass.
+///
+/// Closure checking consults these tables for every imported declaration and
+/// every transitively reached type. Re-scanning the import table at each such
+/// site makes large prelude surfaces quadratic in their number of bindings.
+pub(crate) fn alias_subs_by_exporter(
     bindings: &ImportBindings,
-    target_module: &[String],
-) -> BTreeMap<String, String> {
-    let mut subs = BTreeMap::new();
-    for (local, b) in bindings {
-        if b.target_module.as_slice() == target_module && local != &b.target_name {
-            subs.insert(b.target_name.clone(), local.clone());
+) -> BTreeMap<Vec<String>, BTreeMap<String, String>> {
+    let mut by_exporter: BTreeMap<Vec<String>, BTreeMap<String, String>> = BTreeMap::new();
+    for (local, binding) in bindings {
+        if local != &binding.target_name {
+            by_exporter
+                .entry(binding.target_module.clone())
+                .or_default()
+                .insert(binding.target_name.clone(), local.clone());
         }
     }
-    subs
+    by_exporter
 }
 
 pub fn public_names(module: &Module) -> BTreeSet<String> {
@@ -211,4 +218,52 @@ pub(crate) fn lookup_origin_type_name<'a>(
         }
     }
     tname.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_tables_are_grouped_by_exporter_without_identity_entries() {
+        let alpha = vec!["alpha".to_string()];
+        let beta = vec!["beta".to_string()];
+        let bindings = ImportBindings::from([
+            (
+                "LocalA".to_string(),
+                ImportBinding {
+                    target_module: alpha.clone(),
+                    target_name: "A".to_string(),
+                },
+            ),
+            (
+                "B".to_string(),
+                ImportBinding {
+                    target_module: alpha.clone(),
+                    target_name: "B".to_string(),
+                },
+            ),
+            (
+                "LocalC".to_string(),
+                ImportBinding {
+                    target_module: beta.clone(),
+                    target_name: "C".to_string(),
+                },
+            ),
+        ]);
+
+        assert_eq!(
+            alias_subs_by_exporter(&bindings),
+            BTreeMap::from([
+                (
+                    alpha,
+                    BTreeMap::from([("A".to_string(), "LocalA".to_string())])
+                ),
+                (
+                    beta,
+                    BTreeMap::from([("C".to_string(), "LocalC".to_string())])
+                ),
+            ])
+        );
+    }
 }

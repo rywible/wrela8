@@ -1,6 +1,7 @@
 Module path=__image_pixels
   Const N_RENDERERS: usize
   Const N_RENDER_WORKERS: usize
+  Fn __wrela_pixels_p8r_packet_selftest() -> bool
   Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
   Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
   Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
@@ -462,6 +463,8 @@ Module path=render_program
   Fn polynomial_sparse(c0: read i32, c1: read i32, u: read i32, t: read i32, domain: read FixedDomain) -> NumericOutcome
   Fn polynomial_taylor(c0: read i32, c1: read i32, x: read i32, remainder_radius: read i32, domain: read FixedDomain) -> NumericOutcome
 Module path=render_raster
+  Fn pixels_f32_to_bits(value: read f32) -> u32
+  Fn pixels_f32_from_bits(bits: read u32) -> f32
   Struct IdentitySetId data
     pub field value: u32
   Struct MaterialSummaryId data
@@ -501,7 +504,62 @@ Module path=render_raster
     field words: [i64; 2]
     fn from_lanes(lanes: read [i32; 4]) -> I32x4
     fn lane(read self, index: read usize) -> i32
+  Struct F32x4 data
+    field words: [i64; 2]
+    fn from_bits(lanes: read [u32; 4]) -> F32x4
+    fn from_lanes(lanes: read [f32; 4]) -> F32x4
+    fn lane(read self, index: read usize) -> f32
+    fn lane_bits(read self, index: read usize) -> u32
+  Fn pixels_f32_min_scalar(lhs: read f32, rhs: read f32) -> f32
+  Fn pixels_f32_max_scalar(lhs: read f32, rhs: read f32) -> f32
+  Fn pixels_i32_select_gt_scalar(lhs: read i32, rhs: read i32, when_true: read i32, when_false: read i32) -> i32
+  Fn pixels_f32_select_ge_scalar(lhs: read f32, rhs: read f32, when_true: read f32, when_false: read f32) -> f32
+  Fn pixels_f32_select_gt_scalar(lhs: read f32, rhs: read f32, when_true: read f32, when_false: read f32) -> f32
+  Fn pixels_i32x4_backend_splat(value: read i32) -> I32x4
+  Const PIXELS_REGION_RASTER_SCALAR_PREFIX: u32
+  Const PIXELS_REGION_RASTER_PACKET_LOOP: u32
+  Const PIXELS_REGION_RASTER_SCALAR_SUFFIX: u32
+  Const PIXELS_REGION_RASTER_CHARGE: u32
+  Const PIXELS_REGION_COVERAGE_ENTRY: u32
+  Const PIXELS_REGION_COVERAGE_CELL_WALK: u32
+  Fn pixels_census_region(region: read u32) -> unit
   Fn pixels_i32x4_backend_add(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_sub(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_shr_arith_imm(value: read I32x4, immediate: read u8) -> I32x4
+  Fn pixels_i32x4_backend_and(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_or(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_select_gt(lhs: read I32x4, rhs: read I32x4, when_true: read I32x4, when_false: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_to_f32x4(value: read I32x4) -> F32x4
+  Fn pixels_f32x4_backend_splat(value: read f32) -> F32x4
+  Fn pixels_f32x4_backend_add(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_sub(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_mul(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_min(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_max(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_select_ge(lhs: read F32x4, rhs: read F32x4, when_true: read F32x4, when_false: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_select_gt(lhs: read F32x4, rhs: read F32x4, when_true: read F32x4, when_false: read F32x4) -> F32x4
+  Fn __pixels_u128_zero() -> [u64; 2]
+  Fn __pixels_u128_from_u64(value: read u64) -> [u64; 2]
+  Fn __pixels_u128_is_zero(value: read [u64; 2]) -> bool
+  Fn __pixels_u128_compare(lhs: read [u64; 2], rhs: read [u64; 2]) -> i32
+  Fn __pixels_u128_add(lhs: read [u64; 2], rhs: read [u64; 2]) -> [u64; 2]
+  Fn __pixels_u128_sub(lhs: read [u64; 2], rhs: read [u64; 2]) -> [u64; 2]
+  Fn __pixels_u128_shift_left(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_shift_right(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_lower_bits_nonzero(value: read [u64; 2], count: read u32) -> bool
+  Fn __pixels_u128_bit(value: read [u64; 2], index: read u32) -> bool
+  Fn __pixels_u128_shift_right_jam(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_top_bit(value: read [u64; 2]) -> i32
+  Fn __pixels_u128_scale_to(value: read u64, exponent: read i32, target: read i32) -> [u64; 2]
+  Fn __pixels_u128_round_shift_even(value: read [u64; 2], distance: read u32) -> u64
+  Fn __pixels_f32_mantissa(bits: read u32) -> u64
+  Fn __pixels_f32_exponent(bits: read u32) -> i32
+  Fn pixels_f32_fma_bits_fallback(lhs_bits: read u32, rhs_bits: read u32, addend_bits: read u32) -> u32
+  Fn pixels_f32_fma_scalar(lhs: read f32, rhs: read f32, addend: read f32) -> f32
+  Fn generated_f32_fma_fallback_is_fused_and_bit_exact() -> unit
+  Fn pixels_f32x4_backend_fma(lhs: read F32x4, rhs: read F32x4, addend: read F32x4) -> F32x4
+  Fn pixels_f32_to_i32_scalar(value: read f32) -> i32
+  Fn pixels_f32x4_backend_to_i32x4(value: read F32x4) -> I32x4
   Enum I32x4Outcome data
     variant Value(I32x4)
     variant Error

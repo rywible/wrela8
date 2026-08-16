@@ -81,6 +81,39 @@ pub fn optimize_checked(
     flow: Option<&FlowWirProgram>,
     layout: &LayoutCtx,
 ) -> Result<Option<MwirProgram>, String> {
+    Ok(optimize_for_codegen_checked(mwir, flow, layout)?.map(CodegenOptimized::into_program))
+}
+
+pub(crate) enum CodegenOptimized {
+    Ordinary(MwirProgram),
+    ProofsCurrent(crate::range::CertifiedProgram),
+}
+
+impl CodegenOptimized {
+    pub(crate) fn as_program(&self) -> &MwirProgram {
+        match self {
+            Self::Ordinary(program) => program,
+            Self::ProofsCurrent(program) => program.as_program(),
+        }
+    }
+
+    pub(crate) fn proofs_current(&self) -> bool {
+        matches!(self, Self::ProofsCurrent(_))
+    }
+
+    fn into_program(self) -> MwirProgram {
+        match self {
+            Self::Ordinary(program) => program,
+            Self::ProofsCurrent(program) => program.into_program(),
+        }
+    }
+}
+
+pub(crate) fn optimize_for_codegen_checked(
+    mwir: &MwirProgram,
+    flow: Option<&FlowWirProgram>,
+    layout: &LayoutCtx,
+) -> Result<Option<CodegenOptimized>, String> {
     if !(inlining() || const_prop() || gvn() || dce() || sroa() || crate::lower::bounds_elide()) {
         return Ok(None);
     }
@@ -112,9 +145,11 @@ pub fn optimize_checked(
         inline_program(&mut prog, flow, layout);
     }
     if crate::lower::bounds_elide() {
-        prog = crate::range::apply_program_proofs(&prog)?;
+        return Ok(Some(CodegenOptimized::ProofsCurrent(
+            crate::range::apply_program_proofs_owned_certified(prog)?,
+        )));
     }
-    Ok(Some(prog))
+    Ok(Some(CodegenOptimized::Ordinary(prog)))
 }
 
 /// Compatibility wrapper for analysis tests.  Production codegen uses
@@ -175,10 +210,47 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
                 f(e);
             }
         }
-        Inst::I32x4FromLanes { dst, lanes } => {
+        Inst::I32x4FromLanes { dst, lanes } | Inst::PacketFromLanes { dst, lanes, .. } => {
             f(dst);
             f(lanes);
         }
+        Inst::PacketSplat { dst, scalar, .. } => {
+            f(dst);
+            f(scalar);
+        }
+        Inst::PacketShiftRightArithmetic { dst, src, .. }
+        | Inst::PacketConvert { dst, src, .. } => {
+            f(dst);
+            f(src);
+        }
+        Inst::PacketSelect {
+            dst,
+            lhs,
+            rhs,
+            if_true,
+            if_false,
+            ..
+        } => {
+            f(dst);
+            f(lhs);
+            f(rhs);
+            f(if_true);
+            f(if_false);
+        }
+        Inst::PacketFma {
+            dst,
+            lhs,
+            rhs,
+            addend,
+        } => {
+            f(dst);
+            f(lhs);
+            f(rhs);
+            f(addend);
+        }
+        // Deliberately visits nothing: a region marker names no temp, so
+        // every temp-renaming pass leaves it alone by construction.
+        Inst::RegionMarker { .. } => {}
         Inst::MakeEnum { dst, payload, .. } => {
             f(dst);
             for p in payload {
@@ -187,6 +259,7 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         }
         Inst::StringConcat { dst, lhs, rhs, .. }
         | Inst::I32x4Add { dst, lhs, rhs }
+        | Inst::PacketBinary { dst, lhs, rhs, .. }
         | Inst::ArithChecked { dst, lhs, rhs, .. }
         | Inst::ArithWrapping { dst, lhs, rhs, .. }
         | Inst::DivRem { dst, lhs, rhs, .. }

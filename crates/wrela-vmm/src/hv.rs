@@ -23,6 +23,7 @@ pub const HV_MEMORY_WRITE: u64 = 1 << 1;
 pub const HV_MEMORY_EXEC: u64 = 1 << 2;
 
 pub const HV_REG_PC: u32 = 31;
+pub const HV_REG_FPCR: u32 = 32;
 pub const HV_REG_CPSR: u32 = 34;
 
 pub fn hv_reg_xn(n: u32) -> u32 {
@@ -156,6 +157,12 @@ pub fn decode_brk(esr: u64) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn architectural_system_register_encodings_are_pinned() {
+        assert_eq!(HV_SYS_REG_CPACR_EL1, 0xc082);
+        assert_eq!(HV_REG_FPCR, 32);
+    }
 
     fn build_esr_data_abort(ec: u32, write: bool, srt: u32, sas: u32) -> u64 {
         let mut iss: u64 = 0;

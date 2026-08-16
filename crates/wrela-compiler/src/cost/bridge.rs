@@ -227,6 +227,7 @@ impl BlockBridge {
                             frame_size: function.frame_size as usize,
                             code: function.code.clone(),
                             relocs: Vec::new(),
+                            regions: Vec::new(),
                         },
                     )
                 })
@@ -381,11 +382,11 @@ mod tests {
     use crate::cost::sweep::SweepPoint;
 
     fn word(rule: CostRule) -> EmittedWord {
-        EmittedWord::new(0xd503_201f, "nop".to_string(), rule, None, &[])
+        EmittedWord::gpr(0xd503_201f, "nop".to_string(), rule, None, &[])
     }
 
     fn branch() -> EmittedWord {
-        EmittedWord::new(
+        EmittedWord::gpr(
             crate::encode::enc_b(4),
             "b .+4".to_string(),
             CostRule::Branch,
@@ -402,6 +403,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         CodegenProgram {
@@ -778,7 +780,7 @@ mod tests {
     }
 
     fn cbz(byte_offset: i32) -> EmittedWord {
-        EmittedWord::new(
+        EmittedWord::gpr(
             crate::encode::enc_cbz(0, byte_offset, true),
             "cbz".to_string(),
             CostRule::Branch,
@@ -788,7 +790,7 @@ mod tests {
     }
 
     fn alu() -> EmittedWord {
-        EmittedWord::new(0, "alu".to_string(), CostRule::Alu, Some(1), &[0, 0])
+        EmittedWord::gpr(0, "alu".to_string(), CostRule::Alu, Some(1), &[0, 0])
     }
 
     fn abort_shape() -> CodegenProgram {

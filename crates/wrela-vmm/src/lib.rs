@@ -24,6 +24,11 @@ pub const WALL_CAP: Duration = Duration::from_secs(30);
 /// performance admission and the sweeps get cheap.
 pub const PIXELS_WALL_CAP: Duration = Duration::from_secs(1800);
 
+/// Guest FPCR policy: make every floating-point NaN result the architectural
+/// default NaN. Pixels' packet ABI seals that bit pattern, so both host
+/// backends must install the policy before executing any guest instruction.
+pub(crate) const GUEST_FPCR: u64 = 1 << 25;
+
 pub(crate) const fn boot_wall_cap(has_pixels_renderer: bool) -> Duration {
     if has_pixels_renderer {
         PIXELS_WALL_CAP
@@ -1294,7 +1299,7 @@ mod tests {
             runtime_loaded.file.display().to_string(),
         );
         paths.insert(
-            gen_key,
+            gen_key.clone(),
             wrela_compiler::rtconfig::GENERATED_INPUT_PATH.to_string(),
         );
         let time_key: Option<Vec<String>> = if loader::module_mentions_time(&module) {
@@ -1308,8 +1313,13 @@ mod tests {
         } else {
             None
         };
-        let mut programs_vec =
-            wrela_compiler::sema::check_program_typed(&modules_vec, &paths).expect("must check");
+        let internal_sources = BTreeSet::from([gen_key]);
+        let mut programs_vec = wrela_compiler::sema::check_program_typed_with_internal_sources(
+            &modules_vec,
+            &paths,
+            &internal_sources,
+        )
+        .expect("must check");
         if let Some(tk) = &time_key {
             programs_vec.remove(tk);
             modules_vec.remove(tk);
@@ -1387,6 +1397,7 @@ mod tests {
             graph: &graph,
             modules: &compiled.modules,
             programs: &compiled.programs,
+            layouts: &compiled.layouts,
             layout_ctx: &compiled.layout_ctx,
             async_frames: &compiled.async_frames,
             group_child_index: &compiled.group_child_index,
@@ -1453,6 +1464,7 @@ mod tests {
             graph: &graph,
             modules: &compiled.modules,
             programs: &compiled.programs,
+            layouts: &compiled.layouts,
             layout_ctx: &compiled.layout_ctx,
             async_frames: &compiled.async_frames,
             group_child_index: &compiled.group_child_index,

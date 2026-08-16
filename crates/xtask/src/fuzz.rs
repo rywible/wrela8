@@ -2399,6 +2399,7 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
             graph: &graph,
             modules: &compiled.modules,
             programs: &compiled.programs,
+            layouts: &compiled.layouts,
             layout_ctx: &compiled.layout_ctx,
             async_frames: &compiled.async_frames,
             group_child_index: &compiled.group_child_index,

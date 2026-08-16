@@ -3,6 +3,7 @@ module examples.boot_pixels_plane
 # @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
 # surface in order to pin its contract; see sema::check_reserved_source_names.
 from core.runtime import __wrela_trace_p7_u64
+from core.__image_pixels import __wrela_pixels_p8r_packet_selftest
 
 from core.field import (
     Field,
@@ -66,6 +67,10 @@ pub fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> M
 fn pinned_scene_contract():
     assert FIXTURE_ID == 34, "fixture id must remain pinned"
     assert WIDTH == 64, "adversarial scene value must remain pinned"
+
+@test(runtime)
+fn packet_substrate_executes_in_the_guest():
+    assert __wrela_pixels_p8r_packet_selftest(), "all P8R packet lanes and special values"
 
 @test(runtime)
 async fn plane_renders_from_scratch(renderer: Actor[Renderer[SceneParams]]):

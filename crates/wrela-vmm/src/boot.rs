@@ -1161,6 +1161,7 @@ fn boot_image_core_inner(
                             code: r,
                         });
                     }
+                    set(HV_REG_FPCR, crate::GUEST_FPCR)?;
                     Ok(())
                 })();
                 match init {

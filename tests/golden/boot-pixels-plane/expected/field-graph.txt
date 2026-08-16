@@ -24,21 +24,21 @@ Renderers count=1
     Material id=m0 kind=Sample base_color=[s8,s9,s10] opacity=s1 emissive=[s0,s0,s0] roughness=s9 metallic=s0 specular=s9 ior=s11 normal=geometric pattern=none
     Identity kind=material enum=examples.boot_pixels_plane::MaterialId variant=Ground
     Identity kind=object enum=examples.boot_pixels_plane::ObjectId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.boot_pixels_plane:58:28@bytes=1214..1217 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:58:17@bytes=1203..1204,examples.boot_pixels_plane:58:35@bytes=1221..1224,examples.boot_pixels_plane:63:35@bytes=1469..1470]
-    Origin kind=scalar id=s1 primary=examples.boot_pixels_plane:58:42@bytes=1228..1231 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:58:17@bytes=1203..1204,examples.boot_pixels_plane:63:35@bytes=1469..1470]
-    Origin kind=scalar id=s2 primary=examples.boot_pixels_plane:58:17@bytes=1203..1204 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s0 primary=examples.boot_pixels_plane:59:28@bytes=1281..1284 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:59:17@bytes=1270..1271,examples.boot_pixels_plane:59:35@bytes=1288..1291,examples.boot_pixels_plane:64:35@bytes=1536..1537]
+    Origin kind=scalar id=s1 primary=examples.boot_pixels_plane:59:42@bytes=1295..1298 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:59:17@bytes=1270..1271,examples.boot_pixels_plane:64:35@bytes=1536..1537]
+    Origin kind=scalar id=s2 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
     Origin kind=scalar id=s3 primary=examples.boot_pixels_plane:0:0@bytes=0..0
     Origin kind=scalar id=s4 primary=examples.boot_pixels_plane:0:0@bytes=0..0
     Origin kind=scalar id=s5 primary=examples.boot_pixels_plane:0:0@bytes=0..0
-    Origin kind=scalar id=s6 primary=examples.boot_pixels_plane:58:17@bytes=1203..1204 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=scalar id=s7 primary=examples.boot_pixels_plane:58:17@bytes=1203..1204 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=scalar id=s8 primary=examples.boot_pixels_plane:63:48@bytes=1482..1486 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:63:35@bytes=1469..1470]
-    Origin kind=scalar id=s9 primary=examples.boot_pixels_plane:63:56@bytes=1490..1493 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:63:35@bytes=1469..1470,examples.boot_pixels_plane:63:80@bytes=1514..1517]
-    Origin kind=scalar id=s10 primary=examples.boot_pixels_plane:63:63@bytes=1497..1501 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:63:35@bytes=1469..1470]
-    Origin kind=scalar id=s11 primary=examples.boot_pixels_plane:63:35@bytes=1469..1470 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.boot_pixels_plane:58:17@bytes=1203..1204 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.boot_pixels_plane:59:16@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.boot_pixels_plane:63:35@bytes=1469..1470 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.boot_pixels_plane:64:48@bytes=1549..1553 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537]
+    Origin kind=scalar id=s9 primary=examples.boot_pixels_plane:64:56@bytes=1557..1560 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537,examples.boot_pixels_plane:64:80@bytes=1581..1584]
+    Origin kind=scalar id=s10 primary=examples.boot_pixels_plane:64:63@bytes=1564..1568 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537]
+    Origin kind=scalar id=s11 primary=examples.boot_pixels_plane:64:35@bytes=1536..1537 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.boot_pixels_plane:60:16@bytes=1337..1338 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.boot_pixels_plane:64:35@bytes=1536..1537 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
     Roots field=f1 material=m0
     SymbolicQuota steps=21/1000000 nodes=23/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.boot_pixels_plane::world material_key=examples.boot_pixels_plane::shade

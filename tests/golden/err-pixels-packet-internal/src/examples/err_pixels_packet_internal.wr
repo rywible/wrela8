@@ -1,0 +1,9 @@
+module examples.err_pixels_packet_internal
+
+# P8R packet carriers and helpers are compiler/renderer-internal. An ordinary
+# project cannot import the nominal carrier even though renderer modules use
+# public declarations to cross their own sealed module boundaries.
+from core.render_raster import F32x4
+
+fn borrowed_packet(value: F32x4) -> F32x4:
+    return value

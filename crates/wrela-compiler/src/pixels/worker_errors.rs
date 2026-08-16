@@ -320,10 +320,7 @@ mod tests {
         // This is the lint that makes B1-style drift impossible: adding a
         // new failure code to render.wr without registering it here fails
         // the build, not a fixture three milestones later.
-        let render = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core/render.wr"),
-        )
-        .expect("stdlib/core/render.wr is readable");
+        let render = renderer_sources();
         // Codes reported through row/sample failure paths and direct worker
         // returns. Keeping both spellings here closes the loophole where a
         // direct `run_job` invariant could borrow an unrelated registered
@@ -358,12 +355,35 @@ mod tests {
         }
     }
 
+    /// Every renderer module's source, concatenated.
+    ///
+    /// The renderer spans `stdlib/core/render.wr` and its sibling
+    /// `render_*.wr` modules, so a guard that reads only `render.wr` would
+    /// stop seeing the code it guards the moment a function moved.
+    fn renderer_sources() -> String {
+        let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&core)
+            .expect("stdlib/core is readable")
+            .map(|entry| entry.expect("stdlib/core entry").path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| extension == "wr")
+                    && path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| stem == "render" || stem.starts_with("render_"))
+            })
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("renderer module is readable"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn run_job_preflight_reports_only_internal_invariants() {
-        let render = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core/render.wr"),
-        )
-        .expect("stdlib/core/render.wr is readable");
+        let render = renderer_sources();
         let start = render
             .find("pub fn __wrela_pixels_p7_run_job(")
             .expect("run_job exists");

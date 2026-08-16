@@ -1,0 +1,15 @@
+# pixels conformance cache parity
+schema = 1
+cases = full-corpus
+cache_scope = compile-closure,score
+boot_inputs = verified-content-cache
+artifacts = tests/pixels_truth/p8-visibility.txt
+artifact_sha256 = 2667349a72bf15d815d044125417587911d47e880d39388b9554b1d27f10c390
+
+## [M] measured wall time (seconds)
+cold = 121.8
+warm = 5.1
+disabled = 143.9
+
+## verdict
+identical = true

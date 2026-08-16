@@ -90,6 +90,53 @@ pub fn check_typed(module: &Module, path: &str) -> Result<typed::TypedProgram, S
     check_typed_single(module, path)
 }
 
+/// Check one source module once and render the stable `check` observation
+/// from the same declarations and effect table. This is the single-module
+/// counterpart to [`check_program_typed_with_dump`].
+pub fn check_typed_with_dump(
+    module: &Module,
+    path: &str,
+) -> Result<(typed::TypedProgram, String), SemaError> {
+    if let Some(import) = module.imports.first() {
+        return Err(unimplemented_at(
+            "imports through the single-module entry (`--stage=typed`, `wrela test`) are",
+            import.span,
+        ));
+    }
+    let text = crate::syntax::printer::pretty(module);
+    let needs_time = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|tok| tok == "now" || crate::loader::TIME_PRELUDE_NAMES.contains(&tok));
+    if needs_time {
+        let (time_key, time_loaded) = load_time_module_as_sema()?;
+        let root_key = module.path.clone();
+        let time_path = time_loaded.file.display().to_string();
+        let mut modules = BTreeMap::new();
+        modules.insert(root_key.clone(), module.clone());
+        modules.insert(time_key.clone(), time_loaded.module);
+        let mut paths = BTreeMap::new();
+        paths.insert(root_key.clone(), path.to_string());
+        paths.insert(time_key, time_path);
+        let (mut programs, dump) = check_program_typed_with_dump(&modules, &paths)?;
+        let program = programs.remove(&root_key).ok_or_else(|| {
+            SemaError::at(
+                "internal",
+                "internal error: time-prelude check lost the root module".to_string(),
+                Span::default(),
+            )
+        })?;
+        return Ok((program, dump));
+    }
+    let (program, decl_items) = check_typed_single_with_decls(module, path)?;
+    let dump = dump_with_imports(
+        module,
+        &types::ImportedTypes::new(),
+        Some(&decl_items),
+        Some(&program.effects),
+    )?;
+    Ok((program, dump))
+}
+
 fn check_typed_with_time_prelude(
     module: &Module,
     path: &str,
@@ -131,7 +178,7 @@ fn check_typed_single_with_decls(
     module: &Module,
     path: &str,
 ) -> Result<(typed::TypedProgram, Vec<types::DeclItem>), SemaError> {
-    check_reserved_source_names(module, path)?;
+    check_reserved_source_names(module, path, false)?;
     prepare_stdlib_enums_for_file(path, module)?;
     let specialized = specialize::specialize(module)?;
     let layouts = types::check_layouts(&specialized)?;
@@ -265,7 +312,16 @@ pub fn check_program_dump(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<String, SemaError> {
-    let (programs, tables) = check_program_typed_tables(modules, paths)?;
+    let (programs, tables) = check_program_typed_tables(modules, paths, &BTreeSet::new())?;
+    render_check_dump(modules, &programs, &tables)
+}
+
+pub fn check_program_dump_with_internal_sources(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+    internal_sources: &BTreeSet<Vec<String>>,
+) -> Result<String, SemaError> {
+    let (programs, tables) = check_program_typed_tables(modules, paths, internal_sources)?;
     render_check_dump(modules, &programs, &tables)
 }
 
@@ -402,24 +458,76 @@ pub fn check_program_typed(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
-    check_program_typed_tables(modules, paths).map(|(programs, _)| programs)
+    check_program_typed_tables(modules, paths, &BTreeSet::new()).map(|(programs, _)| programs)
+}
+
+/// Check an import closure with loader-authenticated compiler-owned modules.
+///
+/// The ordinary public entry points deliberately pass an empty set. Callers
+/// use this only for generated modules whose ASTs were created inside the
+/// compiler; filesystem spelling and angle-bracket display paths never grant
+/// the capability.
+pub fn check_program_typed_with_internal_sources(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+    internal_sources: &BTreeSet<Vec<String>>,
+) -> Result<BTreeMap<Vec<String>, typed::TypedProgram>, SemaError> {
+    check_program_typed_tables(modules, paths, internal_sources).map(|(programs, _)| programs)
+}
+
+/// Check an import closure once and render the stable `check` observation
+/// from the exact same semantic tables.
+pub fn check_program_typed_with_dump(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, String), SemaError> {
+    let (programs, tables) = check_program_typed_tables(modules, paths, &BTreeSet::new())?;
+    let dump = render_check_dump(modules, &programs, &tables)?;
+    Ok((programs, dump))
+}
+
+pub fn check_program_typed_with_dump_and_internal_sources(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+    internal_sources: &BTreeSet<Vec<String>>,
+) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, String), SemaError> {
+    let (programs, tables) = check_program_typed_tables(modules, paths, internal_sources)?;
+    let dump = render_check_dump(modules, &programs, &tables)?;
+    Ok((programs, dump))
 }
 
 fn check_program_typed_tables(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
+    internal_sources: &BTreeSet<Vec<String>>,
 ) -> Result<(BTreeMap<Vec<String>, typed::TypedProgram>, CheckDumpTables), SemaError> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s sema-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     for (key, module) in modules {
-        check_reserved_source_names(module, paths.get(key).map_or("<unknown>", String::as_str))?;
+        check_reserved_source_names(
+            module,
+            paths.get(key).map_or("<unknown>", String::as_str),
+            internal_sources.contains(key),
+        )?;
     }
     prepare_stdlib_enums_for_closure(modules, paths)?;
-    let mut specialized: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    let mut specialized: BTreeMap<Vec<String>, std::borrow::Cow<'_, Module>> = BTreeMap::new();
     let mut layouts: BTreeMap<Vec<String>, Vec<types::LayoutType>> = BTreeMap::new();
     for (key, module) in modules {
-        let s = specialize::specialize(module)?;
+        let s = specialize::specialize_cow(module)?;
         layouts.insert(key.clone(), types::check_layouts(&s)?);
         specialized.insert(key.clone(), s);
     }
+    timing("specialize-layouts");
 
     let mut symtabs: BTreeMap<Vec<String>, symbols::SymbolTable> = BTreeMap::new();
     let mut exports = imports::Exports::new();
@@ -444,6 +552,17 @@ fn check_program_typed_tables(
 
     inject_time_prelude_bindings(&mut bindings, &specialized);
     inject_pixels_prelude_bindings(&mut bindings, &specialized);
+    let alias_subs: BTreeMap<Vec<String>, BTreeMap<Vec<String>, BTreeMap<String, String>>> =
+        bindings
+            .iter()
+            .map(|(module, module_bindings)| {
+                (
+                    module.clone(),
+                    imports::alias_subs_by_exporter(module_bindings),
+                )
+            })
+            .collect();
+    timing("symbols-imports");
     let core_render = vec!["core".to_string(), "render".to_string()];
     let image_pixels = crate::loader::IMAGE_PIXELS_MODULE_KEY
         .iter()
@@ -454,6 +573,7 @@ fn check_program_typed_tables(
     let core_render_program = vec!["core".to_string(), "render_program".to_string()];
     let core_render_certificate = vec!["core".to_string(), "render_certificate".to_string()];
     let core_render_coverage = vec!["core".to_string(), "render_coverage".to_string()];
+    let core_render_arrangement = vec!["core".to_string(), "render_arrangement".to_string()];
     let core_render_raster = vec!["core".to_string(), "render_raster".to_string()];
     let has_pixels_runtime = symtabs.contains_key(&image_pixels)
         && symtabs.contains_key(&core_render)
@@ -485,6 +605,12 @@ fn check_program_typed_tables(
             let Some(module_bindings) = bindings.get_mut(&key) else {
                 continue;
             };
+            let imports_packet_selftest = module_bindings
+                .get("__wrela_pixels_p8r_packet_selftest")
+                .is_some_and(|binding| {
+                    binding.target_module == image_pixels
+                        && binding.target_name == "__wrela_pixels_p8r_packet_selftest"
+                });
             for (target_module, names) in [
                 (
                     &core_render,
@@ -523,13 +649,37 @@ fn check_program_typed_tables(
                     &["CoverageOutcome", "coverage_line_twice_area"][..],
                 ),
                 (
+                    &core_render_arrangement,
+                    &[
+                        "RendererWorkerP8RSubdivisionCell",
+                        "RendererWorkerP8RSubdivisionStack",
+                    ][..],
+                ),
+                (
                     &core_render_raster,
                     &[
                         "AffineRunSetup",
                         "EventId",
                         "EventPixel",
+                        "F32x4",
                         "I32x4",
                         "I32x4Outcome",
+                        "__pixels_f32_exponent",
+                        "__pixels_f32_mantissa",
+                        "__pixels_u128_add",
+                        "__pixels_u128_bit",
+                        "__pixels_u128_compare",
+                        "__pixels_u128_from_u64",
+                        "__pixels_u128_is_zero",
+                        "__pixels_u128_lower_bits_nonzero",
+                        "__pixels_u128_round_shift_even",
+                        "__pixels_u128_scale_to",
+                        "__pixels_u128_shift_left",
+                        "__pixels_u128_shift_right",
+                        "__pixels_u128_shift_right_jam",
+                        "__pixels_u128_sub",
+                        "__pixels_u128_top_bit",
+                        "__pixels_u128_zero",
                         "IdSlice",
                         "IdentitySetId",
                         "LightSummaryId",
@@ -539,8 +689,42 @@ fn check_program_typed_tables(
                         "RasterGeometryLane",
                         "RasterRun",
                         "RunId",
+                        "PIXELS_REGION_COVERAGE_CELL_WALK",
+                        "PIXELS_REGION_COVERAGE_ENTRY",
+                        "PIXELS_REGION_RASTER_CHARGE",
+                        "PIXELS_REGION_RASTER_PACKET_LOOP",
+                        "PIXELS_REGION_RASTER_SCALAR_PREFIX",
+                        "PIXELS_REGION_RASTER_SCALAR_SUFFIX",
                         "i32x4_add_checked",
+                        "pixels_f32_fma_bits_fallback",
+                        "pixels_f32_fma_scalar",
+                        "pixels_f32_from_bits",
+                        "pixels_f32_max_scalar",
+                        "pixels_f32_min_scalar",
+                        "pixels_f32_select_ge_scalar",
+                        "pixels_f32_select_gt_scalar",
+                        "pixels_f32_to_bits",
+                        "pixels_f32_to_i32_scalar",
+                        "pixels_f32x4_backend_add",
+                        "pixels_f32x4_backend_fma",
+                        "pixels_f32x4_backend_max",
+                        "pixels_f32x4_backend_min",
+                        "pixels_f32x4_backend_mul",
+                        "pixels_f32x4_backend_select_ge",
+                        "pixels_f32x4_backend_select_gt",
+                        "pixels_f32x4_backend_splat",
+                        "pixels_f32x4_backend_sub",
+                        "pixels_f32x4_backend_to_i32x4",
+                        "pixels_census_region",
                         "pixels_i32x4_backend_add",
+                        "pixels_i32x4_backend_and",
+                        "pixels_i32x4_backend_or",
+                        "pixels_i32x4_backend_select_gt",
+                        "pixels_i32x4_backend_shr_arith_imm",
+                        "pixels_i32x4_backend_splat",
+                        "pixels_i32x4_backend_sub",
+                        "pixels_i32x4_backend_to_f32x4",
+                        "pixels_i32_select_gt_scalar",
                         "raster_geometry_lane_valid",
                         "raster_i32_enclosure_fits",
                         "raster_run4",
@@ -553,6 +737,16 @@ fn check_program_typed_tables(
                     continue;
                 }
                 for name in names {
+                    if target_module == &core_render_raster
+                        && is_pixels_packet_internal_name(name)
+                        && !is_pixels_packet_visibility_key(&key)
+                        && !paths
+                            .get(&key)
+                            .is_some_and(|path| is_compiler_internal_fixture_path(Path::new(path)))
+                        && !imports_packet_selftest
+                    {
+                        continue;
+                    }
                     if !symtabs[&key].contains_key(*name) && !module_bindings.contains_key(*name) {
                         module_bindings.insert(
                             (*name).to_string(),
@@ -566,8 +760,57 @@ fn check_program_typed_tables(
             }
         }
     }
+    // Where each injected `core.render` surface symbol is actually declared.
+    //
+    // The renderer is more than one module, so binding the whole injected
+    // surface to `core.render` would point every renderer body at the wrong
+    // module for any helper that lives in a sibling — and, because the import
+    // shadow rule compares declaring modules, would withhold whole imports.
+    // Asking the loaded symbol tables who declares a name keeps this correct
+    // by construction when a helper moves, instead of through a second list
+    // that has to move with it.
+    let renderer_surface_owners = {
+        let renderer_modules: Vec<&Vec<String>> = symtabs
+            .keys()
+            .filter(|path| path.len() == 2 && path[0] == "core" && path[1].starts_with("render"))
+            .collect();
+        let mut owners: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+        for name in crate::pixels::surface::injected_core_render_names() {
+            let declaring: Vec<&Vec<String>> = renderer_modules
+                .iter()
+                .copied()
+                .filter(|path| symtabs[*path].contains_key(name))
+                .collect();
+            match declaring.as_slice() {
+                [] => {}
+                [only] => {
+                    owners.insert(name, (*only).clone());
+                }
+                many => {
+                    // Two renderer modules declaring one reserved name would
+                    // make the injected binding a coin flip, so it fails
+                    // closed rather than picking one.
+                    return Err(SemaError::at(
+                        "sema",
+                        format!(
+                            "reserved Pixels symbol `{name}` is declared by {} renderer \
+                             modules ({}); exactly one module owns each reserved name",
+                            many.len(),
+                            many.iter()
+                                .map(|path| path.join("."))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        Span::default(),
+                    ));
+                }
+            }
+        }
+        owners
+    };
+
     for (key, module_bindings) in &mut bindings {
-        if key == &core_render || !has_pixels_runtime {
+        if !has_pixels_runtime {
             continue;
         }
         // The injected Pixels surface comes from one table
@@ -577,10 +820,16 @@ fn check_program_typed_tables(
             if symtabs[key].contains_key(name) || module_bindings.contains_key(name) {
                 continue;
             }
+            let Some(owner) = renderer_surface_owners.get(name) else {
+                continue;
+            };
+            if owner == key {
+                continue;
+            }
             module_bindings.insert(
                 name.to_string(),
                 imports::ImportBinding {
-                    target_module: core_render.clone(),
+                    target_module: owner.clone(),
                     target_name: name.to_string(),
                 },
             );
@@ -695,7 +944,7 @@ fn check_program_typed_tables(
     let closure_shapes = imports::closure_type_shapes(
         &specialized
             .iter()
-            .map(|(k, m)| (k.clone(), m))
+            .map(|(k, m)| (k.clone(), m.as_ref()))
             .collect::<Vec<_>>(),
     );
     let mut imported_types: BTreeMap<Vec<String>, types::ImportedTypes> = BTreeMap::new();
@@ -720,6 +969,7 @@ fn check_program_typed_tables(
     }
 
     types::classify_closure(&mut decl_items_map, &imported_targets)?;
+    timing("declare-types");
 
     let mut mctxs: BTreeMap<Vec<String>, bodies::ModuleCtx> = BTreeMap::new();
     for (key, module) in &specialized {
@@ -767,16 +1017,20 @@ fn check_program_typed_tables(
             )
         };
         let dst = mctxs.get_mut(&key).expect("key is a key of mctxs");
-        let subs = imports::alias_subs_for_exporter(&bindings[&key], &target_module);
+        let empty_subs = BTreeMap::new();
+        let subs = alias_subs
+            .get(&key)
+            .and_then(|by_exporter| by_exporter.get(&target_module))
+            .unwrap_or(&empty_subs);
         let origin = target_module.join(".");
         if let Some(mut f) = fn_entry {
-            types::rekey_decl_fn_names(&mut f.decl, &subs);
+            types::rekey_decl_fn_names(&mut f.decl, subs);
             dst.fn_decl_module.insert(local.clone(), origin.clone());
             dst.fn_decl_name.insert(local.clone(), target_name.clone());
             dst.fns.insert(local.clone(), f);
         }
         if let Some(mut c) = const_entry {
-            types::rekey_type_names(&mut c, &subs);
+            types::rekey_type_names(&mut c, subs);
             dst.const_decl_module.insert(local.clone(), origin.clone());
             dst.const_decl_name
                 .insert(local.clone(), target_name.clone());
@@ -786,7 +1040,7 @@ fn check_program_typed_tables(
             }
         }
         if let Some(mut s) = struct_entry {
-            types::rekey_decl_struct_names(&mut s.decl, &subs);
+            types::rekey_decl_struct_names(&mut s.decl, subs);
             dst.struct_decl_module.insert(local.clone(), origin.clone());
             dst.type_decl_module.insert(local.clone(), origin.clone());
             dst.type_decl_name
@@ -794,14 +1048,14 @@ fn check_program_typed_tables(
             dst.structs.insert(local.clone(), s);
         }
         if let Some(mut e) = enum_entry {
-            types::rekey_decl_enum_names(&mut e.decl, &subs);
+            types::rekey_decl_enum_names(&mut e.decl, subs);
             dst.type_decl_module.insert(local.clone(), origin);
             dst.type_decl_name
                 .insert(local.clone(), target_name.clone());
             dst.enums.insert(local.clone(), e);
         }
         if let Some(mut s) = static_entry {
-            types::rekey_type_names(&mut s.ty, &subs);
+            types::rekey_type_names(&mut s.ty, subs);
             dst.statics.insert(local, s);
             for layout in layout_entries {
                 dst.layouts
@@ -811,7 +1065,8 @@ fn check_program_typed_tables(
         }
     }
 
-    close_mctx_type_reachability(&mut mctxs, &bindings);
+    close_mctx_type_reachability(&mut mctxs, &bindings, &alias_subs);
+    timing("module-contexts");
 
     let mut programs: BTreeMap<Vec<String>, typed::TypedProgram> = BTreeMap::new();
     for (key, module) in &specialized {
@@ -832,8 +1087,10 @@ fn check_program_typed_tables(
         program.instantiations = generics::check(module, decl_items, mctx, path)?;
         programs.insert(key.clone(), program);
     }
+    timing("bodies-generics");
 
-    splice_imported_decls(&mut programs, &bindings);
+    splice_imported_decls(&mut programs, &bindings, &alias_subs);
+    timing("splice-imported");
 
     for (key, module) in &specialized {
         let decl_items = &decl_items_map[key];
@@ -847,6 +1104,7 @@ fn check_program_typed_tables(
         crate::eval::legal::check_wake_sites(program)?;
         crate::eval::legal::check_bottom_half(program)?;
     }
+    timing("legal");
 
     for (key, module) in &specialized {
         let mut layouts = match programs.get_mut(key) {
@@ -858,8 +1116,10 @@ fn check_program_typed_tables(
             p.layouts = layouts;
         }
     }
+    timing("complete-layouts");
 
     splice_imported_static_layouts(&mut programs, &bindings);
+    timing("splice-static-layouts");
 
     let by_name: BTreeMap<String, &typed::TypedProgram> =
         programs.iter().map(|(k, p)| (k.join("."), p)).collect();
@@ -874,6 +1134,7 @@ fn check_program_typed_tables(
             &program.unbounded_sync_loops,
         )?;
     }
+    timing("closure-proofs");
 
     Ok((
         programs,
@@ -884,42 +1145,127 @@ fn check_program_typed_tables(
     ))
 }
 
+fn is_pixels_packet_visibility_key(key: &[String]) -> bool {
+    // Imported stdlib bodies are evaluated in each caller's module context.
+    // Their transitive renderer references therefore need declaration
+    // visibility throughout the toolchain-owned closure, while the source
+    // token fence and lowering identity check keep the operations unavailable
+    // to ordinary project modules.
+    matches!(key.first().map(String::as_str), Some("core" | "drivers"))
+}
+
+fn is_pixels_packet_internal_name(name: &str) -> bool {
+    matches!(
+        name,
+        "I32x4" | "F32x4" | "I32x4Outcome" | "i32x4_add_checked"
+    ) || name.starts_with("pixels_f32")
+        || name.starts_with("pixels_i32_")
+        || name.starts_with("pixels_i32x4_")
+}
+
 pub fn is_compiler_reserved_source_name(name: &str) -> bool {
-    name.starts_with("__wrela_") || name.starts_with("RendererWorker")
+    name.starts_with("__wrela_")
+        || name.starts_with("__pixels_")
+        || name.starts_with("RendererWorker")
+        || is_pixels_packet_internal_name(name)
 }
 
 /// Opt-in marker letting a repository-owned contract fixture name the
 /// compiler-reserved Pixels surface in order to pin its contract.
 pub const COMPILER_INTERNAL_FIXTURE_MARKER: &str = "@wrela-compiler-internal";
 
-/// Is this source file a toolchain-owned stdlib module?
+/// Authenticate a filesystem or re-check copy of a shipped stdlib module.
 ///
-/// Trust follows the stdlib *layout*, not the path the compiler was built at.
-/// `loader::stdlib_core_root` resolves `core.*` and `drivers.*` imports either
-/// to a `stdlib/` sibling of the package root or to the toolchain copy, so a
-/// compiler binary that has been moved, or a project vendoring its own
-/// `stdlib/`, is a supported configuration — and pinning trust to
-/// `CARGO_MANIFEST_DIR` made the stdlib itself fail this check there, with a
-/// baffling "compiler-reserved namespace" error on toolchain code.
-fn is_stdlib_source(path: &Path) -> bool {
-    let components: Vec<_> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    components
-        .windows(2)
-        .any(|pair| pair[0] == "stdlib" && (pair[1] == "core" || pair[1] == "drivers"))
+/// A vendored stdlib remains supported when its parsed AST is the shipped
+/// module's AST. Merely placing a counterfeit file under `stdlib/core` (or
+/// supplying a pseudo-path) grants nothing. Re-checks may use synthetic
+/// display paths because their AST still has to match the toolchain source.
+fn is_authenticated_stdlib_source(module: &Module, source_path: &Path) -> bool {
+    let core = crate::loader::toolchain_stdlib_core();
+    let drivers = crate::loader::toolchain_stdlib_drivers();
+    let canonical_source = source_path.canonicalize().ok();
+    if [core.as_path(), drivers.as_path()].into_iter().any(|root| {
+        root.canonicalize().is_ok_and(|root| {
+            canonical_source
+                .as_ref()
+                .is_some_and(|source| source.starts_with(root))
+        })
+    }) {
+        return true;
+    }
+
+    // A sibling vendored stdlib is authenticated by AST equality with the
+    // shipped module, never by the adjacent component names alone.
+    let components = source_path.components().collect::<Vec<_>>();
+    let Some((namespace, suffix_start)) = components.windows(2).find_map(|pair| {
+        let first = pair[0].as_os_str().to_str()?;
+        let second = pair[1].as_os_str().to_str()?;
+        (first == "stdlib" && matches!(second, "core" | "drivers")).then_some((second, pair[1]))
+    }) else {
+        return false;
+    };
+    let root = if namespace == "core" { core } else { drivers };
+    let Some(namespace_index) = components
+        .iter()
+        .position(|component| *component == suffix_start)
+    else {
+        return false;
+    };
+    let mut expected = root;
+    for component in components.iter().skip(namespace_index + 1) {
+        expected.push(component.as_os_str());
+    }
+    let Ok(source) = std::fs::read_to_string(expected) else {
+        return false;
+    };
+    let Ok(tokens) = crate::syntax::lexer::lex(&source) else {
+        return false;
+    };
+    let Ok(expected_module) = crate::syntax::parser::parse(tokens) else {
+        return false;
+    };
+    crate::syntax::printer::pretty(module) == crate::syntax::printer::pretty(&expected_module)
 }
 
-fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaError> {
+fn is_compiler_internal_fixture_path(source_path: &Path) -> bool {
+    let marked = std::fs::read_to_string(source_path).is_ok_and(|source| {
+        source.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with('#') && line.contains(COMPILER_INTERNAL_FIXTURE_MARKER)
+        })
+    });
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    marked
+        && source_path.canonicalize().is_ok_and(|source| {
+            ["../../tests/golden", "../../stdlib/tests"]
+                .into_iter()
+                .filter_map(|relative| manifest.join(relative).canonicalize().ok())
+                .any(|root| source.starts_with(root))
+        })
+}
+
+fn check_reserved_source_names(
+    module: &Module,
+    path: &str,
+    authenticated_internal: bool,
+) -> Result<(), SemaError> {
     let source_path = Path::new(path);
-    // Angle-bracket paths are compiler-owned synthetic/re-check inputs. User
-    // files enter through the loader with a filesystem path and are checked
-    // before any live-rtconfig re-check replaces that provenance with
-    // `<module.path>`.
-    let synthetic = path.starts_with('<') && path.ends_with('>');
-    if synthetic || is_stdlib_source(source_path) {
+    if authenticated_internal || is_authenticated_stdlib_source(module, source_path) {
         return Ok(());
+    }
+
+    if matches!(
+        module.path.first().map(String::as_str),
+        Some("core" | "drivers")
+    ) {
+        return Err(SemaError::at(
+            "name",
+            format!(
+                "module `{}` is in a compiler-reserved namespace and cannot be declared by user sources",
+                module.path.join(".")
+            ),
+            module.span,
+        ));
     }
 
     let source = std::fs::read_to_string(source_path)
@@ -936,19 +1282,7 @@ fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaEr
     // Match the directive as a comment line, not as a loose substring: prose
     // that merely mentions the marker (a fixture explaining why it does *not*
     // opt in, say) must not thereby opt itself in.
-    let marked = source.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with('#') && line.contains(COMPILER_INTERNAL_FIXTURE_MARKER)
-    });
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository_fixture = marked
-        && source_path.canonicalize().is_ok_and(|source| {
-            ["../../tests/golden", "../../stdlib/tests"]
-                .into_iter()
-                .filter_map(|relative| manifest.join(relative).canonicalize().ok())
-                .any(|root| source.starts_with(root))
-        });
-    if repository_fixture {
+    if is_compiler_internal_fixture_path(source_path) {
         return Ok(());
     }
 
@@ -989,7 +1323,19 @@ fn check_reserved_source_names(module: &Module, path: &str) -> Result<(), SemaEr
 fn splice_imported_decls(
     programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+    alias_subs: &BTreeMap<Vec<String>, BTreeMap<Vec<String>, BTreeMap<String, String>>>,
 ) {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s sema-splice-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     let mut declared: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
     for (key, p) in programs.iter() {
         let mut names: BTreeSet<String> = BTreeSet::new();
@@ -1000,16 +1346,94 @@ fn splice_imported_decls(
         declared.insert(key.clone(), names);
     }
     let empty_bindings = imports::ImportBindings::new();
-    let resolve = |m: &Vec<String>, name: &str| -> Option<(Vec<String>, String)> {
-        if declared.get(m).is_some_and(|d| d.contains(name)) {
-            return Some((m.clone(), name.to_string()));
+    // The shadow rule below asks whether two modules disagree about a name.
+    // Looking only at the first import hop makes a re-export look like a
+    // disagreement: after a helper moves out of `core.render` into a sibling
+    // module, an injected binding still names `core.render` while
+    // `core.render` itself now names the sibling. Chasing to the declaring
+    // module makes "same declaration, different number of hops" the non-event
+    // it is.
+    let resolved_declarations: std::cell::RefCell<
+        BTreeMap<(Vec<String>, String), Option<(Vec<String>, String)>>,
+    > = std::cell::RefCell::new(BTreeMap::new());
+    let resolve_declaring = |m: &Vec<String>, name: &str| -> Option<(Vec<String>, String)> {
+        let mut module = m.clone();
+        let mut name = name.to_string();
+        let mut path: Vec<(Vec<String>, String)> = Vec::new();
+        let mut seen: BTreeSet<(Vec<String>, String)> = BTreeSet::new();
+        loop {
+            let state = (module.clone(), name.clone());
+            let cached = { resolved_declarations.borrow().get(&state).cloned() };
+            if let Some(cached) = cached {
+                let mut cache = resolved_declarations.borrow_mut();
+                for visited in path {
+                    cache.insert(visited, cached.clone());
+                }
+                return cached;
+            }
+            if declared.get(&module).is_some_and(|d| d.contains(&name)) {
+                let resolved = Some((module, name));
+                let mut cache = resolved_declarations.borrow_mut();
+                cache.insert(state, resolved.clone());
+                for visited in path {
+                    cache.insert(visited, resolved.clone());
+                }
+                return resolved;
+            }
+            // Import cycles are legal, so the walk needs its own terminator:
+            // a chain that returns to a pair it has already visited declares
+            // the name nowhere.
+            if !seen.insert(state.clone()) {
+                let mut cache = resolved_declarations.borrow_mut();
+                cache.insert(state, None);
+                for visited in path {
+                    cache.insert(visited, None);
+                }
+                return None;
+            }
+            path.push(state);
+            let Some(binding) = bindings.get(&module).unwrap_or(&empty_bindings).get(&name) else {
+                let mut cache = resolved_declarations.borrow_mut();
+                for visited in path {
+                    cache.insert(visited, None);
+                }
+                return None;
+            };
+            module = binding.target_module.clone();
+            name = binding.target_name.clone();
         }
-        bindings
-            .get(m)
-            .unwrap_or(&empty_bindings)
-            .get(name)
-            .map(|b| (b.target_module.clone(), b.target_name.clone()))
     };
+
+    let mut visible_by_module: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
+    let mut all_visible_names = BTreeSet::new();
+    for module in declared.keys().chain(bindings.keys()) {
+        let visible = visible_by_module.entry(module.clone()).or_default();
+        visible.extend(declared.get(module).into_iter().flatten().cloned());
+        visible.extend(
+            bindings
+                .get(module)
+                .unwrap_or(&empty_bindings)
+                .keys()
+                .cloned(),
+        );
+        all_visible_names.extend(visible.iter().cloned());
+    }
+    // Shadow checks compare the same `(module, name)` resolutions across many
+    // importer/exporter pairs. Resolve the rectangular closure once instead
+    // of walking (and allocating keys for) every pairwise comparison.
+    let resolved_by_module: BTreeMap<Vec<String>, BTreeMap<String, (Vec<String>, String)>> =
+        visible_by_module
+            .keys()
+            .map(|module| {
+                let resolved = all_visible_names
+                    .iter()
+                    .filter_map(|name| {
+                        resolve_declaring(module, name).map(|decl| (name.clone(), decl))
+                    })
+                    .collect();
+                (module.clone(), resolved)
+            })
+            .collect();
 
     let shadow: BTreeMap<(Vec<String>, Vec<String>), String> = {
         let same_decl = |a: &(Vec<String>, String), b: &(Vec<String>, String)| -> bool {
@@ -1062,13 +1486,16 @@ fn splice_imported_decls(
                 if n == m || !examined.insert((m.clone(), n.clone())) {
                     continue;
                 }
-                let mut visible: BTreeSet<String> = declared.get(n).cloned().unwrap_or_default();
-                visible.extend(bindings.get(n).unwrap_or(&empty_bindings).keys().cloned());
-                for name in &visible {
-                    let (Some(from_n), Some(from_m)) = (resolve(n, name), resolve(m, name)) else {
+                for name in &visible_by_module[n] {
+                    let resolved = (
+                        resolved_by_module[n].get(name).cloned(),
+                        resolved_by_module[m].get(name).cloned(),
+                    );
+                    let (Some(from_n), Some(from_m)) = resolved else {
                         continue;
                     };
-                    if !same_decl(&from_n, &from_m) {
+                    let same = same_decl(&from_n, &from_m);
+                    if !same {
                         shadow.insert((m.clone(), n.clone()), name.clone());
                         break;
                     }
@@ -1077,34 +1504,17 @@ fn splice_imported_decls(
         }
         shadow
     };
+    timing("shadow");
 
-    let mut unresolvable: BTreeMap<Vec<String>, BTreeMap<String, String>> = BTreeMap::new();
-    let module_names: Vec<Vec<String>> = programs.keys().cloned().collect();
-    for m in &module_names {
-        let mut out: BTreeMap<String, String> = BTreeMap::new();
-        for (owner, names) in &declared {
-            if owner == m {
-                continue;
-            }
-            for name in names {
-                if resolve(m, name).is_some() || out.contains_key(name) {
-                    continue;
-                }
-                out.insert(
-                    name.clone(),
-                    format!(
-                        "is declared in module `{}`, which module `{}` does not import; \
-                         evaluating an imported body that reaches a declaration present \
-                         only in that body's private helpers (not in any imported \
-                         signature) is not supported yet",
-                        owner.join("."),
-                        m.join(".")
-                    ),
-                );
-            }
+    let mut owner_by_name = BTreeMap::new();
+    for (owner, names) in &declared {
+        for name in names {
+            owner_by_name
+                .entry(name.clone())
+                .or_insert_with(|| owner.join("."));
         }
-        unresolvable.insert(m.clone(), out);
     }
+    let unimported_owners = std::sync::Arc::new(owner_by_name);
 
     let splices: Vec<(Vec<String>, String, Vec<String>, String)> = bindings
         .iter()
@@ -1119,40 +1529,76 @@ fn splice_imported_decls(
             })
         })
         .collect();
+    // Imported bodies are immutable after checking. Share one typed body per
+    // declaration across caller views; only an alias substitution needs an
+    // owned rewritten copy. The Pixels closure injects the same large helper
+    // surface into many modules, so cloning every body for every view was a
+    // quadratic memory and cold-compile tax.
+    let shared_fns: BTreeMap<(Vec<String>, String), std::sync::Arc<typed::TypedFn>> = programs
+        .iter()
+        .flat_map(|(module, program)| {
+            program.fns.iter().map(move |(name, function)| {
+                (
+                    (module.clone(), name.clone()),
+                    std::sync::Arc::new(function.clone()),
+                )
+            })
+        })
+        .collect();
+    let shared_structs: BTreeMap<(Vec<String>, String), std::sync::Arc<typed::TypedStruct>> =
+        programs
+            .iter()
+            .flat_map(|(module, program)| {
+                program.structs.iter().map(move |(name, structure)| {
+                    (
+                        (module.clone(), name.clone()),
+                        std::sync::Arc::new(structure.clone()),
+                    )
+                })
+            })
+            .collect();
+    let shared_enums: BTreeMap<(Vec<String>, String), std::sync::Arc<typed::TypedEnum>> = programs
+        .iter()
+        .flat_map(|(module, program)| {
+            program.enums.iter().map(move |(name, enumeration)| {
+                (
+                    (module.clone(), name.clone()),
+                    std::sync::Arc::new(enumeration.clone()),
+                )
+            })
+        })
+        .collect();
+    timing("share");
+    let mut companions_done: BTreeSet<(Vec<String>, Vec<String>)> = BTreeSet::new();
+    let mut instantiations_done: BTreeSet<(Vec<String>, Vec<String>)> = BTreeSet::new();
     for (key, local, target_module, target_name) in splices {
-        let Some(src) = programs.get(&target_module) else {
+        let withheld = shadow.get(&(key.clone(), target_module.clone())).cloned();
+        let Some((const_entry, fn_entry, struct_entry, enum_entry, static_entry)) =
+            programs.get(&target_module).map(|src| {
+                (
+                    src.consts.get(&target_name).cloned(),
+                    shared_fns
+                        .get(&(target_module.clone(), target_name.clone()))
+                        .cloned(),
+                    shared_structs
+                        .get(&(target_module.clone(), target_name.clone()))
+                        .cloned(),
+                    shared_enums
+                        .get(&(target_module.clone(), target_name.clone()))
+                        .cloned(),
+                    src.statics.get(&target_name).cloned(),
+                )
+            })
+        else {
             continue;
         };
-        let withheld = shadow.get(&(key.clone(), target_module.clone())).cloned();
-        let const_entry = src.consts.get(&target_name).cloned();
-        let fn_entry = src.fns.get(&target_name).cloned();
-        let struct_entry = src.structs.get(&target_name).cloned();
-        let enum_entry = src.enums.get(&target_name).cloned();
-        let static_entry = src.statics.get(&target_name).cloned();
-        let companion_statics: Vec<(String, _)> = if fn_entry.is_some() {
-            src.statics
-                .iter()
-                .map(|(n, s)| (n.clone(), s.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let companion_consts: Vec<(String, _)> = if fn_entry.is_some() {
-            src.consts
-                .iter()
-                .map(|(n, c)| (n.clone(), c.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let inst_entries = src.instantiations.clone();
         let body_bearing = const_entry.is_some()
             || fn_entry.is_some()
             || struct_entry.is_some()
             || enum_entry.is_some()
             || static_entry.is_some();
-        let dst = programs.get_mut(&key).expect("key is a key of programs");
         if let (Some(witness), true) = (&withheld, body_bearing) {
+            let dst = programs.get_mut(&key).expect("key is a key of programs");
             dst.imported.unresolvable.insert(
                 local.clone(),
                 format!(
@@ -1165,24 +1611,87 @@ fn splice_imported_decls(
                 ),
             );
         } else {
-            let subs = imports::alias_subs_for_exporter(
-                bindings.get(&key).expect("key is a key of bindings"),
-                &target_module,
-            );
+            let empty_subs = BTreeMap::new();
+            let subs = alias_subs
+                .get(&key)
+                .and_then(|by_exporter| by_exporter.get(&target_module))
+                .unwrap_or(&empty_subs);
+            let pair = (key.clone(), target_module.clone());
+            let copy_companions = fn_entry.is_some() && companions_done.insert(pair.clone());
+            let copy_instantiations = instantiations_done.insert(pair);
+            let (companion_statics, companion_consts, inst_entries) = {
+                let src = programs
+                    .get(&target_module)
+                    .expect("target module was present above");
+                let dst = programs.get(&key).expect("key is a key of programs");
+                let companion_statics = if copy_companions {
+                    src.statics
+                        .iter()
+                        .filter(|(name, _)| !dst.statics.contains_key(*name))
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let companion_consts = if copy_companions {
+                    src.consts
+                        .iter()
+                        .filter(|(name, _)| !dst.consts.contains_key(*name))
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let inst_entries = if copy_instantiations {
+                    src.instantiations
+                        .iter()
+                        .filter_map(|(instantiation_key, value)| {
+                            let new_key = typed::rekey_canonical_key(instantiation_key, subs);
+                            (!dst.imported.instantiations.contains_key(&new_key)).then(|| {
+                                let mut value = value.clone();
+                                typed::rekey_instantiation(&mut value, subs);
+                                (new_key, value)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                (companion_statics, companion_consts, inst_entries)
+            };
+            let dst = programs.get_mut(&key).expect("key is a key of programs");
             if let Some(mut c) = const_entry {
-                typed::rekey_const_names(&mut c, &subs);
+                typed::rekey_const_names(&mut c, subs);
                 dst.imported.consts.insert(local.clone(), c);
             }
-            if let Some(mut f) = fn_entry {
-                typed::rekey_fn_names(&mut f, &subs);
+            if let Some(f) = fn_entry {
+                let f = if subs.is_empty() {
+                    f
+                } else {
+                    let mut f = (*f).clone();
+                    typed::rekey_fn_names(&mut f, subs);
+                    std::sync::Arc::new(f)
+                };
                 dst.imported.fns.insert(local.clone(), f);
             }
-            if let Some(mut s) = struct_entry {
-                typed::rekey_struct_names(&mut s, &subs);
+            if let Some(s) = struct_entry {
+                let s = if subs.is_empty() {
+                    s
+                } else {
+                    let mut s = (*s).clone();
+                    typed::rekey_struct_names(&mut s, subs);
+                    std::sync::Arc::new(s)
+                };
                 dst.imported.structs.insert(local.clone(), s);
             }
-            if let Some(mut e) = enum_entry {
-                typed::rekey_enum_names(&mut e, &subs);
+            if let Some(e) = enum_entry {
+                let e = if subs.is_empty() {
+                    e
+                } else {
+                    let mut e = (*e).clone();
+                    typed::rekey_enum_names(&mut e, subs);
+                    std::sync::Arc::new(e)
+                };
                 dst.imported.enums.insert(local.clone(), e);
             }
             if let Some(s) = static_entry {
@@ -1194,38 +1703,25 @@ fn splice_imported_decls(
             for (name, c) in companion_consts {
                 dst.consts.entry(name).or_insert(c);
             }
-            for (ikey, mut inst) in inst_entries {
-                typed::rekey_instantiation(&mut inst, &subs);
-                let new_key = typed::rekey_canonical_key(&ikey, &subs);
+            for (new_key, inst) in inst_entries {
                 dst.imported.instantiations.entry(new_key).or_insert(inst);
             }
         }
     }
+    timing("bindings");
 
-    close_typed_type_reachability(programs, bindings);
+    close_typed_type_reachability(programs, bindings, alias_subs);
+    timing("types");
 
-    for (key, notes) in unresolvable {
-        let dst = programs.get_mut(&key).expect("key is a key of programs");
-        for (name, note) in notes {
-            if dst.imported.structs.contains_key(&name)
-                || dst.imported.enums.contains_key(&name)
-                || dst.imported.fns.contains_key(&name)
-                || dst.imported.consts.contains_key(&name)
-                || dst.structs.contains_key(&name)
-                || dst.enums.contains_key(&name)
-                || dst.fns.contains_key(&name)
-                || dst.consts.contains_key(&name)
-            {
-                continue;
-            }
-            dst.imported.unresolvable.entry(name).or_insert(note);
-        }
+    for program in programs.values_mut() {
+        program.imported.unimported_owners = unimported_owners.clone();
     }
 }
 
 fn close_mctx_type_reachability(
     mctxs: &mut BTreeMap<Vec<String>, bodies::ModuleCtx>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+    alias_subs: &BTreeMap<Vec<String>, BTreeMap<Vec<String>, BTreeMap<String, String>>>,
 ) {
     let empty = imports::ImportBindings::new();
     let module_keys: Vec<Vec<String>> = mctxs.keys().cloned().collect();
@@ -1283,10 +1779,14 @@ fn close_mctx_type_reachability(
                         src.enums.get(&def_name).cloned(),
                     )
                 };
-                let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+                let empty_subs = BTreeMap::new();
+                let subs = alias_subs
+                    .get(importer)
+                    .and_then(|by_exporter| by_exporter.get(&def_module))
+                    .unwrap_or(&empty_subs);
                 let dst = mctxs.get_mut(importer).expect("importer is a key");
                 if let Some(mut s) = struct_entry {
-                    types::rekey_decl_struct_names(&mut s.decl, &subs);
+                    types::rekey_decl_struct_names(&mut s.decl, subs);
                     if s.decl.name != tname {
                         let mut name_sub = BTreeMap::new();
                         name_sub.insert(s.decl.name.clone(), tname.clone());
@@ -1302,7 +1802,7 @@ fn close_mctx_type_reachability(
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
                 } else if let Some(mut e) = enum_entry {
-                    types::rekey_decl_enum_names(&mut e.decl, &subs);
+                    types::rekey_decl_enum_names(&mut e.decl, subs);
                     if e.decl.name != tname {
                         let mut name_sub = BTreeMap::new();
                         name_sub.insert(e.decl.name.clone(), tname.clone());
@@ -1324,6 +1824,7 @@ fn close_mctx_type_reachability(
 fn close_typed_type_reachability(
     programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
+    alias_subs: &BTreeMap<Vec<String>, BTreeMap<Vec<String>, BTreeMap<String, String>>>,
 ) {
     let empty = imports::ImportBindings::new();
     let module_keys: Vec<Vec<String>> = programs.keys().cloned().collect();
@@ -1344,20 +1845,23 @@ fn close_typed_type_reachability(
             {
                 let dst = &programs[importer];
                 if let Some(s) = dst
-                    .imported
                     .structs
                     .get(&name)
-                    .or_else(|| dst.structs.get(&name))
+                    .or_else(|| dst.imported.structs.get(&name).map(|value| value.as_ref()))
                 {
                     typed::collect_named_types_from_struct(s, &mut mentioned);
                 } else if let Some(e) = dst
-                    .imported
                     .enums
                     .get(&name)
-                    .or_else(|| dst.enums.get(&name))
+                    .or_else(|| dst.imported.enums.get(&name).map(|value| value.as_ref()))
                 {
                     typed::collect_named_types_from_enum(e, &mut mentioned);
-                } else if let Some(f) = dst.imported.fns.get(&name).or_else(|| dst.fns.get(&name)) {
+                } else if let Some(f) = dst.fns.get(&name).or_else(|| {
+                    dst.imported
+                        .fns
+                        .get(&name)
+                        .map(|function| function.as_ref())
+                }) {
                     typed::collect_named_types_from_fn(f, &mut mentioned);
                 } else if let Some(c) = dst
                     .imported
@@ -1399,29 +1903,47 @@ fn close_typed_type_reachability(
                     (
                         src.structs
                             .get(&def_name)
-                            .or_else(|| src.imported.structs.get(&def_name))
+                            .or_else(|| {
+                                src.imported
+                                    .structs
+                                    .get(&def_name)
+                                    .map(|value| value.as_ref())
+                            })
                             .cloned(),
                         src.enums
                             .get(&def_name)
-                            .or_else(|| src.imported.enums.get(&def_name))
+                            .or_else(|| {
+                                src.imported
+                                    .enums
+                                    .get(&def_name)
+                                    .map(|value| value.as_ref())
+                            })
                             .cloned(),
                     )
                 };
-                let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+                let empty_subs = BTreeMap::new();
+                let subs = alias_subs
+                    .get(importer)
+                    .and_then(|by_exporter| by_exporter.get(&def_module))
+                    .unwrap_or(&empty_subs);
                 let dst = programs.get_mut(importer).expect("importer is a key");
                 if let Some(mut s) = struct_entry {
-                    typed::rekey_struct_names(&mut s, &subs);
+                    typed::rekey_struct_names(&mut s, subs);
                     if s.name != tname {
                         let mut name_sub = BTreeMap::new();
                         name_sub.insert(s.name.clone(), tname.clone());
                         typed::rekey_struct_names(&mut s, &name_sub);
                     }
-                    dst.imported.structs.insert(tname.clone(), s);
+                    dst.imported
+                        .structs
+                        .insert(tname.clone(), std::sync::Arc::new(s));
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
                 } else if let Some(mut e) = enum_entry {
-                    typed::rekey_enum_names(&mut e, &subs);
-                    dst.imported.enums.insert(tname.clone(), e);
+                    typed::rekey_enum_names(&mut e, subs);
+                    dst.imported
+                        .enums
+                        .insert(tname.clone(), std::sync::Arc::new(e));
                     origins.insert(tname.clone(), def_module);
                     queue.push(tname);
                 }
@@ -1467,7 +1989,7 @@ fn close_typed_type_reachability(
                 if let Some(s) = src
                     .structs
                     .get(&tname)
-                    .or_else(|| src.imported.structs.get(&tname))
+                    .or_else(|| src.imported.structs.get(&tname).map(|value| value.as_ref()))
                 {
                     struct_entry = Some(s.clone());
                     def_module = Some(mod_key.clone());
@@ -1476,7 +1998,7 @@ fn close_typed_type_reachability(
                 if let Some(e) = src
                     .enums
                     .get(&tname)
-                    .or_else(|| src.imported.enums.get(&tname))
+                    .or_else(|| src.imported.enums.get(&tname).map(|value| value.as_ref()))
                 {
                     enum_entry = Some(e.clone());
                     def_module = Some(mod_key.clone());
@@ -1486,19 +2008,23 @@ fn close_typed_type_reachability(
             let Some(def_module) = def_module else {
                 continue;
             };
-            let subs = imports::alias_subs_for_exporter(own_bindings, &def_module);
+            let empty_subs = BTreeMap::new();
+            let subs = alias_subs
+                .get(importer)
+                .and_then(|by_exporter| by_exporter.get(&def_module))
+                .unwrap_or(&empty_subs);
             let dst = programs.get_mut(importer).expect("importer is a key");
             if let Some(mut s) = struct_entry {
-                typed::rekey_struct_names(&mut s, &subs);
+                typed::rekey_struct_names(&mut s, subs);
                 if s.name != tname {
                     let mut name_sub = BTreeMap::new();
                     name_sub.insert(s.name.clone(), tname.clone());
                     typed::rekey_struct_names(&mut s, &name_sub);
                 }
-                dst.imported.structs.insert(tname, s);
+                dst.imported.structs.insert(tname, std::sync::Arc::new(s));
             } else if let Some(mut e) = enum_entry {
-                typed::rekey_enum_names(&mut e, &subs);
-                dst.imported.enums.insert(tname, e);
+                typed::rekey_enum_names(&mut e, subs);
+                dst.imported.enums.insert(tname, std::sync::Arc::new(e));
             }
         }
     }
@@ -1508,28 +2034,40 @@ fn splice_imported_static_layouts(
     programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
 ) {
-    let splices: Vec<(Vec<String>, Vec<String>, String)> = bindings
-        .iter()
-        .flat_map(|(key, bs)| {
-            bs.iter().map(move |(_local, b)| {
-                (key.clone(), b.target_module.clone(), b.target_name.clone())
-            })
-        })
-        .collect();
-    for (importer, exporter, target_name) in splices {
-        let Some(src) = programs.get(&exporter) else {
-            continue;
-        };
-        let layouts: Vec<_> =
-            if src.statics.contains_key(&target_name) || src.fns.contains_key(&target_name) {
-                src.layouts.clone()
-            } else {
-                src.layouts
-                    .iter()
-                    .filter(|l| l.name == target_name)
-                    .cloned()
-                    .collect()
+    // A function/static import makes every layout from its exporter visible.
+    // Compute that closure once per importer/exporter pair: the Pixels prelude
+    // injects hundreds of functions from one generated module, and cloning the
+    // same complete layout vector once per binding is needlessly quadratic.
+    let mut requests: BTreeMap<(Vec<String>, Vec<String>), (bool, BTreeSet<String>)> =
+        BTreeMap::new();
+    for (importer, module_bindings) in bindings {
+        for binding in module_bindings.values() {
+            let Some(src) = programs.get(&binding.target_module) else {
+                continue;
             };
+            let request = requests
+                .entry((importer.clone(), binding.target_module.clone()))
+                .or_default();
+            if src.statics.contains_key(&binding.target_name)
+                || src.fns.contains_key(&binding.target_name)
+            {
+                request.0 = true;
+            } else {
+                request.1.insert(binding.target_name.clone());
+            }
+        }
+    }
+    for ((importer, exporter), (all, names)) in requests {
+        let src = &programs[&exporter];
+        let layouts: Vec<_> = if all {
+            src.layouts.clone()
+        } else {
+            src.layouts
+                .iter()
+                .filter(|layout| names.contains(&layout.name))
+                .cloned()
+                .collect()
+        };
         if layouts.is_empty() {
             continue;
         }
@@ -1545,7 +2083,7 @@ fn splice_imported_static_layouts(
 
 fn inject_time_prelude_bindings(
     bindings: &mut BTreeMap<Vec<String>, imports::ImportBindings>,
-    specialized: &BTreeMap<Vec<String>, Module>,
+    specialized: &BTreeMap<Vec<String>, std::borrow::Cow<'_, Module>>,
 ) {
     let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
         .iter()
@@ -1571,7 +2109,7 @@ fn inject_time_prelude_bindings(
 
 fn inject_pixels_prelude_bindings(
     bindings: &mut BTreeMap<Vec<String>, imports::ImportBindings>,
-    specialized: &BTreeMap<Vec<String>, Module>,
+    specialized: &BTreeMap<Vec<String>, std::borrow::Cow<'_, Module>>,
 ) {
     let pixels_key = vec!["core".to_string(), "__image_pixels".to_string()];
     let Some(pixels_module) = specialized.get(&pixels_key) else {
@@ -1665,6 +2203,84 @@ mod tests {
     use crate::syntax::{lexer, parser};
 
     #[test]
+    fn combined_typed_check_preserves_both_stable_observations() {
+        let src = concat!(
+            "module m\n\n",
+            "pub struct Pair:\n",
+            "    left: u64\n",
+            "    right: u64\n\n",
+            "pub fn sum(pair: Pair) -> u64:\n",
+            "    return pair.left + pair.right\n",
+        );
+        let module = parser::parse(lexer::lex(src).expect("lex")).expect("parse");
+        let expected_program = check_typed(&module, "m.wr").expect("typed");
+        let expected_dump = check_dump(&module, "m.wr").expect("check dump");
+        let (program, dump) = check_typed_with_dump(&module, "m.wr").expect("combined check");
+        assert_eq!(program, expected_program);
+        assert_eq!(dump, expected_dump);
+    }
+
+    #[test]
+    fn imported_static_layout_batches_are_complete_and_deduplicated() {
+        fn layout(name: &str) -> types::LayoutType {
+            types::LayoutType {
+                name: name.to_string(),
+                kind: types::LayoutKind::Wire,
+                endian: types::LayoutEndian::Little,
+                size: Some(0),
+                padding: 0,
+                entries: Vec::new(),
+            }
+        }
+
+        let importer = vec!["app".to_string()];
+        let exporter = vec!["wire".to_string()];
+        let mut programs = BTreeMap::from([
+            (
+                importer.clone(),
+                typed::TypedProgram {
+                    layouts: vec![layout("Header")],
+                    ..typed::TypedProgram::default()
+                },
+            ),
+            (
+                exporter.clone(),
+                typed::TypedProgram {
+                    layouts: vec![layout("Header"), layout("Record")],
+                    ..typed::TypedProgram::default()
+                },
+            ),
+        ]);
+        let bindings = BTreeMap::from([(
+            importer.clone(),
+            imports::ImportBindings::from([
+                (
+                    "LocalHeader".to_string(),
+                    imports::ImportBinding {
+                        target_module: exporter.clone(),
+                        target_name: "Header".to_string(),
+                    },
+                ),
+                (
+                    "LocalRecord".to_string(),
+                    imports::ImportBinding {
+                        target_module: exporter,
+                        target_name: "Record".to_string(),
+                    },
+                ),
+            ]),
+        )]);
+
+        splice_imported_static_layouts(&mut programs, &bindings);
+        let names: Vec<_> = programs[&importer]
+            .layouts
+            .iter()
+            .map(|layout| layout.name.as_str())
+            .collect();
+        assert_eq!(names, ["Header", "Record"]);
+    }
+
+    #[test]
     fn check_typed_rejects_imports() {
         let src = "module m\n\nfrom other import X\n\npub fn f() -> u64:\n    return 1\n";
         let tokens = lexer::lex(src).expect("lex");
@@ -1683,12 +2299,104 @@ mod tests {
             "module m\n\nfn __wrela_pixels_f32_to_bits(value: f32) -> u32:\n    return 0\n",
             "module m\n\nfn f() -> u32:\n    return __wrela_pixels_f32_to_bits(0.0)\n",
             "module m\n\npub struct RendererWorkerPool:\n    value: u32\n",
+            "module m\n\nfrom core.render_raster import F32x4\n",
+            "module m\n\nfn f() -> u32:\n    return pixels_f32_to_bits(0.0)\n",
         ] {
             let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
-            let error = check_reserved_source_names(&module, "/nonexistent/user-module.wr")
+            let error = check_reserved_source_names(&module, "/nonexistent/user-module.wr", false)
                 .expect_err("reserved name must fail before lowering");
             assert_eq!(error.category, "name");
             assert!(error.message.contains("compiler-reserved namespace"));
         }
+    }
+
+    #[test]
+    fn user_modules_cannot_claim_toolchain_module_namespaces() {
+        for source in [
+            "module core.render_raster\n\nfn harmless() -> u32:\n    return 0\n",
+            "module drivers.display\n\nfn harmless() -> u32:\n    return 0\n",
+        ] {
+            let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
+            let error = check_reserved_source_names(&module, "/nonexistent/user-module.wr", false)
+                .expect_err("toolchain namespace must fail before declaration resolution");
+            assert_eq!(error.category, "name");
+            assert_eq!(
+                error.message,
+                format!(
+                    "module `{}` is in a compiler-reserved namespace and cannot be declared by user sources",
+                    module.path.join(".")
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn counterfeit_stdlib_path_does_not_grant_internal_source_capability() {
+        let source = "module core.render_raster\n\nfn pixels_f32_to_bits(value: f32) -> u32:\n    return 0\n";
+        let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
+        let error = check_reserved_source_names(
+            &module,
+            "/tmp/untrusted-project/nested/stdlib/core/render_raster.wr",
+            false,
+        )
+        .expect_err("path spelling must not authenticate a counterfeit stdlib module");
+        assert_eq!(error.category, "name");
+        assert!(error.message.contains("compiler-reserved namespace"));
+    }
+
+    #[test]
+    fn untrusted_synthetic_path_does_not_grant_internal_source_capability() {
+        let source = "module user\n\nfn pixels_f32_to_bits(value: f32) -> u32:\n    return 0\n";
+        let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
+        let error = check_typed(&module, "<user>")
+            .expect_err("caller-provided pseudo-path must remain untrusted");
+        assert_eq!(error.category, "name");
+        assert!(error.message.contains("compiler-reserved namespace"));
+    }
+
+    #[test]
+    fn imported_typed_bodies_share_storage_but_alias_rewrites_are_isolated() {
+        let sources = [
+            (
+                vec!["a".to_string()],
+                "module a\n\npub fn value() -> u32:\n    return 7\n",
+            ),
+            (
+                vec!["b".to_string()],
+                "module b\n\nfrom a import value\n\npub fn b() -> u32:\n    return value()\n",
+            ),
+            (
+                vec!["c".to_string()],
+                "module c\n\nfrom a import value\n\npub fn c() -> u32:\n    return value()\n",
+            ),
+            (
+                vec!["d".to_string()],
+                "module d\n\nfrom a import value as renamed\n\npub fn d() -> u32:\n    return renamed()\n",
+            ),
+        ];
+        let modules = sources
+            .iter()
+            .map(|(key, source)| {
+                (
+                    key.clone(),
+                    parser::parse(lexer::lex(source).expect("lex")).expect("parse"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let paths = sources
+            .iter()
+            .map(|(key, _)| (key.clone(), format!("<{}>", key.join("."))))
+            .collect::<BTreeMap<_, _>>();
+        let programs = check_program_typed(&modules, &paths).expect("check closure");
+        let b = &programs[&vec!["b".to_string()]].imported.fns["value"];
+        let c = &programs[&vec!["c".to_string()]].imported.fns["value"];
+        let d = &programs[&vec!["d".to_string()]].imported.fns["renamed"];
+        assert!(std::sync::Arc::ptr_eq(b, c));
+        assert!(!std::sync::Arc::ptr_eq(b, d));
+        assert_eq!(
+            d.as_ref(),
+            b.as_ref(),
+            "an alias with no internal name references keeps the body exact"
+        );
     }
 }

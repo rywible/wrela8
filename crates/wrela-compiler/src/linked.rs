@@ -366,7 +366,7 @@ impl LinkedProgram {
 
 #[cfg(test)]
 fn raw_word(word: u32, text: &str, rule: CostRule) -> EmittedWord {
-    EmittedWord::new(word, text.to_string(), rule, None, &[])
+    EmittedWord::gpr(word, text.to_string(), rule, None, &[])
 }
 
 pub(crate) fn default_origin_ranges(code: &[EmittedWord]) -> Vec<(u32, usize, usize)> {
@@ -498,7 +498,7 @@ pub fn synthetic_words(words: &[u32], section: &str) -> Vec<EmittedWord> {
             } else {
                 Vec::new()
             };
-            let mut ew = EmittedWord::new(word, format!("{section}[{i}]"), rule, dst, &srcs);
+            let mut ew = EmittedWord::gpr(word, format!("{section}[{i}]"), rule, dst, &srcs);
             if rule == CostRule::Branch && word & 0xff00_0010 == 0x5400_0000 && (word & 0xf) < 14 {
                 ew.flags = crate::cost::FlagEffect::Read;
             }
@@ -655,6 +655,7 @@ mod tests {
                 .map(|i| raw_word(i as u32, "nop", CostRule::Alu))
                 .collect(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         }
     }
 

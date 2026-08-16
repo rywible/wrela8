@@ -100,6 +100,40 @@ pub fn enc_ldr_w_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b10, 0b01, scaled_offset(byte_offset, 4), rn, rt)
 }
 
+fn ldr_str_fp_imm(size: u32, load: bool, imm12: u32, rn: u8, rt: u8) -> u32 {
+    assert!(imm12 < 4096, "imm12 out of range: {imm12}");
+    (size << 30)
+        | (0b111101 << 24)
+        | (u32::from(load) << 22)
+        | (imm12 << 10)
+        | (reg(rn) << 5)
+        | reg(rt)
+}
+
+/// Scalar FP load/store forms. The register number names the FP/SIMD bank,
+/// which is why these do not reuse the integer load/store helper.
+pub fn enc_ldr_fp_imm(rt: u8, rn: u8, byte_offset: u16, double: bool) -> u32 {
+    let scale = if double { 8 } else { 4 };
+    ldr_str_fp_imm(
+        if double { 0b11 } else { 0b10 },
+        true,
+        scaled_offset(byte_offset, scale),
+        rn,
+        rt,
+    )
+}
+
+pub fn enc_str_fp_imm(rt: u8, rn: u8, byte_offset: u16, double: bool) -> u32 {
+    let scale = if double { 8 } else { 4 };
+    ldr_str_fp_imm(
+        if double { 0b11 } else { 0b10 },
+        false,
+        scaled_offset(byte_offset, scale),
+        rn,
+        rt,
+    )
+}
+
 pub fn enc_strb_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b00, 0b00, scaled_offset(byte_offset, 1), rn, rt)
 }
@@ -152,6 +186,9 @@ pub fn access_width_bytes(word: u32) -> Option<u8> {
     if matches!(word & 0xffc0_0000, 0x3dc0_0000 | 0x3d80_0000) {
         return Some(16);
     }
+    if word & 0x3f00_0000 == 0x3d00_0000 {
+        return Some(if word >> 30 == 0b10 { 4 } else { 8 });
+    }
     let width = 1u8 << (word >> 30);
     if word & 0x3F00_0000 == 0x3900_0000 {
         return Some(width);
@@ -163,6 +200,29 @@ pub fn access_width_bytes(word: u32) -> Option<u8> {
         return Some(width);
     }
     None
+}
+
+/// True for a word in the "Data Processing -- Scalar Floating-Point and
+/// Advanced SIMD" top-level encoding group (`op1` = `x111`).
+pub fn is_fp_simd_data_processing(word: u32) -> bool {
+    (word >> 25) & 0b111 == 0b111
+}
+
+/// True for a word in the "Loads and Stores" top-level group (`op1` = `x1x0`).
+fn is_load_store_group(word: u32) -> bool {
+    (word >> 27) & 1 == 1 && (word >> 25) & 1 == 0
+}
+
+/// True for every word that reads or writes the FP/SIMD register file.
+///
+/// This is the structural half of the cost taxonomy: an instruction the
+/// architecture routes to the V pipes must carry an FP/ASIMD cost class, and
+/// an integer instruction must not. The auditor checks both directions, so a
+/// new FP emitter cannot inherit an integer price by omission.
+pub fn is_fp_simd_word(word: u32) -> bool {
+    is_fp_simd_data_processing(word)
+        // Load/store with V=1 is the SIMD&FP register form.
+        || (is_load_store_group(word) && (word >> 26) & 1 == 1)
 }
 
 pub fn reads_sp(word: u32) -> bool {
@@ -403,6 +463,10 @@ pub fn enc_fmul(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
 
 pub fn enc_fdiv(fd: u8, fn_: u8, fm: u8, double: bool) -> u32 {
     fp_data_2(0x1e20_1800, fd, fn_, fm, double)
+}
+
+pub fn enc_fneg(fd: u8, fn_: u8, double: bool) -> u32 {
+    (if double { 0x1e61_4000 } else { 0x1e21_4000 }) | (reg(fn_) << 5) | reg(fd)
 }
 
 pub fn enc_fcmp(fn_: u8, fm: u8, double: bool) -> u32 {
@@ -812,6 +876,83 @@ pub fn enc_add_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
     0x4ea0_8400 | (u32::from(vm) << 16) | (u32::from(vn) << 5) | u32::from(vd)
 }
 
+fn asimd_three(base: u32, vd: u8, vn: u8, vm: u8) -> u32 {
+    assert!(vd < 32 && vn < 32 && vm < 32);
+    base | (u32::from(vm) << 16) | (u32::from(vn) << 5) | u32::from(vd)
+}
+
+pub fn enc_sub_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x6ea0_8400, vd, vn, vm)
+}
+
+pub fn enc_sshr_v4s(vd: u8, vn: u8, immediate: u8) -> u32 {
+    assert!((1..32).contains(&immediate), "sshr immediate out of range");
+    0x4f00_0400 | (u32::from(64 - immediate) << 16) | (u32::from(vn) << 5) | u32::from(vd)
+}
+
+pub fn enc_and_v16b(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4e20_1c00, vd, vn, vm)
+}
+
+pub fn enc_orr_v16b(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4ea0_1c00, vd, vn, vm)
+}
+
+pub fn enc_bsl_v16b(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x6e60_1c00, vd, vn, vm)
+}
+
+pub fn enc_cmgt_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4ea0_3400, vd, vn, vm)
+}
+
+pub fn enc_dup_v4s_element0(vd: u8, vn: u8) -> u32 {
+    assert!(vd < 32 && vn < 32);
+    0x4e04_0400 | (u32::from(vn) << 5) | u32::from(vd)
+}
+
+pub fn enc_fadd_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4e20_d400, vd, vn, vm)
+}
+
+pub fn enc_fsub_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4ea0_d400, vd, vn, vm)
+}
+
+pub fn enc_fmul_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x6e20_dc00, vd, vn, vm)
+}
+
+pub fn enc_fmax_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4e20_f400, vd, vn, vm)
+}
+
+pub fn enc_fmin_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4ea0_f400, vd, vn, vm)
+}
+
+pub fn enc_fmla_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x4e20_cc00, vd, vn, vm)
+}
+
+pub fn enc_fcmge_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x6e20_e400, vd, vn, vm)
+}
+
+pub fn enc_fcmgt_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
+    asimd_three(0x6ea0_e400, vd, vn, vm)
+}
+
+pub fn enc_scvtf_v4s(vd: u8, vn: u8) -> u32 {
+    assert!(vd < 32 && vn < 32);
+    0x4e21_d800 | (u32::from(vn) << 5) | u32::from(vd)
+}
+
+pub fn enc_fcvtzs_v4s(vd: u8, vn: u8) -> u32 {
+    assert!(vd < 32 && vn < 32);
+    0x4ea1_b800 | (u32::from(vn) << 5) | u32::from(vd)
+}
+
 pub fn enc_uzp1_v4s(vd: u8, vn: u8, vm: u8) -> u32 {
     assert!(vd < 32 && vn < 32 && vm < 32);
     0x4e80_1800 | (u32::from(vm) << 16) | (u32::from(vn) << 5) | u32::from(vd)
@@ -834,6 +975,27 @@ mod tests {
         assert_eq!(enc_uzp1_v4s(0, 0, 3), 0x4e83_1800);
         assert_eq!(enc_add_v4s(2, 0, 1), 0x4ea1_8402);
         assert_eq!(enc_str_q_imm(2, 11, 32), 0x3d80_0962);
+    }
+
+    #[test]
+    fn p8r_packet_words_match_arm_architecture_encodings() {
+        assert_eq!(enc_fadd_v4s(0, 1, 2), 0x4e22_d420);
+        assert_eq!(enc_fsub_v4s(3, 4, 5), 0x4ea5_d483);
+        assert_eq!(enc_fmul_v4s(6, 7, 8), 0x6e28_dce6);
+        assert_eq!(enc_fmax_v4s(9, 10, 11), 0x4e2b_f549);
+        assert_eq!(enc_fmin_v4s(12, 13, 14), 0x4eae_f5ac);
+        assert_eq!(enc_fmla_v4s(15, 16, 17), 0x4e31_ce0f);
+        assert_eq!(enc_fcmge_v4s(18, 19, 20), 0x6e34_e672);
+        assert_eq!(enc_fcmgt_v4s(21, 22, 23), 0x6eb7_e6d5);
+        assert_eq!(enc_bsl_v16b(18, 0, 1), 0x6e61_1c12);
+        assert_eq!(enc_sub_v4s(2, 3, 4), 0x6ea4_8462);
+        assert_eq!(enc_sshr_v4s(5, 6, 7), 0x4f39_04c5);
+        assert_eq!(enc_and_v16b(7, 8, 9), 0x4e29_1d07);
+        assert_eq!(enc_orr_v16b(10, 11, 12), 0x4eac_1d6a);
+        assert_eq!(enc_cmgt_v4s(13, 14, 15), 0x4eaf_35cd);
+        assert_eq!(enc_scvtf_v4s(16, 17), 0x4e21_da30);
+        assert_eq!(enc_fcvtzs_v4s(18, 19), 0x4ea1_ba72);
+        assert_eq!(enc_dup_v4s_element0(1, 0), 0x4e04_0401);
     }
 
     #[test]
@@ -869,6 +1031,8 @@ mod tests {
         assert_eq!(enc_fsub(7, 8, 9, false), 0x1e29_3907);
         assert_eq!(enc_fmul(10, 11, 12, true), 0x1e6c_096a);
         assert_eq!(enc_fdiv(13, 14, 15, true), 0x1e6f_19cd);
+        assert_eq!(enc_fneg(16, 17, false), 0x1e21_4230);
+        assert_eq!(enc_fneg(18, 19, true), 0x1e61_4272);
         assert_eq!(enc_fcmp(0, 1, false), 0x1e21_2000);
         assert_eq!(enc_fcmp(2, 3, true), 0x1e63_2040);
         assert_eq!(enc_fcvt(4, 5, false), 0x1e62_40a4);
@@ -896,6 +1060,14 @@ mod tests {
     }
 
     #[test]
+    fn ldr_str_scalar_fp_unsigned_offset() {
+        assert_eq!(enc_str_fp_imm(0, 1, 0, false), 0xbd00_0020);
+        assert_eq!(enc_ldr_fp_imm(0, 1, 0, false), 0xbd40_0020);
+        assert_eq!(enc_str_fp_imm(2, 3, 16, true), 0xfd00_0862);
+        assert_eq!(enc_ldr_fp_imm(2, 3, 16, true), 0xfd40_0862);
+    }
+
+    #[test]
     fn reads_sp_distinguishes_sp_from_xzr_at_register_31() {
         assert!(reads_sp(enc_sub_imm(31, 31, 64, true)));
         assert!(reads_sp(enc_add_imm(31, 31, 64, true)));
@@ -917,6 +1089,10 @@ mod tests {
             (enc_str_x_imm(0, 1, 8), 8, "str x"),
             (enc_ldr_w_imm(0, 1, 4), 4, "ldr w"),
             (enc_str_w_imm(0, 1, 4), 4, "str w"),
+            (enc_ldr_fp_imm(0, 1, 4, false), 4, "ldr s"),
+            (enc_str_fp_imm(0, 1, 4, false), 4, "str s"),
+            (enc_ldr_fp_imm(0, 1, 8, true), 8, "ldr d"),
+            (enc_str_fp_imm(0, 1, 8, true), 8, "str d"),
             (enc_ldrh_imm(0, 1, 2), 2, "ldrh"),
             (enc_strh_imm(0, 1, 2), 2, "strh"),
             (enc_ldrb_imm(0, 1, 1), 1, "ldrb"),

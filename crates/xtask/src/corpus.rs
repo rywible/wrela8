@@ -287,7 +287,10 @@ pub(crate) fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
         modules.insert(key.clone(), loaded_mod.module.clone());
         paths.insert(key.clone(), loaded_mod.file.display().to_string());
     }
-    sema::check_program(&modules, &paths).map_err(|e| format!("[{}] {}", e.category, e.message))
+    let internal_sources = super::generated_internal_source_keys(&paths);
+    sema::check_program_typed_with_internal_sources(&modules, &paths, &internal_sources)
+        .map(|_| ())
+        .map_err(|e| format!("[{}] {}", e.category, e.message))
 }
 
 pub(crate) fn wrap_corpus_fragment(
@@ -430,6 +433,7 @@ pub(crate) fn assert_fragment_items_preserved(
 }
 
 pub(crate) fn corpus_sema_check_wrapped_sema(wrapped: &str) -> Result<Result<(), String>, String> {
+    static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tokens =
         lexer::lex(wrapped).map_err(|e| format!("--sema wrap re-lex failed: {}", e.message))?;
     let module =
@@ -441,10 +445,7 @@ pub(crate) fn corpus_sema_check_wrapped_sema(wrapped: &str) -> Result<Result<(),
     let dir = std::env::temp_dir().join(format!(
         "wrela-corpus-sema-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     let corpus_dir = dir.join("corpus");
     std::fs::create_dir_all(&corpus_dir).map_err(|e| format!("--sema wrap temp dir: {e}"))?;
@@ -716,4 +717,39 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corpus_sema_check_wrapped_sema;
+
+    #[test]
+    fn imported_corpus_closures_authenticate_only_generated_runtime_sources() {
+        let wrapped = r#"module corpus.snippet
+
+from core.io_error import IoError
+
+fn example(value: Result[unit, IoError]) -> Result[unit, IoError]:
+    return value
+"#;
+        let checked = corpus_sema_check_wrapped_sema(wrapped).expect("corpus wrapper should load");
+        assert_eq!(checked, Ok(()));
+    }
+
+    #[test]
+    fn imported_corpus_root_cannot_claim_generated_runtime_names() {
+        let wrapped = r#"module corpus.snippet
+
+from core.io_error import IoError
+
+pub fn __wrela_select_count(core: usize) -> usize:
+    return core
+"#;
+        let checked = corpus_sema_check_wrapped_sema(wrapped).expect("corpus wrapper should load");
+        let error = checked.expect_err("user-authored reserved name must fail closed");
+        assert!(
+            error.contains("compiler-reserved namespace"),
+            "unexpected diagnostic: {error}"
+        );
+    }
 }

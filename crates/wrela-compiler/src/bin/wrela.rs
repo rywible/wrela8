@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -21,6 +21,21 @@ const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|la
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
+}
+
+fn generated_internal_source_keys(paths: &BTreeMap<Vec<String>, String>) -> BTreeSet<Vec<String>> {
+    paths
+        .iter()
+        .filter_map(|(key, path)| {
+            matches!(
+                path.as_str(),
+                rtconfig::GENERATED_INPUT_PATH
+                    | loader::GENERATED_PIXELS_INPUT_PATH
+                    | loader::GENERATED_PIXELS_STUB_INPUT_PATH
+            )
+            .then(|| key.clone())
+        })
+        .collect()
 }
 
 fn note_dump_diagnostic() {
@@ -108,7 +123,12 @@ fn check_closure(path: &str, module: Module) -> Result<CheckedClosure, ()> {
                     .map(|(k, m)| (k, m.module))
                     .collect();
                 let root = loaded.root.join(".");
-                match sema::check_program_typed(&modules_by_key, &paths) {
+                let internal_sources = generated_internal_source_keys(&paths);
+                match sema::check_program_typed_with_internal_sources(
+                    &modules_by_key,
+                    &paths,
+                    &internal_sources,
+                ) {
                     Ok(progs) => {
                         let programs: BTreeMap<String, TypedProgram> =
                             progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
@@ -204,7 +224,12 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CheckedC
     } else {
         None
     };
-    match sema::check_program_typed(&modules_by_key, &paths) {
+    let internal_sources = generated_internal_source_keys(&paths);
+    match sema::check_program_typed_with_internal_sources(
+        &modules_by_key,
+        &paths,
+        &internal_sources,
+    ) {
         Ok(mut progs) => {
             if let Some(tk) = &time_key {
                 progs.remove(tk);
@@ -229,8 +254,19 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CheckedC
     }
 }
 
+#[allow(dead_code)] // Also compiled as the xtask's embedded golden CLI module.
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    run_args(&args)
+}
+
+/// Run the compiler CLI over an already-separated argument vector.
+///
+/// The repository task runner embeds this narrow entry point for golden
+/// subprocesses. That avoids compiling and linking a second executable on a
+/// cold `cargo xtask golden` invocation while preserving the exact CLI path,
+/// exit status, stdout, and stderr used by the shipped `wrela` binary.
+pub fn run_args(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("version") => {
             println!(
@@ -300,7 +336,13 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
                             return;
                         }
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                        for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
+                        for (k, e) in program.enums.iter().map(|(key, value)| (key, value)).chain(
+                            program
+                                .imported
+                                .enums
+                                .iter()
+                                .map(|(key, value)| (key, value.as_ref())),
+                        ) {
                             enum_variants
                                 .entry(k.clone())
                                 .or_insert_with(|| e.variants.clone());
@@ -616,7 +658,13 @@ fn build_report(
                                 (&graph, &fallback_placement)
                             };
                         let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                        for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
+                        for (k, e) in program.enums.iter().map(|(key, value)| (key, value)).chain(
+                            program
+                                .imported
+                                .enums
+                                .iter()
+                                .map(|(key, value)| (key, value.as_ref())),
+                        ) {
                             enum_variants
                                 .entry(k.clone())
                                 .or_insert_with(|| e.variants.clone());
@@ -635,32 +683,19 @@ fn build_report(
                                 let target = first_field_value(&text, "Target value=")
                                     .unwrap_or("")
                                     .to_string();
-                                let mut layout_types = Vec::new();
-                                for (key, module) in modules {
-                                    if key == rtconfig::MODULE_ADDR || key == "__image_runtime" {
-                                        continue;
-                                    }
-                                    let specialized = sema::specialize::specialize(module)
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    let mut layouts = sema::types::check_layouts(&specialized)
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    if let Some(p) = programs.get(key) {
-                                        sema::types::complete_layouts(
-                                            &specialized,
-                                            p,
-                                            &mut layouts,
-                                        )
-                                        .map_err(|e| render_sema_error(&e))?;
-                                    }
-                                    layout_types.extend(layouts);
-                                }
+                                let layout_types =
+                                    layout::report_layout_types(modules, programs)
+                                        .map_err(|error| format!("error[build]: {error}\n"))?;
                                 report::render_exact_bytes_section(&mut text, &layout_types)
                                     .map_err(|e| render_sema_error(&e))?;
                                 let img = match layout_result {
                                     Some((image_layout, codegen, _, placement)) => {
                                         if let Some(ref tables) = image_layout.runtime {
-                                            let rt_text = rtconfig::generate_and_typecheck(tables)
-                                                .map_err(|e| {
+                                            // The live generated closure was typechecked during
+                                            // layout/codegen. This base rendering exists only so
+                                            // the report can record its stable digest.
+                                            let rt_text =
+                                                rtconfig::generate(tables).map_err(|e| {
                                                     if e.ends_with('\n') {
                                                         e
                                                     } else {
@@ -1140,7 +1175,12 @@ fn dump(args: &[String]) -> ExitCode {
                                 .into_iter()
                                 .map(|(k, m)| (k, m.module))
                                 .collect();
-                            match sema::check_program_dump(&modules, &paths) {
+                            let internal_sources = generated_internal_source_keys(&paths);
+                            match sema::check_program_dump_with_internal_sources(
+                                &modules,
+                                &paths,
+                                &internal_sources,
+                            ) {
                                 Ok(text) => print!("{text}"),
                                 Err(e) => print_sema_error(&e),
                             }
@@ -2058,6 +2098,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
+        layouts: &compiled.layouts,
         layout_ctx: &compiled.layout_ctx,
         async_frames: &compiled.async_frames,
         group_child_index: &compiled.group_child_index,

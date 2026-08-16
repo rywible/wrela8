@@ -53,10 +53,13 @@ pub fn run(program: &TypedProgram, graph: &ImageGraph, layout: &ImageLayout) -> 
 }
 
 fn resolve_fn<'a>(program: &'a TypedProgram, fn_key: &str) -> Option<&'a TypedFn> {
-    program
-        .fns
-        .get(fn_key)
-        .or_else(|| program.imported.fns.get(fn_key))
+    program.fns.get(fn_key).or_else(|| {
+        program
+            .imported
+            .fns
+            .get(fn_key)
+            .map(|function| function.as_ref())
+    })
 }
 
 fn render_failure(fn_key: &str, e: EvalError) -> String {
@@ -151,11 +154,13 @@ fn check_field_ty(name: &str, ty: &Type, v: &Value) -> Result<(), String> {
 }
 
 fn find_image_report_struct(program: &TypedProgram) -> Option<&TypedStruct> {
-    for s in program
-        .structs
-        .values()
-        .chain(program.imported.structs.values())
-    {
+    for s in program.structs.values().chain(
+        program
+            .imported
+            .structs
+            .values()
+            .map(|value| value.as_ref()),
+    ) {
         if struct_matches_report(s) {
             return Some(s);
         }

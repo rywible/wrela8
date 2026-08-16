@@ -80,6 +80,34 @@ pub(crate) fn inst_facts(inst: &Inst) -> InstFacts {
         }
 
         I32x4Add { dst, lhs, rhs } => InstFacts::new([*lhs, *rhs], [*dst], [], None),
+        PacketFromLanes { dst, lanes, .. } => InstFacts::new([*lanes], [*dst], [], None),
+        // Fixed-register packet emission loads the scalar lane directly from
+        // its canonical slot. Marking it as an address escape keeps the GPR
+        // allocator from making that slot stale without inventing a second
+        // packet-specific allocation side table.
+        PacketSplat { dst, scalar, .. } => InstFacts::new([*scalar], [*dst], [*scalar], None),
+        PacketBinary { dst, lhs, rhs, .. } => InstFacts::new([*lhs, *rhs], [*dst], [], None),
+        PacketShiftRightArithmetic { dst, src, .. } | PacketConvert { dst, src, .. } => {
+            InstFacts::new([*src], [*dst], [], None)
+        }
+        PacketSelect {
+            dst,
+            lhs,
+            rhs,
+            if_true,
+            if_false,
+            ..
+        } => InstFacts::new([*lhs, *rhs, *if_true, *if_false], [*dst], [], None),
+        PacketFma {
+            dst,
+            lhs,
+            rhs,
+            addend,
+        } => InstFacts::new([*lhs, *rhs, *addend], [*dst], [], None),
+        // A marker reads and writes nothing, but it is not removable: it is
+        // the census's only anchor, and dropping it would silently retire a
+        // measured region rather than fail.
+        RegionMarker { .. } => InstFacts::new([], [], [], Observable),
         I32x4FromLanes { dst, lanes } => InstFacts::new([*lanes], [*dst], [], None),
 
         MakeAggregate { dst, elems } => InstFacts::new(elems.iter().copied(), [*dst], [], None),

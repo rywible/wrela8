@@ -159,11 +159,22 @@ pub fn event_coverage(
 }
 
 pub struct SemanticRay<'a> {
-    pub range: &'a dyn Fn(f64, f64) -> Option<Interval>,
+    /// Return the field value and ray-derivative intervals together.  A dual
+    /// field evaluation computes both, so keeping them in one callback avoids
+    /// evaluating the complete semantic graph twice for every retained cell.
+    pub dual_range: &'a dyn Fn(f64, f64) -> Option<(Interval, Interval)>,
     pub value: &'a dyn Fn(f64) -> f64,
-    pub derivative_range: &'a dyn Fn(f64, f64) -> Option<Interval>,
-    pub gradient: &'a dyn Fn(f64) -> Vec3,
-    pub identity: &'a dyn Fn(f64) -> u32,
+    /// Evaluate all terminal-only data together. Implementations can share a
+    /// point evaluation between the value, gradient, and identity instead of
+    /// walking the semantic graph independently for each result.
+    pub terminal: &'a dyn Fn(f64) -> Option<OracleTerminal>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OracleTerminal {
+    pub value: f64,
+    pub gradient: Vec3,
+    pub identity: u32,
 }
 
 pub fn isolate_all_roots(
@@ -194,22 +205,23 @@ pub fn isolate_all_roots(
     while stack_len != 0 {
         stack_len -= 1;
         let cell = stack[stack_len];
-        let range = (ray.range)(cell.lo, cell.hi).ok_or(OracleError::NonFinite)?;
+        let (range, derivative) =
+            (ray.dual_range)(cell.lo, cell.hi).ok_or(OracleError::NonFinite)?;
         if !range.contains_zero() {
             continue;
         }
-        let derivative = (ray.derivative_range)(cell.lo, cell.hi).ok_or(OracleError::NonFinite)?;
         let unique = derivative.lo > 0.0 || derivative.hi < 0.0;
         if cell.hi - cell.lo <= tolerance {
             let midpoint = cell.lo + (cell.hi - cell.lo) * 0.5;
-            let value = (ray.value)(midpoint);
-            if !value.is_finite() {
+            let terminal = (ray.terminal)(midpoint).ok_or(OracleError::NonFinite)?;
+            if !terminal.value.is_finite() {
                 return Err(OracleError::NonFinite);
             }
-            let normal = (ray.gradient)(midpoint)
+            let normal = terminal
+                .gradient
                 .normalized()
                 .ok_or(OracleError::Unresolved)?;
-            let identity = (ray.identity)(midpoint);
+            let identity = terminal.identity;
             // A nonsmooth/min-max semantic field can have a conservative
             // derivative interval spanning zero even at a simple crossing.
             // Terminal endpoint signs still prove the crossing orientation
@@ -317,9 +329,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn combined_callbacks_visit_each_terminal_cell_once() {
+        use std::cell::Cell;
+
+        let dual_calls = Cell::new(0_u32);
+        let terminal_calls = Cell::new(0_u32);
+        let value_calls = Cell::new(0_u32);
+        let dual_range = |lo: f64, hi: f64| {
+            dual_calls.set(dual_calls.get() + 1);
+            Some((Interval::new(lo - 0.5, hi - 0.5)?, Interval::new(1.0, 1.0)?))
+        };
+        let value = |t: f64| {
+            value_calls.set(value_calls.get() + 1);
+            t - 0.5
+        };
+        let terminal = |t: f64| {
+            terminal_calls.set(terminal_calls.get() + 1);
+            Some(OracleTerminal {
+                value: t - 0.5,
+                gradient: Vec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                identity: 17,
+            })
+        };
+        let mut stack = [OracleCell::default(); 64];
+        let mut roots = [OracleRoot::default(); 4];
+        let count = isolate_all_roots(
+            SemanticRay {
+                dual_range: &dual_range,
+                value: &value,
+                terminal: &terminal,
+            },
+            0.0,
+            1.0,
+            1.0 / 1024.0,
+            14,
+            &mut stack,
+            &mut roots,
+        )
+        .expect("linear root");
+        assert_eq!(count, 1);
+        assert_eq!(roots[0].identity, 17);
+        assert_eq!(
+            terminal_calls.get(),
+            2,
+            "one call per adjacent terminal cell"
+        );
+        assert_eq!(value_calls.get(), 4, "two endpoint signs per terminal cell");
+        assert!(dual_calls.get() > terminal_calls.get());
+    }
+
+    #[test]
     fn independent_oracle_finds_sphere_entry_and_exit() {
         // (q - 2)^2 - 1 = 0, roots 1 and 3.
-        let range = |lo: f64, hi: f64| {
+        let dual_range = |lo: f64, hi: f64| {
             let at_lo = (lo - 2.0).powi(2) - 1.0;
             let at_hi = (hi - 2.0).powi(2) - 1.0;
             let minimum = if lo <= 2.0 && 2.0 <= hi {
@@ -327,25 +393,30 @@ mod tests {
             } else {
                 at_lo.min(at_hi)
             };
-            Interval::new(minimum, at_lo.max(at_hi))
+            Some((
+                Interval::new(minimum, at_lo.max(at_hi))?,
+                Interval::new(2.0 * (lo - 2.0), 2.0 * (hi - 2.0))?,
+            ))
         };
         let value = |t: f64| (t - 2.0).powi(2) - 1.0;
-        let derivative = |lo: f64, hi: f64| Interval::new(2.0 * (lo - 2.0), 2.0 * (hi - 2.0));
-        let gradient = |t: f64| Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: t - 2.0,
+        let terminal = |t: f64| {
+            Some(OracleTerminal {
+                value: value(t),
+                gradient: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: t - 2.0,
+                },
+                identity: 7,
+            })
         };
-        let identity = |_| 7;
         let mut stack = [OracleCell::default(); 64];
         let mut roots = [OracleRoot::default(); 4];
         let count = isolate_all_roots(
             SemanticRay {
-                range: &range,
+                dual_range: &dual_range,
                 value: &value,
-                derivative_range: &derivative,
-                gradient: &gradient,
-                identity: &identity,
+                terminal: &terminal,
             },
             0.0,
             4.0,
@@ -364,24 +435,31 @@ mod tests {
 
     #[test]
     fn terminal_endpoint_signs_orient_a_crossing_with_mixed_derivative_bounds() {
-        let range = |lo: f64, hi: f64| Interval::new(0.5 - hi, 0.5 - lo);
-        let value = |t: f64| 0.5 - t;
-        let derivative = |_: f64, _: f64| Interval::new(-1.0, 1.0);
-        let gradient = |_| Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
+        let dual_range = |lo: f64, hi: f64| {
+            Some((
+                Interval::new(0.5 - hi, 0.5 - lo)?,
+                Interval::new(-1.0, 1.0)?,
+            ))
         };
-        let identity = |_| 9;
+        let value = |t: f64| 0.5 - t;
+        let terminal = |t: f64| {
+            Some(OracleTerminal {
+                value: value(t),
+                gradient: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+                identity: 9,
+            })
+        };
         let mut stack = [OracleCell::default(); 64];
         let mut roots = [OracleRoot::default(); 4];
         let count = isolate_all_roots(
             SemanticRay {
-                range: &range,
+                dual_range: &dual_range,
                 value: &value,
-                derivative_range: &derivative,
-                gradient: &gradient,
-                identity: &identity,
+                terminal: &terminal,
             },
             0.0,
             1.0,
@@ -400,7 +478,8 @@ mod tests {
 
     #[test]
     fn adjacent_unoriented_terminal_cell_preserves_proved_crossing_orientation() {
-        let range = |_: f64, _: f64| Interval::new(-1.0, 1.0);
+        let dual_range =
+            |_: f64, _: f64| Some((Interval::new(-1.0, 1.0)?, Interval::new(-1.0, 1.0)?));
         let value = |t: f64| {
             if t < 0.5 {
                 1.0
@@ -410,22 +489,24 @@ mod tests {
                 -1.0
             }
         };
-        let derivative = |_: f64, _: f64| Interval::new(-1.0, 1.0);
-        let gradient = |_: f64| Vec3 {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
+        let terminal = |t: f64| {
+            Some(OracleTerminal {
+                value: value(t),
+                gradient: Vec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                identity: 0,
+            })
         };
-        let identity = |_: f64| 0;
         let mut stack = [OracleCell::default(); 8];
         let mut roots = [OracleRoot::default(); 4];
         let count = isolate_all_roots(
             SemanticRay {
-                range: &range,
+                dual_range: &dual_range,
                 value: &value,
-                derivative_range: &derivative,
-                gradient: &gradient,
-                identity: &identity,
+                terminal: &terminal,
             },
             0.0,
             1.0,
@@ -441,23 +522,26 @@ mod tests {
 
     #[test]
     fn unresolved_is_explicit_instead_of_becoming_a_miss() {
-        let range = |_: f64, _: f64| Interval::new(-1.0, 1.0);
+        let dual_range =
+            |_: f64, _: f64| Some((Interval::new(-1.0, 1.0)?, Interval::new(-1.0, 1.0)?));
         let value = |_| 0.0;
-        let derivative = |_: f64, _: f64| Interval::new(-1.0, 1.0);
-        let gradient = |_| Vec3 {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
+        let terminal = |t: f64| {
+            Some(OracleTerminal {
+                value: value(t),
+                gradient: Vec3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                identity: 1,
+            })
         };
-        let identity = |_| 1;
         assert_eq!(
             isolate_all_roots(
                 SemanticRay {
-                    range: &range,
+                    dual_range: &dual_range,
                     value: &value,
-                    derivative_range: &derivative,
-                    gradient: &gradient,
-                    identity: &identity,
+                    terminal: &terminal,
                 },
                 0.0,
                 1.0,

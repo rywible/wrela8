@@ -798,7 +798,7 @@ fn expand_rodata_adr_sites(
             adrp.word = encode::enc_adrp(reg, 0);
             adrp.text = adrp.text.replacen("adr ", "adrp ", 1);
             code.push(adrp);
-            code.push(crate::cost::EmittedWord::new(
+            code.push(crate::cost::EmittedWord::gpr(
                 encode::enc_add_imm(reg, reg, 0, true),
                 format!("add x{reg}, x{reg}, #0"),
                 crate::cost::CostRule::Alu,
@@ -1641,7 +1641,7 @@ fn device_register_windows(
     let Some(b) = boot else {
         return Ok(Vec::new());
     };
-    let layouts = closure_layout_types(b.modules, b.programs)?;
+    let layouts = b.layouts;
     let decls = closure_decl_items(b.modules)?;
 
     let mut out: Vec<(usize, String, String, u64)> = Vec::new();
@@ -1763,26 +1763,56 @@ fn closure_layout_types(
     modules: &BTreeMap<String, Module>,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<BTreeMap<String, crate::sema::types::LayoutType>, LayoutError> {
+    checked_layout_types(modules.keys(), programs)
+}
+
+fn checked_layout_types<'a>(
+    keys: impl Iterator<Item = &'a String>,
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<BTreeMap<String, crate::sema::types::LayoutType>, LayoutError> {
     let mut out = BTreeMap::new();
-    for (key, module) in modules {
-        let specialized = crate::sema::specialize::specialize(module)
-            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
-        let mut layouts = crate::sema::types::check_layouts(&specialized)
-            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
+    for key in keys {
         let Some(program) = programs.get(key) else {
             return Err(LayoutError::new(format!(
                 "internal error: module `{key}` is in the build closure without a typed program, \
-                 so `complete_layouts` cannot resolve a `@layout(runtime)` const array length \
-                 (plans/M10.md item E1)"
+                 so its checked layouts are unavailable (plans/M10.md item E1)"
             )));
         };
-        crate::sema::types::complete_layouts(&specialized, program, &mut layouts)
-            .map_err(|e| LayoutError::new(format!("pool backing: {}", e.message)))?;
-        for l in layouts {
-            out.insert(l.name.clone(), l);
+        // Semantic checking already specializes, validates, and completes
+        // these layouts, including runtime const array lengths. Re-running
+        // that pipeline here cloned every AST once per layout consumer and
+        // created a second authority that could drift from the TypedProgram
+        // used by lowering.
+        for layout in &program.layouts {
+            if let Some(previous) = out.get(&layout.name)
+                && previous != layout
+            {
+                return Err(LayoutError::new(format!(
+                    "internal error: checked layout `{}` disagrees across module views",
+                    layout.name
+                )));
+            }
+            out.insert(layout.name.clone(), layout.clone());
         }
     }
     Ok(out)
+}
+
+/// Completed, deduplicated layouts that belong in the source-facing exact
+/// bytes section. Generated runtime modules are intentionally omitted, as
+/// they have their own report sections and are not source closure inputs.
+pub fn report_layout_types(
+    modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, TypedProgram>,
+) -> Result<Vec<crate::sema::types::LayoutType>, String> {
+    checked_layout_types(
+        modules.keys().filter(|key| {
+            key.as_str() != crate::rtconfig::MODULE_ADDR && key.as_str() != "__image_runtime"
+        }),
+        programs,
+    )
+    .map(|layouts| layouts.into_values().collect())
+    .map_err(|error| error.message)
 }
 
 fn image_pool_backings(
@@ -1791,8 +1821,7 @@ fn image_pool_backings(
     let Some(b) = boot else {
         return Ok(BTreeMap::new());
     };
-    let layouts = closure_layout_types(b.modules, b.programs)?;
-    crate::eval::image_checks::pool_backings(b.graph, &layouts).map_err(|e| {
+    crate::eval::image_checks::pool_backings(b.graph, b.layouts).map_err(|e| {
         LayoutError::new(format!(
             "internal error: a pool declaration this image's own graph check accepted cannot be \
              placed: {}",
@@ -1812,6 +1841,17 @@ fn layout_program_inner(
     program: &CodegenProgram,
     boot: Option<BootCtx>,
 ) -> Result<ImageLayout, LayoutError> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s layout-program-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     let _late_address_relax = crate::codegen::late_address_relax_guard();
     let image_base = machine_layout::IMAGE_BASE;
 
@@ -1819,6 +1859,7 @@ fn layout_program_inner(
         Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
+    timing("wiring");
 
     let mut rodata_entries: Vec<Vec<u8>> = program.rodata.clone();
     let mut rodata_cursor: usize = rodata_entries.iter().map(Vec::len).sum();
@@ -1826,29 +1867,31 @@ fn layout_program_inner(
         intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
     }
 
-    let mut program_owned;
-    let program = if let Some(w) = wiring.as_ref() {
-        program_owned = program.clone();
-        apply_resume_remaps(&mut program_owned, w);
-        inject_rt_enqueue_and_dispatch_fns(&mut program_owned, w)?;
-        inject_rt_cross_core_fns(&mut program_owned, w)?;
-        inject_boot_init_fn(&mut program_owned, w);
-        inject_checkpoint_irq_fns(&mut program_owned, w);
-        &program_owned
-    } else {
-        program
-    };
-
-    verify_conventions_after_layout(program)?;
-
     // Relax only self-contained, value-only sites before assigning final
     // function bases.  The relaxation pass freezes any function with a
     // relocation or control transfer, so every surviving relocation index is
     // still local to an unchanged wide body.  All later section addresses and
     // patches are then computed from this one final program.
-    let relaxed_program = crate::relax::relax_immediates(program)
-        .map_err(|e| LayoutError::new(format!("late immediate relaxation: {e}")))?;
+    let relaxed_program = if let Some(w) = wiring.as_ref() {
+        let mut owned = program.clone();
+        apply_resume_remaps(&mut owned, w);
+        inject_rt_enqueue_and_dispatch_fns(&mut owned, w)?;
+        inject_rt_cross_core_fns(&mut owned, w)?;
+        inject_boot_init_fn(&mut owned, w);
+        inject_checkpoint_irq_fns(&mut owned, w);
+        timing("inject");
+        verify_conventions_after_layout(&owned)?;
+        timing("conventions");
+        crate::relax::relax_immediates_owned(owned)
+    } else {
+        timing("inject");
+        verify_conventions_after_layout(program)?;
+        timing("conventions");
+        crate::relax::relax_immediates(program)
+    }
+    .map_err(|e| LayoutError::new(format!("late immediate relaxation: {e}")))?;
     let program = &relaxed_program.program;
+    timing("immediates");
 
     let entry_words = build_entry_stub();
 
@@ -1865,6 +1908,7 @@ fn layout_program_inner(
         .iter()
         .flat_map(|entry| entry.iter().copied())
         .collect();
+    timing("flatten");
     let runtime: Option<&RuntimeTables> = wiring.as_ref().map(|w| &w.tables);
 
     let mut abort_fixed_words = Vec::new();
@@ -2419,6 +2463,7 @@ fn layout_program_inner(
     verify_device_windows(&sections, &device_regs)?;
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
+    timing("patch-relocs");
     let mut core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
         (Some(w), cb) if w.tables.cores > 1 => (1..w.tables.cores)
             .filter_map(|core| {
@@ -2575,9 +2620,11 @@ fn layout_program_inner(
     let mut linked =
         crate::linked::LinkedProgram::from_parts(linked_sections, linked_fns, image_base)
             .map_err(LayoutError::new)?;
+    timing("linked-build");
     let (relaxed_linked, _) = crate::relax::relax_linked_addresses(&linked)
         .map_err(|e| LayoutError::new(format!("late address relaxation: {e}")))?;
     linked = relaxed_linked;
+    timing("linked-relax");
     if let Some(boot) = boot.as_ref() {
         // Persistent Flow storage exists once per placed turn record, not once
         // per async function.  Actor/driver records reserve the maximum frame
@@ -2621,7 +2668,9 @@ fn layout_program_inner(
         }
     }
     crate::cost::audit::audit_linked(&linked).map_err(LayoutError::new)?;
+    timing("audit");
     let linked_blob = linked.serialize(image_base).map_err(LayoutError::new)?;
+    timing("serialize");
     for section in &mut sections {
         if let Some(linked_section) = linked
             .sections
@@ -3458,7 +3507,13 @@ pub fn enrich_layout_ctx_with_instantiations(
 
     let mut enum_definitions = BTreeMap::new();
     for typed in programs.values() {
-        for (name, enumeration) in typed.enums.iter().chain(typed.imported.enums.iter()) {
+        for (name, enumeration) in typed.enums.iter().map(|(name, value)| (name, value)).chain(
+            typed
+                .imported
+                .enums
+                .iter()
+                .map(|(name, value)| (name, value.as_ref())),
+        ) {
             enum_definitions
                 .entry(name.clone())
                 .or_insert_with(|| enumeration.clone());
@@ -3518,7 +3573,9 @@ pub fn enrich_layout_ctx_with_instantiations(
 pub fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgram {
     let mut merged_fns: BTreeMap<String, mwir::MwirFn> = BTreeMap::new();
     let mut merged_rodata: Vec<Vec<u8>> = Vec::new();
+    let mut direct_fp_fns = BTreeSet::new();
     for p in programs {
+        direct_fp_fns.extend(p.direct_fp_fns);
         let offset = merged_rodata.len();
         merged_rodata.extend(p.rodata);
         for (key, mut f) in p.fns {
@@ -3535,6 +3592,7 @@ pub fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgra
     mwir::MwirProgram {
         fns: merged_fns,
         rodata: merged_rodata,
+        direct_fp_fns,
     }
 }
 
@@ -3543,6 +3601,7 @@ pub struct ImageCodegen {
     pub graph: ImageGraph,
     pub modules: BTreeMap<String, Module>,
     pub programs: BTreeMap<String, TypedProgram>,
+    pub layouts: BTreeMap<String, crate::sema::types::LayoutType>,
     pub flow: FlowWirProgram,
     pub async_frames: BTreeMap<String, u64>,
     pub group_child_index: BTreeMap<String, usize>,
@@ -3587,13 +3646,55 @@ pub fn lower_and_codegen_image(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
-    _renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
+    renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
     pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
     instrumented_pixels: bool,
     runtime_tests: &[String],
     async_tests: &BTreeSet<String>,
     emit_comptime_tests: bool,
 ) -> Result<ImageCodegen, String> {
+    lower_and_codegen_image_with_direct_fp(
+        modules,
+        programs,
+        layout_ctx,
+        graph,
+        renderer_configs,
+        pixels_programs,
+        instrumented_pixels,
+        runtime_tests,
+        async_tests,
+        emit_comptime_tests,
+        true,
+    )
+}
+
+/// Census-only image compilation switch for reproducing the ordered legacy-FP
+/// checkpoint. Product compilation always enters through
+/// [`lower_and_codegen_image`] and therefore always honors direct-FP markers.
+pub(crate) fn lower_and_codegen_image_with_direct_fp(
+    modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, TypedProgram>,
+    layout_ctx: &LayoutCtx,
+    graph: &ImageGraph,
+    _renderer_configs: Option<&crate::pixels::config::RendererConfigs>,
+    pixels_programs: Option<&crate::pixels::PixelsProgramSet>,
+    instrumented_pixels: bool,
+    runtime_tests: &[String],
+    async_tests: &BTreeSet<String>,
+    emit_comptime_tests: bool,
+    direct_fp: bool,
+) -> Result<ImageCodegen, String> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s image-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     if graph.renderers.is_empty()
         != pixels_programs.is_none_or(|set| set.compiled_renderers.is_empty())
     {
@@ -3622,6 +3723,11 @@ pub fn lower_and_codegen_image(
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+    // These completed layouts are an immutable authority for runtime wiring,
+    // device windows, and pool placement. Computing them once avoids
+    // repeatedly specializing and cloning every module in a large closure.
+    let closure_layouts = closure_layout_types(modules, programs).map_err(|e| e.message)?;
+    timing("setup-layouts");
     // Renderer workers deliberately keep all mutable sweep state in their
     // compiler-placed workspace. They therefore have an empty actor-state
     // layout even in the preliminary image pass, before the live generated
@@ -3687,16 +3793,19 @@ pub fn lower_and_codegen_image(
         crate::codegen::async_frame_sizes(&flow_derive, &layout_ctx).map_err(|e| e.message)?;
     let (group_child_index_derive, _) =
         crate::codegen::compute_group_child_indices(&flow_derive).map_err(|e| e.message)?;
+    timing("derive-flow");
     let boot = BootCtx {
         graph,
         modules,
         programs,
+        layouts: &closure_layouts,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames_derive,
         group_child_index: &group_child_index_derive,
         flow: &flow_derive,
     };
     let preliminary_wiring = RuntimeWiring::derive(&boot).map_err(|e| e.message)?;
+    timing("preliminary-wiring");
     let pixels_plan = if let Some(programs) = pixels_programs
         && !programs.compiled_renderers.is_empty()
     {
@@ -3731,11 +3840,13 @@ pub fn lower_and_codegen_image(
             &plan.renderers,
         )?;
     }
+    timing("pixels-placement");
     let graph = &generated_graph;
     let boot = BootCtx {
         graph,
         modules,
         programs,
+        layouts: &closure_layouts,
         layout_ctx: &layout_ctx,
         async_frames: &async_frames_derive,
         group_child_index: &group_child_index_derive,
@@ -3765,6 +3876,7 @@ pub fn lower_and_codegen_image(
             );
         }
     }
+    timing("final-wiring");
     // The derive pass exists only to establish runtime wiring before the live
     // generated modules are rechecked. Keeping its closure-sized FlowWIR and
     // analyses alive across live lowering nearly doubles peak memory for
@@ -3809,6 +3921,9 @@ pub fn lower_and_codegen_image(
             crate::lower::ImageForceRootOpts::default(),
         )
     };
+    timing("live-recheck");
+    let live_layouts =
+        closure_layout_types(&live_modules, &live_programs).map_err(|e| e.message)?;
     if let Some(programs) = pixels_programs
         && !programs.compiled_renderers.is_empty()
     {
@@ -3838,8 +3953,14 @@ pub fn lower_and_codegen_image(
         emit_comptime_tests,
         only: Some(only),
     };
-    let mwir = lower_mwir_closure(&live_programs, capacity, &lower_opts)?;
+    timing("live-layouts-roots");
+    let mut mwir = lower_mwir_closure(&live_programs, capacity, &lower_opts)?;
+    if !direct_fp {
+        mwir.direct_fp_fns.clear();
+    }
+    timing("mwir");
     let flow = lower_flow_closure(&live_programs, &lower_opts)?;
+    timing("flow");
     let method_index =
         actor_method_index_tables(&live_modules, &layout_ctx).map_err(|e| e.message)?;
     let group_arena_capacity = count_with_group_sites(&live_modules);
@@ -3854,15 +3975,18 @@ pub fn lower_and_codegen_image(
         &enqueue_specs,
     )
     .map_err(|e| e.message)?;
+    timing("codegen");
     let async_frames =
         crate::codegen::async_frame_sizes(&flow, &layout_ctx).map_err(|e| e.message)?;
     let (group_child_index, _) =
         crate::codegen::compute_group_child_indices(&flow).map_err(|e| e.message)?;
+    timing("final-analyses");
     Ok(ImageCodegen {
         program,
         graph: generated_graph,
         modules: live_modules,
         programs: live_programs,
+        layouts: live_layouts,
         flow,
         async_frames,
         group_child_index,
@@ -3931,11 +4055,24 @@ fn recheck_with_live_rtconfig(
     rtconfig_text: &str,
     pixels_config_text: Option<&str>,
 ) -> Result<(BTreeMap<String, Module>, BTreeMap<String, TypedProgram>), String> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s live-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     let gen_module = crate::rtconfig::parse_generated(rtconfig_text)?;
+    timing("parse-rtconfig");
     let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
         .iter()
         .map(|s| (*s).to_string())
         .collect();
+    let mut internal_sources = BTreeSet::from([gen_key.clone()]);
     let mut modules_vec: BTreeMap<Vec<String>, Module> = BTreeMap::new();
     let mut paths: BTreeMap<Vec<String>, String> = BTreeMap::new();
     for (dot, m) in modules {
@@ -3943,15 +4080,22 @@ fn recheck_with_live_rtconfig(
         if key.as_slice() == crate::loader::IMAGE_RUNTIME_MODULE_KEY {
             continue;
         }
+        // Every module in this input map already passed the source-provenance
+        // fence. Preserve that authenticated fact when the live-config
+        // re-check replaces real and fixture paths with stable synthetic
+        // display paths; new generated modules are added explicitly below.
+        internal_sources.insert(key.clone());
         paths.insert(key.clone(), format!("<{dot}>"));
         modules_vec.insert(key, m.clone());
     }
+    timing("clone-closure");
     let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
         .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
     modules_vec.insert(runtime_key.clone(), runtime_loaded.module);
     paths.insert(runtime_key, runtime_loaded.file.display().to_string());
     modules_vec.insert(gen_key.clone(), gen_module);
     paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
+    timing("load-runtime");
     if let Some(source) = pixels_config_text {
         let (view_key, view_module) = crate::loader::load_render_program_module()
             .map_err(|_| "stdlib/core/render_program.wr missing".to_string())?;
@@ -3961,12 +4105,14 @@ fn recheck_with_live_rtconfig(
             .iter()
             .map(|part| (*part).to_string())
             .collect();
+        internal_sources.insert(key.clone());
         modules_vec.insert(
             key.clone(),
             crate::pixels::glue::parse_configuration_source(source)?,
         );
         paths.insert(key, crate::loader::GENERATED_PIXELS_INPUT_PATH.to_string());
     }
+    timing("parse-pixels");
     let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
         .iter()
         .map(|s| (*s).to_string())
@@ -3981,12 +4127,19 @@ fn recheck_with_live_rtconfig(
         paths.insert(time_key.clone(), time_loaded.file.display().to_string());
         modules_vec.insert(time_key, time_loaded.module);
     }
-    let programs_vec = crate::sema::check_program_typed(&modules_vec, &paths).map_err(|e| {
+    timing("load-time");
+    let programs_vec = crate::sema::check_program_typed_with_internal_sources(
+        &modules_vec,
+        &paths,
+        &internal_sources,
+    )
+    .map_err(|e| {
         format!(
             "error[{}]: live rtconfig re-check: {}",
             e.category, e.message
         )
     })?;
+    timing("sema");
     let programs: BTreeMap<String, TypedProgram> = programs_vec
         .into_iter()
         .map(|(k, p)| (k.join("."), p))
@@ -3995,6 +4148,7 @@ fn recheck_with_live_rtconfig(
         .into_iter()
         .map(|(k, m)| (k.join("."), m))
         .collect();
+    timing("convert");
     Ok((modules, programs))
 }
 
@@ -4003,10 +4157,38 @@ fn lower_mwir_closure(
     capacity: Option<u64>,
     opts: &crate::lower::LowerOpts,
 ) -> Result<mwir::MwirProgram, String> {
+    let mut owners = BTreeMap::new();
+    let mut inventories = BTreeMap::new();
+    for (module, typed) in programs {
+        let inventory = crate::lower::sync_lowering_candidates(typed, opts);
+        for key in &inventory {
+            owners.insert(key.clone(), module);
+        }
+        inventories.insert(module, inventory);
+    }
+    // These two functions are rewritten as a checked pair: the raw submit
+    // receives the driver callback and the driver receives the raw submit.
+    // Keep them in the deterministic last module view that can see both so
+    // deduplication cannot split the bridge installation across owners.
+    if let Some((owner, _)) = inventories.iter().rev().find(|(_, keys)| {
+        keys.contains(crate::lower::PIXELS_DISPLAY_RAW_FN)
+            && keys.contains(crate::lower::PIXELS_DISPLAY_DRIVER_FN)
+    }) {
+        owners.insert(crate::lower::PIXELS_DISPLAY_RAW_FN.to_string(), owner);
+        owners.insert(crate::lower::PIXELS_DISPLAY_DRIVER_FN.to_string(), owner);
+    }
     let mut mwir_programs = Vec::with_capacity(programs.len());
-    for typed in programs.values() {
+    for (module, typed) in programs {
+        let only = owners
+            .iter()
+            .filter_map(|(key, owner)| (owner == &module).then_some(key.clone()))
+            .collect();
+        let local_opts = crate::lower::LowerOpts {
+            emit_comptime_tests: opts.emit_comptime_tests,
+            only: Some(only),
+        };
         mwir_programs.push(
-            crate::lower::lower_program_with_capacity(typed, opts, capacity)
+            crate::lower::lower_program_with_capacity(typed, &local_opts, capacity)
                 .map_err(|e| e.message)?,
         );
     }
@@ -4020,13 +4202,25 @@ fn lower_flow_closure(
     programs: &BTreeMap<String, TypedProgram>,
     opts: &crate::lower::LowerOpts,
 ) -> Result<FlowWirProgram, String> {
+    let mut owners = BTreeMap::new();
+    for (module, typed) in programs {
+        for key in crate::flowwir_lower::async_lowering_candidates(typed, opts) {
+            owners.insert(key, module);
+        }
+    }
     let mut flow_fns = BTreeMap::new();
-    for typed in programs.values() {
-        flow_fns.extend(
-            crate::flowwir_lower::lower_program_with(typed, opts)
-                .map_err(|e| e.message)?
-                .fns,
-        );
+    for (module, typed) in programs {
+        let only = owners
+            .iter()
+            .filter_map(|(key, owner)| (owner == &module).then_some(key.clone()))
+            .collect();
+        let local_opts = crate::lower::LowerOpts {
+            emit_comptime_tests: opts.emit_comptime_tests,
+            only: Some(only),
+        };
+        let lowered =
+            crate::flowwir_lower::lower_program_with(typed, &local_opts).map_err(|e| e.message)?;
+        flow_fns.extend(lowered.fns);
     }
     Ok(FlowWirProgram { fns: flow_fns })
 }
@@ -4061,6 +4255,17 @@ pub fn try_layout_with_codegen(
     )>,
     String,
 > {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s layout-final-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     let empty_tests: &[String] = &[];
     let empty_async = BTreeSet::new();
     if graph.renderers.is_empty() {
@@ -4087,19 +4292,23 @@ pub fn try_layout_with_codegen(
         Err(e) if !graph.renderers.is_empty() => return Err(e),
         Err(_) => return Ok(None),
     };
+    timing("lower-codegen");
     let placement = crate::placement::place(
         &compiled.graph,
         &compiled.modules,
         &compiled.layout_ctx,
         compiled.graph.cores,
     )?;
+    timing("placement");
     let report_graph = compiled.graph.clone();
-    layout_program(
+    timing("graph-clone");
+    let result = layout_program(
         &compiled.program,
         Some(BootCtx {
             graph: &compiled.graph,
             modules: &compiled.modules,
             programs: &compiled.programs,
+            layouts: &compiled.layouts,
             layout_ctx: &compiled.layout_ctx,
             async_frames: &compiled.async_frames,
             group_child_index: &compiled.group_child_index,
@@ -4118,7 +4327,9 @@ pub fn try_layout_with_codegen(
         )?;
         Ok(Some((layout, compiled.program, report_graph, placement)))
     })
-    .or_else(|e| Err(e.message))
+    .or_else(|e| Err(e.message));
+    timing("program");
+    result
 }
 
 pub fn try_layout_program(
@@ -4322,7 +4533,7 @@ mod tests {
             code: words
                 .iter()
                 .map(|w| {
-                    crate::cost::EmittedWord::new(
+                    crate::cost::EmittedWord::gpr(
                         *w,
                         String::new(),
                         crate::cost::CostRule::Alu,
@@ -4332,6 +4543,7 @@ mod tests {
                 })
                 .collect(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         }
     }
 
@@ -4376,6 +4588,85 @@ struct TurnTable:
     }
 
     #[test]
+    fn closure_layout_types_rejects_disagreeing_checked_views() {
+        let source = "module examples.layout_view\n\n@layout(runtime, endian=little)\nstruct Cell:\n    value: u32\n";
+        let module = crate::syntax::parser::parse(crate::syntax::lexer::lex(source).expect("lex"))
+            .expect("parse");
+        let program = crate::sema::check_typed(&module, "<layout-view>").expect("check");
+        let mut conflicting = program.clone();
+        conflicting.layouts[0].size = Some(8);
+        let mut modules = BTreeMap::new();
+        modules.insert("a".to_string(), module.clone());
+        modules.insert("b".to_string(), module);
+        let mut programs = BTreeMap::new();
+        programs.insert("a".to_string(), program);
+        programs.insert("b".to_string(), conflicting);
+        let error = closure_layout_types(&modules, &programs)
+            .expect_err("conflicting checked layouts must fail closed");
+        assert!(
+            error
+                .message
+                .contains("checked layout `Cell` disagrees across module views"),
+            "got: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn closure_lowering_emits_one_owner_for_shared_imported_body() {
+        let sources = [
+            (
+                vec!["a".to_string()],
+                "module a\n\npub fn shared() -> u32:\n    return 7\n",
+            ),
+            (
+                vec!["b".to_string()],
+                "module b\n\nfrom a import shared\n\npub fn b() -> u32:\n    return shared()\n",
+            ),
+            (
+                vec!["c".to_string()],
+                "module c\n\nfrom a import shared\n\npub fn c() -> u32:\n    return shared()\n",
+            ),
+        ];
+        let modules = sources
+            .iter()
+            .map(|(key, source)| {
+                (
+                    key.clone(),
+                    crate::syntax::parser::parse(crate::syntax::lexer::lex(source).expect("lex"))
+                        .expect("parse"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let paths = sources
+            .iter()
+            .map(|(key, _)| (key.clone(), format!("<{}>", key.join("."))))
+            .collect::<BTreeMap<_, _>>();
+        let programs = crate::sema::check_program_typed(&modules, &paths)
+            .expect("check closure")
+            .into_iter()
+            .map(|(key, program)| (key.join("."), program))
+            .collect::<BTreeMap<_, _>>();
+        let opts = crate::lower::LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(["shared".to_string()].into_iter().collect()),
+        };
+        let naive_count = programs
+            .values()
+            .map(|program| {
+                crate::lower::lower_program_with(program, &opts)
+                    .expect("naive lower")
+                    .fns
+                    .len()
+            })
+            .sum::<usize>();
+        let linked = lower_mwir_closure(&programs, None, &opts).expect("closure lower");
+        assert_eq!(naive_count, 3, "fixture must exercise duplicate views");
+        assert_eq!(linked.fns.len(), 1);
+        assert!(linked.fns.contains_key("shared"));
+    }
+
+    #[test]
     fn force_rooted_probe_resolves_via_bl_call_key() {
         let src = "\
 module examples.bl_call_probe
@@ -4407,8 +4698,17 @@ pub fn t():
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
-        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
-        let programs_vec = crate::sema::check_program_typed(&modules_vec, &paths).expect("check");
+        paths.insert(
+            gen_key.clone(),
+            crate::rtconfig::GENERATED_INPUT_PATH.to_string(),
+        );
+        let internal_sources = BTreeSet::from([gen_key]);
+        let programs_vec = crate::sema::check_program_typed_with_internal_sources(
+            &modules_vec,
+            &paths,
+            &internal_sources,
+        )
+        .expect("check");
         let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
             .into_iter()
             .map(|(k, p)| (k.join("."), p))
@@ -4466,7 +4766,7 @@ pub fn t():
                     .words
                     .iter()
                     .map(|w| {
-                        crate::cost::EmittedWord::new(
+                        crate::cost::EmittedWord::gpr(
                             *w,
                             String::new(),
                             crate::cost::CostRule::Alu,
@@ -4476,6 +4776,7 @@ pub fn t():
                     })
                     .collect(),
                 relocs: a.relocs,
+                regions: Vec::new(),
             },
         );
         let codegen = crate::codegen::CodegenProgram {
@@ -5470,14 +5771,14 @@ fn two():
 
     #[test]
     fn late_adr_growth_rewrites_the_reloc_and_shifts_following_words() {
-        let first = crate::cost::EmittedWord::new(
+        let first = crate::cost::EmittedWord::gpr(
             encode::enc_adr(9, 0),
             "adr x9, rodata+0x0".into(),
             crate::cost::CostRule::Adrp,
             Some(9),
             &[],
         );
-        let second = crate::cost::EmittedWord::new(
+        let second = crate::cost::EmittedWord::gpr(
             encode::enc_movz(10, 1, 0, true),
             "movz x10".into(),
             crate::cost::CostRule::MovWide,
@@ -5495,6 +5796,7 @@ fn two():
                         word: 0,
                         byte_offset: 0,
                     }],
+                    regions: Vec::new(),
                 },
             )]),
             ..CodegenProgram::default()
@@ -5904,7 +6206,7 @@ fn two():
             let placed = vec![
                 window_static("LANE2", 0x4000_8800, LANE2_BYTES),
                 window_static("LANE1", 0x4000_e900, cores * LANE1_ROW),
-                window_static("RT", 0x4054_0000, 3072),
+                window_static("RT", wrela_machine::layout::RTDATA_BASE, 3072),
             ];
             verify_device_window_statics(&placed)
                 .unwrap_or_else(|e| panic!("cores={cores}: {}", e.message));
@@ -6314,7 +6616,7 @@ fn two():
             "f".to_string(),
             crate::codegen::CodegenFn {
                 frame_size: 0,
-                code: vec![crate::cost::EmittedWord::new(
+                code: vec![crate::cost::EmittedWord::gpr(
                     encode::enc_ret(30),
                     "ret".to_string(),
                     crate::cost::CostRule::Branch,
@@ -6322,6 +6624,7 @@ fn two():
                     &[30],
                 )],
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         let program = CodegenProgram {

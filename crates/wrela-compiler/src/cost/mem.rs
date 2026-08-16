@@ -303,17 +303,17 @@ mod tests {
     }
 
     fn load(offset: u64) -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[MEM_SP_REG])
+        EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[MEM_SP_REG])
             .with_mem(MemRef::stack(offset))
     }
 
     fn store(offset: u64) -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Store, None, &[MEM_SP_REG, 0])
+        EmittedWord::gpr(0, String::new(), CostRule::Store, None, &[MEM_SP_REG, 0])
             .with_mem(MemRef::stack(offset))
     }
 
     fn cold(base: u8, imm: u64) -> EmittedWord {
-        EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[base])
+        EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[base])
             .with_mem(MemRef::cold_stable(base, imm))
     }
 
@@ -453,7 +453,7 @@ mod tests {
         let t = table();
         let mut s = state(&t);
         let uniq = |seq: u64| {
-            EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[0])
+            EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[0])
                 .with_mem(MemRef::cold_unique(seq))
         };
         for seq in 0..4u64 {
@@ -462,7 +462,7 @@ mod tests {
             assert_eq!(v.latency, 4);
         }
         assert_eq!(s.access(&uniq(0)).level, MemLevel::L1dHit);
-        let untagged = EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[0]);
+        let untagged = EmittedWord::gpr(0, String::new(), CostRule::Load, Some(1), &[0]);
         assert_eq!(s.access(&untagged).level, MemLevel::Unresolved);
     }
 
@@ -494,7 +494,7 @@ mod tests {
         let lo = SweepPoint::pinned(&t).with("store_to_load_forwarding", 1);
         let mut s = MemState::new(&t, &lo);
         s.access(&store(8));
-        let unknown = EmittedWord::new(0, String::new(), CostRule::Store, None, &[0])
+        let unknown = EmittedWord::gpr(0, String::new(), CostRule::Store, None, &[0])
             .with_mem(MemRef::unknown(7, Some(0), 0));
         assert_eq!(s.access(&unknown).level, MemLevel::Buffered);
         assert_eq!(s.access(&load(8)).level, MemLevel::L1dHit);

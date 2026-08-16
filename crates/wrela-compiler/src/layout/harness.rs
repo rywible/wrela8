@@ -404,42 +404,42 @@ pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
     let h1 = ((bits >> 16) & 0xFFFF) as u16;
     let h2 = ((bits >> 32) & 0xFFFF) as u16;
     let h3 = ((bits >> 48) & 0xFFFF) as u16;
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_movz(9, h0, 0, true),
         format!("movz x9, #{h0:#x}"),
         CostRule::MovWide,
         Some(9),
         &[],
     ));
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_movk(9, h1, 16, true),
         format!("movk x9, #{h1:#x}, lsl #16"),
         CostRule::MovWide,
         Some(9),
         &[],
     ));
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_movk(9, h2, 32, true),
         format!("movk x9, #{h2:#x}, lsl #32"),
         CostRule::MovWide,
         Some(9),
         &[],
     ));
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_movk(9, h3, 48, true),
         format!("movk x9, #{h3:#x}, lsl #48"),
         CostRule::MovWide,
         Some(9),
         &[],
     ));
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_ldr_x_imm(9, 9, 0),
         "ldr x9, [x9]".to_string(),
         CostRule::Load,
         Some(9),
         &[9],
     ));
-    words.push(EmittedWord::new(
+    words.push(EmittedWord::gpr(
         encode::enc_br(9),
         "br x9".to_string(),
         CostRule::Branch,
@@ -450,6 +450,7 @@ pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
         frame_size: 0,
         code: words,
         relocs: Vec::new(),
+        regions: Vec::new(),
     }
 }
 
@@ -1569,7 +1570,7 @@ mod harness_jit {
     fn install_abort_tail_floor_replaces_the_stub_with_the_long_jump() {
         let stub = crate::codegen::CodegenFn {
             frame_size: 16,
-            code: vec![crate::cost::EmittedWord::new(
+            code: vec![crate::cost::EmittedWord::gpr(
                 encode::enc_ret(30),
                 "ret".to_string(),
                 crate::cost::CostRule::Branch,
@@ -1577,6 +1578,7 @@ mod harness_jit {
                 &[30],
             )],
             relocs: Vec::new(),
+            regions: Vec::new(),
         };
         let mut fns = BTreeMap::new();
         fns.insert("__wrela_abort".to_string(), stub.clone());

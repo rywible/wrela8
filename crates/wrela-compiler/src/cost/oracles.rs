@@ -16,7 +16,21 @@ pub fn inventory_rows(rule: CostRule) -> &'static [u32] {
         CostRule::Abort | CostRule::AbortVal => &[20],
         CostRule::Barrier => &[17],
         CostRule::System => &[19],
-        CostRule::Neon => &[35],
+        // Row 35 is the shared "FP/ASIMD data-processing" dimension every
+        // FP/ASIMD class exercises; the second row is the family's own
+        // dimension, added by P8R.1 so the coarse row can no longer stand in
+        // for operations the A76 prices differently.
+        CostRule::FpAddSub | CostRule::FpMul => &[35, 40],
+        CostRule::FpFma => &[35, 40, 49],
+        CostRule::FpDivSqrt => &[35, 41],
+        CostRule::FpCompare | CostRule::FpConvert => &[35, 42],
+        CostRule::FpMove => &[35, 43],
+        CostRule::FpLoad | CostRule::FpLoadQ => &[7, 9, 12, 29, 44],
+        CostRule::FpStore | CostRule::FpStoreQ => &[8, 13, 30, 45],
+        CostRule::AsimdInt | CostRule::AsimdPermute => &[35, 46],
+        CostRule::AsimdFpAddSub | CostRule::AsimdFpMul => &[35, 47],
+        CostRule::AsimdFpFma => &[35, 47, 49],
+        CostRule::AsimdFpCmp | CostRule::AsimdFpCvt => &[35, 48],
     }
 }
 
@@ -116,11 +130,11 @@ mod tests {
     }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(0, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(0, String::new(), rule, dst, srcs)
     }
 
     fn word_enc(enc: u32, rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(enc, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(enc, String::new(), rule, dst, srcs)
     }
 
     fn load_stack(dst: u8, offset: u64) -> EmittedWord {
@@ -161,6 +175,7 @@ mod tests {
             frame_size: 0,
             code,
             relocs: Vec::new(),
+            regions: Vec::new(),
         }
     }
 
@@ -396,7 +411,7 @@ mod tests {
                 &prog(
                     "f",
                     vec![
-                        EmittedWord::new(
+                        EmittedWord::gpr(
                             0xF940_0000,
                             String::new(),
                             CostRule::Load,
@@ -413,7 +428,7 @@ mod tests {
                 &prog(
                     "f",
                     vec![
-                        EmittedWord::new(
+                        EmittedWord::gpr(
                             0xF900_0000,
                             String::new(),
                             CostRule::Store,
@@ -537,9 +552,9 @@ mod tests {
         ];
 
         let flags_dep = vec![
-            EmittedWord::new(0, String::new(), CostRule::Alu, None, &[5, 6])
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[5, 6])
                 .with_flags(FlagEffect::Write),
-            EmittedWord::new(0, String::new(), CostRule::Alu, Some(7), &[8, 9])
+            EmittedWord::gpr(0, String::new(), CostRule::Alu, Some(7), &[8, 9])
                 .with_flags(FlagEffect::Read),
         ];
         let flags_ind = vec![
@@ -547,10 +562,10 @@ mod tests {
             word(CostRule::Alu, Some(7), &[8, 9]),
         ];
 
-        let sp_write = EmittedWord::new(0xD100_43FF, String::new(), CostRule::Alu, Some(31), &[31]);
+        let sp_write = EmittedWord::gpr(0xD100_43FF, String::new(), CostRule::Alu, Some(31), &[31]);
         let sp_dep = vec![sp_write.clone(), load_stack(1, 8)];
         let sp_ind = vec![
-            EmittedWord::new(0xD100_4000, String::new(), CostRule::Alu, Some(0), &[0]),
+            EmittedWord::gpr(0xD100_4000, String::new(), CostRule::Alu, Some(0), &[0]),
             load_stack(1, 8),
         ];
 
@@ -577,15 +592,15 @@ mod tests {
 
     #[test]
     fn register_thirty_one_as_xzr_carries_no_dependence() {
-        let sp_write = EmittedWord::new(0xD100_43FF, String::new(), CostRule::Alu, Some(31), &[31]);
+        let sp_write = EmittedWord::gpr(0xD100_43FF, String::new(), CostRule::Alu, Some(31), &[31]);
         let xzr_store =
-            EmittedWord::new(0xF900_0000, String::new(), CostRule::Store, None, &[0, 31])
+            EmittedWord::gpr(0xF900_0000, String::new(), CostRule::Store, None, &[0, 31])
                 .with_mem(MemRef::cold_stable(0, 0));
         let with_producer = total(&prog("f", vec![sp_write, xzr_store.clone()]));
         let alone = total(&prog(
             "f",
             vec![
-                EmittedWord::new(0xD100_40A5, String::new(), CostRule::Alu, Some(5), &[5]),
+                EmittedWord::gpr(0xD100_40A5, String::new(), CostRule::Alu, Some(5), &[5]),
                 xzr_store,
             ],
         ));
@@ -1204,10 +1219,28 @@ mod tests {
             rows.contains(&39),
             "row 39 (the ordered accesses) must exist"
         );
+        // P8R.1 added rows 40-49 for the FP/ASIMD families the coarse row 35
+        // used to stand in for. Grow this bound in the same commit as the
+        // census, so a row that appears without a rule naming it is visible.
         assert!(
-            !rows.contains(&40),
+            rows.contains(&49),
+            "row 49 (FMA accumulator forwarding) must exist"
+        );
+        assert!(
+            !rows.contains(&50),
             "the census grew a row this check does not know about"
         );
+        // Every new FP/ASIMD family names its own dimension, not just the
+        // shared row 35, so the coarse row can never silently price a family
+        // the A76 treats differently again.
+        for rule in CostRule::ALL.iter().copied().filter(|r| r.is_fp_simd()) {
+            let named = inventory_rows(rule);
+            assert!(
+                named.iter().any(|row| (40..=49).contains(row)),
+                "CostRule::{rule:?} names only {named:?}; every FP/ASIMD class \
+                 owns a family dimension"
+            );
+        }
     }
 
     #[test]

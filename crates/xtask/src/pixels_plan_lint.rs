@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::root;
 
 const PLAN: &str = "docs/designs/WRELA_PIXELS_COMPILER_IMPLEMENTATION_PLAN.md";
+const P8R_PLAN: &str = "docs/designs/WRELA_PIXELS_P8R_TIGHTENING_PLAN.md";
+const INVARIANT_MATRIX: &str = "docs/designs/WRELA_PIXELS_INVARIANT_MATRIX.md";
+const PACKET_CONSUMER_MATRIX: &str = "docs/designs/WRELA_PIXELS_PACKET_CONSUMER_MATRIX.md";
 const PIXELS_CASES: &str = "tests/pixels-cases.txt";
 const PIXELS_CASE_MARKER: &str = "# Permanent Pixels fixture: ";
 const REQUIRED_FIELDS: &[&str] = &[
@@ -58,6 +61,19 @@ fn task_id(line: &str) -> Option<&str> {
     line.strip_prefix("## Task ")?
         .split_once(" — ")
         .map(|(id, _)| id.trim())
+}
+
+/// Basis markers that excuse a `**Files:**` entry from having to exist yet.
+///
+/// One marker per milestone basis. A task that plans a file into existence
+/// names the basis it was planned at, so a stale marker is visible instead of
+/// a silently missing path.
+const NEW_FILE_MARKERS: &[&str] = &["new at P-1 basis", "new at P8 basis"];
+
+fn marks_planned_file(content: &str) -> bool {
+    NEW_FILE_MARKERS
+        .iter()
+        .any(|marker| content.contains(marker))
 }
 
 fn section<'a>(text: &'a str, start: &str, end: &str) -> Result<&'a str, String> {
@@ -189,10 +205,673 @@ fn lint_text(text: &str, repo: &Path) -> Result<(), String> {
     }
 
     lint_marked_paths(text, repo)?;
+    lint_p8r_chain_link(text)?;
     lint_display_contract(repo)?;
     lint_normative_docs(repo)?;
     lint_formal_readme(repo)?;
     lint_permanent_fixtures(text, repo, &headings)?;
+    Ok(())
+}
+
+/// Task IDs of the P8R tightening plan, in execution order.
+const P8R_TASKS: &[&str] = &[
+    "P8R.0", "P8R.1", "P8R.2", "P8R.3", "P8R.4", "P8R.5", "P8R.6", "P8R.7",
+];
+
+/// The canonical plan task whose prerequisite must name the P8R close.
+const P8R_CLOSE_TASK: &str = "P8R.7";
+
+/// Lint the P8R tightening plan against the §10.0 executor schema.
+///
+/// The P8R plan is a separate document from the canonical plan, so the
+/// canonical §14 commit-order cross-check does not apply to it. What does
+/// apply is the required-section schema, a unique ordered task list, and the
+/// same "a `**Files:**` path either exists or is marked as planned" rule.
+fn lint_p8r_schema(text: &str, repo: &Path) -> Result<(), String> {
+    let mut headings = Vec::new();
+    let mut starts = Vec::new();
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if let Some(id) = task_id(line.trim_end()) {
+            headings.push(id.to_string());
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    if headings != P8R_TASKS {
+        return Err(format!(
+            "pixels plan lint: P8R task headings are {headings:?}, expected {P8R_TASKS:?}"
+        ));
+    }
+    starts.push(text.len());
+    for (index, id) in headings.iter().enumerate() {
+        let body = &text[starts[index]..starts[index + 1]];
+        for field in REQUIRED_FIELDS {
+            let needle = format!("**{field}:**");
+            if !body.contains(&needle) {
+                return Err(format!(
+                    "pixels plan lint: P8R task {id} is missing field `{field}`"
+                ));
+            }
+        }
+    }
+    lint_marked_paths(text, repo)
+}
+
+fn lint_invariant_matrix(text: &str, repo: &Path) -> Result<(), String> {
+    const REQUIRED_AREAS: &[&str] = &[
+        "LOWERING",
+        "EVENTS",
+        "EXCLUSION",
+        "PROJECTIVE",
+        "CAPACITY",
+        "PLACEMENT",
+        "SNAPSHOT",
+        "CERTIFY",
+        "COVERAGE",
+        "QUANTIZE",
+        "DISPLAY",
+        "EVIDENCE",
+        "REPLAY",
+        "FAILURE",
+    ];
+    let mut ids = BTreeSet::new();
+    let mut areas = BTreeSet::new();
+    let mut rows = 0usize;
+    for line in text.lines().filter(|line| line.starts_with("| INV-PIX-")) {
+        let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+        if cells.len() != 11 || !cells[0].is_empty() || !cells[10].is_empty() {
+            return Err(format!(
+                "pixels plan lint: invariant row must have exactly 9 columns: `{line}`"
+            ));
+        }
+        let id = cells[1];
+        let Some(rest) = id.strip_prefix("INV-PIX-") else {
+            unreachable!("row filter established the prefix")
+        };
+        let Some((area, number)) = rest.rsplit_once('-') else {
+            return Err(format!("pixels plan lint: malformed invariant ID `{id}`"));
+        };
+        if area.is_empty()
+            || !area
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
+            || number.len() != 3
+            || !number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(format!("pixels plan lint: malformed invariant ID `{id}`"));
+        }
+        if !ids.insert(id.to_string()) {
+            return Err(format!("pixels plan lint: duplicate invariant ID `{id}`"));
+        }
+        areas.insert(area.to_string());
+        if cells[2].is_empty() {
+            return Err(format!(
+                "pixels plan lint: invariant `{id}` has no description"
+            ));
+        }
+        for cell in &cells[3..10] {
+            let covered = cell
+                .strip_prefix("covered(")
+                .and_then(|value| value.strip_suffix(')'));
+            if let Some(artifact) = covered {
+                if artifact.is_empty() || artifact.contains(char::is_whitespace) {
+                    return Err(format!(
+                        "pixels plan lint: invariant `{id}` has malformed covered artifact `{cell}`"
+                    ));
+                }
+                let (path, anchor) = artifact
+                    .split_once('#')
+                    .map_or((artifact, None), |(path, anchor)| (path, Some(anchor)));
+                if !repo.join(path).exists() {
+                    return Err(format!(
+                        "pixels plan lint: invariant `{id}` cites missing artifact `{path}`"
+                    ));
+                }
+                if let Some(anchor) = anchor {
+                    if anchor.is_empty() {
+                        return Err(format!(
+                            "pixels plan lint: invariant `{id}` cites an empty anchor in `{cell}`"
+                        ));
+                    }
+                    let artifact_text = std::fs::read_to_string(repo.join(path)).map_err(|error| {
+                        format!(
+                            "pixels plan lint: read covered artifact `{path}` for invariant `{id}`: {error}"
+                        )
+                    })?;
+                    if !artifact_text.contains(anchor) {
+                        return Err(format!(
+                            "pixels plan lint: invariant `{id}` cites missing anchor `{anchor}` in artifact `{path}`"
+                        ));
+                    }
+                }
+                continue;
+            }
+            if cell
+                .strip_prefix("not-applicable(")
+                .and_then(|value| value.strip_suffix(')'))
+                .is_some_and(|reason| !reason.is_empty())
+                || cell
+                    .strip_prefix("planned(")
+                    .and_then(|value| value.strip_suffix(')'))
+                    .is_some_and(|task| task.starts_with('P') && task.contains('.'))
+            {
+                continue;
+            }
+            let gap = cell
+                .strip_prefix("blocking-gap(")
+                .and_then(|value| value.strip_suffix(')'));
+            let deferred = cell
+                .strip_prefix("accepted-deferred(")
+                .and_then(|value| value.strip_suffix(')'));
+            if let Some(details) = gap.or(deferred) {
+                let has_decision = details.split(';').any(|part| {
+                    let part = part.trim();
+                    part.len() == 9
+                        && part.starts_with("D-P8R-")
+                        && part[7..].bytes().all(|byte| byte.is_ascii_digit())
+                });
+                let has_owner = details
+                    .split(';')
+                    .any(|part| part.trim().starts_with("owner="));
+                let has_milestone = deferred.is_none_or(|_| {
+                    details
+                        .split(';')
+                        .any(|part| part.trim().starts_with("milestone="))
+                });
+                if has_decision && has_owner && has_milestone {
+                    continue;
+                }
+            }
+            return Err(format!(
+                "pixels plan lint: invariant `{id}` has noncanonical status cell `{cell}`"
+            ));
+        }
+        rows += 1;
+    }
+    if rows == 0 {
+        return Err("pixels plan lint: invariant matrix has no rows".to_string());
+    }
+    for required in REQUIRED_AREAS {
+        if !areas.contains(*required) {
+            return Err(format!(
+                "pixels plan lint: invariant matrix lacks required `{required}` coverage"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn canonical_packet_needs(plan: &str) -> Result<BTreeMap<String, String>, String> {
+    const PREFIX: &str = "[P9-PACKET-NEED:";
+    let mut needs = BTreeMap::new();
+    let mut rest = plan;
+    while let Some((_, after)) = rest.split_once(PREFIX) {
+        let (payload, tail) = after.split_once(']').ok_or_else(|| {
+            "pixels plan lint: unterminated canonical P9 packet-need marker".to_string()
+        })?;
+        rest = tail;
+        let (id, kind) = payload.rsplit_once(':').ok_or_else(|| {
+            format!("pixels plan lint: malformed canonical packet need `{payload}`")
+        })?;
+        if !matches!(kind, "packet" | "scalar") || !id.starts_with("P9.") {
+            return Err(format!(
+                "pixels plan lint: malformed canonical packet need `{payload}`"
+            ));
+        }
+        if needs.insert(id.to_string(), kind.to_string()).is_some() {
+            return Err(format!(
+                "pixels plan lint: duplicate canonical packet need `{id}`"
+            ));
+        }
+    }
+    if needs.is_empty() {
+        return Err("pixels plan lint: canonical plan has no packet-need IDs".to_string());
+    }
+    Ok(needs)
+}
+
+fn lint_packet_consumer_matrix(text: &str, plan: &str) -> Result<(), String> {
+    const HEADER: &str = "| need ID | P9 task | packet need | landed operation(s) | resolution |";
+    const EXPECTED_TASK_ROWS: &[(&str, usize)] = &[
+        ("P9.4", 2),
+        ("P9.5", 1),
+        ("P9.6", 2),
+        ("P9.7", 1),
+        ("P9.8", 1),
+        ("P9.9", 1),
+        ("P9.10", 2),
+        ("P9.11", 1),
+    ];
+
+    if text.lines().filter(|line| *line == HEADER).count() != 1 {
+        return Err(
+            "pixels plan lint: packet consumer matrix must have one canonical header".into(),
+        );
+    }
+    let mut in_table = false;
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        if line == HEADER {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if line.starts_with("|---") {
+            continue;
+        }
+        if !line.starts_with('|') {
+            break;
+        }
+        let cells = line.split('|').map(str::trim).collect::<Vec<_>>();
+        if cells.len() != 7 || !cells[0].is_empty() || !cells[6].is_empty() {
+            return Err(format!(
+                "pixels plan lint: packet consumer row must have exactly five columns: `{line}`"
+            ));
+        }
+        if cells[1].is_empty()
+            || cells[2].is_empty()
+            || cells[3].is_empty()
+            || cells[4].is_empty()
+            || cells[5].is_empty()
+        {
+            return Err(format!(
+                "pixels plan lint: packet consumer row contains an empty cell: `{line}`"
+            ));
+        }
+        rows.push((cells[1], cells[2], cells[3], cells[4], cells[5]));
+    }
+
+    let canonical_needs = canonical_packet_needs(plan)?;
+    let mut task_counts = BTreeMap::new();
+    let mut row_identities = BTreeSet::new();
+    let mut matrix_need_ids = BTreeSet::new();
+    let mut matrix_operations = BTreeSet::new();
+    let implemented_operations = wrela_compiler::mwir::PIXELS_PACKET_OPERATION_NAMES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for (need_id, task_cell, need, operations, resolution) in rows {
+        let mut task_parts = task_cell.splitn(2, ' ');
+        let task = task_parts.next().unwrap_or("");
+        if task_parts.next().is_none_or(str::is_empty) {
+            return Err(format!(
+                "pixels plan lint: packet consumer row `{task_cell}` must name its task and consumer"
+            ));
+        }
+        if !EXPECTED_TASK_ROWS
+            .iter()
+            .any(|(expected, _)| task == *expected)
+        {
+            return Err(format!(
+                "pixels plan lint: packet consumer matrix has unexpected task `{task}`"
+            ));
+        }
+        *task_counts.entry(task).or_insert(0usize) += 1;
+        if !need_id.starts_with(&format!("{task}-")) {
+            return Err(format!(
+                "pixels plan lint: need ID `{need_id}` does not belong to task `{task}`"
+            ));
+        }
+        let expected_kind = canonical_needs.get(need_id).ok_or_else(|| {
+            format!("pixels plan lint: matrix need `{need_id}` has no canonical P9 marker")
+        })?;
+        if !matrix_need_ids.insert(need_id) {
+            return Err(format!(
+                "pixels plan lint: packet consumer matrix duplicates need ID `{need_id}`"
+            ));
+        }
+        if !row_identities.insert((task_cell, need)) {
+            return Err(format!(
+                "pixels plan lint: packet consumer matrix duplicates `{task}` need `{need}`"
+            ));
+        }
+
+        let landed = resolution == "landed" || resolution.starts_with("landed; ");
+        let deliberately_scalar = resolution.starts_with("deliberately scalar; ");
+        if !landed && !deliberately_scalar {
+            return Err(format!(
+                "pixels plan lint: packet consumer `{task}` has unresolved state `{resolution}`"
+            ));
+        }
+        if deliberately_scalar {
+            if expected_kind != "scalar" || operations != "scalar" {
+                return Err(format!(
+                    "pixels plan lint: `{need_id}` contradicts its canonical `{expected_kind}` resolution"
+                ));
+            }
+            continue;
+        }
+        if expected_kind != "packet" {
+            return Err(format!(
+                "pixels plan lint: `{need_id}` must use its canonical scalar resolution"
+            ));
+        }
+        if operations == "scalar" {
+            return Err(format!(
+                "pixels plan lint: landed packet row `{task}` cannot name scalar operations"
+            ));
+        }
+        let mut row_operations = BTreeSet::new();
+        for operation in operations.split(", ") {
+            if !implemented_operations.contains(operation) {
+                return Err(format!(
+                    "pixels plan lint: packet consumer `{task}` names unsupported operation `{operation}`"
+                ));
+            }
+            if !row_operations.insert(operation) {
+                return Err(format!(
+                    "pixels plan lint: packet consumer `{task}` duplicates operation `{operation}`"
+                ));
+            }
+            matrix_operations.insert(operation);
+        }
+    }
+    let canonical_need_ids = canonical_needs
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if matrix_need_ids != canonical_need_ids {
+        let missing = canonical_need_ids
+            .difference(&matrix_need_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        let extra = matrix_need_ids
+            .difference(&canonical_need_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "pixels plan lint: canonical packet-need closure mismatch: missing={missing:?} extra={extra:?}"
+        ));
+    }
+    for (task, expected) in EXPECTED_TASK_ROWS {
+        let actual = task_counts.get(task).copied().unwrap_or(0);
+        if actual != *expected {
+            return Err(format!(
+                "pixels plan lint: packet consumer matrix has {actual} row(s) for {task}, expected {expected}"
+            ));
+        }
+    }
+    if matrix_operations != implemented_operations {
+        let missing = implemented_operations
+            .difference(&matrix_operations)
+            .copied()
+            .collect::<Vec<_>>();
+        let extra = matrix_operations
+            .difference(&implemented_operations)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(format!(
+            "pixels plan lint: packet operation closure mismatch: missing={missing:?} extra={extra:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Prove the canonical task chain reaches P8R: Task P9.1 requires the P8R
+/// close, and the P8 close names the interstitial milestone's plan.
+fn lint_p8r_chain_link(plan: &str) -> Result<(), String> {
+    let p9_1 = section(plan, "## Task P9.1 — ", "## Task P9.2 — ")?;
+    let requires = section(p9_1, "**Requires:**", "**Produces:**")?;
+    if !requires.contains(P8R_CLOSE_TASK) {
+        return Err(format!(
+            "pixels plan lint: Task P9.1 must require Task {P8R_CLOSE_TASK}; its \
+             prerequisite reads `{}`",
+            requires.trim()
+        ));
+    }
+    let seam = section(plan, "### Milestone P8 close", "# Milestone P9 — ")?;
+    if !seam.contains(P8R_PLAN.trim_start_matches("docs/designs/")) {
+        return Err(
+            "pixels plan lint: the P8 close / P9 entry seam must point at the P8R plan".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Roots scanned for decision-ID references. Everything a P8R decision could
+/// legitimately be cited from: documents, compiler and tool sources, Wrela
+/// sources, locked thresholds, and fixtures.
+const DECISION_SCAN_ROOTS: &[&str] = &["docs", "crates", "stdlib", "bench", "tests", "formal"];
+
+/// Extensions scanned for decision-ID references.
+const DECISION_SCAN_EXTENSIONS: &[&str] = &["md", "rs", "wr", "toml", "txt"];
+
+/// This file defines the registry syntax and its negative tests, so its own
+/// literals are not tree evidence.
+const DECISION_SCAN_EXCLUDED: &[&str] = &["crates/xtask/src/pixels_plan_lint.rs"];
+
+const DECISION_PREFIX: &str = "D-P8R-";
+
+/// One `D-P8R-nn` occurrence found in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecisionCitation {
+    id: String,
+    path: String,
+    is_definition: bool,
+}
+
+/// Collect every `D-P8R-nn` occurrence in `text`, classifying each as a
+/// definition or a reference.
+///
+/// A definition is the sealed form `**D-P8R-nn** (sealed YYYY-MM-DD) — `.
+/// Every other occurrence is a reference. The two forms are deliberately far
+/// apart so prose cannot accidentally define a decision.
+fn decision_citations(path: &str, text: &str) -> Result<Vec<DecisionCitation>, String> {
+    let mut found = Vec::new();
+    let bytes = text.as_bytes();
+    let mut at = 0usize;
+    while let Some(relative) = text[at..].find(DECISION_PREFIX) {
+        let start = at + relative;
+        let digits_at = start + DECISION_PREFIX.len();
+        at = digits_at;
+        let digits = &text[digits_at..text.len().min(digits_at + 2)];
+        // `D-P8R-nn` is the schema placeholder these documents use when they
+        // describe the registry rather than cite a decision.
+        if digits == "nn" {
+            continue;
+        }
+        if digits.len() != 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!(
+                "pixels plan lint: {path} cites `{DECISION_PREFIX}` without a two-digit ID"
+            ));
+        }
+        let after = digits_at + 2;
+        let is_definition = text[..start].ends_with("**")
+            && text[after..].starts_with("** (sealed ")
+            && text[after + "** (sealed ".len()..].starts_with(|c: char| c.is_ascii_digit());
+        // A longer numeric tail would silently truncate to a different ID.
+        if bytes.get(after).is_some_and(u8::is_ascii_digit) {
+            return Err(format!(
+                "pixels plan lint: {path} cites `{DECISION_PREFIX}` with more than two digits"
+            ));
+        }
+        found.push(DecisionCitation {
+            id: format!("{DECISION_PREFIX}{digits}"),
+            path: path.to_string(),
+            is_definition,
+        });
+    }
+    Ok(found)
+}
+
+/// Every `D-P8R-nn` referenced anywhere resolves to exactly one definition.
+fn lint_decision_registry(citations: &[DecisionCitation]) -> Result<(), String> {
+    let mut ids: Vec<&str> = citations.iter().map(|c| c.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        let definitions: Vec<&DecisionCitation> = citations
+            .iter()
+            .filter(|c| c.id == id && c.is_definition)
+            .collect();
+        match definitions.len() {
+            1 => {}
+            0 => {
+                let sites: BTreeSet<&str> = citations
+                    .iter()
+                    .filter(|c| c.id == id)
+                    .map(|c| c.path.as_str())
+                    .collect();
+                return Err(format!(
+                    "pixels plan lint: decision `{id}` is referenced by {sites:?} but never \
+                     sealed; a definition reads `**{id}** (sealed YYYY-MM-DD) — ...`"
+                ));
+            }
+            n => {
+                let sites: Vec<&str> = definitions.iter().map(|c| c.path.as_str()).collect();
+                return Err(format!(
+                    "pixels plan lint: decision `{id}` is sealed {n} times, in {sites:?}; \
+                     exactly one normative document owns each decision"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk the decision-scan roots, in a deterministic order.
+fn decision_scan_files(repo: &Path) -> Result<Vec<PathBuf>, String> {
+    fn collect(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let entry_path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Build outputs and proof-tool caches are not repository evidence.
+            if name == "target" || name == ".lake" || name.starts_with('.') {
+                continue;
+            }
+            if entry_path.is_dir() {
+                collect(&entry_path, files)?;
+            } else if entry_path.extension().is_some_and(|extension| {
+                DECISION_SCAN_EXTENSIONS
+                    .iter()
+                    .any(|wanted| extension == *wanted)
+            }) {
+                files.push(entry_path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    for root_name in DECISION_SCAN_ROOTS {
+        let root_path = repo.join(root_name);
+        if root_path.is_dir() {
+            collect(&root_path, &mut files)?;
+        }
+    }
+    Ok(files)
+}
+
+/// Gather decision citations across the tree.
+fn tree_decision_citations(repo: &Path) -> Result<Vec<DecisionCitation>, String> {
+    let mut citations = Vec::new();
+    for path in decision_scan_files(repo)? {
+        let relative = path
+            .strip_prefix(repo)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if DECISION_SCAN_EXCLUDED.contains(&relative.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        if !text.contains(DECISION_PREFIX) {
+            continue;
+        }
+        citations.extend(decision_citations(&relative, &text)?);
+    }
+    Ok(citations)
+}
+
+/// The losing `RTDATA_BASE` statements struck by D-P8R-09.
+fn superseded_rtdata_base_values() -> [String; 2] {
+    [
+        format!("IMAGE_BASE + {} MiB", 2),
+        format!("0x{:04x}_{:04x}", 0x4054, 0),
+    ]
+}
+
+/// D-P8R-09: the machine chapter states the packing base the machine crate
+/// actually defines, and no live source restates the losing value. Markdown
+/// may retain it only in an explicitly historical paragraph.
+fn lint_rtdata_base(repo: &Path) -> Result<(), String> {
+    let base = wrela_machine::layout::RTDATA_BASE;
+    let image_base = wrela_machine::layout::IMAGE_BASE;
+    let mib = (base - image_base) / (1 << 20);
+    if image_base + mib * (1 << 20) != base {
+        return Err(format!(
+            "pixels plan lint: RTDATA_BASE ({base:#x}) is not a whole number of MiB above \
+             IMAGE_BASE ({image_base:#x}); restate the machine chapter by hand"
+        ));
+    }
+    let chapter_path = repo.join("docs/language/06-machine.md");
+    let chapter = std::fs::read_to_string(&chapter_path)
+        .map_err(|error| format!("read {}: {error}", chapter_path.display()))?;
+    for needle in [
+        format!("`RTDATA_BASE = IMAGE_BASE + {mib} MiB`"),
+        format!("(`{:#06x}_{:04x}`)", base >> 16, base & 0xffff),
+    ] {
+        if !chapter.contains(&needle) {
+            return Err(format!(
+                "pixels plan lint: docs/language/06-machine.md must state the machine's own \
+                 packing base; missing `{needle}`"
+            ));
+        }
+    }
+
+    for path in decision_scan_files(repo)? {
+        let relative = path
+            .strip_prefix(repo)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        if path.extension().is_some_and(|extension| extension == "md") {
+            lint_superseded_rtdata_base(&relative, &text)?;
+        } else {
+            lint_live_rtdata_base(&relative, &text)?;
+        }
+    }
+    Ok(())
+}
+
+fn lint_live_rtdata_base(path: &str, text: &str) -> Result<(), String> {
+    for superseded in superseded_rtdata_base_values() {
+        if text.contains(&superseded) {
+            return Err(format!(
+                "pixels plan lint: {path} contains the superseded RTDATA_BASE value \
+                 `{superseded}` in live source"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A superseded `RTDATA_BASE` value may appear only in a paragraph that cites
+/// the decision that superseded it, which is what makes it historical text
+/// rather than a second live contract.
+fn lint_superseded_rtdata_base(path: &str, text: &str) -> Result<(), String> {
+    for paragraph in text.split("\n\n") {
+        for superseded in superseded_rtdata_base_values() {
+            if paragraph.contains(&superseded) && !paragraph.contains("D-P8R-09") {
+                return Err(format!(
+                    "pixels plan lint: {path} restates the superseded RTDATA_BASE value \
+                     `{superseded}` outside a paragraph citing D-P8R-09"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -852,7 +1531,7 @@ fn lint_marked_paths(text: &str, repo: &Path) -> Result<(), String> {
             in_fence = !in_fence;
             continue;
         }
-        if !in_files || content.contains("new at P-1 basis") {
+        if !in_files || marks_planned_file(content) {
             continue;
         }
         if in_fence {
@@ -886,7 +1565,24 @@ pub(crate) fn pixels_plan_lint() -> Result<(), String> {
     let repo = root();
     let text = std::fs::read_to_string(repo.join(PLAN)).map_err(|e| format!("read {PLAN}: {e}"))?;
     lint_text(&text, &repo)?;
-    println!("pixels-plan-lint: 154 tasks, canonical contracts, and 43 fixtures match");
+    let p8r = std::fs::read_to_string(repo.join(P8R_PLAN))
+        .map_err(|e| format!("read {P8R_PLAN}: {e}"))?;
+    lint_p8r_schema(&p8r, &repo)?;
+    let invariant_matrix = std::fs::read_to_string(repo.join(INVARIANT_MATRIX))
+        .map_err(|e| format!("read {INVARIANT_MATRIX}: {e}"))?;
+    lint_invariant_matrix(&invariant_matrix, &repo)?;
+    let packet_matrix = std::fs::read_to_string(repo.join(PACKET_CONSUMER_MATRIX))
+        .map_err(|e| format!("read {PACKET_CONSUMER_MATRIX}: {e}"))?;
+    lint_packet_consumer_matrix(&packet_matrix, &text)?;
+    let citations = tree_decision_citations(&repo)?;
+    lint_decision_registry(&citations)?;
+    lint_rtdata_base(&repo)?;
+    let sealed = citations.iter().filter(|c| c.is_definition).count();
+    println!(
+        "pixels-plan-lint: 154 canonical tasks, {} P8R tasks, canonical contracts, \
+         {sealed} sealed decision(s), invariant/packet matrices, and 44 fixtures match",
+        P8R_TASKS.len()
+    );
     Ok(())
 }
 
@@ -896,6 +1592,267 @@ mod tests {
 
     fn actual() -> String {
         std::fs::read_to_string(root().join(PLAN)).unwrap()
+    }
+
+    fn actual_p8r() -> String {
+        std::fs::read_to_string(root().join(P8R_PLAN)).unwrap()
+    }
+
+    fn actual_invariant_matrix() -> String {
+        std::fs::read_to_string(root().join(INVARIANT_MATRIX)).unwrap()
+    }
+
+    #[test]
+    fn repository_p8r_plan_passes_its_schema() {
+        lint_p8r_schema(&actual_p8r(), &root()).unwrap();
+    }
+
+    #[test]
+    fn repository_invariant_and_packet_matrices_close() {
+        lint_invariant_matrix(&actual_invariant_matrix(), &root()).unwrap();
+        let packet = std::fs::read_to_string(root().join(PACKET_CONSUMER_MATRIX)).unwrap();
+        lint_packet_consumer_matrix(&packet, &actual()).unwrap();
+    }
+
+    #[test]
+    fn packet_matrix_rejects_unresolved_rows_and_operation_drift() {
+        let packet = std::fs::read_to_string(root().join(PACKET_CONSUMER_MATRIX)).unwrap();
+
+        let unresolved = packet.replacen("| landed |", "| planned |", 1);
+        let plan = actual();
+        let error = lint_packet_consumer_matrix(&unresolved, &plan).unwrap_err();
+        assert!(error.contains("unresolved state"), "{error}");
+
+        let unsupported = packet.replacen("f32x4.add", "f32x4.divide", 1);
+        let error = lint_packet_consumer_matrix(&unsupported, &plan).unwrap_err();
+        assert!(error.contains("unsupported operation"), "{error}");
+
+        let omitted = packet.replacen(
+            "| P9.5-NORMAL-MOMENTS | P9.5 normal moments | accumulate first/second moments | f32x4.load, f32x4.store, f32x4.splat, f32x4.add, f32x4.sub, f32x4.mul, f32x4.min, f32x4.max, f32x4.fma | landed |\n",
+            "",
+            1,
+        );
+        let error = lint_packet_consumer_matrix(&omitted, &plan).unwrap_err();
+        assert!(error.contains("P9.5"), "{error}");
+
+        let malformed = packet.replacen(
+            "| P9.4-MATERIAL-SOA | P9.4 material summaries | load/store four SoA coefficients and broadcast parameters |",
+            "| P9.4-MATERIAL-SOA | P9.4 material summaries |",
+            1,
+        );
+        let error = lint_packet_consumer_matrix(&malformed, &plan).unwrap_err();
+        assert!(error.contains("exactly five columns"), "{error}");
+
+        let missing_marker = plan.replace(
+            "[P9-PACKET-NEED:P9.6-POINT-ATTENUATION:scalar]",
+            "[P9 packet need omitted]",
+        );
+        let error = lint_packet_consumer_matrix(&packet, &missing_marker).unwrap_err();
+        assert!(error.contains("no canonical P9 marker"), "{error}");
+
+        let wrong_kind = plan.replace(
+            "[P9-PACKET-NEED:P9.6-POINT-ATTENUATION:scalar]",
+            "[P9-PACKET-NEED:P9.6-POINT-ATTENUATION:packet]",
+        );
+        let error = lint_packet_consumer_matrix(&packet, &wrong_kind).unwrap_err();
+        assert!(error.contains("contradicts"), "{error}");
+    }
+
+    #[test]
+    fn invariant_matrix_rejects_missing_artifacts_and_duplicate_ids() {
+        let actual = actual_invariant_matrix();
+        let missing = actual.replacen(
+            "covered(crates/wrela-compiler/src/pixels/symbolic.rs)",
+            "covered(crates/wrela-compiler/src/pixels/does-not-exist.rs)",
+            1,
+        );
+        let error = lint_invariant_matrix(&missing, &root()).unwrap_err();
+        assert!(error.contains("missing artifact"), "{error}");
+
+        let missing_anchor = actual.replacen(
+            "#fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack",
+            "#fn.__wrela_pixels_missing_census_target",
+            1,
+        );
+        let error = lint_invariant_matrix(&missing_anchor, &root()).unwrap_err();
+        assert!(error.contains("missing anchor"), "{error}");
+
+        let duplicate = actual.replacen("INV-PIX-EVENTS-001", "INV-PIX-LOWERING-001", 1);
+        let error = lint_invariant_matrix(&duplicate, &root()).unwrap_err();
+        assert!(error.contains("duplicate invariant ID"), "{error}");
+    }
+
+    #[test]
+    fn p8r_schema_rejects_a_missing_field_and_a_dropped_task() {
+        let changed = actual_p8r().replacen("**Stop conditions:**", "**Stopping:**", 1);
+        assert!(
+            lint_p8r_schema(&changed, &root())
+                .unwrap_err()
+                .contains("Stop conditions")
+        );
+        let changed = actual_p8r().replacen(
+            "## Task P8R.5 — renderer-internal packet substrate",
+            "## Not a task — renderer-internal packet substrate",
+            1,
+        );
+        assert!(
+            lint_p8r_schema(&changed, &root())
+                .unwrap_err()
+                .contains("expected")
+        );
+    }
+
+    #[test]
+    fn p8r_files_accept_the_p8_basis_marker_but_not_an_unmarked_ghost() {
+        assert!(marks_planned_file(
+            "tests/census/p8-baseline/ # new at P8 basis"
+        ));
+        assert!(marks_planned_file("stdlib/core/gone.wr # new at P-1 basis"));
+        assert!(!marks_planned_file("stdlib/core/gone.wr"));
+        // Synthetic rather than tied to a path that happens to be missing
+        // today: the point is that an unmarked, nonexistent path fails,
+        // whichever path it is.
+        let changed = actual_p8r().replacen(
+            "crates/wrela-compiler/src/cost/rule.rs",
+            "crates/wrela-compiler/src/cost/not_a_real_module.rs",
+            1,
+        );
+        assert!(
+            lint_p8r_schema(&changed, &root())
+                .unwrap_err()
+                .contains("unmarked Files path")
+        );
+    }
+
+    #[test]
+    fn repository_chain_links_p9_1_to_the_p8r_close() {
+        lint_p8r_chain_link(&actual()).unwrap();
+    }
+
+    #[test]
+    fn chain_link_fails_when_p9_1_or_the_seam_forgets_p8r() {
+        // Prose around the prerequisite moves; the requirement does not.
+        let changed = actual().replace(P8R_CLOSE_TASK, "P8.11");
+        assert!(
+            lint_p8r_chain_link(&changed)
+                .unwrap_err()
+                .contains("must require Task P8R.7")
+        );
+        let changed = actual().replace("WRELA_PIXELS_P8R_TIGHTENING_PLAN.md", "SOME_OTHER_PLAN.md");
+        assert!(lint_p8r_chain_link(&changed).unwrap_err().contains("seam"));
+    }
+
+    #[test]
+    fn repository_decision_registry_resolves_every_reference_once() {
+        let citations = tree_decision_citations(&root()).unwrap();
+        assert!(
+            citations.iter().filter(|c| c.is_definition).count() >= 9,
+            "the P8R.0 ledger seals D-P8R-01..09: {citations:?}"
+        );
+        lint_decision_registry(&citations).unwrap();
+    }
+
+    #[test]
+    fn decision_citations_separate_the_sealed_form_from_prose() {
+        let text = "seal per D-P8R-04 below.\n\n> **D-P8R-04** (sealed 2026-08-15) — no FMA.\n";
+        let found = decision_citations("fake.md", text).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|c| (c.id.as_str(), c.is_definition))
+                .collect::<Vec<_>>(),
+            vec![("D-P8R-04", false), ("D-P8R-04", true)]
+        );
+        // A bolded mention that is not the sealed form stays a reference.
+        let found = decision_citations("fake.md", "**D-P8R-04** is closed.").unwrap();
+        assert_eq!(found[0].is_definition, false);
+
+        // Byte offsets immediately following a multi-byte character must not
+        // be sliced as though they were UTF-8 character boundaries.
+        let found = decision_citations("fake.md", "— D-P8R-04 owns this.").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "D-P8R-04");
+        assert!(!found[0].is_definition);
+    }
+
+    #[test]
+    fn decision_citations_reject_a_malformed_id() {
+        assert!(
+            decision_citations("fake.md", "see D-P8R-4 for that")
+                .unwrap_err()
+                .contains("two-digit")
+        );
+        assert!(
+            decision_citations("fake.md", "see D-P8R-041 for that")
+                .unwrap_err()
+                .contains("more than two digits")
+        );
+    }
+
+    #[test]
+    fn decision_registry_fails_on_a_duplicate_or_dangling_id() {
+        let sealed = |path: &str, id: &str| DecisionCitation {
+            id: id.to_string(),
+            path: path.to_string(),
+            is_definition: true,
+        };
+        let cited = |path: &str, id: &str| DecisionCitation {
+            id: id.to_string(),
+            path: path.to_string(),
+            is_definition: false,
+        };
+
+        lint_decision_registry(&[sealed("a.md", "D-P8R-01"), cited("b.md", "D-P8R-01")]).unwrap();
+
+        let duplicate = [
+            sealed("a.md", "D-P8R-01"),
+            sealed("b.md", "D-P8R-01"),
+            cited("c.md", "D-P8R-01"),
+        ];
+        let error = lint_decision_registry(&duplicate).unwrap_err();
+        assert!(error.contains("sealed 2 times"), "{error}");
+
+        let dangling = [cited("c.md", "D-P8R-42")];
+        let error = lint_decision_registry(&dangling).unwrap_err();
+        assert!(error.contains("never sealed"), "{error}");
+    }
+
+    #[test]
+    fn repository_rtdata_base_matches_the_machine_constant() {
+        lint_rtdata_base(&root()).unwrap();
+    }
+
+    #[test]
+    fn superseded_rtdata_base_is_rejected_in_live_source() {
+        let losing_hex = superseded_rtdata_base_values()[1].clone();
+        let error = lint_live_rtdata_base(
+            "crates/example/src/lib.rs",
+            &format!("const RTDATA_BASE: u64 = {losing_hex};"),
+        )
+        .unwrap_err();
+        assert!(error.contains("live source"), "{error}");
+        assert!(error.contains("crates/example/src/lib.rs"), "{error}");
+    }
+
+    #[test]
+    fn superseded_rtdata_base_value_needs_its_decision_citation() {
+        let losing_formula = superseded_rtdata_base_values()[0].clone();
+        let losing_hex = superseded_rtdata_base_values()[1].clone();
+        lint_superseded_rtdata_base(
+            "fake.md",
+            &format!("D-P8R-09 records that this chapter previously said {losing_formula}.\n"),
+        )
+        .unwrap();
+        let error = lint_superseded_rtdata_base(
+            "fake.md",
+            &format!("The packing base is at {losing_formula}.\n\nSomething else.\n"),
+        )
+        .unwrap_err();
+        assert!(error.contains("superseded RTDATA_BASE"), "{error}");
+        let error =
+            lint_superseded_rtdata_base("fake.md", &format!("It sits at {losing_hex} today."))
+                .unwrap_err();
+        assert!(error.contains(&losing_hex), "{error}");
     }
 
     #[test]

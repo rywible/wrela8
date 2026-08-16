@@ -1,0 +1,126 @@
+# @wrela-compiler-internal: pins the closed renderer packet substrate.
+module pixels_packet_substrate
+
+from core.render_raster import F32x4, I32x4, pixels_f32_fma_scalar, pixels_f32_from_bits, pixels_f32_max_scalar, pixels_f32_min_scalar, pixels_f32_select_ge_scalar, pixels_f32_select_gt_scalar, pixels_f32_to_bits, pixels_f32_to_i32_scalar, pixels_f32x4_backend_add, pixels_f32x4_backend_fma, pixels_f32x4_backend_max, pixels_f32x4_backend_min, pixels_f32x4_backend_mul, pixels_f32x4_backend_select_ge, pixels_f32x4_backend_select_gt, pixels_f32x4_backend_splat, pixels_f32x4_backend_sub, pixels_f32x4_backend_to_i32x4, pixels_i32_select_gt_scalar, pixels_i32x4_backend_add, pixels_i32x4_backend_and, pixels_i32x4_backend_or, pixels_i32x4_backend_select_gt, pixels_i32x4_backend_shr_arith_imm, pixels_i32x4_backend_splat, pixels_i32x4_backend_sub, pixels_i32x4_backend_to_f32x4
+
+@test
+fn packet_carriers_pin_lane_order_and_special_bits():
+    f = F32x4.from_lanes([0.0, -0.0, 1.0, -2.0])
+    assert f.lane_bits(0) == 0
+    assert f.lane_bits(1) == 2147483648
+    assert f.lane_bits(2) == 1065353216
+    assert f.lane_bits(3) == 3221225472
+    i = I32x4.from_lanes([-2147483648, -1, 0, 2147483647])
+    assert i.lane(0) == -2147483648 and i.lane(1) == -1
+    assert i.lane(2) == 0 and i.lane(3) == 2147483647
+
+@test
+fn f32x4_arithmetic_splat_and_compare_select_are_lanewise():
+    lhs = F32x4.from_lanes([1.0, -2.0, 3.0, 4.0])
+    rhs = F32x4.from_lanes([0.5, 4.0, -1.0, 4.0])
+    add = pixels_f32x4_backend_add(lhs, rhs)
+    sub = pixels_f32x4_backend_sub(lhs, rhs)
+    mul = pixels_f32x4_backend_mul(lhs, rhs)
+    assert add.lane(0) == 1.5 and add.lane(1) == 2.0 and add.lane(2) == 2.0 and add.lane(3) == 8.0
+    assert sub.lane(0) == 0.5 and sub.lane(1) == -6.0 and sub.lane(2) == 4.0 and sub.lane(3) == 0.0
+    assert mul.lane(0) == 0.5 and mul.lane(1) == -8.0 and mul.lane(2) == -3.0 and mul.lane(3) == 16.0
+    splat = pixels_f32x4_backend_splat(-3.5)
+    assert splat.lane(0) == -3.5 and splat.lane(1) == -3.5 and splat.lane(2) == -3.5 and splat.lane(3) == -3.5
+    yes = F32x4.from_lanes([10.0, 11.0, 12.0, 13.0])
+    no = F32x4.from_lanes([20.0, 21.0, 22.0, 23.0])
+    ge = pixels_f32x4_backend_select_ge(lhs, rhs, yes, no)
+    gt = pixels_f32x4_backend_select_gt(lhs, rhs, yes, no)
+    assert ge.lane(0) == 10.0 and ge.lane(1) == 21.0 and ge.lane(2) == 12.0 and ge.lane(3) == 13.0
+    assert gt.lane(0) == 10.0 and gt.lane(1) == 21.0 and gt.lane(2) == 12.0 and gt.lane(3) == 23.0
+
+@test
+fn f32x4_min_max_pin_nan_and_signed_zero_semantics():
+    nan = F32x4.from_bits([2143363909, 2139095041, 4290847557, 4286578689])
+    lhs = F32x4.from_lanes([-0.0, 0.0, 2.0, 1.0])
+    rhs = F32x4.from_lanes([0.0, -0.0, 1.0, 2.0])
+    minimum = pixels_f32x4_backend_min(lhs, rhs)
+    maximum = pixels_f32x4_backend_max(lhs, rhs)
+    assert minimum.lane_bits(0) == 2147483648 and minimum.lane_bits(1) == 2147483648
+    assert maximum.lane_bits(0) == 0 and maximum.lane_bits(1) == 0
+    assert minimum.lane(2) == 1.0 and minimum.lane(3) == 1.0
+    assert maximum.lane(2) == 2.0 and maximum.lane(3) == 2.0
+    nan_min = pixels_f32x4_backend_min(nan, rhs)
+    nan_max = pixels_f32x4_backend_max(nan, rhs)
+    rhs_nan_min = pixels_f32x4_backend_min(rhs, nan)
+    rhs_nan_max = pixels_f32x4_backend_max(rhs, nan)
+    lane: usize = 0
+    @budget(bound=4)
+    while lane < 4:
+        assert nan_min.lane_bits(lane) == 2143289344
+        assert nan_max.lane_bits(lane) == 2143289344
+        assert rhs_nan_min.lane_bits(lane) == 2143289344
+        assert rhs_nan_max.lane_bits(lane) == 2143289344
+        assert pixels_f32_to_bits(pixels_f32_min_scalar(nan.lane(lane), rhs.lane(lane))) == 2143289344
+        assert pixels_f32_to_bits(pixels_f32_max_scalar(nan.lane(lane), rhs.lane(lane))) == 2143289344
+        assert pixels_f32_to_bits(pixels_f32_min_scalar(rhs.lane(lane), nan.lane(lane))) == 2143289344
+        assert pixels_f32_to_bits(pixels_f32_max_scalar(rhs.lane(lane), nan.lane(lane))) == 2143289344
+        lane = lane + 1
+    selected = pixels_f32x4_backend_select_gt(nan, rhs, lhs, rhs)
+    assert selected.lane(0) == rhs.lane(0)
+
+    infinities = F32x4.from_bits([2139095040, 4286578688, 2139095040, 4286578688])
+    finite = F32x4.from_lanes([3.0, -3.0, -4.0, 4.0])
+    infinity_min = pixels_f32x4_backend_min(infinities, finite)
+    infinity_max = pixels_f32x4_backend_max(infinities, finite)
+    assert infinity_min.lane(0) == 3.0 and infinity_min.lane_bits(1) == 4286578688
+    assert infinity_min.lane(2) == -4.0 and infinity_min.lane_bits(3) == 4286578688
+    assert infinity_max.lane_bits(0) == 2139095040 and infinity_max.lane(1) == -3.0
+    assert infinity_max.lane_bits(2) == 2139095040 and infinity_max.lane(3) == 4.0
+
+    rhs_nan = pixels_f32x4_backend_max(finite, nan)
+    assert rhs_nan.lane_bits(0) == 2143289344 and rhs_nan.lane_bits(3) == 2143289344
+
+@test
+fn packet_fma_is_fused_and_conversions_pin_fcvtzs_scvtf():
+    fused = pixels_f32x4_backend_fma(
+        F32x4.from_lanes([1.0000001192092896; 4]),
+        F32x4.from_lanes([0.9999999403953552; 4]),
+        F32x4.from_lanes([-1.0; 4]),
+    )
+    assert fused.lane_bits(0) == 864026622
+    nan_fused = pixels_f32x4_backend_fma(
+        F32x4.from_bits([2143363909, 2139095041, 1065353216, 1065353216]),
+        F32x4.from_bits([1065353216, 1065353216, 2143363909, 1065353216]),
+        F32x4.from_bits([0, 0, 0, 2139095041]),
+    )
+    assert nan_fused.lane_bits(0) == 2143289344 and nan_fused.lane_bits(1) == 2143289344
+    assert nan_fused.lane_bits(2) == 2143289344 and nan_fused.lane_bits(3) == 2143289344
+    values = F32x4.from_lanes([0.0, -3.75, 2147483648.0, 1.9999999])
+    ints = pixels_f32x4_backend_to_i32x4(values)
+    assert ints.lane(0) == 0 and ints.lane(1) == -3
+    assert ints.lane(2) == 2147483647 and ints.lane(3) == 1
+    floats = pixels_i32x4_backend_to_f32x4(I32x4.from_lanes([0, -1, 16777217, 2147483647]))
+    assert floats.lane_bits(0) == 0 and floats.lane_bits(1) == 3212836864
+    assert floats.lane_bits(2) == 1266679808 and floats.lane_bits(3) == 1325400064
+
+    special = pixels_f32x4_backend_to_i32x4(F32x4.from_bits([
+        2139095040, 4286578688, 2143289344, 1325400063,
+    ]))
+    assert special.lane(0) == 2147483647 and special.lane(1) == -2147483648
+    assert special.lane(2) == 0 and special.lane(3) == 2147483520
+    lower_boundary = pixels_f32x4_backend_to_i32x4(F32x4.from_lanes([
+        -2147483648.0, -2147483520.0, 2147483520.0, -1.9999999,
+    ]))
+    assert lower_boundary.lane(0) == -2147483648 and lower_boundary.lane(1) == -2147483520
+    assert lower_boundary.lane(2) == 2147483520 and lower_boundary.lane(3) == -1
+
+@test
+fn i32x4_closed_operations_are_wrapping_signed_and_lanewise():
+    lhs = I32x4.from_lanes([2147483647, -2147483648, -7, 12])
+    rhs = I32x4.from_lanes([1, 1, 3, -4])
+    add = pixels_i32x4_backend_add(lhs, rhs)
+    sub = pixels_i32x4_backend_sub(lhs, rhs)
+    assert add.lane(0) == -2147483648 and add.lane(1) == -2147483647
+    assert sub.lane(0) == 2147483646 and sub.lane(1) == 2147483647
+    shifted = pixels_i32x4_backend_shr_arith_imm(lhs, 3)
+    assert shifted.lane(0) == 268435455 and shifted.lane(1) == -268435456 and shifted.lane(2) == -1 and shifted.lane(3) == 1
+    masked = pixels_i32x4_backend_and(lhs, I32x4.from_lanes([255; 4]))
+    joined = pixels_i32x4_backend_or(masked, I32x4.from_lanes([256; 4]))
+    assert joined.lane(0) == 511 and joined.lane(1) == 256 and joined.lane(2) == 505 and joined.lane(3) == 268
+    selected = pixels_i32x4_backend_select_gt(lhs, rhs, pixels_i32x4_backend_splat(7), pixels_i32x4_backend_splat(9))
+    assert selected.lane(0) == 7 and selected.lane(1) == 9 and selected.lane(2) == 9 and selected.lane(3) == 7

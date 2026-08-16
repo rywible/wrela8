@@ -401,16 +401,55 @@ pub struct TypedProgram {
     pub type_decl_names: BTreeMap<String, String>,
     /// Canonical module path for stable typed metadata keys.
     pub module_path: String,
+    /// Loader-qualified module identity. Unlike `module_path`, this cannot be
+    /// forged by a user-written `module` declaration and is therefore safe to
+    /// use when admitting compiler-internal renderer operations.
+    pub module_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ImportedDecls {
     pub consts: BTreeMap<String, TypedConst>,
-    pub fns: BTreeMap<String, TypedFn>,
-    pub structs: BTreeMap<String, TypedStruct>,
-    pub enums: BTreeMap<String, TypedEnum>,
+    pub fns: BTreeMap<String, std::sync::Arc<TypedFn>>,
+    pub structs: BTreeMap<String, std::sync::Arc<TypedStruct>>,
+    pub enums: BTreeMap<String, std::sync::Arc<TypedEnum>>,
     pub instantiations: BTreeMap<String, TypedInstantiation>,
+    /// Canonical declaring module for names that exist somewhere in the
+    /// checked closure. Shared by every module view and consulted only after
+    /// ordinary local/import resolution fails, so private-body diagnostics do
+    /// not require a quadratic map of preformatted strings per module.
+    pub unimported_owners: std::sync::Arc<BTreeMap<String, String>>,
     pub unresolvable: BTreeMap<String, String>,
+}
+
+impl TypedProgram {
+    pub fn unresolvable_import_note(&self, name: &str) -> Option<String> {
+        if let Some(note) = self.imported.unresolvable.get(name) {
+            return Some(note.clone());
+        }
+        // A declared/imported signature that lacks a lowerable body has its
+        // own, more specific diagnostic. The fallback below is exclusively
+        // for a private declaration the current module never imported.
+        if self.const_decl_modules.contains_key(name)
+            || self.fn_decl_modules.contains_key(name)
+            || self.type_decl_modules.contains_key(name)
+            || self.consts.contains_key(name)
+            || self.fns.contains_key(name)
+            || self.structs.contains_key(name)
+            || self.enums.contains_key(name)
+            || self.statics.contains_key(name)
+        {
+            return None;
+        }
+        let owner = self.imported.unimported_owners.get(name)?;
+        Some(format!(
+            "is declared in module `{owner}`, which module `{}` does not import; \
+             evaluating an imported body that reaches a declaration present \
+             only in that body's private helpers (not in any imported \
+             signature) is not supported yet",
+            self.module_key,
+        ))
+    }
 }
 
 fn push_line(out: &mut String, depth: usize, line: &str) {

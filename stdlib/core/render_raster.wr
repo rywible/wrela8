@@ -3,6 +3,15 @@ module render_raster
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_ceil_div, interval_floor_div, interval_narrow
 from core.field import Vec3, rsqrt_scalar, sqrt_scalar
 
+# Compiler-recognized representation copies used only inside this sealed
+# module. Their ordinary bodies keep source checking total; lowering and
+# comptime evaluation preserve the exact f32 bits.
+pub fn pixels_f32_to_bits(value: f32) -> u32:
+    return value.to[u32]()
+
+pub fn pixels_f32_from_bits(bits: u32) -> f32:
+    return bits.to[f32]()
+
 pub struct IdentitySetId:
     pub value: u32
 
@@ -72,12 +81,473 @@ pub struct I32x4:
             return (word *% 4294967296 >> 32).to[i32]()
         return (word >> 32).to[i32]()
 
+# Sealed 16-byte carrier for the internal f32x4 substrate. Machine-v1 scalar
+# slots are eight bytes, so the carrier stores two packed lane pairs instead
+# of an ordinary [f32; 4]. The generated bit helpers are representation copies.
+pub struct F32x4:
+    words: [i64; 2]
+
+    pub fn from_bits(lanes: [u32; 4]) -> F32x4:
+        return F32x4(words=[
+            lanes[0].to[i64]() | (lanes[1].to[i64]() *% 4294967296),
+            lanes[2].to[i64]() | (lanes[3].to[i64]() *% 4294967296),
+        ])
+
+    pub fn from_lanes(lanes: [f32; 4]) -> F32x4:
+        return F32x4(words=[
+            pixels_f32_to_bits(lanes[0]).to[i64]() | (pixels_f32_to_bits(lanes[1]).to[i64]() *% 4294967296),
+            pixels_f32_to_bits(lanes[2]).to[i64]() | (pixels_f32_to_bits(lanes[3]).to[i64]() *% 4294967296),
+        ])
+
+    pub fn lane(read self, index: usize) -> f32:
+        assert index < 4
+        word = self.words[index / 2]
+        if index % 2 == 0:
+            return pixels_f32_from_bits((word & 4294967295).to[u32]())
+        return pixels_f32_from_bits((word >> 32 & 4294967295).to[u32]())
+
+    pub fn lane_bits(read self, index: usize) -> u32:
+        assert index < 4
+        word = self.words[index / 2]
+        if index % 2 == 0:
+            return (word & 4294967295).to[u32]()
+        return (word >> 32 & 4294967295).to[u32]()
+
+pub fn pixels_f32_min_scalar(lhs: f32, rhs: f32) -> f32:
+    lhs_bits = pixels_f32_to_bits(lhs)
+    rhs_bits = pixels_f32_to_bits(rhs)
+    if lhs_bits & 2139095040 == 2139095040 and lhs_bits & 8388607 != 0:
+        return pixels_f32_from_bits(2143289344)
+    if rhs_bits & 2139095040 == 2139095040 and rhs_bits & 8388607 != 0:
+        return pixels_f32_from_bits(2143289344)
+    if lhs == 0.0 and rhs == 0.0:
+        return pixels_f32_from_bits(lhs_bits | rhs_bits)
+    if lhs < rhs:
+        return lhs
+    return rhs
+
+pub fn pixels_f32_max_scalar(lhs: f32, rhs: f32) -> f32:
+    lhs_bits = pixels_f32_to_bits(lhs)
+    rhs_bits = pixels_f32_to_bits(rhs)
+    if lhs_bits & 2139095040 == 2139095040 and lhs_bits & 8388607 != 0:
+        return pixels_f32_from_bits(2143289344)
+    if rhs_bits & 2139095040 == 2139095040 and rhs_bits & 8388607 != 0:
+        return pixels_f32_from_bits(2143289344)
+    if lhs == 0.0 and rhs == 0.0:
+        return pixels_f32_from_bits(lhs_bits & rhs_bits)
+    if lhs > rhs:
+        return lhs
+    return rhs
+
+pub fn pixels_i32_select_gt_scalar(lhs: i32, rhs: i32, when_true: i32, when_false: i32) -> i32:
+    if lhs > rhs:
+        return when_true
+    return when_false
+
+pub fn pixels_f32_select_ge_scalar(lhs: f32, rhs: f32, when_true: f32, when_false: f32) -> f32:
+    if lhs >= rhs:
+        return when_true
+    return when_false
+
+pub fn pixels_f32_select_gt_scalar(lhs: f32, rhs: f32, when_true: f32, when_false: f32) -> f32:
+    if lhs > rhs:
+        return when_true
+    return when_false
+
+pub fn pixels_i32x4_backend_splat(value: i32) -> I32x4:
+    return I32x4.from_lanes([value; 4])
+
+# Hot-path census region ids. These are the sealed vocabulary the compiler's
+# `pixels::hot_census` module knows by the same numbers; a marker naming an id
+# outside it fails the census lane closed.
+pub const PIXELS_REGION_RASTER_SCALAR_PREFIX: u32 = 1
+pub const PIXELS_REGION_RASTER_PACKET_LOOP: u32 = 2
+pub const PIXELS_REGION_RASTER_SCALAR_SUFFIX: u32 = 3
+pub const PIXELS_REGION_RASTER_CHARGE: u32 = 4
+pub const PIXELS_REGION_COVERAGE_ENTRY: u32 = 5
+pub const PIXELS_REGION_COVERAGE_CELL_WALK: u32 = 6
+
+# Open a hot-path census region. The compiler replaces every call with a
+# non-emitting MachineWir `RegionMarker`, so the emitted code is byte-identical
+# with the markers present and stripped; the scalar body below is what any
+# non-renderer evaluation of this symbol sees, and it does nothing.
+#
+# Block labels were rejected as the region mechanism because they are not
+# stable across optimization, and helper functions because their call overhead
+# is exactly the thing being measured.
+pub fn pixels_census_region(region: u32) -> unit:
+    return
+
 pub fn pixels_i32x4_backend_add(read lhs: I32x4, read rhs: I32x4) -> I32x4:
     return I32x4.from_lanes([
-        lhs.lane(0) + rhs.lane(0),
-        lhs.lane(1) + rhs.lane(1),
-        lhs.lane(2) + rhs.lane(2),
-        lhs.lane(3) + rhs.lane(3),
+        lhs.lane(0) +% rhs.lane(0),
+        lhs.lane(1) +% rhs.lane(1),
+        lhs.lane(2) +% rhs.lane(2),
+        lhs.lane(3) +% rhs.lane(3),
+    ])
+
+pub fn pixels_i32x4_backend_sub(read lhs: I32x4, read rhs: I32x4) -> I32x4:
+    return I32x4.from_lanes([
+        lhs.lane(0) -% rhs.lane(0), lhs.lane(1) -% rhs.lane(1),
+        lhs.lane(2) -% rhs.lane(2), lhs.lane(3) -% rhs.lane(3),
+    ])
+
+pub fn pixels_i32x4_backend_shr_arith_imm(read value: I32x4, immediate: u8) -> I32x4:
+    assert immediate > 0 and immediate <= 31
+    return I32x4.from_lanes([
+        value.lane(0) >> immediate.to[i32](), value.lane(1) >> immediate.to[i32](),
+        value.lane(2) >> immediate.to[i32](), value.lane(3) >> immediate.to[i32](),
+    ])
+
+pub fn pixels_i32x4_backend_and(read lhs: I32x4, read rhs: I32x4) -> I32x4:
+    return I32x4.from_lanes([
+        lhs.lane(0) & rhs.lane(0), lhs.lane(1) & rhs.lane(1),
+        lhs.lane(2) & rhs.lane(2), lhs.lane(3) & rhs.lane(3),
+    ])
+
+pub fn pixels_i32x4_backend_or(read lhs: I32x4, read rhs: I32x4) -> I32x4:
+    return I32x4.from_lanes([
+        lhs.lane(0) | rhs.lane(0), lhs.lane(1) | rhs.lane(1),
+        lhs.lane(2) | rhs.lane(2), lhs.lane(3) | rhs.lane(3),
+    ])
+
+pub fn pixels_i32x4_backend_select_gt(read lhs: I32x4, read rhs: I32x4, read when_true: I32x4, read when_false: I32x4) -> I32x4:
+    return I32x4.from_lanes([
+        pixels_i32_select_gt_scalar(lhs.lane(0), rhs.lane(0), when_true.lane(0), when_false.lane(0)),
+        pixels_i32_select_gt_scalar(lhs.lane(1), rhs.lane(1), when_true.lane(1), when_false.lane(1)),
+        pixels_i32_select_gt_scalar(lhs.lane(2), rhs.lane(2), when_true.lane(2), when_false.lane(2)),
+        pixels_i32_select_gt_scalar(lhs.lane(3), rhs.lane(3), when_true.lane(3), when_false.lane(3)),
+    ])
+
+pub fn pixels_i32x4_backend_to_f32x4(read value: I32x4) -> F32x4:
+    return F32x4.from_lanes([
+        value.lane(0).to[f32](), value.lane(1).to[f32](),
+        value.lane(2).to[f32](), value.lane(3).to[f32](),
+    ])
+
+pub fn pixels_f32x4_backend_splat(value: f32) -> F32x4:
+    return F32x4.from_lanes([value; 4])
+
+pub fn pixels_f32x4_backend_add(read lhs: F32x4, read rhs: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        lhs.lane(0) + rhs.lane(0), lhs.lane(1) + rhs.lane(1),
+        lhs.lane(2) + rhs.lane(2), lhs.lane(3) + rhs.lane(3),
+    ])
+
+pub fn pixels_f32x4_backend_sub(read lhs: F32x4, read rhs: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        lhs.lane(0) - rhs.lane(0), lhs.lane(1) - rhs.lane(1),
+        lhs.lane(2) - rhs.lane(2), lhs.lane(3) - rhs.lane(3),
+    ])
+
+pub fn pixels_f32x4_backend_mul(read lhs: F32x4, read rhs: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        lhs.lane(0) * rhs.lane(0), lhs.lane(1) * rhs.lane(1),
+        lhs.lane(2) * rhs.lane(2), lhs.lane(3) * rhs.lane(3),
+    ])
+
+pub fn pixels_f32x4_backend_min(read lhs: F32x4, read rhs: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        pixels_f32_min_scalar(lhs.lane(0), rhs.lane(0)), pixels_f32_min_scalar(lhs.lane(1), rhs.lane(1)),
+        pixels_f32_min_scalar(lhs.lane(2), rhs.lane(2)), pixels_f32_min_scalar(lhs.lane(3), rhs.lane(3)),
+    ])
+
+pub fn pixels_f32x4_backend_max(read lhs: F32x4, read rhs: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        pixels_f32_max_scalar(lhs.lane(0), rhs.lane(0)), pixels_f32_max_scalar(lhs.lane(1), rhs.lane(1)),
+        pixels_f32_max_scalar(lhs.lane(2), rhs.lane(2)), pixels_f32_max_scalar(lhs.lane(3), rhs.lane(3)),
+    ])
+
+pub fn pixels_f32x4_backend_select_ge(read lhs: F32x4, read rhs: F32x4, read when_true: F32x4, read when_false: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        pixels_f32_select_ge_scalar(lhs.lane(0), rhs.lane(0), when_true.lane(0), when_false.lane(0)),
+        pixels_f32_select_ge_scalar(lhs.lane(1), rhs.lane(1), when_true.lane(1), when_false.lane(1)),
+        pixels_f32_select_ge_scalar(lhs.lane(2), rhs.lane(2), when_true.lane(2), when_false.lane(2)),
+        pixels_f32_select_ge_scalar(lhs.lane(3), rhs.lane(3), when_true.lane(3), when_false.lane(3)),
+    ])
+
+pub fn pixels_f32x4_backend_select_gt(read lhs: F32x4, read rhs: F32x4, read when_true: F32x4, read when_false: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        pixels_f32_select_gt_scalar(lhs.lane(0), rhs.lane(0), when_true.lane(0), when_false.lane(0)),
+        pixels_f32_select_gt_scalar(lhs.lane(1), rhs.lane(1), when_true.lane(1), when_false.lane(1)),
+        pixels_f32_select_gt_scalar(lhs.lane(2), rhs.lane(2), when_true.lane(2), when_false.lane(2)),
+        pixels_f32_select_gt_scalar(lhs.lane(3), rhs.lane(3), when_true.lane(3), when_false.lane(3)),
+    ])
+
+# Two-word unsigned arithmetic for the generated fused-reference path. The
+# exact product is at most 48 bits; aligning its leading bit at bit 100 leaves
+# enough guard bits for one binary32 rounding while fitting the signed sum in
+# 128 bits.
+pub fn __pixels_u128_zero() -> [u64; 2]:
+    return [0, 0]
+
+pub fn __pixels_u128_from_u64(value: u64) -> [u64; 2]:
+    return [value, 0]
+
+pub fn __pixels_u128_is_zero(read value: [u64; 2]) -> bool:
+    return value[0] == 0 and value[1] == 0
+
+pub fn __pixels_u128_compare(read lhs: [u64; 2], read rhs: [u64; 2]) -> i32:
+    if lhs[1] < rhs[1]:
+        return -1
+    if lhs[1] > rhs[1]:
+        return 1
+    if lhs[0] < rhs[0]:
+        return -1
+    if lhs[0] > rhs[0]:
+        return 1
+    return 0
+
+pub fn __pixels_u128_add(read lhs: [u64; 2], read rhs: [u64; 2]) -> [u64; 2]:
+    low = lhs[0] +% rhs[0]
+    carry: u64 = 0
+    if low < lhs[0]:
+        carry = 1
+    return [low, lhs[1] +% rhs[1] +% carry]
+
+pub fn __pixels_u128_sub(read lhs: [u64; 2], read rhs: [u64; 2]) -> [u64; 2]:
+    borrow: u64 = 0
+    if lhs[0] < rhs[0]:
+        borrow = 1
+    return [lhs[0] -% rhs[0], lhs[1] -% rhs[1] -% borrow]
+
+pub fn __pixels_u128_shift_left(read value: [u64; 2], distance: u32) -> [u64; 2]:
+    if distance == 0:
+        return value
+    if distance >= 128:
+        return __pixels_u128_zero()
+    if distance >= 64:
+        factor = 1.to[u64]() << (distance - 64).to[u64]()
+        return [0, value[0] *% factor]
+    factor = 1.to[u64]() << distance.to[u64]()
+    return [
+        value[0] *% factor,
+        (value[1] *% factor) | (value[0] >> (64 - distance).to[u64]()),
+    ]
+
+pub fn __pixels_u128_shift_right(read value: [u64; 2], distance: u32) -> [u64; 2]:
+    if distance == 0:
+        return value
+    if distance >= 128:
+        return __pixels_u128_zero()
+    if distance >= 64:
+        return [value[1] >> (distance - 64).to[u64](), 0]
+    carry_factor = 1.to[u64]() << (64 - distance).to[u64]()
+    return [
+        (value[0] >> distance.to[u64]()) | (value[1] *% carry_factor),
+        value[1] >> distance.to[u64](),
+    ]
+
+pub fn __pixels_u128_lower_bits_nonzero(read value: [u64; 2], count: u32) -> bool:
+    if count == 0:
+        return false
+    if count >= 128:
+        return not __pixels_u128_is_zero(value)
+    if count > 64:
+        high_count = count - 64
+        high_mask = (1.to[u64]() << high_count.to[u64]()) - 1
+        return value[0] != 0 or value[1] & high_mask != 0
+    if count == 64:
+        return value[0] != 0
+    mask = (1.to[u64]() << count.to[u64]()) - 1
+    return value[0] & mask != 0
+
+pub fn __pixels_u128_bit(read value: [u64; 2], index: u32) -> bool:
+    if index >= 128:
+        return false
+    if index >= 64:
+        return value[1] & (1.to[u64]() << (index - 64).to[u64]()) != 0
+    return value[0] & (1.to[u64]() << index.to[u64]()) != 0
+
+pub fn __pixels_u128_shift_right_jam(read value: [u64; 2], distance: u32) -> [u64; 2]:
+    shifted = __pixels_u128_shift_right(value, distance)
+    if __pixels_u128_lower_bits_nonzero(value, distance):
+        shifted[0] = shifted[0] | 1
+    return shifted
+
+pub fn __pixels_u128_top_bit(read value: [u64; 2]) -> i32:
+    word = value[1]
+    offset: i32 = 64
+    if word == 0:
+        word = value[0]
+        offset = 0
+    top: i32 = 0
+    @budget(bound=64)
+    while word > 1:
+        word = word >> 1
+        top = top + 1
+    return offset + top
+
+pub fn __pixels_u128_scale_to(value: u64, exponent: i32, target: i32) -> [u64; 2]:
+    wide = __pixels_u128_from_u64(value)
+    distance = exponent - target
+    if distance >= 0:
+        return __pixels_u128_shift_left(wide, distance.to[u32]())
+    return __pixels_u128_shift_right_jam(wide, (0 - distance).to[u32]())
+
+pub fn __pixels_u128_round_shift_even(read value: [u64; 2], distance: u32) -> u64:
+    if distance == 0:
+        return value[0]
+    if distance > 128:
+        return 0
+    kept = __pixels_u128_shift_right(value, distance)[0]
+    round_bit = __pixels_u128_bit(value, distance - 1)
+    sticky = __pixels_u128_lower_bits_nonzero(value, distance - 1)
+    if round_bit and (sticky or kept & 1 == 1):
+        return kept + 1
+    return kept
+
+pub fn __pixels_f32_mantissa(bits: u32) -> u64:
+    exponent_bits = (bits >> 23) & 255
+    fraction = (bits & 8388607).to[u64]()
+    if exponent_bits == 0:
+        return fraction
+    return 8388608 + fraction
+
+pub fn __pixels_f32_exponent(bits: u32) -> i32:
+    exponent_bits = (bits >> 23) & 255
+    if exponent_bits == 0:
+        return -149
+    return exponent_bits.to[i32]() - 150
+
+pub fn pixels_f32_fma_bits_fallback(lhs_bits: u32, rhs_bits: u32, addend_bits: u32) -> u32:
+    lhs_abs = lhs_bits & 2147483647
+    rhs_abs = rhs_bits & 2147483647
+    addend_abs = addend_bits & 2147483647
+    lhs_nan = lhs_abs > 2139095040
+    rhs_nan = rhs_abs > 2139095040
+    addend_nan = addend_abs > 2139095040
+    if lhs_nan or rhs_nan or addend_nan:
+        return 2143289344
+
+    lhs_inf = lhs_abs == 2139095040
+    rhs_inf = rhs_abs == 2139095040
+    addend_inf = addend_abs == 2139095040
+    lhs_zero = lhs_abs == 0
+    rhs_zero = rhs_abs == 0
+    product_negative = (lhs_bits ^ rhs_bits) & 2147483648 != 0
+    addend_negative = addend_bits & 2147483648 != 0
+    if lhs_inf or rhs_inf:
+        if (lhs_inf and rhs_zero) or (rhs_inf and lhs_zero):
+            return 2143289344
+        if addend_inf and addend_negative != product_negative:
+            return 2143289344
+        if product_negative:
+            return 4286578688
+        return 2139095040
+    if addend_inf:
+        return addend_bits
+
+    lhs_mantissa = __pixels_f32_mantissa(lhs_bits)
+    rhs_mantissa = __pixels_f32_mantissa(rhs_bits)
+    addend_mantissa = __pixels_f32_mantissa(addend_bits)
+    product_mantissa = lhs_mantissa * rhs_mantissa
+    product_exponent = __pixels_f32_exponent(lhs_bits) + __pixels_f32_exponent(rhs_bits)
+    addend_exponent = __pixels_f32_exponent(addend_bits)
+    if product_mantissa == 0 and addend_mantissa == 0:
+        if product_negative and addend_negative:
+            return 2147483648
+        return 0
+
+    product_top: i32 = -1000
+    if product_mantissa != 0:
+        product_top = product_exponent + __pixels_u128_top_bit(
+            __pixels_u128_from_u64(product_mantissa),
+        )
+    addend_top: i32 = -1000
+    if addend_mantissa != 0:
+        addend_top = addend_exponent + __pixels_u128_top_bit(
+            __pixels_u128_from_u64(addend_mantissa),
+        )
+    top = product_top
+    if addend_top > top:
+        top = addend_top
+    target = top - 100
+    product_scaled = __pixels_u128_scale_to(product_mantissa, product_exponent, target)
+    addend_scaled = __pixels_u128_scale_to(addend_mantissa, addend_exponent, target)
+    negative = false
+    magnitude = __pixels_u128_zero()
+    comparison = __pixels_u128_compare(product_scaled, addend_scaled)
+    if product_negative == addend_negative:
+        negative = product_negative
+        magnitude = __pixels_u128_add(product_scaled, addend_scaled)
+    elif comparison > 0:
+        negative = product_negative
+        magnitude = __pixels_u128_sub(product_scaled, addend_scaled)
+    elif comparison < 0:
+        negative = addend_negative
+        magnitude = __pixels_u128_sub(addend_scaled, product_scaled)
+    if __pixels_u128_is_zero(magnitude):
+        return 0
+
+    leading = __pixels_u128_top_bit(magnitude)
+    unbiased = target + leading
+    sign: u32 = 0
+    if negative:
+        sign = 2147483648
+    if unbiased > 127:
+        return sign | 2139095040
+    if unbiased >= -126:
+        rounded = __pixels_u128_round_shift_even(magnitude, (leading - 23).to[u32]())
+        if rounded == 16777216:
+            rounded = rounded >> 1
+            unbiased = unbiased + 1
+            if unbiased > 127:
+                return sign | 2139095040
+        exponent = (unbiased + 127).to[u32]()
+        return sign | (exponent << 23) | (rounded.to[u32]() & 8388607)
+
+    distance: i32 = -149
+    distance = distance - target
+    rounded: u64 = 0
+    if distance <= 0:
+        shifted = __pixels_u128_shift_left(magnitude, (0 - distance).to[u32]())
+        rounded = shifted[0]
+    else:
+        rounded = __pixels_u128_round_shift_even(magnitude, distance.to[u32]())
+    if rounded >= 8388608:
+        return sign | 8388608
+    return sign | rounded.to[u32]()
+
+# The compiler lowers this explicit packet operation to FMLA. Scalar and
+# evaluator execution use the integer-mantissa fallback above, so no `a*b+c`
+# expression or f64 double-rounding path can masquerade as a fused reference.
+pub fn pixels_f32_fma_scalar(lhs: f32, rhs: f32, addend: f32) -> f32:
+    return pixels_f32_from_bits(pixels_f32_fma_bits_fallback(
+        pixels_f32_to_bits(lhs), pixels_f32_to_bits(rhs), pixels_f32_to_bits(addend),
+    ))
+
+@test
+fn generated_f32_fma_fallback_is_fused_and_bit_exact():
+    assert pixels_f32_fma_bits_fallback(1065353217, 1065353215, 3212836864) == 864026622
+    assert pixels_f32_fma_bits_fallback(8388608, 1056964608, 1) == 4194305
+    assert pixels_f32_fma_bits_fallback(2139095039, 1065353217, 4286578687) == 1946157055
+    assert pixels_f32_fma_bits_fallback(2147483648, 1065353216, 2147483648) == 2147483648
+    assert pixels_f32_fma_bits_fallback(0, 2139095040, 0) == 2143289344
+    assert pixels_f32_fma_bits_fallback(2139095040, 1065353216, 4286578688) == 2143289344
+
+pub fn pixels_f32x4_backend_fma(read lhs: F32x4, read rhs: F32x4, read addend: F32x4) -> F32x4:
+    return F32x4.from_lanes([
+        pixels_f32_fma_scalar(lhs.lane(0), rhs.lane(0), addend.lane(0)),
+        pixels_f32_fma_scalar(lhs.lane(1), rhs.lane(1), addend.lane(1)),
+        pixels_f32_fma_scalar(lhs.lane(2), rhs.lane(2), addend.lane(2)),
+        pixels_f32_fma_scalar(lhs.lane(3), rhs.lane(3), addend.lane(3)),
+    ])
+
+pub fn pixels_f32_to_i32_scalar(value: f32) -> i32:
+    bits = pixels_f32_to_bits(value)
+    if bits & 2139095040 == 2139095040 and bits & 8388607 != 0:
+        return 0
+    if value >= 2147483648.0:
+        return 2147483647
+    if value <= -2147483648.0:
+        return -2147483648
+    return value.to[i32]()
+
+pub fn pixels_f32x4_backend_to_i32x4(read value: F32x4) -> I32x4:
+    return I32x4.from_lanes([
+        pixels_f32_to_i32_scalar(value.lane(0)), pixels_f32_to_i32_scalar(value.lane(1)),
+        pixels_f32_to_i32_scalar(value.lane(2)), pixels_f32_to_i32_scalar(value.lane(3)),
     ])
 
 pub enum I32x4Outcome:

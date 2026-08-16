@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::flow_liveness::{FlowLiveness, PointKind};
+use crate::flow_liveness::{FlowLiveness, FlowPoint, PointKind};
 use crate::flowwir::{FlowInst, FlowWirFn, Transition};
 use crate::mwir::Temp;
 use crate::regalloc;
@@ -123,12 +123,24 @@ fn state_temp_sets(a: &FlowLiveness, n: usize) -> Vec<BTreeSet<Temp>> {
     out
 }
 
-fn used_in_state(a: &FlowLiveness, state: usize, t: Temp) -> bool {
-    a.points.iter().any(|p| {
-        matches!(
-            p.kind,
-            PointKind::Op { state: s, .. } | PointKind::Transition { state: s } if s == state
-        ) && (p.uses.contains(&t) || p.defs.contains(&t))
+fn points_by_state(a: &FlowLiveness, states: usize) -> Vec<Vec<&FlowPoint>> {
+    let mut out = vec![Vec::new(); states];
+    for point in &a.points {
+        let state = match point.kind {
+            PointKind::Op { state, .. } | PointKind::Transition { state } => Some(state),
+            PointKind::ResumeDef { .. } => None,
+        };
+        if let Some(state) = state.and_then(|state| out.get_mut(state)) {
+            state.push(point);
+        }
+    }
+    out
+}
+
+fn used_in_state(points: &[&FlowPoint], t: Temp) -> bool {
+    points.iter().any(|p| {
+        matches!(p.kind, PointKind::Op { .. } | PointKind::Transition { .. })
+            && (p.uses.contains(&t) || p.defs.contains(&t))
     })
 }
 
@@ -188,15 +200,8 @@ fn resume_results(a: &FlowLiveness) -> BTreeSet<Temp> {
     a.suspends.iter().map(|s| s.result_temp).collect()
 }
 
-fn same_state_interference(a: &FlowLiveness, state: usize, left: Temp, right: Temp) -> bool {
-    a.points.iter().any(|p| {
-        let in_state = matches!(
-            p.kind,
-            PointKind::Op { state: s, .. } | PointKind::Transition { state: s } if s == state
-        );
-        if !in_state {
-            return false;
-        }
+fn same_state_interference(points: &[&FlowPoint], left: Temp, right: Temp) -> bool {
+    points.iter().any(|p| {
         let mentioned = |t| p.uses.contains(&t) || p.defs.contains(&t);
         if mentioned(left) && mentioned(right) {
             return true;
@@ -235,15 +240,12 @@ fn point_may_call(f: &FlowWirFn, state: usize, index: usize) -> bool {
     }
 }
 
-fn live_across_call(f: &FlowWirFn, a: &FlowLiveness, state: usize, t: Temp) -> bool {
-    a.points.iter().any(|p| {
-        let PointKind::Op { state: s, index } = p.kind else {
+fn live_across_call(f: &FlowWirFn, points: &[&FlowPoint], state: usize, t: Temp) -> bool {
+    points.iter().any(|p| {
+        let PointKind::Op { index, .. } = p.kind else {
             return false;
         };
-        s == state
-            && point_may_call(f, state, index)
-            && p.live_in.contains(&t)
-            && p.live_out.contains(&t)
+        point_may_call(f, state, index) && p.live_in.contains(&t) && p.live_out.contains(&t)
     })
 }
 
@@ -255,6 +257,7 @@ fn assign_state_registers(
 ) -> Vec<StateAssignment> {
     let n = f.frame.temp_count();
     let sets = state_temp_sets(a, f.states.len());
+    let state_points = points_by_state(a, f.states.len());
     let mut assignments = Vec::with_capacity(f.states.len());
     for state in 0..f.states.len() {
         let candidates: Vec<Temp> = sets[state]
@@ -266,8 +269,8 @@ fn assign_state_registers(
                         && matches!(homes[t.0], Home::Frame { .. }))
             })
             .filter(|t| t.0 < f.frame.temp_types.len())
-            .filter(|t| used_in_state(a, state, *t))
-            .filter(|t| !live_across_call(f, a, state, *t))
+            .filter(|t| used_in_state(&state_points[state], *t))
+            .filter(|t| !live_across_call(f, &state_points[state], state, *t))
             .filter(|t| scalar_type(&f.frame.temp_types[t.0]))
             .collect();
         let mut regs = vec![None; n];
@@ -281,7 +284,7 @@ fn assign_state_registers(
                 let conflict = occupied.get(&r).is_some_and(|others| {
                     others
                         .iter()
-                        .any(|other| same_state_interference(a, state, t, *other))
+                        .any(|other| same_state_interference(&state_points[state], t, *other))
                 });
                 if !conflict {
                     regs[t.0] = Some(r);
@@ -397,13 +400,14 @@ pub fn plan_flow(
     }
 
     let mut states = assign_state_registers(f, analysis, &classes, &homes);
+    let state_points = points_by_state(analysis, f.states.len());
     // A state-local scalar that did not get a register is a state spill.  Give
     // it an ordinary durable slot so emission never has an unrepresented home.
     for state in &states {
         for (i, reg) in state.temp_regs.iter().enumerate() {
             if reg.is_none()
                 && classes[i] == StorageClass::StateLocal
-                && used_in_state(analysis, state.state, Temp(i))
+                && used_in_state(&state_points[state.state], Temp(i))
             {
                 // It is harmless for one temp to be visited by more than one
                 // state; the first slot is reused in the metadata below.
@@ -463,6 +467,7 @@ pub fn validate(f: &FlowWirFn, analysis: &FlowLiveness, plan: &FramePlan) -> Res
             }
         }
     }
+    let state_points = points_by_state(analysis, f.states.len());
     for p in &analysis.points {
         let state = match p.kind {
             PointKind::Op { state, .. }
@@ -482,26 +487,30 @@ pub fn validate(f: &FlowWirFn, analysis: &FlowLiveness, plan: &FramePlan) -> Res
                 ));
             }
         }
-        if let Some(assignment) = plan.states.get(state) {
-            for (left, &left_reg) in assignment.temp_regs.iter().enumerate() {
-                let Some(left_reg) = left_reg else { continue };
-                for (right, &right_reg) in assignment.temp_regs.iter().enumerate().skip(left + 1) {
-                    if right_reg == Some(left_reg)
-                        && same_state_interference(analysis, state, Temp(left), Temp(right))
-                    {
-                        return Err(format!(
-                            "state s{state} assigns interfering temps t{left} and t{right} to x{left_reg}"
-                        ));
-                    }
+    }
+    // These are state-wide properties. Checking them once per program point
+    // made validation quadratic in the number of operations, even though the
+    // assignment and interference relation do not change within a state.
+    for assignment in &plan.states {
+        let state = assignment.state;
+        for (left, &left_reg) in assignment.temp_regs.iter().enumerate() {
+            let Some(left_reg) = left_reg else { continue };
+            for (right, &right_reg) in assignment.temp_regs.iter().enumerate().skip(left + 1) {
+                if right_reg == Some(left_reg)
+                    && same_state_interference(&state_points[state], Temp(left), Temp(right))
+                {
+                    return Err(format!(
+                        "state s{state} assigns interfering temps t{left} and t{right} to x{left_reg}"
+                    ));
                 }
             }
-            for t in &assignment.live_in_loads {
-                if assignment.temp_regs.get(t.0).copied().flatten().is_none() {
-                    return Err(format!("state s{state} entry-loads unassigned temp {t}"));
-                }
-                if matches!(plan.homes[t.0], Home::None) {
-                    return Err(format!("state s{state} entry-loads register-only temp {t}"));
-                }
+        }
+        for t in &assignment.live_in_loads {
+            if assignment.temp_regs.get(t.0).copied().flatten().is_none() {
+                return Err(format!("state s{state} entry-loads unassigned temp {t}"));
+            }
+            if matches!(plan.homes[t.0], Home::None) {
+                return Err(format!("state s{state} entry-loads register-only temp {t}"));
             }
         }
     }

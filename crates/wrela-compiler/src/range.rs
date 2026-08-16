@@ -122,7 +122,20 @@ fn constant(r: &Range) -> Option<i128> {
 /// of the iteration loop by the caller. Every source is read before the first
 /// write, so an instruction whose destination is also one of its sources still
 /// observes the pre-state exactly as the copying formulation did.
-fn transfer_into(inst: &Inst, defs: &[Temp], state: &mut [Range], types: &[Type]) {
+fn transfer_into(
+    inst: &Inst,
+    defs: &[Temp],
+    state: &mut [Range],
+    types: &[Type],
+    tracked: Option<&[bool]>,
+) {
+    if tracked.is_some_and(|tracked| {
+        !defs
+            .iter()
+            .any(|temp| tracked.get(temp.0).copied().unwrap_or(false))
+    }) {
+        return;
+    }
     let read = |t: Temp| state.get(t.0).unwrap_or(&Range::Top).clone();
     let update = match inst {
         Inst::ConstInt { .. } | Inst::ConstBool { .. } => const_range(inst),
@@ -315,9 +328,15 @@ struct BlockAnalysis {
     inst_defs: Vec<Vec<Temp>>,
 }
 
-fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
+fn analyze_blocks_tracked(f: &MwirFn, tracked_temps: &[usize]) -> Result<BlockAnalysis, String> {
     let cfg = crate::cfg::build_cfg(f)?;
     let n = f.temp_types.len();
+    let mut tracked = vec![false; n];
+    for &temp in tracked_temps {
+        if let Some(slot) = tracked.get_mut(temp) {
+            *slot = true;
+        }
+    }
     let inst_defs = instruction_defs(f);
     let mut entry = vec![vec![Range::Bottom; n]; cfg.blocks.len()];
     let mut exit = vec![vec![Range::Bottom; n]; cfg.blocks.len()];
@@ -338,7 +357,9 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
     for iteration in 0..MAX_ITERATIONS {
         let mut changed = false;
         for b in 0..cfg.blocks.len() {
-            incoming.iter_mut().for_each(|range| *range = Range::Bottom);
+            for &temp in tracked_temps {
+                incoming[temp] = Range::Bottom;
+            }
             for &pred in &cfg.blocks[b].predecessors {
                 let last = cfg.blocks[pred].range.end - 1;
                 let mut refinement = None;
@@ -364,33 +385,47 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
                 // exit state; an unrefined edge joins straight out of `exit`.
                 let edge = match refinement {
                     Some((cmp, truth)) => {
-                        refined_edge.clone_from(&exit[pred]);
+                        for &temp in tracked_temps {
+                            refined_edge[temp] = exit[pred][temp].clone();
+                        }
                         refine(&mut refined_edge, cmp, truth);
                         &refined_edge
                     }
                     None => &exit[pred],
                 };
-                for t in 0..n {
-                    incoming[t] = incoming[t].join(&edge[t]);
+                for &temp in tracked_temps {
+                    incoming[temp] = incoming[temp].join(&edge[temp]);
                 }
             }
             if b == 0 {
                 // Only the receiver and parameters are definitions at entry.
                 // Other temps begin unknown until their defining instruction.
-                let mut available = BTreeSet::new();
                 if let Some((t, _)) = f.receiver {
-                    available.insert(t);
+                    if tracked[t.0]
+                        && let Some((lo, hi)) = type_bounds(&f.temp_types[t.0])
+                    {
+                        incoming[t.0] = Range::interval(lo, hi);
+                    }
                 }
-                available.extend(f.params.iter().map(|(t, _)| *t));
-                for t in available {
-                    if let Some((lo, hi)) = type_bounds(&f.temp_types[t.0]) {
+                for (t, _) in &f.params {
+                    if tracked[t.0]
+                        && let Some((lo, hi)) = type_bounds(&f.temp_types[t.0])
+                    {
                         incoming[t.0] = Range::interval(lo, hi);
                     }
                 }
             }
-            current.clone_from(&incoming);
+            for &temp in tracked_temps {
+                current[temp] = incoming[temp].clone();
+            }
             for at in cfg.blocks[b].range.clone() {
-                transfer_into(&f.body[at], &inst_defs[at], &mut current, &f.temp_types);
+                transfer_into(
+                    &f.body[at],
+                    &inst_defs[at],
+                    &mut current,
+                    &f.temp_types,
+                    Some(&tracked),
+                );
             }
             // Widen before deciding whether this block changed. A widened temp
             // is restored to its type envelope, which is normally the value
@@ -407,8 +442,11 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
             // envelope is a sound over-approximation and is itself a fixed
             // point (type bounds cannot expand further), so recognising the
             // stable state is a precision gain, not a weakened bound.
-            if exit[b] != current && cfg.blocks[b].predecessors.iter().any(|pred| *pred >= b) {
-                for t in 0..n {
+            let exit_expanded = tracked_temps
+                .iter()
+                .any(|&temp| exit[b][temp] != current[temp]);
+            if exit_expanded && cfg.blocks[b].predecessors.iter().any(|pred| *pred >= b) {
+                for &t in tracked_temps {
                     let expands = match (&exit[b][t], &current[t]) {
                         (
                             Range::Interval {
@@ -438,9 +476,17 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
                     }
                 }
             }
-            if entry[b] != incoming || exit[b] != current {
-                entry[b].clone_from(&incoming);
-                exit[b].clone_from(&current);
+            let changed_entry = tracked_temps
+                .iter()
+                .any(|&temp| entry[b][temp] != incoming[temp]);
+            let changed_exit = tracked_temps
+                .iter()
+                .any(|&temp| exit[b][temp] != current[temp]);
+            if changed_entry || changed_exit {
+                for &temp in tracked_temps {
+                    entry[b][temp] = incoming[temp].clone();
+                    exit[b][temp] = current[temp].clone();
+                }
                 changed = true;
             }
         }
@@ -449,8 +495,10 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
         }
         if iteration + 1 == MAX_ITERATIONS {
             for b in 0..cfg.blocks.len() {
-                entry[b].fill(Range::Top);
-                exit[b].fill(Range::Top);
+                for &temp in tracked_temps {
+                    entry[b][temp] = Range::Top;
+                    exit[b][temp] = Range::Top;
+                }
                 widened.insert(b);
             }
         }
@@ -463,6 +511,53 @@ fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
         widened,
         inst_defs,
     })
+}
+
+fn analyze_blocks(f: &MwirFn) -> Result<BlockAnalysis, String> {
+    analyze_blocks_tracked(f, &(0..f.temp_types.len()).collect::<Vec<_>>())
+}
+
+/// Temps whose values can affect an indexed operand or a branch refinement of
+/// one of its dependencies. Bounds proving observes no other lattice entries,
+/// so scanning them at every CFG edge was pure dense-state work.
+fn bounds_relevant_temps(f: &MwirFn) -> Vec<usize> {
+    let n = f.temp_types.len();
+    let mut dependencies = vec![Vec::<Temp>::new(); n];
+    let mut comparison_peers = vec![Vec::<Temp>::new(); n];
+    let mut seeds = Vec::new();
+    for inst in &f.body {
+        match inst {
+            Inst::Copy { dst, src } => dependencies[dst.0].push(*src),
+            Inst::ArithChecked { dst, lhs, rhs, .. }
+            | Inst::ArithWrapping { dst, lhs, rhs, .. } => {
+                dependencies[dst.0].extend([*lhs, *rhs]);
+            }
+            Inst::Convert { dst, src, .. } => dependencies[dst.0].push(*src),
+            Inst::Compare { lhs, rhs, .. } => {
+                comparison_peers[lhs.0].push(*rhs);
+                comparison_peers[rhs.0].push(*lhs);
+            }
+            Inst::IndexGet { index, .. }
+            | Inst::IndexSet { index, .. }
+            | Inst::PlacedIndexGet { index, .. }
+            | Inst::PlacedIndexSet { index, .. } => seeds.push(*index),
+            _ => {}
+        }
+    }
+    let mut relevant = vec![false; n];
+    let mut pending = seeds;
+    while let Some(temp) = pending.pop() {
+        if temp.0 >= n || std::mem::replace(&mut relevant[temp.0], true) {
+            continue;
+        }
+        pending.extend(dependencies[temp.0].iter().copied());
+        pending.extend(comparison_peers[temp.0].iter().copied());
+    }
+    relevant
+        .into_iter()
+        .enumerate()
+        .filter_map(|(temp, relevant)| relevant.then_some(temp))
+        .collect()
 }
 
 pub fn analyze(f: &MwirFn) -> Result<Analysis, String> {
@@ -485,7 +580,7 @@ pub fn analyze(f: &MwirFn) -> Result<Analysis, String> {
         let mut current = entry[block.id].clone();
         for i in block.range.clone() {
             instructions[i].before = current.clone();
-            transfer_into(&f.body[i], &inst_defs[i], &mut current, &f.temp_types);
+            transfer_into(&f.body[i], &inst_defs[i], &mut current, &f.temp_types, None);
             instructions[i].after = current.clone();
         }
     }
@@ -576,12 +671,17 @@ pub fn bounds_proofs(f: &MwirFn, analysis: &Analysis) -> Vec<BoundsProof> {
 }
 
 fn bounds_proofs_sparse(f: &MwirFn) -> Result<Vec<BoundsProof>, String> {
+    let tracked_temps = bounds_relevant_temps(f);
+    let mut tracked = vec![false; f.temp_types.len()];
+    for &temp in &tracked_temps {
+        tracked[temp] = true;
+    }
     let BlockAnalysis {
         cfg,
         entry,
         inst_defs,
         ..
-    } = analyze_blocks(f)?;
+    } = analyze_blocks_tracked(f, &tracked_temps)?;
     let mut out = Vec::new();
     for block in &cfg.blocks {
         let mut current = entry[block.id].clone();
@@ -613,7 +713,13 @@ fn bounds_proofs_sparse(f: &MwirFn) -> Result<Vec<BoundsProof>, String> {
                     result: proof_for(range, len, is_unsigned(ty)),
                 });
             }
-            transfer_into(inst, &inst_defs[at], &mut current, &f.temp_types);
+            transfer_into(
+                inst,
+                &inst_defs[at],
+                &mut current,
+                &f.temp_types,
+                Some(&tracked),
+            );
         }
     }
     Ok(out)
@@ -829,17 +935,50 @@ fn has_index_sites(f: &MwirFn) -> bool {
 pub fn apply_program_proofs(
     program: &crate::mwir::MwirProgram,
 ) -> Result<crate::mwir::MwirProgram, String> {
-    let mut out = program.clone();
-    for (key, f) in &program.fns {
+    Ok(apply_program_proofs_certified(program)?.into_program())
+}
+
+/// An MWIR program whose proven index sites were produced by the range
+/// analysis and have not passed through another rewrite.
+///
+/// The inner program is deliberately private. Codegen may use this witness to
+/// avoid immediately repeating the same fixed-point analysis, while callers
+/// that can mutate MWIR receive an ordinary `MwirProgram` and must validate it
+/// again.
+pub(crate) struct CertifiedProgram(crate::mwir::MwirProgram);
+
+impl CertifiedProgram {
+    pub(crate) fn as_program(&self) -> &crate::mwir::MwirProgram {
+        &self.0
+    }
+
+    pub(crate) fn into_program(self) -> crate::mwir::MwirProgram {
+        self.0
+    }
+}
+
+pub(crate) fn apply_program_proofs_certified(
+    program: &crate::mwir::MwirProgram,
+) -> Result<CertifiedProgram, String> {
+    apply_program_proofs_owned_certified(program.clone())
+}
+
+pub(crate) fn apply_program_proofs_owned_certified(
+    mut program: crate::mwir::MwirProgram,
+) -> Result<CertifiedProgram, String> {
+    let keys = program.fns.keys().cloned().collect::<Vec<_>>();
+    for key in keys {
+        let f = &program.fns[&key];
         // Range analysis is intentionally demand-driven.  Besides avoiding
         // needless work on runtime helpers, this keeps a parked proof option
         // from turning every bounds-free function into a fixed-point problem.
         if !has_index_sites(f) {
             continue;
         }
-        out.fns.insert(key.clone(), apply_proofs_sparse(f)?);
+        let rewritten = apply_proofs_sparse(f)?;
+        program.fns.insert(key, rewritten);
     }
-    Ok(out)
+    Ok(CertifiedProgram(program))
 }
 
 /// Apply the same proof-carrying rewrite to FlowWir states whose local body
@@ -1265,7 +1404,37 @@ mod tests {
     #[test]
     fn sparse_proof_application_matches_full_instruction_history() {
         for ty in [Type::Usize, Type::I64] {
-            let f = branched_index(ty);
+            let mut f = branched_index(ty);
+            let copied_index = Temp(f.temp_types.len());
+            let irrelevant = Temp(f.temp_types.len() + 1);
+            f.temp_types.extend([Type::Usize, Type::U64]);
+            f.body.splice(
+                3..3,
+                [
+                    Inst::ConstInt {
+                        dst: irrelevant,
+                        ty: Type::U64,
+                        value: 99,
+                    },
+                    Inst::Copy {
+                        dst: copied_index,
+                        src: Temp(1),
+                    },
+                ],
+            );
+            if let Inst::JumpIfFalse { target, .. } = &mut f.body[2] {
+                *target += 2;
+            }
+            if let Inst::IndexGet { index, .. } = &mut f.body[5] {
+                *index = copied_index;
+            } else {
+                panic!("fixture lost its indexed access");
+            }
+            let relevant = bounds_relevant_temps(&f);
+            assert!(relevant.contains(&copied_index.0));
+            assert!(relevant.contains(&1));
+            assert!(relevant.contains(&4), "comparison peer must be tracked");
+            assert!(!relevant.contains(&irrelevant.0));
             let full = apply_proofs(&f, &analyze(&f).expect("full range analysis"))
                 .expect("full proof rewrite");
             let sparse = apply_proofs_sparse(&f).expect("sparse proof rewrite");

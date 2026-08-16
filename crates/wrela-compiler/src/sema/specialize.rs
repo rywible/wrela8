@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::{interp, to_sema_error, value::Value};
@@ -18,13 +19,26 @@ struct ConstSkeleton {
 }
 
 pub fn specialize(module: &Module) -> Result<Module, SemaError> {
-    let known_consts = compute_known_consts(module);
+    Ok(specialize_cow(module)?.into_owned())
+}
+
+pub(crate) fn specialize_cow(module: &Module) -> Result<Cow<'_, Module>, SemaError> {
+    let mut condition_exprs = Vec::new();
+    harvest_conditions_items(&module.items, &mut condition_exprs);
+    if condition_exprs.is_empty() {
+        // The overwhelmingly common module has no `comptime if` at all.
+        // Building a const-checking skeleton and recursively reconstructing
+        // every statement in that case cannot change the AST; it only makes
+        // each closure check walk and clone large stdlib modules twice.
+        return Ok(Cow::Borrowed(module));
+    }
+    let known_consts = compute_known_consts(module, &condition_exprs);
     let skeleton = build_const_skeleton(module, &known_consts)?;
     let items = specialize_items(&module.items, &known_consts, &skeleton)?;
-    Ok(Module {
+    Ok(Cow::Owned(Module {
         items,
         ..module.clone()
-    })
+    }))
 }
 
 fn top_level_consts(module: &Module) -> Vec<&ConstItem> {
@@ -38,10 +52,7 @@ fn top_level_consts(module: &Module) -> Vec<&ConstItem> {
         .collect()
 }
 
-fn compute_known_consts(module: &Module) -> BTreeSet<String> {
-    let mut condition_exprs = Vec::new();
-    harvest_conditions_items(&module.items, &mut condition_exprs);
-
+fn compute_known_consts(module: &Module, condition_exprs: &[&Expr]) -> BTreeSet<String> {
     let mut referenced = BTreeSet::new();
     for e in condition_exprs {
         collect_names_in_expr(e, &mut referenced);
@@ -946,5 +957,23 @@ fn expand_one_stmt(
             out.push(other.clone());
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+    use crate::syntax::{lexer, parser};
+
+    #[test]
+    fn module_without_comptime_if_stays_borrowed() {
+        let source =
+            "module examples.specialize_borrowed\n\npub fn value() -> u32:\n    return 7\n";
+        let module = parser::parse(lexer::lex(source).expect("lex")).expect("parse");
+        let specialized = specialize_cow(&module).expect("specialize");
+        assert!(matches!(specialized, Cow::Borrowed(_)));
+        assert_eq!(specialized.as_ref(), &module);
     }
 }

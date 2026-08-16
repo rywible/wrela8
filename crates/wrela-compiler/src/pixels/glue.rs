@@ -7542,7 +7542,9 @@ pub fn configuration_source(
         "module __image_pixels\n\n\
          from core.field import cos_scalar, rsqrt_scalar, sin_scalar, sqrt_scalar\n\n\
          from core.render_interval import FixedDomain, Iv32, interval_add, interval_from_f32_bits, interval_mul\n\n\
+         from core.render_arrangement import __wrela_pixels_p8r_clip_handler, __wrela_pixels_p8r_deformation_handler, __wrela_pixels_p8r_dispatch_handler, __wrela_pixels_p8r_polynomial_handler, __wrela_pixels_p8r_predicate_handler, __wrela_pixels_p8r_smooth_band_handler, __wrela_pixels_p8r_torus_handler\n\n\
          from core.render_raster import AffineRunSetup, EventId, EventPixel, I32x4, IdSlice, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, QRunScalar, RasterGeometryLane, RasterRun, RunId, pixels_i32x4_backend_add, raster_geometry_lane_valid, raster_run4\n\n\
+         from core.render_raster import F32x4, __pixels_f32_exponent, __pixels_f32_mantissa, __pixels_u128_add, __pixels_u128_bit, __pixels_u128_compare, __pixels_u128_from_u64, __pixels_u128_is_zero, __pixels_u128_lower_bits_nonzero, __pixels_u128_round_shift_even, __pixels_u128_scale_to, __pixels_u128_shift_left, __pixels_u128_shift_right, __pixels_u128_shift_right_jam, __pixels_u128_sub, __pixels_u128_top_bit, __pixels_u128_zero, pixels_f32_fma_bits_fallback, pixels_f32_fma_scalar, pixels_f32_from_bits, pixels_f32_max_scalar, pixels_f32_min_scalar, pixels_f32_select_ge_scalar, pixels_f32_select_gt_scalar, pixels_f32_to_bits, pixels_f32_to_i32_scalar, pixels_f32x4_backend_add, pixels_f32x4_backend_fma, pixels_f32x4_backend_max, pixels_f32x4_backend_min, pixels_f32x4_backend_mul, pixels_f32x4_backend_select_ge, pixels_f32x4_backend_select_gt, pixels_f32x4_backend_splat, pixels_f32x4_backend_sub, pixels_f32x4_backend_to_i32x4, pixels_i32_select_gt_scalar, pixels_i32x4_backend_and, pixels_i32x4_backend_or, pixels_i32x4_backend_select_gt, pixels_i32x4_backend_shr_arith_imm, pixels_i32x4_backend_splat, pixels_i32x4_backend_sub, pixels_i32x4_backend_to_f32x4\n\n\
          from core.render_certificate import certify_quadratic_discriminant\n\n\
          from core.render_program import polynomial_horner9\n\n\
          # These declarations are emitted mechanically from core.render_program,\n\
@@ -7561,7 +7563,79 @@ pub fn configuration_source(
          \x20   return bits.to[f32]()\n\
          \n\
          pub fn __wrela_pixels_f64_bits_to_f32(bits: u64) -> f32:\n\
-         \x20   return bits.to[f32]()\n",
+         \x20   return bits.to[f32]()\n\
+         \n\
+         # Guest-executed P8R packet substrate regression. Every sealed packet\n\
+         # operation is driven across all four lanes and compared by exact bits.\n\
+         pub fn __wrela_pixels_p8r_packet_selftest() -> bool:\n\
+         \x20   ia = I32x4.from_lanes([2147483647, -2147483648, -7, 12])\n\
+         \x20   ib = I32x4.from_lanes([1, 1, 3, -4])\n\
+         \x20   isplat = pixels_i32x4_backend_splat(-5)\n\
+         \x20   if isplat.lane(0) != -5 or isplat.lane(1) != -5 or isplat.lane(2) != -5 or isplat.lane(3) != -5:\n\
+         \x20       return false\n\
+         \x20   iadd = pixels_i32x4_backend_add(ia, ib)\n\
+         \x20   if iadd.lane(0) != -2147483648 or iadd.lane(1) != -2147483647 or iadd.lane(2) != -4 or iadd.lane(3) != 8:\n\
+         \x20       return false\n\
+         \x20   isub = pixels_i32x4_backend_sub(ia, ib)\n\
+         \x20   if isub.lane(0) != 2147483646 or isub.lane(1) != 2147483647 or isub.lane(2) != -10 or isub.lane(3) != 16:\n\
+         \x20       return false\n\
+         \x20   ishr = pixels_i32x4_backend_shr_arith_imm(ia, 3)\n\
+         \x20   if ishr.lane(0) != 268435455 or ishr.lane(1) != -268435456 or ishr.lane(2) != -1 or ishr.lane(3) != 1:\n\
+         \x20       return false\n\
+         \x20   iand = pixels_i32x4_backend_and(ia, I32x4.from_lanes([255; 4]))\n\
+         \x20   if iand.lane(0) != 255 or iand.lane(1) != 0 or iand.lane(2) != 249 or iand.lane(3) != 12:\n\
+         \x20       return false\n\
+         \x20   ior = pixels_i32x4_backend_or(iand, I32x4.from_lanes([256; 4]))\n\
+         \x20   if ior.lane(0) != 511 or ior.lane(1) != 256 or ior.lane(2) != 505 or ior.lane(3) != 268:\n\
+         \x20       return false\n\
+         \x20   isel = pixels_i32x4_backend_select_gt(ia, ib, pixels_i32x4_backend_splat(7), pixels_i32x4_backend_splat(9))\n\
+         \x20   if isel.lane(0) != 7 or isel.lane(1) != 9 or isel.lane(2) != 9 or isel.lane(3) != 7:\n\
+         \x20       return false\n\
+         \x20   itof = pixels_i32x4_backend_to_f32x4(I32x4.from_lanes([0, -1, 16777217, 2147483647]))\n\
+         \x20   if itof.lane_bits(0) != 0 or itof.lane_bits(1) != 3212836864 or itof.lane_bits(2) != 1266679808 or itof.lane_bits(3) != 1325400064:\n\
+         \x20       return false\n\
+         \x20   fa = F32x4.from_lanes([1.0, -2.0, 3.0, 4.0])\n\
+         \x20   fb = F32x4.from_lanes([0.5, 4.0, -1.0, 4.0])\n\
+         \x20   fsplat = pixels_f32x4_backend_splat(-3.5)\n\
+         \x20   if fsplat.lane_bits(0) != 3227516928 or fsplat.lane_bits(1) != 3227516928 or fsplat.lane_bits(2) != 3227516928 or fsplat.lane_bits(3) != 3227516928:\n\
+         \x20       return false\n\
+         \x20   fadd = pixels_f32x4_backend_add(fa, fb)\n\
+         \x20   if fadd.lane_bits(0) != 1069547520 or fadd.lane_bits(1) != 1073741824 or fadd.lane_bits(2) != 1073741824 or fadd.lane_bits(3) != 1090519040:\n\
+         \x20       return false\n\
+         \x20   fsub = pixels_f32x4_backend_sub(fa, fb)\n\
+         \x20   if fsub.lane_bits(0) != 1056964608 or fsub.lane_bits(1) != 3233808384 or fsub.lane_bits(2) != 1082130432 or fsub.lane_bits(3) != 0:\n\
+         \x20       return false\n\
+         \x20   fmul = pixels_f32x4_backend_mul(fa, fb)\n\
+         \x20   if fmul.lane_bits(0) != 1056964608 or fmul.lane_bits(1) != 3238002688 or fmul.lane_bits(2) != 3225419776 or fmul.lane_bits(3) != 1098907648:\n\
+         \x20       return false\n\
+         \x20   zeros = F32x4.from_bits([2147483648, 0, 2143289344, 1073741824])\n\
+         \x20   zero_rhs = F32x4.from_bits([0, 2147483648, 1065353216, 2143289344])\n\
+         \x20   fmin = pixels_f32x4_backend_min(zeros, zero_rhs)\n\
+         \x20   if fmin.lane_bits(0) != 2147483648 or fmin.lane_bits(1) != 2147483648 or fmin.lane_bits(2) != 2143289344 or fmin.lane_bits(3) != 2143289344:\n\
+         \x20       return false\n\
+         \x20   fmax = pixels_f32x4_backend_max(zeros, zero_rhs)\n\
+         \x20   if fmax.lane_bits(0) != 0 or fmax.lane_bits(1) != 0 or fmax.lane_bits(2) != 2143289344 or fmax.lane_bits(3) != 2143289344:\n\
+         \x20       return false\n\
+         \x20   cmp_lhs = F32x4.from_bits([1065353216, 1073741824, 2143289344, 1082130432])\n\
+         \x20   cmp_rhs = F32x4.from_lanes([1.0, 3.0, 0.0, 3.0])\n\
+         \x20   when_true = F32x4.from_lanes([10.0, 11.0, 12.0, 13.0])\n\
+         \x20   when_false = F32x4.from_lanes([20.0, 21.0, 22.0, 23.0])\n\
+         \x20   fge = pixels_f32x4_backend_select_ge(cmp_lhs, cmp_rhs, when_true, when_false)\n\
+         \x20   if fge.lane_bits(0) != 1092616192 or fge.lane_bits(1) != 1101529088 or fge.lane_bits(2) != 1102053376 or fge.lane_bits(3) != 1095761920:\n\
+         \x20       return false\n\
+         \x20   fgt = pixels_f32x4_backend_select_gt(cmp_lhs, cmp_rhs, when_true, when_false)\n\
+         \x20   if fgt.lane_bits(0) != 1101004800 or fgt.lane_bits(1) != 1101529088 or fgt.lane_bits(2) != 1102053376 or fgt.lane_bits(3) != 1095761920:\n\
+         \x20       return false\n\
+         \x20   fused = pixels_f32x4_backend_fma(F32x4.from_bits([1065353217, 8388608, 2139095039, 2147483648]), F32x4.from_bits([1065353215, 1056964608, 1065353217, 1065353216]), F32x4.from_bits([3212836864, 1, 4286578687, 2147483648]))\n\
+         \x20   if fused.lane_bits(0) != 864026622 or fused.lane_bits(1) != 4194305 or fused.lane_bits(2) != 1946157055 or fused.lane_bits(3) != 2147483648:\n\
+         \x20       return false\n\
+         \x20   nan_fused = pixels_f32x4_backend_fma(F32x4.from_bits([2143363909, 2139095041, 1065353216, 1065353216]), F32x4.from_bits([1065353216, 1065353216, 2143363909, 1065353216]), F32x4.from_bits([0, 0, 0, 2139095041]))\n\
+         \x20   if nan_fused.lane_bits(0) != 2143289344 or nan_fused.lane_bits(1) != 2143289344 or nan_fused.lane_bits(2) != 2143289344 or nan_fused.lane_bits(3) != 2143289344:\n\
+         \x20       return false\n\
+         \x20   ftoi = pixels_f32x4_backend_to_i32x4(F32x4.from_bits([2139095040, 4286578688, 2143289344, 1325400063]))\n\
+         \x20   if ftoi.lane(0) != 2147483647 or ftoi.lane(1) != -2147483648 or ftoi.lane(2) != 0 or ftoi.lane(3) != 2147483520:\n\
+         \x20       return false\n\
+         \x20   return true\n",
     );
     writeln!(
         output,

@@ -228,11 +228,11 @@ mod tests {
     }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(0, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(0, String::new(), rule, dst, srcs)
     }
 
     fn word_enc(enc: u32, rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(enc, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(enc, String::new(), rule, dst, srcs)
     }
 
     fn cold_load(rule: CostRule, seq: u64) -> EmittedWord {
@@ -247,6 +247,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         CodegenProgram {
@@ -453,7 +454,7 @@ mod tests {
         let one = single_core();
         let load = || cold_load(CostRule::Load, 0);
         let msr = word_enc(0xD518_2000, CostRule::System, None, &[0]);
-        let nzcv = EmittedWord::new(0, String::new(), CostRule::Alu, None, &[5, 6])
+        let nzcv = EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[5, 6])
             .with_flags(FlagEffect::Write);
 
         assert_eq!(
@@ -582,6 +583,7 @@ mod tests {
                     frame_size: 0,
                     code,
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             );
             fns.insert(
@@ -590,6 +592,7 @@ mod tests {
                     frame_size: 0,
                     code: handler.clone(),
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             );
             score_program_at(

@@ -1,4 +1,5 @@
 test pinned_scene_contract: ok
+test packet_substrate_executes_in_the_guest: ok
 p7 0000000000000080
 p7 0000000000000000
 p7 0000000000000078
@@ -14,7 +15,7 @@ p7 0000000000000000
 p7 0000000000000000
 p7 0000000000000000
 test plane_renders_from_scratch: ok
-2 passed, 0 failed
+3 passed, 0 failed
 lane1 turns=5 run_one=16 messages=5
 lane1 hits=0:2,1:1,2:1,3:1,4:1
 display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6148b70b282b413da9ff888bf92cb2ae67eead5e1e78492fe07318e70e17271e visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=0 checkpoint=0

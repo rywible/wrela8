@@ -7,7 +7,7 @@ use super::branch::{BlockCounts, BranchTerms};
 use super::footprint::{self, CoreBudget, HotBlocks};
 use super::mem::{MemLevel, MemState};
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass};
+use super::rule::{CostRule, EmittedWord, MemClass, REG_BANK_COUNT, Reg};
 use super::sweep::SweepPoint;
 use super::table::{CostTable, LatRow, pipe_range};
 
@@ -309,6 +309,7 @@ pub fn score_linked_program(
                     frame_size: f.frame_size as usize,
                     code: f.code.clone(),
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             )
         })
@@ -438,7 +439,7 @@ pub fn score_program_at_with_hot(
 pub struct ScoreCtx {
     machine: Machine,
     uops: Vec<Result<Vec<Uop>, String>>,
-    timing: Vec<(u64, u64, bool)>,
+    timing: Vec<(u64, u64, bool, bool)>,
     lat: Vec<LatSpec>,
 }
 
@@ -460,7 +461,7 @@ impl ScoreCtx {
                 )
             })
             .collect();
-        let mut timing = vec![(1u64, 0u64, false); n];
+        let mut timing = vec![(1u64, 0u64, false, false); n];
         let mut lat = Vec::with_capacity(n);
         lat.resize_with(n, || LatSpec {
             row: None,
@@ -475,6 +476,7 @@ impl ScoreCtx {
                     .unwrap_or(1),
                 row.map(|r| r.m_pipe_stall).unwrap_or(0),
                 row.map(|r| r.m_pipe_block).unwrap_or(false),
+                row.is_some_and(|r| r.thru_num == 1),
             );
             lat[i] = LatSpec {
                 row: table
@@ -498,7 +500,7 @@ impl ScoreCtx {
         }
     }
 
-    fn timing(&self, rule: CostRule) -> (u64, u64, bool) {
+    fn timing(&self, rule: CostRule) -> (u64, u64, bool, bool) {
         self.timing[rule as usize]
     }
 
@@ -781,8 +783,17 @@ fn score_words(
     let mut mem = MemState::new(table, point);
     let mut pipe_free = vec![0u64; ctx.machine.pipes + 1];
     let mut unit_free = [0u64; PORT_CLASS_COUNT];
+    // Some table rows deliberately allow fewer operations than their port
+    // group has physical pipes. In particular, scalar FP loads may use both
+    // L pipes while a Q load/store is sealed at one operation per cycle.
+    // Per-rule readiness represents that row throughput instead of silently
+    // widening Q accesses to the generic two-AGU rate.
+    let mut rule_free = vec![0u64; CostRule::ALL.len()];
     let mut block_free = 0u64;
-    let mut ready = [0u64; 32];
+    // Readiness is per bank: `x0` and `v0` are different registers, so one
+    // 32-entry table made every FP definition look like it clobbered the
+    // general register of the same number (P8R.1).
+    let mut ready = [[0u64; 32]; REG_BANK_COUNT];
     let mut flags_ready = 0u64;
     let mut sp_ready = 0u64;
     let mut control_ready = 0u64;
@@ -803,7 +814,7 @@ fn score_words(
         check_mem_base_in_srcs(ew)?;
 
         let uops = ctx.uops(ew.rule)?;
-        let (hold, m_stall, blocks) = ctx.timing(ew.rule);
+        let (hold, m_stall, blocks, one_per_interval) = ctx.timing(ew.rule);
         let occupancy = hold.saturating_add(m_stall);
         let exec_lat = ctx.rule_latency(ew.rule, point);
         let cross = crosscore_extra(fn_key, ew, table, point, placement);
@@ -880,6 +891,9 @@ fn score_words(
         if cross.serializes_window {
             base_ready = base_ready.max(max_retire);
         }
+        if one_per_interval {
+            base_ready = base_ready.max(rule_free[ew.rule as usize]);
+        }
         let mut issue = base_ready;
         for u in uops {
             let earliest = base_ready.max(unit_free[u.class.index()]);
@@ -894,6 +908,9 @@ fn score_words(
         }
         if blocks {
             block_free = block_free.max(issue.saturating_add(exec_lat));
+        }
+        if one_per_interval {
+            rule_free[ew.rule as usize] = issue.saturating_add(occupancy.max(1));
         }
 
         let mut lat = match ew.rule {
@@ -915,7 +932,13 @@ fn score_words(
                     };
                     *terms.entry(format!("Mem level={name}")).or_insert(0) += 1;
                 }
-                verdict.latency
+                match verdict.level {
+                    // The hierarchy supplies the L1 floor, while the
+                    // operation-specific row supplies width/bank completion
+                    // latency (notably fp_load_q's extra cycle).
+                    MemLevel::L1dHit | MemLevel::Unresolved => verdict.latency.max(exec_lat),
+                    _ => verdict.latency,
+                }
             }
             _ => exec_lat,
         };
@@ -925,12 +948,13 @@ fn score_words(
         let finish = issue.saturating_add(lat);
         retire[i] = finish;
         if let Some(d) = ew.dst {
-            let d = d as usize;
-            if d < 32 && d != MEM_SP_REG as usize {
-                ready[d] = finish;
+            if !d.is_sp() {
+                if let Some(slot) = ready[d.bank.index()].get_mut(usize::from(d.num)) {
+                    *slot = finish;
+                }
             }
         }
-        if ew.dst == Some(MEM_SP_REG) {
+        if ew.dst.is_some_and(Reg::is_sp) {
             sp_ready = finish;
         }
         if ew.flags.writes() {
@@ -973,12 +997,10 @@ fn earliest_pipe(pipes: u32, from: u64, pipe_free: &[u64]) -> Result<(usize, u64
 }
 
 fn timing_row(rule: CostRule, table: &CostTable) -> Option<&LatRow> {
-    let key = if rule.is_load() {
-        "load"
-    } else if rule.is_store() {
-        "store"
-    } else {
-        rule.as_str()
+    let key = match rule {
+        CostRule::Load | CostRule::LoadAcquire => "load",
+        CostRule::Store | CostRule::StoreRelease => "store",
+        _ => rule.as_str(),
     };
     table.latency_row(key)
 }
@@ -1029,12 +1051,14 @@ fn check_mem_base_in_srcs(ew: &EmittedWord) -> Result<(), String> {
     m.require_base_in_srcs(ew.src_slice())
 }
 
-fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
+fn src_ready(ew: &EmittedWord, ready: &[[u64; 32]; REG_BANK_COUNT]) -> u64 {
     let mut t = 0u64;
     for &s in ew.src_slice() {
-        let i = s as usize;
-        if i < 32 {
-            t = t.max(ready[i]);
+        // Synthetic model fixtures may name a number outside the architected
+        // 0..=31 range; such an operand carries no dependency, exactly as it
+        // did before operands were banked.
+        if let Some(slot) = ready[s.bank.index()].get(usize::from(s.num)) {
+            t = t.max(*slot);
         }
     }
     t
@@ -1066,7 +1090,11 @@ mod tests {
     }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(0, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(0, String::new(), rule, dst, srcs)
+    }
+
+    fn banked_word(rule: CostRule, dst: Option<Reg>, srcs: &[Reg]) -> EmittedWord {
+        EmittedWord::banked(0, String::new(), rule, dst, srcs)
     }
 
     fn word_flags(rule: CostRule, dst: Option<u8>, srcs: &[u8], flags: FlagEffect) -> EmittedWord {
@@ -1093,6 +1121,14 @@ mod tests {
         word(CostRule::Load, Some(dst), &[0, dep]).with_mem(MemRef::cold_unique(seq))
     }
 
+    fn fp_load(rule: CostRule, dst: u8, seq: u64) -> EmittedWord {
+        banked_word(rule, Some(Reg::fp(dst)), &[Reg::gpr(0)]).with_mem(MemRef::cold_unique(seq))
+    }
+
+    fn fp_store(rule: CostRule, src: u8, seq: u64) -> EmittedWord {
+        banked_word(rule, None, &[Reg::gpr(0), Reg::fp(src)]).with_mem(MemRef::cold_unique(seq))
+    }
+
     fn prog(key: &str, code: Vec<EmittedWord>) -> CodegenProgram {
         let mut fns = BTreeMap::new();
         fns.insert(
@@ -1101,6 +1137,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         CodegenProgram {
@@ -1158,11 +1195,11 @@ mod tests {
         assert_eq!(call.len(), 2);
         assert_eq!(call[0].class, PortClass::I);
         assert_eq!(call[1].class, PortClass::B);
-        let neon = m
-            .uops_for(ports_for(CostRule::Neon, &table).unwrap())
+        let asimd = m
+            .uops_for(ports_for(CostRule::AsimdInt, &table).unwrap())
             .unwrap();
-        assert_eq!(neon.len(), 1, "`V0,V1` lists alternatives for one uop");
-        assert_eq!(neon[0].pipes, m.mask("D").unwrap());
+        assert_eq!(asimd.len(), 1, "`V0,V1` lists alternatives for one uop");
+        assert_eq!(asimd[0].pipes, m.mask("D").unwrap());
         let alu = m
             .uops_for(ports_for(CostRule::Alu, &table).unwrap())
             .unwrap();
@@ -1209,21 +1246,120 @@ mod tests {
     }
 
     #[test]
-    fn store_data_uop_contends_with_neon() {
-        let neon = || word(CostRule::Neon, None, &[]);
+    fn scalar_and_q_fp_memory_use_distinct_latency_and_throughput_rows() {
+        let scalar_loads = prog(
+            "f",
+            vec![
+                fp_load(CostRule::FpLoad, 0, 0),
+                fp_load(CostRule::FpLoad, 1, 1),
+            ],
+        );
+        let q_loads = prog(
+            "f",
+            vec![
+                fp_load(CostRule::FpLoadQ, 0, 0),
+                fp_load(CostRule::FpLoadQ, 1, 1),
+            ],
+        );
+        assert_eq!(total(&scalar_loads), 5, "two scalar FP loads dual-issue");
+        assert_eq!(
+            total(&q_loads),
+            7,
+            "Q loads have six-cycle completion and only one may issue per cycle"
+        );
+
+        let scalar_stores = prog(
+            "f",
+            vec![
+                fp_store(CostRule::FpStore, 0, 0),
+                fp_store(CostRule::FpStore, 1, 1),
+            ],
+        );
+        let q_stores = prog(
+            "f",
+            vec![
+                fp_store(CostRule::FpStoreQ, 0, 0),
+                fp_store(CostRule::FpStoreQ, 1, 1),
+            ],
+        );
+        assert_eq!(total(&scalar_stores), 1, "two scalar FP stores dual-issue");
+        assert_eq!(total(&q_stores), 2, "Q stores are sealed at one per cycle");
+    }
+
+    /// Register number 0 in each bank, used both ways round.
+    ///
+    /// Before P8R.1 the scheduler kept one 32-entry ready table, so a `v0`
+    /// definition and an `x0` definition wrote the same slot: an `x0`
+    /// consumer waited on an unrelated vector result (an invented
+    /// dependency), and a `v0` consumer could be satisfied by an integer
+    /// definition (a hidden one). Both directions are checked here.
+    #[test]
+    fn a_vector_and_a_general_register_of_the_same_number_are_independent() {
+        // `fmul s0, s1, s2` is 3 cycles; `add x1, x0, x0` is 1.
+        let fp_def = || banked_word(CostRule::FpMul, Some(Reg::fp(0)), &[Reg::fp(1), Reg::fp(2)]);
+        let gpr_def = || word(CostRule::Alu, Some(Reg::gpr(0).num), &[1, 2]);
+
+        // An `x0` consumer must not wait for the `v0` definition.
+        let invented = prog("f", vec![fp_def(), word(CostRule::Alu, Some(3), &[0, 0])]);
+        let baseline = prog("f", vec![fp_def(), word(CostRule::Alu, Some(3), &[4, 4])]);
+        assert_eq!(
+            total(&invented),
+            total(&baseline),
+            "an x0 consumer must not depend on a v0 definition"
+        );
+
+        // A `v0` consumer must still wait for the `v0` definition, and must
+        // not be satisfied by an `x0` definition instead.
+        let real = prog(
+            "f",
+            vec![
+                fp_def(),
+                banked_word(
+                    CostRule::FpAddSub,
+                    Some(Reg::fp(3)),
+                    &[Reg::fp(0), Reg::fp(0)],
+                ),
+            ],
+        );
+        let hidden = prog(
+            "f",
+            vec![
+                gpr_def(),
+                banked_word(
+                    CostRule::FpAddSub,
+                    Some(Reg::fp(3)),
+                    &[Reg::fp(0), Reg::fp(0)],
+                ),
+            ],
+        );
+        assert!(
+            total(&real) > total(&hidden),
+            "a v0 consumer must wait for the v0 definition ({} vs {})",
+            total(&real),
+            total(&hidden)
+        );
+    }
+
+    #[test]
+    fn store_data_uop_contends_with_asimd() {
+        // Operand-free on purpose: this measures V-pipe occupancy against
+        // the store data uop, not a dependency chain.
+        let neon = || banked_word(CostRule::AsimdInt, None, &[]);
+        // `asimd_int` is latency 2 (P8R.1 replaced the coarse `neon` row's
+        // pessimistic 4 with the SOG's ASIMD basic-arithmetic group).
         let two_neon = prog("f", vec![neon(), neon()]);
-        assert_eq!(total(&two_neon), 4, "both V pipes free: lat 4 from cycle 0");
+        assert_eq!(total(&two_neon), 2, "both V pipes free: lat 2 from cycle 0");
         let with_store = prog("f", vec![store_stack(8), neon(), neon()]);
         assert_eq!(
             total(&with_store),
-            5,
-            "the store's data uop holds a V pipe, so one NEON op slips to cycle 1"
+            3,
+            "the store's data uop holds a V pipe, so one ASIMD op slips to cycle 1"
         );
         let with_alu = prog(
             "f",
             vec![word(CostRule::Alu, Some(1), &[0, 0]), neon(), neon()],
         );
-        assert_eq!(total(&with_alu), 4);
+        assert_eq!(total(&with_alu), 2);
     }
 
     #[test]
@@ -1343,7 +1479,7 @@ mod tests {
             let mut code = vec![load_cold_unique(1, 0)];
             for j in 1..n {
                 if j % 4 == 0 {
-                    code.push(word(CostRule::Neon, None, &[]));
+                    code.push(banked_word(CostRule::AsimdInt, None, &[]));
                 } else {
                     code.push(word(CostRule::Alu, None, &[0]));
                 }
@@ -1351,11 +1487,11 @@ mod tests {
             code
         }
         let inside = prog("f", stream(128));
-        assert_eq!(total(&inside), 35, "nothing crosses a 128-entry window");
+        assert_eq!(total(&inside), 33, "nothing crosses a 128-entry window");
         let across = prog("f", stream(129));
         assert_eq!(
             total(&across),
-            36,
+            34,
             "word 128 cannot cross the 128-entry reorder window"
         );
     }
@@ -1609,7 +1745,7 @@ mod tests {
             8 => encode::enc_ldr_x_imm(dst, MEM_SP_REG, 0),
             w => panic!("no encoder for a {w}-byte load"),
         };
-        EmittedWord::new(enc, String::new(), CostRule::Load, Some(dst), &[MEM_SP_REG])
+        EmittedWord::gpr(enc, String::new(), CostRule::Load, Some(dst), &[MEM_SP_REG])
             .with_mem(MemRef::stack(offset))
     }
 
@@ -1622,7 +1758,7 @@ mod tests {
             8 => encode::enc_str_x_imm(0, MEM_SP_REG, 0),
             w => panic!("no encoder for a {w}-byte store"),
         };
-        EmittedWord::new(enc, String::new(), CostRule::Store, None, &[MEM_SP_REG, 0])
+        EmittedWord::gpr(enc, String::new(), CostRule::Store, None, &[MEM_SP_REG, 0])
             .with_mem(MemRef::stack(offset))
     }
 
@@ -1745,7 +1881,7 @@ mod tests {
             alignment_penalty(&stack, &table, &point).expect("stack"),
             point.get("store_boundary_cross_penalty")
         );
-        let cold = EmittedWord::new(
+        let cold = EmittedWord::gpr(
             crate::encode::enc_str_x_imm(0, 28, 0),
             String::new(),
             CostRule::Store,
@@ -1759,7 +1895,7 @@ mod tests {
             0,
             "an unproven base alignment charges nothing (decision 1611)"
         );
-        let unique = EmittedWord::new(
+        let unique = EmittedWord::gpr(
             crate::encode::enc_str_x_imm(0, 9, 0),
             String::new(),
             CostRule::Store,
@@ -2053,6 +2189,7 @@ mod tests {
                     frame_size: 0,
                     code: code.clone(),
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             );
         }
@@ -2442,7 +2579,7 @@ mod tests {
     }
 
     fn word_enc(enc: u32, rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(enc, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(enc, String::new(), rule, dst, srcs)
     }
 
     #[test]

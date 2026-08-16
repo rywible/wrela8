@@ -148,6 +148,14 @@ fixed-point range expiry, or tile boundary.
 Kinetic maintenance is optional work reduction. It is never a correctness
 input, and disabling it preserves displayed bytes and errors.
 
+> **D-P8R-03** (sealed 2026-08-15) — The camera-cut budget is not relaxed.
+> The full-sweep contract above stands unchanged: a cut, a whip, a first
+> frame, disabled kinetic reuse, and a failed temporal certificate each
+> rebuild from scratch inside the ordinary per-frame budget, and the 60 Hz
+> cut/whip requirement of the temporal milestone is not weakened to buy
+> headroom for any optimization. An optimization that only meets budget by
+> exempting cuts has not met budget.
+
 ### 1.4 Separate candidates from authority
 
 Candidate construction may use bit-defined floating-point arithmetic, jets,
@@ -176,6 +184,27 @@ of the contract.
 Lean proves generic mathematics. Build-time Rust constructs concrete facts,
 stable dumps expose them, and generated guest verifiers consume the encoded
 records. Lean is not invoked by an ordinary Wrela build.
+
+> **D-P8R-08** (sealed 2026-08-15) — Formal claims use exactly this
+> phrasing: Lean proves generic kernel mathematics; build-time Rust
+> constructs concrete facts; generated guest verifiers check encoded
+> records. No document claims an end-to-end verified compiler or renderer,
+> a proof of the shipped image, or a machine-checked pipeline. The
+> candidate/authority separation of §1.4 is part of the same claim: every
+> technique introduced anywhere in this stack *proposes*, and conservative
+> dyadic verification *accepts*. The tracked-tree sweep
+> (`cargo xtask agnostic-sweep`) enforces the superseded over-claims so a
+> document cannot drift back into them.
+
+> **D-P8R-07** (sealed 2026-08-15) — The renderer packet substrate is
+> compiler-internal and renderer-internal. Sealed MachineWir packet
+> operations are surfaced only through the existing generated/sealed
+> renderer intrinsic pattern (`pixels_i32x4_backend_add`-style backend
+> helpers with value-in/value-out signatures over sealed 16-byte packet
+> structs). They do not implement, extend, or expose the public library
+> SIMD types of [05 §8.1](05-library.md); those remain the deliverable of
+> the canonical plan's Task P12.3, which re-plates these operations onto
+> the public types deliberately rather than discovering them.
 
 ## 2. Source and semantic contract
 

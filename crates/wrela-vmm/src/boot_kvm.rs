@@ -73,6 +73,8 @@ const REG_PSTATE: u64 = REG_X0 | 66;
 const REG_SP_EL1: u64 = REG_X0 | 68;
 // S3_0_C1_C0_2, the architectural CPACR_EL1 encoding.
 const REG_CPACR_EL1: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | 0xc082;
+// S3_3_C4_C4_0, the architectural FPCR encoding.
+const REG_FPCR: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | 0xda20;
 
 #[repr(C)]
 struct KvmUserspaceMemoryRegion {
@@ -332,6 +334,7 @@ pub(super) fn boot(
         set_one_reg(fd.as_raw_fd(), REG_SP_EL1, stack)?;
         set_one_reg(fd.as_raw_fd(), REG_PSTATE, 0x3c5)?;
         set_one_reg(fd.as_raw_fd(), REG_CPACR_EL1, 0x0030_0000)?;
+        set_one_reg(fd.as_raw_fd(), REG_FPCR, crate::GUEST_FPCR)?;
         vcpus.push(Vcpu {
             run: Mapping::shared(fd.as_raw_fd(), mmap_size)?,
             _fd: fd,
@@ -671,6 +674,8 @@ mod tests {
         assert_eq!(REG_PC, 0x6030_0000_1000_0040);
         assert_eq!(REG_PSTATE, 0x6030_0000_1000_0042);
         assert_eq!(REG_CPACR_EL1, 0x6030_0000_1300_c082);
+        assert_eq!(REG_FPCR, 0x6030_0000_1300_da20);
+        assert_eq!(crate::GUEST_FPCR, 0x0200_0000);
         assert_eq!(KVM_RUN_EXIT_REASON_OFFSET, 8);
         assert_eq!(KVM_RUN_UNION_OFFSET, 32);
         assert_eq!(KVM_RUN_MMIO_DATA_OFFSET, 40);

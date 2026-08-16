@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::codegen::{self, CodegenProgram};
@@ -21,6 +21,21 @@ pub struct CostStageClosure {
     pub modules: BTreeMap<String, Module>,
 }
 
+fn generated_internal_source_keys(paths: &BTreeMap<Vec<String>, String>) -> BTreeSet<Vec<String>> {
+    paths
+        .iter()
+        .filter_map(|(key, path)| {
+            matches!(
+                path.as_str(),
+                rtconfig::GENERATED_INPUT_PATH
+                    | loader::GENERATED_PIXELS_INPUT_PATH
+                    | loader::GENERATED_PIXELS_STUB_INPUT_PATH
+            )
+            .then(|| key.clone())
+        })
+        .collect()
+}
+
 fn load_err(e: LoadError) -> String {
     match e {
         LoadError::Lex(e) => format!("lex: {e:?}"),
@@ -34,6 +49,13 @@ fn sema_err(e: SemaError) -> String {
 }
 
 pub fn load_cost_stage_closure(path: &Path) -> Result<CostStageClosure, String> {
+    load_cost_stage_closure_impl(path, false)
+}
+
+fn load_cost_stage_closure_impl(
+    path: &Path,
+    trust_census_stdlib_snapshot: bool,
+) -> Result<CostStageClosure, String> {
     let path_str = path.to_string_lossy().into_owned();
     let src = std::fs::read_to_string(path).map_err(|e| format!("read {path_str}: {e}"))?;
     let tokens = lexer::lex(&src).map_err(|e| format!("lex: {e:?}"))?;
@@ -69,7 +91,22 @@ pub fn load_cost_stage_closure(path: &Path) -> Result<CostStageClosure, String> 
         .map(|(k, m)| (k, m.module))
         .collect();
     let root = loaded.root.join(".");
-    let progs = sema::check_program_typed(&modules_by_key, &paths).map_err(sema_err)?;
+    let mut internal_sources = generated_internal_source_keys(&paths);
+    if trust_census_stdlib_snapshot {
+        internal_sources.extend(paths.iter().filter_map(|(key, path)| {
+            let components = Path::new(path)
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .collect::<Vec<_>>();
+            components
+                .windows(2)
+                .any(|pair| pair[0] == "stdlib" && matches!(pair[1], "core" | "drivers"))
+                .then(|| key.clone())
+        }));
+    }
+    let progs =
+        sema::check_program_typed_with_internal_sources(&modules_by_key, &paths, &internal_sources)
+            .map_err(sema_err)?;
     let programs: BTreeMap<String, TypedProgram> =
         progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
     let modules: BTreeMap<String, Module> = modules_by_key
@@ -110,7 +147,10 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CostStag
     } else {
         None
     };
-    let mut progs = sema::check_program_typed(&modules_by_key, &paths).map_err(sema_err)?;
+    let internal_sources = generated_internal_source_keys(&paths);
+    let mut progs =
+        sema::check_program_typed_with_internal_sources(&modules_by_key, &paths, &internal_sources)
+            .map_err(sema_err)?;
     if let Some(tk) = &time_key {
         progs.remove(tk);
         modules_by_key.remove(tk);
@@ -135,7 +175,51 @@ pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
 pub fn codegen_cost_stage_with_placement(
     path: &Path,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
-    let pieces = cost_stage_pieces(path)?;
+    codegen_cost_stage_with_placement_direct_fp(path, true)
+}
+
+/// Compile the cost-stage closure with the renderer direct-FP marker either
+/// honored or stripped. The disabled form exists solely to reproduce the
+/// ordered P8R.3 pre-codegen checkpoint from the current decomposed source;
+/// shipped compilation always uses [`codegen_cost_stage_with_placement`].
+pub fn codegen_cost_stage_with_placement_direct_fp(
+    path: &Path,
+    direct_fp: bool,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
+    let mut pieces = cost_stage_pieces(path)?;
+    if !direct_fp {
+        pieces.mwir.direct_fp_fns.clear();
+    }
+    let placement = pieces.placement.clone();
+    Ok((pieces.codegen()?, placement))
+}
+
+/// Compile a checked-in census source snapshot whose vendored stdlib was
+/// reconstructed by xtask from pinned repository inputs. This explicit API is
+/// the provenance capability; ordinary source paths cannot acquire it.
+pub fn codegen_cost_stage_census_snapshot(
+    path: &Path,
+    direct_fp: bool,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
+    codegen_cost_stage_census(path, direct_fp, true)
+}
+
+/// Compile the hot-census basis with every sealed numeric helper as an
+/// explicit root. Product reachability is intentionally narrower; the census
+/// contract is not, and must fail if any literal target cannot be emitted.
+pub fn codegen_cost_stage_census(
+    path: &Path,
+    direct_fp: bool,
+    trust_census_stdlib_snapshot: bool,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
+    let checked = load_cost_stage_closure_impl(path, trust_census_stdlib_snapshot)?;
+    let mut pieces = cost_stage_pieces_from_with_extra_roots(
+        &checked,
+        &["sqrt_scalar", "rsqrt_scalar", "raster_rsqrt"],
+    )?;
+    if !direct_fp {
+        pieces.mwir.direct_fp_fns.clear();
+    }
     let placement = pieces.placement.clone();
     Ok((pieces.codegen()?, placement))
 }
@@ -188,7 +272,27 @@ fn cost_stage_pieces(path: &Path) -> Result<CostStagePieces, String> {
 }
 
 fn cost_stage_pieces_from(checked: &CostStageClosure) -> Result<CostStagePieces, String> {
-    let reachable = lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
+    cost_stage_pieces_from_with_extra_roots(checked, &[])
+}
+
+fn cost_stage_pieces_from_with_extra_roots(
+    checked: &CostStageClosure,
+    extra_roots: &[&str],
+) -> Result<CostStagePieces, String> {
+    let mut reachable =
+        lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
+    for root in extra_roots {
+        if !checked
+            .programs
+            .values()
+            .any(|program| program.fns.contains_key(*root))
+        {
+            return Err(format!(
+                "cost census: required explicit root `{root}` is absent from the checked closure"
+            ));
+        }
+        reachable.insert((*root).to_string());
+    }
     let lower_opts = LowerOpts {
         emit_comptime_tests: false,
         only: Some(reachable),
@@ -307,6 +411,108 @@ fn linked_shipped_program_recording(
             .map_err(|e| format!("late address relaxation: {e}"))?;
         return Ok((linked, pieces.placement.clone(), TextScope::Closure));
     };
+    let (layout, placement) = layout_shipped_image(&front, img)?;
+    let linked = layout
+        .linked
+        .ok_or_else(|| "image layout did not produce a linked executable stream".to_string())?;
+    Ok((linked, placement, TextScope::Image))
+}
+
+/// Digest the exact sealed image blob for a source basis.
+///
+/// The hot-path census records this beside its emitted-code dump digest, so a
+/// checked-in report identifies both the executable stream it counted and the
+/// complete image whose renderer it describes.
+pub fn shipped_image_digest(path: &Path) -> Result<String, String> {
+    let front = load_shipped_front(path)?;
+    shipped_image_digest_from_front(path, &front, true)
+}
+
+pub fn shipped_image_digest_census(path: &Path, direct_fp: bool) -> Result<String, String> {
+    let front = load_shipped_front(path)?;
+    shipped_image_digest_from_front(path, &front, direct_fp)
+}
+
+pub fn shipped_image_digest_census_snapshot(path: &Path) -> Result<String, String> {
+    let front = load_shipped_front_impl(path, true)?;
+    shipped_image_digest_from_front(path, &front, false)
+}
+
+fn shipped_image_digest_from_front(
+    path: &Path,
+    front: &ShippedFront,
+    direct_fp: bool,
+) -> Result<String, String> {
+    let img = front
+        .image
+        .as_ref()
+        .ok_or_else(|| format!("{} does not declare an image", path.display()))?;
+    let root = &front.checked.programs[&front.checked.root];
+    let runtime_tests: Vec<String> = root
+        .tests
+        .iter()
+        .filter(|test| test.kind == crate::sema::typed::TestKind::Runtime)
+        .map(|test| test.name.clone())
+        .collect();
+    if runtime_tests.is_empty() {
+        return Err(format!(
+            "{} has no runtime image test to identify",
+            path.display()
+        ));
+    }
+    let async_tests: std::collections::BTreeSet<String> = runtime_tests
+        .iter()
+        .filter(|name| {
+            root.fns
+                .get(*name)
+                .is_some_and(|function| function.is_async)
+        })
+        .cloned()
+        .collect();
+    let compiled = crate::layout::lower_and_codegen_image_with_direct_fp(
+        &front.checked.modules,
+        &front.checked.programs,
+        &img.layout_ctx,
+        &img.graph,
+        Some(&img.checked.renderer_configs),
+        Some(&img.pixels),
+        false,
+        &runtime_tests,
+        &async_tests,
+        false,
+        direct_fp,
+    )?;
+    let test_args =
+        crate::layout::resolve_runtime_test_args(root, &runtime_tests, &compiled.graph)?;
+    let boot = crate::layout::BootCtx {
+        graph: &compiled.graph,
+        modules: &compiled.modules,
+        programs: &compiled.programs,
+        layouts: &compiled.layouts,
+        layout_ctx: &compiled.layout_ctx,
+        async_frames: &compiled.async_frames,
+        group_child_index: &compiled.group_child_index,
+        flow: &compiled.flow,
+    };
+    let mut layout = crate::layout::layout_test_image(
+        &compiled.program,
+        &runtime_tests,
+        &async_tests,
+        Some(boot),
+        &test_args,
+    )
+    .map_err(|error| error.message)?;
+    crate::layout::attach_pixels(&mut layout, &img.pixels.compiled_renderers, true)
+        .map_err(|error| error.message)?;
+    crate::layout::attach_blk_report(&mut layout, &img.graph, &compiled.programs)
+        .map_err(|error| error.message)?;
+    Ok(wrela_machine::sha256::sha256_hex(&layout.blob))
+}
+
+fn layout_shipped_image(
+    front: &ShippedFront,
+    img: &ShippedImage,
+) -> Result<(crate::layout::ImageLayout, crate::placement::PlacementTable), String> {
     let compiled = crate::layout::lower_and_codegen_image(
         &front.checked.modules,
         &front.checked.programs,
@@ -330,6 +536,7 @@ fn linked_shipped_program_recording(
         graph: &compiled.graph,
         modules: &compiled.modules,
         programs: &compiled.programs,
+        layouts: &compiled.layouts,
         layout_ctx: &compiled.layout_ctx,
         async_frames: &compiled.async_frames,
         group_child_index: &compiled.group_child_index,
@@ -339,10 +546,7 @@ fn linked_shipped_program_recording(
         crate::layout::layout_program(&compiled.program, Some(boot)).map_err(|e| e.message)?;
     crate::layout::attach_pixels(&mut layout, &img.pixels.compiled_renderers, false)
         .map_err(|error| error.message)?;
-    let linked = layout
-        .linked
-        .ok_or_else(|| "image layout did not produce a linked executable stream".to_string())?;
-    Ok((linked, placement, TextScope::Image))
+    Ok((layout, placement))
 }
 
 pub struct ShippedFront {
@@ -358,7 +562,14 @@ struct ShippedImage {
 }
 
 pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
-    let checked = load_cost_stage_closure(path)?;
+    load_shipped_front_impl(path, false)
+}
+
+fn load_shipped_front_impl(
+    path: &Path,
+    trust_census_stdlib_snapshot: bool,
+) -> Result<ShippedFront, String> {
+    let checked = load_cost_stage_closure_impl(path, trust_census_stdlib_snapshot)?;
     let root = &checked.programs[&checked.root];
     let image = match root.image_fn.clone() {
         None => None,

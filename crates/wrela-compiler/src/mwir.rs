@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::sema::types::{self, Type};
@@ -17,6 +17,10 @@ impl std::fmt::Display for Temp {
 pub struct MwirProgram {
     pub fns: BTreeMap<String, MwirFn>,
     pub rodata: Vec<Vec<u8>>,
+    /// Synchronous renderer functions admitted to use the P8R direct-FP
+    /// storage contract. All other synchronous functions retain the legacy
+    /// GPR bridge, and FlowWir never consults this set.
+    pub direct_fp_fns: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +37,91 @@ impl MwirFn {
         self.temp_types.len()
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketKind {
+    F32x4,
+    I32x4,
+}
+
+impl PacketKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PacketKind::F32x4 => "f32x4",
+            PacketKind::I32x4 => "i32x4",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Min,
+    Max,
+    And,
+    Or,
+}
+
+impl PacketBinaryOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PacketBinaryOp::Add => "add",
+            PacketBinaryOp::Sub => "sub",
+            PacketBinaryOp::Mul => "mul",
+            PacketBinaryOp::Min => "min",
+            PacketBinaryOp::Max => "max",
+            PacketBinaryOp::And => "and",
+            PacketBinaryOp::Or => "or",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketSelectOp {
+    Ge,
+    Gt,
+}
+
+impl PacketSelectOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PacketSelectOp::Ge => "select_ge",
+            PacketSelectOp::Gt => "select_gt",
+        }
+    }
+}
+
+/// Closed operation vocabulary for the renderer-internal packet substrate.
+///
+/// The P8R consumer-matrix lint compares its parsed operation cells with this
+/// exact set. Keep the names stable and update the matrix in the same change
+/// whenever an instruction family is added or removed.
+pub const PIXELS_PACKET_OPERATION_NAMES: &[&str] = &[
+    "f32x4.load",
+    "f32x4.store",
+    "f32x4.splat",
+    "f32x4.add",
+    "f32x4.sub",
+    "f32x4.mul",
+    "f32x4.min",
+    "f32x4.max",
+    "f32x4.select_ge",
+    "f32x4.select_gt",
+    "f32x4.fma",
+    "f32x4.to_i32x4",
+    "i32x4.load",
+    "i32x4.store",
+    "i32x4.splat",
+    "i32x4.add",
+    "i32x4.sub",
+    "i32x4.shr_arith_imm",
+    "i32x4.and",
+    "i32x4.or",
+    "i32x4.select_gt",
+    "i32x4.to_f32x4",
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inst {
@@ -79,6 +168,65 @@ pub enum Inst {
     I32x4FromLanes {
         dst: Temp,
         lanes: Temp,
+    },
+
+    /// Closed renderer-internal packet substrate. Packet temporaries always
+    /// live in aligned 16-byte frame slots in P8R; masks never escape a
+    /// compare-select instruction.
+    PacketFromLanes {
+        kind: PacketKind,
+        dst: Temp,
+        lanes: Temp,
+    },
+    PacketSplat {
+        kind: PacketKind,
+        dst: Temp,
+        scalar: Temp,
+    },
+    PacketBinary {
+        kind: PacketKind,
+        op: PacketBinaryOp,
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+    },
+    PacketShiftRightArithmetic {
+        dst: Temp,
+        src: Temp,
+        immediate: u8,
+    },
+    PacketSelect {
+        kind: PacketKind,
+        op: PacketSelectOp,
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+        if_true: Temp,
+        if_false: Temp,
+    },
+    PacketFma {
+        dst: Temp,
+        lhs: Temp,
+        rhs: Temp,
+        addend: Temp,
+    },
+    PacketConvert {
+        from: PacketKind,
+        to: PacketKind,
+        dst: Temp,
+        src: Temp,
+    },
+
+    /// A hot-path census region boundary.
+    ///
+    /// Non-emitting by construction: it carries a region identity from the
+    /// sealed `pixels_census_region` source annotation through lowering to
+    /// the census, and codegen records its position in the emitted word
+    /// stream without emitting a word. Block labels were rejected because
+    /// they are not stable across optimization, and helper-function
+    /// boundaries because the call overhead distorts what is being measured.
+    RegionMarker {
+        region: u32,
     },
 
     MakeAggregate {
@@ -1032,6 +1180,9 @@ pub fn dump(program: &MwirProgram) -> String {
                 .collect();
             let _ = write!(header, " params=[{}]", ps.join(","));
         }
+        if program.direct_fp_fns.contains(key) {
+            let _ = write!(header, " direct_fp=true");
+        }
         push_line(&mut out, 1, &header);
         for (i, ty) in f.temp_types.iter().enumerate() {
             push_line(
@@ -1098,6 +1249,62 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         }
         Inst::I32x4FromLanes { dst, lanes } => {
             format!("I32x4FromLanes dst={dst} lanes={lanes} order=0,1,2,3")
+        }
+        Inst::PacketFromLanes { kind, dst, lanes } => format!(
+            "PacketFromLanes kind={} dst={dst} lanes={lanes} order=0,1,2,3 align=16",
+            kind.as_str()
+        ),
+        Inst::PacketSplat { kind, dst, scalar } => format!(
+            "PacketSplat kind={} dst={dst} scalar={scalar}",
+            kind.as_str()
+        ),
+        Inst::PacketBinary {
+            kind,
+            op,
+            dst,
+            lhs,
+            rhs,
+        } => format!(
+            "PacketBinary kind={} op={} dst={dst} lhs={lhs} rhs={rhs}",
+            kind.as_str(),
+            op.as_str()
+        ),
+        Inst::PacketShiftRightArithmetic {
+            dst,
+            src,
+            immediate,
+        } => format!("PacketShift kind=i32x4 op=shr_arith dst={dst} src={src} imm={immediate}"),
+        Inst::PacketSelect {
+            kind,
+            op,
+            dst,
+            lhs,
+            rhs,
+            if_true,
+            if_false,
+        } => format!(
+            "PacketSelect kind={} op={} dst={dst} lhs={lhs} rhs={rhs} true={if_true} false={if_false} mask=internal",
+            kind.as_str(),
+            op.as_str()
+        ),
+        Inst::PacketFma {
+            dst,
+            lhs,
+            rhs,
+            addend,
+        } => {
+            format!("PacketFma kind=f32x4 dst={dst} lhs={lhs} rhs={rhs} addend={addend} fused=true")
+        }
+        Inst::PacketConvert { from, to, dst, src } => format!(
+            "PacketConvert from={} to={} dst={dst} src={src}",
+            from.as_str(),
+            to.as_str()
+        ),
+        Inst::RegionMarker { region } => {
+            format!(
+                "RegionMarker region={region} name={} emits=0",
+                crate::pixels::hot_census::region_name(*region)
+            )
         }
         Inst::MmioRead {
             dst,
@@ -1446,4 +1653,82 @@ fn join_temps(ts: &[Temp]) -> String {
         .map(|t| t.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+#[cfg(test)]
+mod packet_dump_tests {
+    use super::*;
+
+    #[test]
+    fn packet_dump_vocabulary_is_stable_and_exposes_the_sealed_semantics() {
+        let cases = [
+            (
+                Inst::PacketFromLanes {
+                    kind: PacketKind::F32x4,
+                    dst: Temp(0),
+                    lanes: Temp(1),
+                },
+                "PacketFromLanes kind=f32x4 dst=t0 lanes=t1 order=0,1,2,3 align=16",
+            ),
+            (
+                Inst::PacketSplat {
+                    kind: PacketKind::I32x4,
+                    dst: Temp(2),
+                    scalar: Temp(3),
+                },
+                "PacketSplat kind=i32x4 dst=t2 scalar=t3",
+            ),
+            (
+                Inst::PacketBinary {
+                    kind: PacketKind::F32x4,
+                    op: PacketBinaryOp::Min,
+                    dst: Temp(4),
+                    lhs: Temp(5),
+                    rhs: Temp(6),
+                },
+                "PacketBinary kind=f32x4 op=min dst=t4 lhs=t5 rhs=t6",
+            ),
+            (
+                Inst::PacketShiftRightArithmetic {
+                    dst: Temp(7),
+                    src: Temp(8),
+                    immediate: 31,
+                },
+                "PacketShift kind=i32x4 op=shr_arith dst=t7 src=t8 imm=31",
+            ),
+            (
+                Inst::PacketSelect {
+                    kind: PacketKind::F32x4,
+                    op: PacketSelectOp::Ge,
+                    dst: Temp(9),
+                    lhs: Temp(10),
+                    rhs: Temp(11),
+                    if_true: Temp(12),
+                    if_false: Temp(13),
+                },
+                "PacketSelect kind=f32x4 op=select_ge dst=t9 lhs=t10 rhs=t11 true=t12 false=t13 mask=internal",
+            ),
+            (
+                Inst::PacketFma {
+                    dst: Temp(14),
+                    lhs: Temp(15),
+                    rhs: Temp(16),
+                    addend: Temp(17),
+                },
+                "PacketFma kind=f32x4 dst=t14 lhs=t15 rhs=t16 addend=t17 fused=true",
+            ),
+            (
+                Inst::PacketConvert {
+                    from: PacketKind::F32x4,
+                    to: PacketKind::I32x4,
+                    dst: Temp(18),
+                    src: Temp(19),
+                },
+                "PacketConvert from=f32x4 to=i32x4 dst=t18 src=t19",
+            ),
+        ];
+        for (inst, expected) in cases {
+            assert_eq!(fmt_inst(&inst), expected);
+        }
+    }
 }

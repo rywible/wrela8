@@ -472,7 +472,9 @@ Every successful build emits a machine-readable report and a summary. At
 minimum: build identity (compiler, revision, target, the build-affecting
 constants — quotas, thresholds — and digests of every input); memory by owner and site with peak ceiling; every promotion
 with its why-chain; per-actor mailbox logical capacity and physical bytes;
-frame slot counts, sizes, and overlays; stack bounds (executor, ISR, fault);
+the completed, deduplicated source-facing type layouts (excluding generated
+runtime modules, which have their own sections); frame slot counts, sizes, and
+overlays; stack bounds (executor, ISR, fault);
 pool capacities (image and scoped) with reclaim destinations; the image
 failure policy;
 queue shapes and maximum in-flight operations; every logical actor edge and

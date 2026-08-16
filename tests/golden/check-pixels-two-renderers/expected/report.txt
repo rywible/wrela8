@@ -7,12 +7,17 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/field.wr sha256=787a074c732b77703784f0822dd114472c1ee5522146d0d3c866fc23823250f7
-  Input path=core/render.wr sha256=e7cb6e095bd3afc9cc474398e617e49cb34988f7e672c641f1121966137c0a01
+  Input path=core/render.wr sha256=c861492b55a76070a9582a8944eaeabee590837e078c4af3982722c7e6b338df
+  Input path=core/render_arrangement.wr sha256=189d472c6ee6775f244181670df65df8182ace64ee999b47444539a225f34cd5
   Input path=core/render_certificate.wr sha256=464f98cf8efae1909bfe9929688dbb1b9a602dc62956ba8f2494b43df563361b
+  Input path=core/render_certify.wr sha256=3cd1ef8576d3ea1673f3ca871d1c001b72c179a7b6fd1a16bd4a8b09cbaf4973
   Input path=core/render_coverage.wr sha256=7ba30a2107a86b3b90389d849ba7fd79da6736698f6851f9f406ff84a90a5df0
   Input path=core/render_interval.wr sha256=02865a0800dd6fa78f8997f17b6df194e703c7dab1df7ed8614e3aa0ae734713
+  Input path=core/render_isolation.wr sha256=e1bf7e350a8d3dc9b86f898f32a3a83ef0262e8e1680398ca5b6dd6964a69437
+  Input path=core/render_orchestrate.wr sha256=47a5c7814494ad07062b23404b6792384e872eef11f68e3a5ce829f84732fecd
+  Input path=core/render_probe.wr sha256=09bf5cbb8e8df899949086413b5cd0afb967ae8c7bccd99d17871ee6621d3f6b
   Input path=core/render_program.wr sha256=82820a0291f016357d988adad7673811ac04902a50c7a6930b675b0a07f17295
-  Input path=core/render_raster.wr sha256=d451dc35c5138da29f24d00f756ddf49d22cf724bd5558292b0c6964aebff281
+  Input path=core/render_raster.wr sha256=c89ea178f7cc73ef31f3d17c9c78186919f0b88817e75173f157359a8986297b
   Input path=core/time.wr sha256=c93194aeb8812f2c3f52b886a9b322cb247c30f39caa25305a2f0f9ef01dca38
   Input path=drivers/display.wr sha256=ca4c2884e5834b9e9f7578231e35ea00c006e9bbfca4e7c498e7570a524c9496
   Input path=examples/check_pixels_two_renderers.wr sha256=aff02cacf22db908e3b642d1c4a1624a88e7773d36ed7b6f1b53a373692d451b
@@ -211,80 +216,16 @@ PixelsCompilerReport v3
     GeneratedWorker actor=__wrela_renderer_1_worker_0 core=0 tiles=[0,1) mailbox_capacity=1
     GeneratedWorker actor=__wrela_renderer_1_worker_1 core=1 tiles=[1,1) mailbox_capacity=1
     ForceRoots keys=[RendererWorker0.init,RendererWorker1.init,RendererWorker2.init,RendererWorker3.init,__wrela_abort_val,__wrela_pixels_bootstrap_camera_light_post,__wrela_pixels_bootstrap_csg,__wrela_pixels_bootstrap_dispatch,__wrela_pixels_bootstrap_event,__wrela_pixels_bootstrap_feature,__wrela_pixels_bootstrap_field,__wrela_pixels_bootstrap_fixed_domain,__wrela_pixels_bootstrap_material,__wrela_pixels_bootstrap_object,__wrela_pixels_bootstrap_scalar,__wrela_pixels_program_validate,struct:Renderer[Params].init]
-  Layout name=FrameProgramHeaderV1 kind=runtime endian=little size=80 padding=0
-    Field name=magic type=[u8; 8] offset=0x0 size=8
-    Field name=version type=u16 offset=0x8 size=2
-    Field name=header_bytes type=u16 offset=0xa size=2
-    Field name=flags type=u32 offset=0xc size=4
-    Field name=total_bytes type=u32 offset=0x10 size=4
-    Field name=renderer_index type=u16 offset=0x14 size=2
-    Field name=reserved0 type=u16 offset=0x16 size=2
-    Field name=numeric_revision type=u32 offset=0x18 size=4
-    Field name=formal_revision type=u32 offset=0x1c size=4
-    Field name=table_count type=u16 offset=0x20 size=2
-    Field name=reserved1 type=[u8; 14] offset=0x22 size=14
-    Field name=digest type=[u8; 32] offset=0x30 size=32
-  Layout name=FrameProgramTableV1 kind=runtime endian=little size=16 padding=0
-    Field name=kind type=u16 offset=0x0 size=2
-    Field name=record_bytes type=u16 offset=0x2 size=2
-    Field name=count type=u32 offset=0x4 size=4
-    Field name=offset type=u32 offset=0x8 size=4
-    Field name=byte_len type=u32 offset=0xc size=4
-  Layout name=FrameProgramRecordV1 kind=runtime endian=little size=16 padding=0
-    Field name=stable_id type=u32 offset=0x0 size=4
-    Field name=tag type=u16 offset=0x4 size=2
-    Field name=flags type=u16 offset=0x6 size=2
-    Field name=operand_offset type=u32 offset=0x8 size=4
-    Field name=operand_count type=u16 offset=0xc size=2
-    Field name=reserved type=u16 offset=0xe size=2
-  Layout name=FrameProgramImmediateV1 kind=runtime endian=little size=24 padding=0
-    Field name=owner_kind type=u16 offset=0x0 size=2
-    Field name=reserved0 type=u16 offset=0x2 size=2
-    Field name=owner_id type=u32 offset=0x4 size=4
-    Field name=ordinal type=u32 offset=0x8 size=4
-    Field name=reserved1 type=u32 offset=0xc size=4
-    Field name=value type=u64 offset=0x10 size=8
-  Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
-    Padding offset=0x0 size=40
-    Field name=next_deadline type=u64 offset=0x28 size=8
-    Field name=exit_code type=u64 offset=0x30 size=8
-    Padding offset=0x38 size=8
-    Field name=test_passed type=u64 offset=0x40 size=8
-    Field name=test_failed type=u64 offset=0x48 size=8
-    Field name=ring_data_bump type=u64 offset=0x50 size=8
-    Field name=ring_desc_bump type=u64 offset=0x58 size=8
-    Field name=line_start type=u64 offset=0x60 size=8
-    Field name=core_marks type=[u64; CORE_SLOTS] offset=0x68 size=256
-    Padding offset=0x168 size=152
-    Field name=vector0_observed type=u64 offset=0x200 size=8
-    Field name=abort_latch type=u64 offset=0x208 size=8
-    Field name=test_next type=u64 offset=0x210 size=8
   Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
     Field name=now_ns type=u64 offset=0x0 size=8
-  Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
-    Field name=word type=u64 offset=0x0 size=8
-  Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
-    Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
-    Padding offset=0x100 size=1792
-    Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
-  Layout name=ConsoleRingDescPage kind=runtime endian=little size=65536 padding=0
-    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=65536
-  Layout name=ConsoleRingAvailPage kind=runtime endian=little size=4 padding=0
-    Field name=avail_flags_idx type=u32 offset=0x0 size=4
-  Layout name=ConsoleRingDoorbellPage kind=runtime endian=little size=8 padding=0
-    Field name=doorbell type=u64 offset=0x0 size=8
   Layout name=ConsoleDataPage kind=runtime endian=little size=131072 padding=0
     Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=131072
-  Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
-    Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
-  Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
-    Field name=turns type=[u64; N_CORES] offset=0x0 size=8
-    Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
-    Field name=messages type=[u64; N_CORES] offset=0x10 size=8
-    Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
-    Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
+  Layout name=ConsoleRingAvailPage kind=runtime endian=little size=4 padding=0
+    Field name=avail_flags_idx type=u32 offset=0x0 size=4
+  Layout name=ConsoleRingDescPage kind=runtime endian=little size=65536 padding=0
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=65536
+  Layout name=ConsoleRingDoorbellPage kind=runtime endian=little size=8 padding=0
+    Field name=doorbell type=u64 offset=0x0 size=8
   Layout name=DisplayMemory kind=runtime endian=little size=12288 padding=3912
     Field name=abi_version type=u32 offset=0x0 size=4
     Field name=format type=u8 offset=0x4 size=1
@@ -314,15 +255,212 @@ PixelsCompilerReport v3
     Field name=tile_reserved type=[u8; 5] offset=0x113 size=5
     Padding offset=0x118 size=3816
     Field name=pixels type=[u8; 8192] offset=0x1000 size=8192
+  Layout name=FrameProgramHeaderV1 kind=runtime endian=little size=80 padding=0
+    Field name=magic type=[u8; 8] offset=0x0 size=8
+    Field name=version type=u16 offset=0x8 size=2
+    Field name=header_bytes type=u16 offset=0xa size=2
+    Field name=flags type=u32 offset=0xc size=4
+    Field name=total_bytes type=u32 offset=0x10 size=4
+    Field name=renderer_index type=u16 offset=0x14 size=2
+    Field name=reserved0 type=u16 offset=0x16 size=2
+    Field name=numeric_revision type=u32 offset=0x18 size=4
+    Field name=formal_revision type=u32 offset=0x1c size=4
+    Field name=table_count type=u16 offset=0x20 size=2
+    Field name=reserved1 type=[u8; 14] offset=0x22 size=14
+    Field name=digest type=[u8; 32] offset=0x30 size=32
+  Layout name=FrameProgramImmediateV1 kind=runtime endian=little size=24 padding=0
+    Field name=owner_kind type=u16 offset=0x0 size=2
+    Field name=reserved0 type=u16 offset=0x2 size=2
+    Field name=owner_id type=u32 offset=0x4 size=4
+    Field name=ordinal type=u32 offset=0x8 size=4
+    Field name=reserved1 type=u32 offset=0xc size=4
+    Field name=value type=u64 offset=0x10 size=8
+  Layout name=FrameProgramRecordV1 kind=runtime endian=little size=16 padding=0
+    Field name=stable_id type=u32 offset=0x0 size=4
+    Field name=tag type=u16 offset=0x4 size=2
+    Field name=flags type=u16 offset=0x6 size=2
+    Field name=operand_offset type=u32 offset=0x8 size=4
+    Field name=operand_count type=u16 offset=0xc size=2
+    Field name=reserved type=u16 offset=0xe size=2
+  Layout name=FrameProgramTableV1 kind=runtime endian=little size=16 padding=0
+    Field name=kind type=u16 offset=0x0 size=2
+    Field name=record_bytes type=u16 offset=0x2 size=2
+    Field name=count type=u32 offset=0x4 size=4
+    Field name=offset type=u32 offset=0x8 size=4
+    Field name=byte_len type=u32 offset=0xc size=4
+  Layout name=GroupArena kind=runtime endian=little size=96 padding=0
+    Field name=slots type=[GroupSlot; GROUP_SLOTS] offset=0x0 size=96
+  Layout name=GroupSlot kind=runtime endian=little size=96 padding=8
+    Field name=in_use type=u64 offset=0x0 size=8
+    Field name=capacity type=u64 offset=0x8 size=8
+    Field name=active_children type=u64 offset=0x10 size=8
+    Field name=deadline_ns type=u64 offset=0x18 size=8
+    Field name=cancelled type=u64 offset=0x20 size=8
+    Field name=parent type=u64 offset=0x28 size=8
+    Field name=join_waiter type=u32 offset=0x30 size=4
+    Padding offset=0x34 size=4
+    Field name=owner_turn type=u32 offset=0x38 size=4
+    Padding offset=0x3c size=4
+    Field name=child0_tag type=u64 offset=0x40 size=8
+    Field name=child0_payload type=u64 offset=0x48 size=8
+    Field name=child1_tag type=u64 offset=0x50 size=8
+    Field name=child1_payload type=u64 offset=0x58 size=8
+  Layout name=InitSpan0Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan1Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan2Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan3Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan4Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan5Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan6Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan7Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=[u64; N_CORES] offset=0x0 size=8
+    Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
+    Field name=messages type=[u64; N_CORES] offset=0x10 size=8
+    Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
+    Field name=enabled type=u64 offset=0x0 size=8
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
+  Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Field name=exit_code type=u64 offset=0x30 size=8
+    Padding offset=0x38 size=8
+    Field name=test_passed type=u64 offset=0x40 size=8
+    Field name=test_failed type=u64 offset=0x48 size=8
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+    Field name=core_marks type=[u64; CORE_SLOTS] offset=0x68 size=256
+    Padding offset=0x168 size=152
+    Field name=vector0_observed type=u64 offset=0x200 size=8
+    Field name=abort_latch type=u64 offset=0x208 size=8
+    Field name=test_next type=u64 offset=0x210 size=8
+  Layout name=Mb0Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB0_WORDS] offset=0x0 size=8
+  Layout name=Mb10Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB10_WORDS] offset=0x0 size=8
+  Layout name=Mb11Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB11_WORDS] offset=0x0 size=8
+  Layout name=Mb12Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB12_WORDS] offset=0x0 size=8
+  Layout name=Mb13Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB13_WORDS] offset=0x0 size=8
+  Layout name=Mb14Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB14_WORDS] offset=0x0 size=8
+  Layout name=Mb15Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB15_WORDS] offset=0x0 size=8
+  Layout name=Mb16Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB16_WORDS] offset=0x0 size=8
+  Layout name=Mb17Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB17_WORDS] offset=0x0 size=8
+  Layout name=Mb18Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB18_WORDS] offset=0x0 size=8
+  Layout name=Mb19Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB19_WORDS] offset=0x0 size=8
+  Layout name=Mb1Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB1_WORDS] offset=0x0 size=8
+  Layout name=Mb20Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB20_WORDS] offset=0x0 size=8
+  Layout name=Mb21Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB21_WORDS] offset=0x0 size=8
+  Layout name=Mb22Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB22_WORDS] offset=0x0 size=8
+  Layout name=Mb23Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB23_WORDS] offset=0x0 size=8
+  Layout name=Mb24Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB24_WORDS] offset=0x0 size=8
+  Layout name=Mb25Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB25_WORDS] offset=0x0 size=8
+  Layout name=Mb26Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB26_WORDS] offset=0x0 size=8
+  Layout name=Mb27Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB27_WORDS] offset=0x0 size=8
+  Layout name=Mb28Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB28_WORDS] offset=0x0 size=8
+  Layout name=Mb29Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB29_WORDS] offset=0x0 size=8
+  Layout name=Mb2Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB2_WORDS] offset=0x0 size=8
+  Layout name=Mb30Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB30_WORDS] offset=0x0 size=8
+  Layout name=Mb31Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB31_WORDS] offset=0x0 size=8
+  Layout name=Mb3Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB3_WORDS] offset=0x0 size=8
+  Layout name=Mb4Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB4_WORDS] offset=0x0 size=8
+  Layout name=Mb5Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB5_WORDS] offset=0x0 size=8
+  Layout name=Mb6Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB6_WORDS] offset=0x0 size=8
+  Layout name=Mb7Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB7_WORDS] offset=0x0 size=8
+  Layout name=Mb8Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB8_WORDS] offset=0x0 size=8
+  Layout name=Mb9Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB9_WORDS] offset=0x0 size=8
+  Layout name=MbCtl kind=runtime endian=little size=24 padding=0
+    Field name=head type=u64 offset=0x0 size=8
+    Field name=tail type=u64 offset=0x8 size=8
+    Field name=count type=u64 offset=0x10 size=8
+  Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
+    Field name=word type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
+    Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+    Padding offset=0x100 size=1792
+    Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
+  Layout name=RingCtl kind=runtime endian=little size=24 padding=0
+    Field name=head type=u64 offset=0x0 size=8
+    Field name=tail type=u64 offset=0x8 size=8
+    Field name=count type=u64 offset=0x10 size=8
+  Layout name=RingsCtl kind=runtime endian=little size=24 padding=0
+    Field name=edges type=[RingCtl; N_RINGS_LEN] offset=0x0 size=24
+  Layout name=RingsData kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; RINGS_DATA_WORDS] offset=0x0 size=8
+  Layout name=RuntimeTables kind=runtime endian=little size=128 padding=0
+    Field name=turns type=[TurnArea; N_TURNS_LEN] offset=0x0 size=128
+  Layout name=SchedCore kind=runtime endian=little size=16 padding=0
+    Field name=ready type=[u64; READY_QUEUE_CAPACITY] offset=0x0 size=8
+    Field name=rr_cursor type=u64 offset=0x8 size=8
+  Layout name=SchedStripe kind=runtime endian=little size=16 padding=0
+    Field name=cores type=[SchedCore; N_CORES] offset=0x0 size=16
+  Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
+    Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
+  Layout name=TurnArea kind=runtime endian=little size=128 padding=47
+    Field name=busy type=u64 offset=0x0 size=8
+    Field name=suspended type=u64 offset=0x8 size=8
+    Field name=resume_ready type=u64 offset=0x10 size=8
+    Field name=reply type=u64 offset=0x18 size=8
+    Field name=waker_turn type=u32 offset=0x20 size=4
+    Field name=waker_core type=u32 offset=0x24 size=4
+    Field name=cur_method type=u64 offset=0x28 size=8
+    Field name=reply_slot_turn type=u32 offset=0x30 size=4
+    Field name=reply_slot_off type=u32 offset=0x34 size=4
+    Field name=reply_tag type=u64 offset=0x38 size=8
+    Field name=ambient_group type=u64 offset=0x40 size=8
+    Field name=lineage_deadline type=u64 offset=0x48 size=8
+    Padding offset=0x50 size=47
+    Field name=_tail type=u8 offset=0x7f size=1
+  Layout name=WakeTables kind=runtime endian=little size=8 padding=0
+    Field name=wake_pending type=[u64; N_WAKE_DRAINS_LEN] offset=0x0 size=8
   Section name=pages base=0x40000000 size=245760
   Cores count=2
   CoreStack core=0 base=0x7fe00000 size=0x100000
   CoreStack core=1 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40600000 size=80
-  Section name=code base=0x40600050 size=1537572
-  Section name=rodata base=0x40777678 size=1575
-  Section name=abort base=0x40777ca0 size=120
-  Section name=checkpoint base=0x40777d18 size=28
+  Section name=code base=0x40600050 size=1655116
+  Section name=rodata base=0x407941a0 size=1609
+  Section name=abort base=0x407947ec size=120
+  Section name=checkpoint base=0x40794864 size=28
   Section name=rtdata base=0x40a00000 size=234120
   Section name=devregs base=0x40a39288 size=16
   Section name=frameprog base=0x40a40000 size=53520
@@ -336,7 +474,7 @@ PixelsCompilerReport v3
   RendererWorker renderer=1 index=1 actor=__wrela_renderer_1_worker_1 core=1 tiles=[1,1) workspace_base=0x40aa1da0 workspace_bytes=5952
   RendererMemory renderer=1 framebuffer_base=0x40aa4000 framebuffer_bytes=16384 probe_base=0x40aa8000 probe_bytes=0
   Entry base=0x40600000
-  CoreEntry core=1 base=0x4076a910
+  CoreEntry core=1 base=0x40788058
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x4001c000 size=131072
   PlacedStatic name=CONSOLE_RING_AVAIL type=ConsoleRingAvailPage addr=0x40011000 size=4
@@ -544,7 +682,7 @@ PixelsCompilerReport v3
   DeviceRegs device=device#0 type=DisplayDevice driver=Display base=0x40a39288 size=8
   DeviceRegs device=device#1 type=DisplayDevice driver=Display base=0x40a39290 size=8
 PixelsImageContract v1
-  GeneratedModule address=core.__image_pixels bytes=188916 digest=bb26eb42c03ebc1f74e51dea27ecc46d2916dffa0e9e1ab846fb67956ffeb038
+  GeneratedModule address=core.__image_pixels bytes=195502 digest=22bb84052b0e5eb9e10f2e084929bb1867bb6b9027d0508f7e1335aecc0bbfdf
   Renderer index=0 profile=AaaByteExact frameprog_base=0x40a40000 frameprog_bytes=26640 frameprog_blob_digest=50c748e2f50758d6a08dcd1db3f414d3dd8c47621b439210c6b38f1fc398a96f state_base=0x40a50000 state_reservation_bytes=164402 framebuffer_base=0x40a74000 framebuffer_bytes=16384 probe_base=0x40a78000 probe_bytes=0 coordinator=__wrela_renderer_0_coordinator@core0 execution=certified-from-scratch presentation=machine-v1-bgra8-srgb
     Field key=examples.two_renderer_scene::world material_key=examples.two_renderer_scene::shade display_ref=driver#0
     Mode width=64 height=32 refresh_hz=60 shade_hz=60 tone_curve=Linear
@@ -575,24 +713,23 @@ PixelsImageContract v1
       Schema run_length_bins=8 root_methods=[0:bernstein-faces,1:monotone-tube,2:krawczyk] composition_shapes=[0:general,1:plane,2:sphere,3:torus]
       Schema expiry_causes=[0:domain-end,1:residual,2:validity,3:order,4:branch,5:numeric,6:fixed-q,7:event] margin_owners=[0:root,1:feature,2:order,3:csg,4:branch,5:numeric,6:fixed-q,7:event]
       Schema density_bins=8 subdivision_bins=16 rebuild_reasons=[0:none,1:x-split,2:q-split,3:feature-split,4:branch-split,5:event-arrangement,6:pixel-cell,7:subpixel-integration,8:exhausted] numeric_failure_bins=8 pixel_classes=[regular,corridor] raster_evidence=[packets,scalar-edges,q-checked,normal-checked,world-positions,background,event,failures]
-  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=5854485 rank_cycles=5854485 schedule_cycles=232918 footprint_cycles=5621567 executable_words=384450 executable_code_bytes=1537800 fetched_text_bytes=3025600 rodata_bytes=1575 image_bytes=4428440 sync_frame_max_bytes=63376 async_frame_total_bytes=28640 ghz=2.4
-    Workload name=flat proxy_cycles=5854485
-    Owner name=app proxy_cycles=20518
-    Owner name=runtime proxy_cycles=212400
+  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=7156589 rank_cycles=7156589 schedule_cycles=260500 footprint_cycles=6896089 executable_words=413836 executable_code_bytes=1655344 fetched_text_bytes=3262784 rodata_bytes=1609 image_bytes=4428440 sync_frame_max_bytes=63376 async_frame_total_bytes=28640 ghz=2.4
+    Workload name=flat proxy_cycles=7156589
+    Owner name=app proxy_cycles=38568
+    Owner name=runtime proxy_cycles=221932
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=10629 max_entry_method_proxy_cycles=2387
-    Budget n=0 fetched_text_bytes=1537856 executable_code_bytes=1537708 l1i_bytes=65536 over_l1i_lines=23005 over_l2_lines=15837 over_l3_lines=7645 text_pages=376 itlb_entries=48 over_itlb_pages=328 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=32 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2945387
+    Core n=0 proxy_cycles=10521 max_entry_method_proxy_cycles=2387
+    Budget n=0 fetched_text_bytes=1655424 executable_code_bytes=1655252 l1i_bytes=65536 over_l1i_lines=24842 over_l2_lines=17674 over_l3_lines=9482 text_pages=405 itlb_entries=48 over_itlb_pages=357 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=32 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3577160
     Core n=1 proxy_cycles=20 max_entry_method_proxy_cycles=57
-    Budget n=1 fetched_text_bytes=1487744 executable_code_bytes=1487476 l1i_bytes=65536 over_l1i_lines=22222 over_l2_lines=15054 over_l3_lines=6862 text_pages=365 itlb_entries=48 over_itlb_pages=317 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=28 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2676180
-    Shared proxy_cycles=221885
-    Scope name=linked-image executable_words=384450 executable_code_bytes=1537800 fetched_text_bytes=3025600 image_bytes=4428440 rodata_bytes=1575 sync_frame_max_bytes=63376 async_frame_total_bytes=28640
-  Convention fns=585 frameless=282 tail_calls=12
+    Budget n=1 fetched_text_bytes=1607360 executable_code_bytes=1607132 l1i_bytes=65536 over_l1i_lines=24091 over_l2_lines=16923 over_l3_lines=8731 text_pages=394 itlb_entries=48 over_itlb_pages=346 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=28 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3318929
+    Shared proxy_cycles=249575
+    Scope name=linked-image executable_words=413836 executable_code_bytes=1655344 fetched_text_bytes=3262784 image_bytes=4428440 rodata_bytes=1609 sync_frame_max_bytes=63376 async_frame_total_bytes=28640
+  Convention fns=604 frameless=274 tail_calls=12
     Fn key=Camera.__wrela_p5_finite frame=400 residents=35 regs=x0-x1 clobbers=all pool=24
     Fn key=Display.init frame=48 residents=8 regs=x1-x6 clobbers=x0-x6,x8-x10,x30-x31 pool=19
     Fn key=FixedDomain.full frame=48 residents=3 regs=x0-x2 clobbers=x0-x2,x8-x10,x30-x31 pool=23
     Fn key=FrameInputSnapshot.make_frame frame=3072 residents=15 regs=x1,x4,x6-x7,x13-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=15
     Fn key=FrameInputSnapshot.post_values frame=1424 residents=4 regs=x1-x4 clobbers=x0-x4,x8-x10,x30-x31 pool=23
-    Fn key=I32x4.from_lanes frame=96 residents=20 regs=x1-x5 clobbers=x0-x5,x8-x14,x30-x31 pool=19
     Fn key=I32x4.lane frame=64 residents=18 regs=x4-x7 clobbers=x0-x7,x9-x14,x30-x31 pool=17
     Fn key=Iv32.lower frame=32 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=Iv32.point frame=32 residents=1 regs=x0 clobbers=x0,x8-x10,x30-x31 pool=23
@@ -616,11 +753,26 @@ PixelsImageContract v1
     Fn key=QRunScalar.error frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=QRunScalar.second_delta frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=QRunScalar.value frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
-    Fn key=RendererFrameBounds.__wrela_p5_accepts_camera frame=1024 residents=95 regs=x0,x2-x4 clobbers=x0-x4,x9-x14,x30-x31 pool=19
+    Fn key=RendererFrameBounds.__wrela_p5_accepts_camera frame=1024 residents=95 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
     Fn key=RendererWorker0.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
     Fn key=RendererWorker1.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
     Fn key=RendererWorker2.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
     Fn key=RendererWorker3.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
+    Fn key=RendererWorkerP8RSubdivisionCell.charge frame=64 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
+    Fn key=RendererWorkerP8RSubdivisionCell.depth frame=64 residents=4 regs=x1-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
+    Fn key=RendererWorkerP8RSubdivisionCell.proof_state frame=64 residents=6 regs=x4-x6 clobbers=x0-x6,x9-x12,x14,x30-x31 pool=18
+    Fn key=RendererWorkerP8RSubdivisionStack.at_depth_limit frame=3568 residents=3 regs=x0,x2-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=22
+    Fn key=RendererWorkerP8RSubdivisionStack.can_push frame=3520 residents=8 regs=x0-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
+    Fn key=RendererWorkerP8RSubdivisionStack.can_split frame=3568 residents=5 regs=x0-x1 clobbers=x0-x4,x9-x11,x30-x31 pool=22
+    Fn key=RendererWorkerP8RSubdivisionStack.clear frame=3520 residents=1 regs=x1 clobbers=x0-x1,x9-x10,x30-x31 pool=24
+    Fn key=RendererWorkerP8RSubdivisionStack.failure frame=3520 residents=2 regs=x0 clobbers=x0,x9-x11,x30-x31 pool=23
+    Fn key=RendererWorkerP8RSubdivisionStack.length frame=3520 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
+    Fn key=RendererWorkerP8RSubdivisionStack.pop frame=7040 residents=8 regs=x4-x6 clobbers=x0-x6,x8-x14,x30-x31 pool=16
+    Fn key=RendererWorkerP8RSubdivisionStack.pop_prioritized frame=21616 residents=17 regs=x4-x6 clobbers=all pool=16
+    Fn key=RendererWorkerP8RSubdivisionStack.push frame=7024 residents=12 regs=x4-x6 clobbers=x0-x6,x9-x14,x30-x31 pool=17
+    Fn key=RendererWorkerP8RSubdivisionStack.push_binary frame=3760 residents=47 regs=x0-x1,x3-x8,x15 clobbers=x0-x15,x30-x31 pool=21
+    Fn key=RendererWorkerP8RSubdivisionStack.push_children frame=3840 residents=24 regs=x0,x2-x3,x7-x8,x15-x17,x19-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=22
+    Fn key=RendererWorkerP8RSubdivisionStack.within_visit_limit frame=3520 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=22
     Fn key=__boot_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_10 frame=0 residents=0 regs=none clobbers=all pool=27
@@ -904,140 +1056,137 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_bootstrap_object frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_scalar frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_display_submit_and_wait frame=16 residents=3 regs=x0-x1 clobbers=all pool=23
-    Fn key=__wrela_pixels_f32_from_bits frame=0 residents=2 regs=x0 clobbers=all pool=24
-    Fn key=__wrela_pixels_f32_to_bits frame=0 residents=2 regs=x1 clobbers=all pool=23
-    Fn key=__wrela_pixels_f64_bits_to_f32 frame=0 residents=2 regs=x0 clobbers=all pool=24
+    Fn key=__wrela_pixels_f32_from_bits frame=16 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_f32_to_bits frame=16 residents=1 regs=x0 clobbers=all pool=23
+    Fn key=__wrela_pixels_f64_bits_to_f32 frame=16 residents=1 regs=x0 clobbers=all pool=25
     Fn key=__wrela_pixels_local_index_header frame=1280 residents=16 regs=x0-x1,x4-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_local_index_word frame=1072 residents=12 regs=x0-x1,x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p5_finite frame=0 residents=9 regs=x0-x2 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_abs frame=0 residents=4 regs=x0-x3 clobbers=all pool=20
+    Fn key=__wrela_pixels_p5_finite frame=48 residents=5 regs=x0-x1 clobbers=all pool=24
+    Fn key=__wrela_pixels_p7_abs frame=32 residents=1 regs=x1 clobbers=all pool=24
     Fn key=__wrela_pixels_p7_active_object_feature frame=13392 residents=9 regs=x7,x15-x16 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_aligned_deformation_depth_miss frame=352 residents=4 regs=x0-x3 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_aligned_deformation_depth_miss frame=368 residents=1 regs=x0 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_append_root frame=368 residents=36 regs=x0-x1,x3-x7,x12-x14 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_arrangement_boundary_crosses frame=5408 residents=172 regs=x0,x5,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_arrangement_boundary_crosses frame=6128 residents=83 regs=x7,x15-x16 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_certify_pixel_row frame=63376 residents=73 regs=x0,x2,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_certify_row frame=45440 residents=59 regs=x2,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_charge_run_telemetry frame=176 residents=44 regs=x0,x2-x6 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_choose_arrangement_axis frame=5152 residents=127 regs=x1,x3,x15-x17,x19 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_clip_curve_misses_cell frame=3744 residents=132 regs=x0,x5,x7,x15-x17,x19-x27 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_coefficient_scalar frame=208 residents=6 regs=x3-x4 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_coefficient_scalar_r0 frame=192 residents=15 regs=x0,x2-x5 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_coefficient_scalar_r1 frame=192 residents=15 regs=x0,x2-x5 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_collect_roots_box frame=29472 residents=107 regs=x1,x3,x15-x17,x19-x20 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_combined_arrangement_coverage frame=23184 residents=148 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_choose_arrangement_axis frame=5280 residents=111 regs=x1,x3,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_clip_curve_misses_cell frame=4384 residents=53 regs=x0,x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_coefficient_scalar frame=224 residents=4 regs=x3-x4 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_coefficient_scalar_r0 frame=272 residents=5 regs=x0,x2-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_coefficient_scalar_r1 frame=272 residents=5 regs=x0,x2-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_collect_roots_box frame=29568 residents=96 regs=x1,x15-x17,x19-x20 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_combined_arrangement_coverage frame=32832 residents=77 regs=x3,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_csg_evaluate frame=80 residents=13 regs=x0-x5 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_csg_influence frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_csg_occupancy frame=80 residents=6 regs=x2-x3 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_csg_occupancy_r0 frame=32 residents=10 regs=x0-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_csg_occupancy_r1 frame=32 residents=10 regs=x0-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_debug_frame_digest frame=64 residents=1 regs=x0 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_deformation_hits_cell frame=3120 residents=248 regs=x0-x1,x15-x17,x19 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_deformation_miss_model frame=256 residents=24 regs=x0-x7,x11-x17,x19-x27 clobbers=all pool=22
-    Fn key=__wrela_pixels_p7_deformation_misses_cell frame=6256 residents=351 regs=x0-x2,x15-x17,x19-x27 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_deformation_polynomial frame=1440 residents=179 regs=x0-x1,x6-x7,x15-x17,x19-x22 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_deformation_silhouette_misses frame=240 residents=7 regs=x0-x5,x8 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_deformation_veto_objects frame=2608 residents=55 regs=x0,x2,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_deformation_hits_cell frame=4208 residents=113 regs=x0,x15-x16 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_deformation_miss_model frame=432 residents=2 regs=x0-x1 clobbers=all pool=22
+    Fn key=__wrela_pixels_p7_deformation_misses_cell frame=7392 residents=209 regs=x0-x1,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_deformation_polynomial frame=2480 residents=50 regs=x0-x1,x6-x7 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_deformation_silhouette_misses frame=272 residents=3 regs=x0-x1,x8 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_deformation_veto_objects frame=2736 residents=39 regs=x0,x2,x15-x17,x19 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_density_bin frame=0 residents=23 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_digest_result frame=336 residents=59 regs=x0,x2-x5 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_event_class frame=0 residents=583 regs=x0-x5 clobbers=all pool=22
-    Fn key=__wrela_pixels_p7_event_clip_q frame=96 residents=32 regs=x0-x3 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_event_coverage frame=2112 residents=72 regs=x1,x3-x4,x7,x15-x17 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_event_clip_q frame=176 residents=22 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_event_coverage frame=2128 residents=70 regs=x1,x4,x7,x15-x17 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_event_owner frame=608 residents=14 regs=x0-x1,x3-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_event_pixel_span frame=368 residents=74 regs=x0-x1,x3-x7 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_event_polynomial frame=896 residents=47 regs=x1,x6-x7,x12-x17,x19-x21 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_event_polynomial_at_q frame=176 residents=38 regs=x1-x7,x15-x17,x19-x25 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_event_polynomial_uv2_bounds frame=768 residents=64 regs=x0-x5,x7,x12-x14 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_event_predicate_curve frame=2096 residents=163 regs=x0-x1,x6-x7,x15-x17,x19-x27 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_feature_filter_excludes_root frame=1984 residents=84 regs=x0-x3,x7,x15-x17 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_feature_normal frame=368 residents=34 regs=x0-x4,x7,x15-x17 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_feature_polynomial frame=560 residents=36 regs=x1,x3,x6-x7,x15-x17,x19-x24 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_feature_polynomial_uv_bounds frame=496 residents=72 regs=x0-x7,x12-x17,x19-x26 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_feature_predicate_uv_bounds frame=176 residents=23 regs=x0-x7,x11-x17,x19-x26 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_feature_q_span frame=288 residents=43 regs=x0-x1,x3-x7 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_event_polynomial frame=976 residents=36 regs=x1,x6-x7 clobbers=all pool=17
+    Fn key=__wrela_pixels_p7_event_polynomial_at_q frame=304 residents=22 regs=x2-x7,x15-x17,x19-x21 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_event_polynomial_uv2_bounds frame=1024 residents=32 regs=x0-x1,x7,x12 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_event_predicate_curve frame=3072 residents=42 regs=x0-x1,x6-x7 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_feature_filter_excludes_root frame=2112 residents=67 regs=x0-x1,x7,x15-x17 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_feature_normal frame=528 residents=14 regs=x0-x1,x7,x12 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_feature_polynomial frame=656 residents=25 regs=x1,x3,x6-x7,x15-x16 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_feature_polynomial_uv_bounds frame=976 residents=12 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_feature_predicate_uv_bounds frame=336 residents=3 regs=x0-x2 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_feature_q_span frame=384 residents=32 regs=x0-x1,x3-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_feature_support_q_span frame=160 residents=7 regs=x5-x7 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_feature_support_q_span_r0 frame=80 residents=7 regs=x0-x1,x4-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_feature_support_q_span_r1 frame=80 residents=7 regs=x0-x1,x4-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_feature_valid_filter frame=304 residents=3 regs=x0-x1,x4 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_feature_world_bounds frame=816 residents=41 regs=x1,x4-x7,x15-x17 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_frame_snapshot_camera frame=496 residents=73 regs=x1-x7,x15-x17,x19-x24 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_feature_world_bounds frame=928 residents=26 regs=x1,x4-x7 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_frame_snapshot_camera frame=800 residents=35 regs=x1-x7,x15-x17,x19-x23 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_frame_snapshot_light_kinds frame=336 residents=59 regs=x1-x7,x15-x17,x19-x23 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_frame_snapshot_light_scalars frame=7248 residents=93 regs=x1-x7,x15-x17,x19-x27 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_frame_snapshot_light_scalars frame=7712 residents=35 regs=x1-x7,x15-x17,x19-x23 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_frame_snapshot_meta frame=96 residents=42 regs=x4-x7,x15-x16 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_frame_snapshot_params frame=656 residents=81 regs=x1-x7,x15-x17,x19-x25 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_frame_snapshot_post frame=112 residents=41 regs=x0-x6 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_frame_snapshot_store frame=1392 residents=180 regs=x0,x7-x8,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_frame_snapshot_params frame=1056 residents=31 regs=x1-x7,x15-x17,x19-x21 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_frame_snapshot_post frame=208 residents=29 regs=x0-x3 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_frame_snapshot_store frame=1472 residents=170 regs=x0,x7-x8,x15-x17,x19-x27 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_half_plane_byte frame=96 residents=99 regs=x1-x7,x14-x17 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_half_plane_units frame=160 residents=106 regs=x1-x7,x14-x17 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_initial_inside frame=320 residents=6 regs=x6-x7 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_initial_inside_r0 frame=496 residents=22 regs=x0-x1,x6-x7,x15 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_initial_inside_r1 frame=496 residents=22 regs=x0-x1,x6-x7,x15 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_interval_from_f32 frame=304 residents=61 regs=x0,x2-x7,x15-x17,x19 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_interval_sin frame=256 residents=54 regs=x0,x2-x4,x16-x17,x19-x27 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_isolate_power_roots frame=12848 residents=100 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_initial_inside_r0 frame=544 residents=16 regs=x0-x1,x6-x7,x15 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_initial_inside_r1 frame=544 residents=16 regs=x0-x1,x6-x7,x15 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_interval_from_f32 frame=352 residents=54 regs=x0,x2-x7,x14-x15 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_interval_sin frame=432 residents=33 regs=x0,x2-x7,x13-x17,x19-x25 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_isolate_power_roots frame=12912 residents=92 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_isolate_smooth_object frame=10160 residents=84 regs=x0-x1,x3,x7,x15-x17,x19-x21 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_job_value frame=80 residents=43 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_load_root frame=592 residents=49 regs=x0-x1,x3-x7,x15-x17,x19-x20 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_material_event_coverage frame=352 residents=7 regs=x7,x12-x13 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_material_event_coverage_r0 frame=272 residents=7 regs=x0-x3,x6-x7,x11 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_material_event_coverage_r1 frame=272 residents=7 regs=x0-x3,x6-x7,x11 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_material_event_coverage_r0 frame=272 residents=6 regs=x0-x1,x3,x6-x7,x11 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_material_event_coverage_r1 frame=272 residents=6 regs=x0-x1,x3,x6-x7,x11 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_numeric_config frame=352 residents=47 regs=x0-x7,x12-x17,x19 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_object_composed_root frame=32 residents=7 regs=x0,x2-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_object_composed_root_r0 frame=0 residents=17 regs=x0,x4-x8 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_object_composed_root_r1 frame=0 residents=17 regs=x0,x4-x8 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_object_identity_span frame=10288 residents=9 regs=x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_object_q_tube frame=480 residents=11 regs=x7,x12-x17 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_object_q_tube_r0 frame=336 residents=10 regs=x0,x2-x3,x6-x7,x11-x15 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_object_q_tube_r1 frame=336 residents=10 regs=x0,x2-x3,x6-x7,x11-x15 clobbers=all pool=18
-    Fn key=__wrela_pixels_p7_outward_high frame=0 residents=15 regs=x0-x3 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_outward_low frame=0 residents=15 regs=x0-x3 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_pinned_camera frame=128 residents=14 regs=x0-x7,x11-x16 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_object_q_tube frame=528 residents=4 regs=x7,x12 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_object_q_tube_r0 frame=400 residents=1 regs=x0 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_object_q_tube_r1 frame=400 residents=1 regs=x0 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_outward_high frame=48 residents=11 regs=x1-x3 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_outward_low frame=48 residents=11 regs=x1-x3 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_pinned_camera frame=224 residents=1 regs=x0 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_pixel_visibility_from_candidates frame=3856 residents=18 regs=x0,x2-x4,x13,x15-x17 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_point_union_occupancy frame=3920 residents=47 regs=x1-x5,x12-x15 clobbers=all pool=15
-    Fn key=__wrela_pixels_p7_polynomial_at_q frame=192 residents=42 regs=x4-x7,x15-x17,x19-x27 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_power frame=208 residents=7 regs=x2-x3 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_predicate_curve_cell frame=3840 residents=144 regs=x0,x7,x15-x17,x19-x22 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_predicate_region_area frame=6736 residents=107 regs=x5-x7,x15-x17,x19-x27 clobbers=all pool=15
-    Fn key=__wrela_pixels_p7_predicate_region_coverage frame=7632 residents=103 regs=x3,x15-x17,x19-x23 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_point_union_occupancy frame=3952 residents=43 regs=x1-x3,x12-x15 clobbers=all pool=15
+    Fn key=__wrela_pixels_p7_polynomial_at_q frame=304 residents=27 regs=x4-x7,x15-x17,x19-x23 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_power frame=240 residents=3 regs=x2-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_predicate_curve_cell frame=4592 residents=51 regs=x0,x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_predicate_region_area frame=16320 residents=34 regs=x5-x7,x15-x17 clobbers=all pool=15
+    Fn key=__wrela_pixels_p7_predicate_region_coverage frame=8000 residents=57 regs=x3,x15-x17 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_projected_union_mode frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_proposal_matches frame=8800 residents=25 regs=x0,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_quartic_discriminant frame=800 residents=222 regs=x1-x7,x15-x17,x19-x27 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_raw_to_f32 frame=0 residents=31 regs=x1-x8,x13-x17,x19 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_quartic_discriminant frame=2336 residents=30 regs=x1-x2 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_raw_to_f32 frame=64 residents=25 regs=x0-x8,x13-x15 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_resolve_pixel_arrangement frame=4112 residents=7 regs=x7,x13-x15 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement_tier frame=35072 residents=202 regs=x0,x2-x3,x7,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement_tier frame=40560 residents=137 regs=x0,x2-x3,x7,x15-x17,x19-x22 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_resolve_silhouette_owner frame=4784 residents=82 regs=x0-x1,x3,x15-x17,x19 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_revalidated_proposal_count frame=8368 residents=25 regs=x0,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_root_camera_coefficient frame=240 residents=62 regs=x4-x7,x15 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_root_coefficient frame=2992 residents=34 regs=x0,x4-x7,x15 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_root_camera_coefficient frame=368 residents=46 regs=x4-x7 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_root_coefficient frame=3072 residents=24 regs=x0,x4-x7,x15 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_root_coefficient_base frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_root_coefficient_count frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_root_polynomial frame=4032 residents=147 regs=x1,x3,x6-x7,x15-x17,x19-x25 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_root_polynomial frame=4448 residents=94 regs=x1,x3,x6-x7,x15-x16 clobbers=all pool=14
     Fn key=__wrela_pixels_p7_root_polynomial_base frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_root_predicate_base frame=0 residents=8 regs=x0-x3 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_row_candidates frame=13472 residents=107 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_row_candidates frame=13712 residents=76 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_row_candidates_with_proposal frame=16224 residents=51 regs=x0,x2-x7,x13-x17,x19-x27 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_run_job frame=45376 residents=123 regs=x0-x2,x15-x17,x19-x21 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_run_job frame=45408 residents=119 regs=x0-x2,x15-x17,x19-x21 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_run_length_bin frame=0 residents=23 regs=x0-x3 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_sealed_feature_valid_filter frame=3680 residents=50 regs=x0-x1,x3,x7,x15-x17 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_sealed_feature_valid_filter frame=3712 residents=46 regs=x0-x1,x3,x7,x15-x17 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_select_visibility frame=8640 residents=16 regs=x0,x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_silhouette_coverage frame=42336 residents=214 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_silhouette_coverage frame=51520 residents=173 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_smooth_object_q_span frame=12144 residents=25 regs=x7,x15-x16 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_standard_torus_cell_positive_hit frame=32 residents=7 regs=x0-x6 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_standard_torus_coefficients frame=864 residents=23 regs=x0-x1,x3-x7,x11-x17,x19-x27 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_standard_torus_discriminant frame=576 residents=9 regs=x2-x7,x11-x13 clobbers=all pool=18
+    Fn key=__wrela_pixels_p7_standard_torus_cell_positive_hit frame=80 residents=2 regs=x5-x6 clobbers=all pool=19
+    Fn key=__wrela_pixels_p7_standard_torus_coefficients frame=1024 residents=2 regs=x0-x1 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_standard_torus_feature frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
-    Fn key=__wrela_pixels_p7_standard_torus_pixel_bounds frame=544 residents=12 regs=x1-x7,x11-x15 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_standard_torus_positive_hit frame=32 residents=5 regs=x0-x4 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_standard_torus_value frame=496 residents=5 regs=x1-x5 clobbers=all pool=21
+    Fn key=__wrela_pixels_p7_standard_torus_positive_hit frame=64 residents=2 regs=x3-x4 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_store_root frame=272 residents=34 regs=x0-x1,x4-x8,x12-x14 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_structural_corridor_pixel frame=576 residents=11 regs=x0,x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_support_q_span frame=3760 residents=126 regs=x0-x1,x3,x7,x15-x17,x19-x20 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_support_q_span frame=4096 residents=84 regs=x1,x3,x7,x15-x17,x19 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_telemetry_charge frame=0 residents=8 regs=x0-x5 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_telemetry_counter frame=48 residents=9 regs=x0-x4 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_telemetry_reset frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
-    Fn key=__wrela_pixels_p7_torus_event_magnitudes frame=1120 residents=22 regs=x0-x1,x4-x7,x11-x17,x19-x27 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_try_certify_regular_row frame=36080 residents=293 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_torus_event_magnitudes frame=1280 residents=2 regs=x0-x1 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_try_certify_regular_row frame=36464 residents=246 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_union_silhouette_coverage frame=3664 residents=26 regs=x1,x7,x15-x17,x19 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_union_silhouette_coverage_at_slack frame=46272 residents=566 regs=x0-x4,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_union_silhouette_coverage_at_slack frame=57744 residents=214 regs=x0-x1,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_worker_error frame=0 residents=13 regs=x0,x4-x8 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_worker_error_class frame=0 residents=110 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_worker_error_code frame=0 residents=17 regs=x0,x4-x7 clobbers=all pool=18
@@ -1061,7 +1210,7 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p8_complete frame=96 residents=7 regs=x1-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p8_complete_r0 frame=96 residents=47 regs=x4-x7,x14-x15 clobbers=all pool=17
     Fn key=__wrela_pixels_p8_complete_r1 frame=96 residents=47 regs=x4-x7,x14-x15 clobbers=all pool=17
-    Fn key=__wrela_pixels_p8_derivative_bounds frame=272 residents=126 regs=x0-x1,x3-x4,x6-x7,x15-x17,x19-x22 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8_derivative_bounds frame=832 residents=56 regs=x0-x1,x6-x7,x15-x17,x19-x20 clobbers=all pool=14
     Fn key=__wrela_pixels_p8_descriptor_digest frame=144 residents=9 regs=x1-x5 clobbers=all pool=22
     Fn key=__wrela_pixels_p8_descriptor_digest_r0 frame=144 residents=23 regs=x0-x5 clobbers=all pool=21
     Fn key=__wrela_pixels_p8_descriptor_digest_r1 frame=144 residents=23 regs=x0-x5 clobbers=all pool=21
@@ -1069,9 +1218,9 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p8_digest_r0 frame=448 residents=39 regs=x4-x7,x15-x17,x19-x27 clobbers=all pool=16
     Fn key=__wrela_pixels_p8_digest_r1 frame=448 residents=39 regs=x4-x7,x15-x17,x19-x27 clobbers=all pool=16
     Fn key=__wrela_pixels_p8_display_doorbell frame=64 residents=11 regs=x0-x2 clobbers=all pool=22
-    Fn key=__wrela_pixels_p8_geometry_lane_valid frame=688 residents=94 regs=x0-x8,x15-x17,x19 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8_geometry_lane_valid frame=768 residents=85 regs=x0-x2,x4-x5,x7-x8,x15-x17,x19 clobbers=all pool=14
     Fn key=__wrela_pixels_p8_geometry_packet_valid frame=496 residents=2 regs=x0,x5 clobbers=all pool=19
-    Fn key=__wrela_pixels_p8_geometry_valid frame=112 residents=62 regs=x0-x4,x6-x8,x15-x17,x19-x20 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8_geometry_valid frame=496 residents=13 regs=x0-x2,x7 clobbers=all pool=15
     Fn key=__wrela_pixels_p8_i32_fits frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_pixels_p8_i64_magnitude frame=0 residents=5 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p8_initialize frame=16 residents=7 regs=x0-x2 clobbers=all pool=23
@@ -1094,6 +1243,14 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p8_write4_r1 frame=0 residents=120 regs=x0-x2,x4-x8,x15-x17 clobbers=all pool=15
     Fn key=__wrela_pixels_p8_write_r0 frame=0 residents=155 regs=x0-x2,x4-x8,x15-x17,x19-x20 clobbers=all pool=15
     Fn key=__wrela_pixels_p8_write_r1 frame=0 residents=155 regs=x0-x2,x4-x8,x15-x17,x19-x20 clobbers=all pool=15
+    Fn key=__wrela_pixels_p8r_clip_handler frame=1376 residents=7 regs=x0-x1,x7,x11 clobbers=all pool=17
+    Fn key=__wrela_pixels_p8r_deformation_handler frame=1600 residents=9 regs=x0-x1,x13-x14 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8r_dispatch_handler frame=1488 residents=15 regs=x12-x13 clobbers=all pool=15
+    Fn key=__wrela_pixels_p8r_handler_class frame=0 residents=31 regs=x0-x5 clobbers=all pool=22
+    Fn key=__wrela_pixels_p8r_polynomial_handler frame=2640 residents=12 regs=x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p8r_predicate_handler frame=1344 residents=4 regs=x0-x1,x5-x6 clobbers=all pool=19
+    Fn key=__wrela_pixels_p8r_smooth_band_handler frame=128 residents=11 regs=x0-x5 clobbers=all pool=17
+    Fn key=__wrela_pixels_p8r_torus_handler frame=2672 residents=12 regs=x0-x1,x7,x15 clobbers=all pool=13
     Fn key=__wrela_pixels_program_operand frame=1184 residents=960 regs=x4-x7,x14-x17,x19 clobbers=all pool=17
     Fn key=__wrela_pixels_program_record frame=784 residents=476 regs=x4-x7,x14-x17,x19-x20 clobbers=all pool=17
     Fn key=__wrela_pixels_program_table_count frame=0 residents=195 regs=x0-x4 clobbers=all pool=22
@@ -1162,8 +1319,8 @@ PixelsImageContract v1
     Fn key=interval_sub frame=128 residents=15 regs=x0-x1,x3-x5 clobbers=x0-x6,x8-x12,x30-x31 pool=20
     Fn key=interval_valid frame=48 residents=23 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
     Fn key=polynomial_horner9 frame=624 residents=10 regs=x0,x4-x5,x26-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=16
-    Fn key=sin_scalar frame=0 residents=52 regs=x0-x8,x15 clobbers=x0-x15,x30-x31 pool=20
-    Fn key=sqrt_scalar frame=80 residents=28 regs=x0-x8,x15-x17,x19-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=20
+    Fn key=sin_scalar frame=384 residents=6 regs=x1 clobbers=x0-x1,x9,x11-x12,x30-x31 pool=23
+    Fn key=sqrt_scalar frame=128 residents=22 regs=x1-x8,x12-x17,x19-x22 clobbers=x0-x17,x19-x22,x30-x31 pool=23
     Fn key=struct:Renderer[Params].__construct_debug_frame frame=10480 residents=105 regs=x0-x7,x15-x17,x19-x27 clobbers=all pool=16
     Fn key=struct:Renderer[Params].__internal_error frame=2096 residents=3 regs=x2-x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21
     Fn key=struct:Renderer[Params].__render_error frame=2096 residents=1 regs=x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21

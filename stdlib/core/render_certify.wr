@@ -1,0 +1,743 @@
+module render_certify
+
+from core.__image_pixels import __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_program_operand, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
+from core.render import FrameInputSnapshot, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P7VisibilitySample
+from core.render_arrangement import __wrela_pixels_p7_deformation_veto_objects, __wrela_pixels_p7_event_coverage, __wrela_pixels_p7_pixel_visibility_from_candidates, __wrela_pixels_p7_resolve_pixel_arrangement, __wrela_pixels_p7_resolve_silhouette_owner, __wrela_pixels_p7_silhouette_coverage, __wrela_pixels_p7_structural_corridor_pixel
+
+# Seal q_u/q_v before a regular sample crosses into P8. The four point rays
+# are independently certified against the complete candidate set. Their
+# outward q differences form the affine derivative enclosure consumed by the
+# compact raster record; a missing/mismatched witness declines fail-closed.
+pub fn __wrela_pixels_p7_density_bin(count: u32) -> usize:
+    if count == 0:
+        return 0
+    if count == 1:
+        return 1
+    if count == 2:
+        return 2
+    if count <= 4:
+        return 3
+    if count <= 8:
+        return 4
+    if count <= 16:
+        return 5
+    if count <= 32:
+        return 6
+    return 7
+
+fn __wrela_pixels_p7_run_length_bin(length: u32) -> usize:
+    if length <= 1:
+        return 0
+    if length == 2:
+        return 1
+    if length <= 4:
+        return 2
+    if length <= 8:
+        return 3
+    if length <= 16:
+        return 4
+    if length <= 32:
+        return 5
+    if length <= 64:
+        return 6
+    return 7
+
+pub fn __wrela_pixels_p7_charge_run_telemetry(
+    renderer: usize,
+    worker: u32,
+    read sample: P7VisibilitySample,
+    length: u32,
+) -> unit:
+    if sample.event:
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 138, length.to[u64]())
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 22, 1)
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 30, 1)
+        return unit
+    method = sample.proof_method.to[usize]()
+    shape = sample.composition_shape.to[usize]()
+    if method >= 3 or shape >= 4:
+        return unit
+    _ = __wrela_pixels_p7_telemetry_charge(
+        renderer,
+        worker,
+        __wrela_pixels_p7_run_length_bin(length),
+        1,
+    )
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 8.to[usize]() + method, 1)
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 11.to[usize]() + shape, 1)
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 15, 1)
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 23, 1)
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 137, length.to[u64]())
+    return unit
+
+pub fn __wrela_pixels_p7_revalidated_proposal_count(
+    read previous: P7RowCandidates,
+    read current: P7RowCandidates,
+) -> u16:
+    if not previous.ok or not current.ok:
+        return 0
+    proposed: u16 = 0
+    before: u16 = 0
+    now: u16 = 0
+    @budget(bound=512)
+    while before < previous.count and now < current.count:
+        old_id = previous.ids[before.to[usize]()]
+        new_id = current.ids[now.to[usize]()]
+        if old_id == new_id:
+            proposed = proposed + 1
+            before = before + 1
+            now = now + 1
+        elif old_id < new_id:
+            before = before + 1
+        else:
+            now = now + 1
+    return proposed
+
+pub fn __wrela_pixels_p7_row_candidates_with_proposal(
+    read previous: P7RowCandidates,
+    read current: P7RowCandidates,
+    enabled: bool,
+) -> P7RowCandidates:
+    if not current.ok:
+        return P7RowCandidates(ok=false, error=5, ids=[0; 256], count=0)
+    if not enabled or not previous.ok:
+        return current
+    # Both lists are sealed, strictly increasing structural IDs. The linear
+    # merge above is the ordinary revalidation: proposed IDs absent from the
+    # new row are discarded, while `current` retains every newly indexed ID.
+    # Returning the complete current list makes the proposal decision-inert.
+    checked = __wrela_pixels_p7_revalidated_proposal_count(previous, current)
+    if checked <= current.count:
+        return current
+    return P7RowCandidates(ok=false, error=5, ids=[0; 256], count=0)
+
+pub fn __wrela_pixels_p7_proposal_matches(
+    read proposal: P7CertifiedRow,
+    read certified: P7CertifiedRow,
+) -> bool:
+    if not proposal.ok or not certified.ok:
+        return false
+    current: u8 = 0
+    @budget(bound=16)
+    while current < certified.count:
+        start = certified.starts[current.to[usize]()]
+        end = certified.ends[current.to[usize]()]
+        sample = certified.samples[current.to[usize]()]
+        matched = false
+        previous: u8 = 0
+        @budget(bound=16)
+        while previous < proposal.count:
+            if proposal.starts[previous.to[usize]()] <= start and proposal.ends[previous.to[usize]()] >= end:
+                prior = proposal.samples[previous.to[usize]()]
+                q_overlaps = not sample.hit or (
+                    prior.hit
+                    and prior.q_lo <= sample.q_hi
+                    and sample.q_lo <= prior.q_hi
+                )
+                if prior.hit == sample.hit and prior.object == sample.object and prior.identity == sample.identity and prior.event == sample.event and q_overlaps:
+                    matched = true
+            previous = previous + 1
+        if not matched:
+            return false
+        current = current + 1
+    return true
+
+pub fn __wrela_pixels_p7_certify_pixel_row(
+    renderer: usize,
+    worker: u32,
+    tile: u32,
+    y: u32,
+    x0: u32,
+    x1: u32,
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+) -> P7CertifiedRow:
+    if not candidates.ok or x0 >= x1 or x1 - x0 > 16 or x1 > 65535:
+        return P7CertifiedRow.failure()
+    row = P7CertifiedRow(
+        ok=true,
+        error=0,
+        x0=x0.to[u16](),
+        x1=x1.to[u16](),
+        samples=[P7VisibilitySample.background(); 16],
+        starts=[0; 16],
+        ends=[0; 16],
+        count=0,
+        run_count=0,
+        corridor_count=0,
+        root_count=0,
+        modeled=false,
+        model=[0; 8],
+    )
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
+        return P7CertifiedRow.failure_with(8)
+    width_pixels = config[1].to[u32]()
+    height_pixels = config[2].to[u32]()
+    x = x0
+    telemetry_enabled = __wrela_pixels_p7_telemetry_counter(
+        renderer,
+        worker,
+        0,
+    )[0] == 1
+    @budget(bound=16)
+    while x < x1:
+        if telemetry_enabled:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 117, 1)
+        pixel_filter: [f32; 4] = [
+            (((x.to[f32]() + 0.5) / width_pixels.to[f32]()) * 2.0 - 1.0) * width_pixels.to[f32]() / height_pixels.to[f32](),
+            1.0 - ((y.to[f32]() + 0.5) / height_pixels.to[f32]()) * 2.0,
+            1.0 / height_pixels.to[f32](),
+            1.0 / height_pixels.to[f32](),
+        ]
+        pixel_candidates = candidates
+        sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+            renderer=renderer,
+            worker=worker,
+            tile=tile,
+            span=x | ((x + 1) << 16),
+            y=y,
+            filter=pixel_filter,
+            candidates=pixel_candidates,
+            snapshot=snapshot,
+        )
+        # A bounded-displacement predictor is not the authored surface. Apply
+        # the sealed absence veto whenever it reports either a hit or an event:
+        # both describe only the undeformed predictor, and a proved absence of
+        # the authored surface overrides both. The proof's strict-separation
+        # envelope keeps this decision identical in source and guest f32.
+        if candidates.count > 0:
+            deformation = __wrela_pixels_p7_deformation_veto_objects(
+                renderer,
+                tile,
+                x.to[u64]() | (y.to[u64]() << 32),
+                pixel_filter,
+                snapshot.params,
+                snapshot.camera,
+            )
+            if deformation[0] != 1:
+                return P7CertifiedRow.failure_with(12)
+            deformation_objects = deformation[1]
+            veto = deformation[2]
+            proved_hits = deformation[3]
+            if veto != 0:
+                if telemetry_enabled:
+                    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 140, 1)
+                pixel_candidates = P7RowCandidates(ok=true, error=0, ids=[0; 256], count=0)
+                veto_copy: u16 = 0
+                @budget(bound=256)
+                while veto_copy < candidates.count:
+                    feature = candidates.ids[veto_copy.to[usize]()]
+                    veto_copy = veto_copy + 1
+                    owner = __wrela_pixels_program_operand(renderer, 4, feature, 0)
+                    if owner[0] != 1 or owner[1] >= 64:
+                        return P7CertifiedRow.failure_with(12)
+                    if (veto >> owner[1]) & 1 != 0:
+                        continue
+                    pixel_candidates.ids[pixel_candidates.count.to[usize]()] = feature
+                    pixel_candidates.count = pixel_candidates.count + 1
+                sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+                    renderer=renderer,
+                    worker=worker,
+                    tile=tile,
+                    span=x | ((x + 1) << 16),
+                    y=y,
+                    filter=pixel_filter,
+                    candidates=pixel_candidates,
+                    snapshot=snapshot,
+                )
+            if sample.ok and deformation_objects != 0 and (
+                not sample.hit
+                or deformation_objects & (veto | proved_hits) != deformation_objects
+            ):
+                sample.event = true
+        if not sample.ok or sample.event:
+            structural = __wrela_pixels_p7_structural_corridor_pixel(
+                renderer,
+                tile,
+                x,
+                y,
+            )
+            if structural[0] != 1:
+                return P7CertifiedRow.failure_with(9)
+            if structural[1] != 1:
+                if telemetry_enabled:
+                    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 128, 1)
+                if sample.ok:
+                    return P7CertifiedRow.failure_with(41)
+                if sample.error == 5:
+                    return P7CertifiedRow.failure_with(12)
+                return P7CertifiedRow.failure_with(sample.error)
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 113, 1)
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 118, 1)
+            selected = P7VisibilitySample.background()
+            selected_hit = false
+            background_seen = false
+            secondary_hit = false
+            secondary_identity: u32 = 0
+            if sample.ok and sample.hit:
+                selected = sample
+                selected_hit = true
+            point_filter: [f32; 4] = [
+                pixel_filter[0],
+                pixel_filter[1],
+                0.0,
+                0.0,
+            ]
+            side_sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+                renderer=renderer,
+                worker=worker,
+                tile=tile,
+                span=x | ((x + 1) << 16),
+                y=y,
+                filter=point_filter,
+                candidates=pixel_candidates,
+                snapshot=snapshot,
+            )
+            if side_sample.ok and side_sample.hit:
+                selected = side_sample
+                selected_hit = true
+            integrated_coverage: i64 = -1
+            curve = __wrela_pixels_p7_silhouette_coverage(
+                renderer,
+                worker,
+                tile,
+                x,
+                y,
+                pixel_candidates,
+                side_sample,
+                snapshot,
+            )
+            if curve[0] == 1 and curve[1] == 1:
+                # The curve tier returns a singleton byte only after all
+                # relevant silhouette and validity boundaries have been
+                # integrated. Its zero is therefore as authoritative as a
+                # positive byte; declining it would route exact background
+                # pixels into the deliberately bounded adaptive fallback.
+                integrated_coverage = curve[2]
+            elif curve[0] == 1:
+                # No analytic integrator applied (an eligible event family
+                # without a closed-form representation) or the integrator
+                # could not pin a unique byte. Fall through to the adaptive
+                # subpixel arrangement below — the fixed-ladder tier the plan
+                # names for exactly this case. Box-complete collection with
+                # corridor pruning keeps that tier inside its cell budget.
+                pass
+            else:
+                return P7CertifiedRow.failure_with(60 + curve[1].to[u8]())
+            if integrated_coverage > 0 and not selected_hit:
+                selected = __wrela_pixels_p7_resolve_silhouette_owner(
+                    renderer,
+                    worker.to[u64]() | (tile.to[u64]() << 32),
+                    x.to[u64]() | (y.to[u64]() << 32),
+                    pixel_filter,
+                    pixel_candidates,
+                    snapshot,
+                    selected,
+                    curve,
+                )
+                if not selected.ok:
+                    return P7CertifiedRow.failure_with(selected.error)
+                selected_hit = selected.hit
+            arrangement = __wrela_pixels_p7_resolve_pixel_arrangement(
+                renderer,
+                worker.to[u64]() | (tile.to[u64]() << 32),
+                x.to[u64]() | (y.to[u64]() << 32),
+                pixel_filter,
+                pixel_candidates,
+                snapshot,
+                selected,
+                integrated_coverage,
+            )
+            if not arrangement.ok:
+                failure = P7CertifiedRow.failure_with(arrangement.error)
+                failure.model = arrangement.model
+                return failure
+            sample = arrangement.sample
+        if row.count >= 16:
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 128, 1)
+            return P7CertifiedRow.failure_with(1)
+        event_coverage = __wrela_pixels_p7_event_coverage(
+            renderer,
+            tile,
+            x,
+            y,
+            sample,
+            snapshot,
+        )
+        if event_coverage[0] != 1:
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 128, 1)
+            return P7CertifiedRow.failure_with(48)
+        if event_coverage[1] == 1:
+            sample.event = true
+            sample.coverage = event_coverage[2].to[u8]()
+            if sample.proof_method & 127 != 3 or sample.composition_shape != 4:
+                sample.proof_margin = (
+                    sample.coverage.to[i32]() | (
+                        sample.coverage.to[i32]() << 8
+                    )
+                )
+        elif sample.event:
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 128, 1)
+            return P7CertifiedRow.failure_with(49)
+        else:
+            structural = __wrela_pixels_p7_structural_corridor_pixel(
+                renderer,
+                tile,
+                x,
+                y,
+            )
+            if structural[0] != 1:
+                if telemetry_enabled:
+                    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 128, 1)
+                return P7CertifiedRow.failure_with(11)
+            # Structural endpoints delimit regular domains but do not by
+            # themselves prove a visibility event. Event records are emitted
+            # only by a certified local arrangement/coverage calculation.
+        if telemetry_enabled:
+            terminal: usize = 126
+            if sample.event:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 118, 1)
+                terminal = 127
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, terminal, 1)
+        index = row.count.to[usize]()
+        row.samples[index] = sample
+        row.starts[index] = x.to[u16]()
+        row.ends[index] = (x + 1).to[u16]()
+        sample_roots = sample.root_count & 65535
+        if sample_roots > row.root_count:
+            row.root_count = sample_roots
+        if sample.event:
+            row.corridor_count = row.corridor_count + 1
+        else:
+            row.run_count = row.run_count + 1
+        row.count = row.count + 1
+        x = x + 1
+    return row
+
+pub fn __wrela_pixels_p7_try_certify_regular_row(
+    renderer: usize,
+    worker: u32,
+    tile: u32,
+    y: u32,
+    x0: u32,
+    x1: u32,
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+) -> P7CertifiedRow:
+    if not candidates.ok or x0 >= x1 or x1 - x0 > 16 or x1 > 65535:
+        return P7CertifiedRow.failure()
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
+        return P7CertifiedRow.failure_with(14)
+    width = config[1].to[u32]()
+    height = config[2].to[u32]()
+    # A sealed material-boundary event does not delimit visibility, but its
+    # pixels owe their displayed byte to event coverage: a span overlapping
+    # its conservative region resolves per pixel so the material integrator
+    # can charge the corridor. Nothing else pushes those pixels off the
+    # regular-span path, because the material edge is invisible to the
+    # occupancy sweep.
+    material_events = __wrela_pixels_tile_event_count(renderer, tile)
+    if material_events == 4294967295 or material_events > 256:
+        return P7CertifiedRow.failure_with(14)
+    material_ordinal: u32 = 0
+    @budget(bound=256)
+    while material_ordinal < material_events:
+        material_event = __wrela_pixels_tile_event(renderer, tile, material_ordinal)
+        if material_event[0] != 1 or material_event[1] > 4294967295:
+            return P7CertifiedRow.failure_with(14)
+        material_id = material_event[1].to[u32]()
+        material_kind = __wrela_pixels_program_operand(renderer, 7, material_id, 0)
+        if material_kind[0] != 1:
+            return P7CertifiedRow.failure_with(14)
+        if material_kind[1] == 8:
+            material_x0 = __wrela_pixels_program_operand(renderer, 7, material_id, 3)
+            material_x1 = __wrela_pixels_program_operand(renderer, 7, material_id, 4)
+            material_y0 = __wrela_pixels_program_operand(renderer, 7, material_id, 5)
+            material_y1 = __wrela_pixels_program_operand(renderer, 7, material_id, 6)
+            if material_x0[0] != 1 or material_x1[0] != 1 or material_y0[0] != 1 or material_y1[0] != 1:
+                return P7CertifiedRow.failure_with(14)
+            if y.to[u64]() >= material_y0[1] and y.to[u64]() < material_y1[1] and x1.to[u64]() > material_x0[1] and x0.to[u64]() < material_x1[1]:
+                return P7CertifiedRow.failure()
+        material_ordinal = material_ordinal + 1
+    center_x = x0.to[f32]() + (x1 - x0).to[f32]() * 0.5
+    filter: [f32; 4] = [
+        ((center_x / width.to[f32]()) * 2.0 - 1.0) * width.to[f32]() / height.to[f32](),
+        1.0 - ((y.to[f32]() + 0.5) / height.to[f32]()) * 2.0,
+        (x1 - x0).to[f32]() / height.to[f32](),
+        1.0 / height.to[f32](),
+    ]
+    sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+        renderer,
+        worker,
+        tile,
+        x0 | (x1 << 16),
+        y,
+        filter,
+        candidates,
+        snapshot,
+    )
+    if not sample.ok:
+        if sample.error == 5:
+            return P7CertifiedRow.failure_with(15)
+        return P7CertifiedRow.failure_with(sample.error)
+    if sample.event:
+        return P7CertifiedRow.failure()
+    span_modeled = false
+    span_model: [i32; 8] = [0; 8]
+    # P7.8 candidate construction is decision-inert: the complete interval
+    # certificate above remains authoritative. Three certified point anchors
+    # provide an implicit quadratic transport model, while q_error encloses
+    # the already-certified whole-domain tube.
+    if sample.hit:
+        left_filter: [f32; 4] = [
+            filter[0] - filter[2],
+            filter[1],
+            0.0,
+            0.0,
+        ]
+        center_filter: [f32; 4] = [
+            filter[0],
+            filter[1],
+            0.0,
+            0.0,
+        ]
+        right_filter: [f32; 4] = [
+            filter[0] + filter[2],
+            filter[1],
+            0.0,
+            0.0,
+        ]
+        left = __wrela_pixels_p7_pixel_visibility_from_candidates(
+            renderer,
+            worker,
+            tile,
+            x0 | ((x0 + 1) << 16),
+            y,
+            left_filter,
+            candidates,
+            snapshot,
+        )
+        center = __wrela_pixels_p7_pixel_visibility_from_candidates(
+            renderer,
+            worker,
+            tile,
+            x0 | ((x0 + 1) << 16),
+            y,
+            center_filter,
+            candidates,
+            snapshot,
+        )
+        right = __wrela_pixels_p7_pixel_visibility_from_candidates(
+            renderer,
+            worker,
+            tile,
+            (x1 - 1) | (x1 << 16),
+            y,
+            right_filter,
+            candidates,
+            snapshot,
+        )
+        if (
+            left.ok and center.ok and right.ok
+            and left.hit and center.hit and right.hit
+            and not left.event and not center.event and not right.event
+            and left.identity == sample.identity
+            and center.identity == sample.identity
+            and right.identity == sample.identity
+        ):
+            span = (x1 - x0).to[i64]()
+            first_lo = left.q_lo.to[i64]()
+            first_hi = left.q_hi.to[i64]()
+            center_lo = center.q_lo.to[i64]()
+            center_hi = center.q_hi.to[i64]()
+            last_lo = right.q_lo.to[i64]()
+            last_hi = right.q_hi.to[i64]()
+            qx_lo = (last_lo - first_hi) / span - 1
+            qx_hi = (last_hi - first_lo) / span + 1
+            half_span = span / 2
+            if half_span < 1:
+                half_span = 1
+            curvature_scale = half_span * half_span
+            qxx_lo = (
+                first_lo - center_hi * 2 + last_lo
+            ) / curvature_scale - 2
+            qxx_hi = (
+                first_hi - center_lo * 2 + last_hi
+            ) / curvature_scale + 2
+            q_error_lo = sample.q_lo.to[i64]() - left.q_hi.to[i64]()
+            q_error_hi = sample.q_hi.to[i64]() - left.q_lo.to[i64]()
+            if (
+                qx_lo >= -2147483648 and qx_hi <= 2147483647
+                and qxx_lo >= -2147483648 and qxx_hi <= 2147483647
+                and q_error_lo >= -2147483648 and q_error_hi <= 2147483647
+            ):
+                span_modeled = true
+                span_model = [
+                    left.q_lo,
+                    left.q_hi,
+                    qx_lo.to[i32](),
+                    qx_hi.to[i32](),
+                    qxx_lo.to[i32](),
+                    qxx_hi.to[i32](),
+                    q_error_lo.to[i32](),
+                    q_error_hi.to[i32](),
+                ]
+    row = P7CertifiedRow(
+        ok=true,
+        error=0,
+        x0=x0.to[u16](),
+        x1=x1.to[u16](),
+        samples=[P7VisibilitySample.background(); 16],
+        starts=[0; 16],
+        ends=[0; 16],
+        count=1,
+        run_count=1,
+        corridor_count=0,
+        root_count=sample.root_count & 65535,
+        modeled=span_modeled,
+        model=span_model,
+    )
+    row.samples[0] = sample
+    row.starts[0] = x0.to[u16]()
+    row.ends[0] = x1.to[u16]()
+    return row
+
+pub fn __wrela_pixels_p7_certify_row(
+    read context: P7RowCertificationContext,
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+) -> P7CertifiedRow:
+    renderer = context.renderer
+    worker = context.worker
+    tile = context.tile
+    y = context.y
+    x0 = context.x0
+    x1 = context.x1
+    proposal = context.proposal
+    proposals_enabled = context.proposals_enabled
+    if not candidates.ok or x0 >= x1 or x1 - x0 > 16 or x1 > 65535:
+        return P7CertifiedRow.failure()
+    row = P7CertifiedRow(
+        ok=true,
+        error=0,
+        x0=x0.to[u16](),
+        x1=x1.to[u16](),
+        samples=[P7VisibilitySample.background(); 16],
+        starts=[0; 16],
+        ends=[0; 16],
+        count=0,
+        run_count=0,
+        corridor_count=0,
+        root_count=0,
+        modeled=false,
+        model=[0; 8],
+    )
+    cursor = x0
+    width = x1 - x0
+    telemetry_enabled = __wrela_pixels_p7_telemetry_counter(
+        renderer,
+        worker,
+        0,
+    )[0] == 1
+    # At most sixteen emitted spans, with up to seven deterministic retry
+    # tiers (proposal, x split, q split, feature, branch, event, terminal).
+    @budget(bound=128)
+    while cursor < x1:
+        retrying = width < x1 - cursor
+        domain_end = x1
+        if domain_end <= cursor or domain_end > x1:
+            return P7CertifiedRow.failure_with(2)
+        proposed_end = cursor
+        if not retrying and proposals_enabled and proposal.ok:
+            proposal_index: u8 = 0
+            @budget(bound=16)
+            while proposal_index < proposal.count:
+                proposed_start = proposal.starts[proposal_index.to[usize]()].to[u32]()
+                candidate_end = proposal.ends[proposal_index.to[usize]()].to[u32]()
+                if proposed_start <= cursor and candidate_end > cursor and candidate_end <= x1:
+                    proposed_end = candidate_end
+                proposal_index = proposal_index + 1
+            # P7.11: the proposal must not narrow the *first* attempt. Seeding
+            # the attempted width from the previous row's partition changes the
+            # emitted spans whenever consecutive rows partition differently
+            # (any silhouette), and the debug alpha encodes the span-wide q
+            # interval width — so enabling proposals would change frame bytes.
+            # `proposed_end` is still computed above so revalidation matching
+            # and its telemetry stay live; it just no longer decides `width`.
+        if width > domain_end - cursor:
+            width = domain_end - cursor
+        candidate = P7CertifiedRow.failure()
+        if width > 1:
+            candidate = __wrela_pixels_p7_try_certify_regular_row(
+                renderer,
+                worker,
+                tile,
+                y,
+                cursor,
+                cursor + width,
+                candidates,
+                snapshot,
+            )
+        else:
+            candidate = __wrela_pixels_p7_certify_pixel_row(
+                renderer,
+                worker,
+                tile,
+                y,
+                cursor,
+                cursor + 1,
+                candidates,
+                snapshot,
+        )
+        if not candidate.ok:
+            if candidate.error != 4:
+                failure = P7CertifiedRow.failure_with(candidate.error)
+                failure.model = candidate.model
+                return failure
+            if width <= 1:
+                failure = P7CertifiedRow.failure_with(candidate.error)
+                failure.model = candidate.model
+                return failure
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 112, 1)
+            # Fixed P7.10 x-split tier. q, feature, and branch refinement are
+            # performed by the complete root collector within each child;
+            # only a one-pixel child may enter the terminal corridor tier.
+            width = (width + 1) / 2
+            continue
+        if proposed_end > cursor and not __wrela_pixels_p7_proposal_matches(
+            proposal,
+            candidate,
+        ):
+            # q, identity, and event state are transported from the previous
+            # row only when the new row's complete certificate revalidates
+            # them. On mismatch the fresh certificate remains authoritative and
+            # no later span in this row consults the stale seed. Clearing
+            # `proposal.ok` is decision-inert: it cannot change which spans are
+            # emitted, only whether revalidation is attempted again.
+            proposal.ok = false
+        if row.count.to[u16]() + candidate.count.to[u16]() > 16:
+            return P7CertifiedRow.failure()
+        index: u8 = 0
+        @budget(bound=16)
+        while index < candidate.count:
+            destination = row.count.to[usize]()
+            source = index.to[usize]()
+            row.samples[destination] = candidate.samples[source]
+            row.starts[destination] = candidate.starts[source]
+            row.ends[destination] = candidate.ends[source]
+            row.count = row.count + 1
+            index = index + 1
+        if candidate.root_count > row.root_count:
+            row.root_count = candidate.root_count
+        row.run_count = row.run_count + candidate.run_count
+        row.corridor_count = row.corridor_count + candidate.corridor_count
+        cursor = candidate.x1.to[u32]()
+        width = x1 - cursor
+    return row

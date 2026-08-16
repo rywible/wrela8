@@ -48,7 +48,7 @@ mod tests {
     }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
-        EmittedWord::new(0, String::new(), rule, dst, srcs)
+        EmittedWord::gpr(0, String::new(), rule, dst, srcs)
     }
 
     fn prog(key: &str, code: Vec<EmittedWord>) -> CodegenProgram {
@@ -59,6 +59,7 @@ mod tests {
                 frame_size: 0,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         CodegenProgram {

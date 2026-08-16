@@ -280,7 +280,7 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
 fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
     prog.structs
         .get(name)
-        .or_else(|| prog.imported.structs.get(name))
+        .or_else(|| prog.imported.structs.get(name).map(|value| value.as_ref()))
 }
 
 fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p TypedInstantiation> {
@@ -306,7 +306,7 @@ fn resolve_struct<'p>(
 }
 
 fn missing_struct(prog: &TypedProgram, name: &str) -> FlowError {
-    if let Some(note) = prog.imported.unresolvable.get(name) {
+    if let Some(note) = prog.unresolvable_import_note(name) {
         return FlowError::named(format!("`{name}` {note}"));
     }
     FlowError::unimplemented(format!(
@@ -327,7 +327,7 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> FlowError {
             .unwrap_or(k)
             .to_string(),
     };
-    if let Some(note) = prog.imported.unresolvable.get(&name) {
+    if let Some(note) = prog.unresolvable_import_note(&name) {
         return FlowError::named(format!("`{name}` {note}"));
     }
     match key {
@@ -402,7 +402,12 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
             let en = prog
                 .enums
                 .get(enum_name)
-                .or_else(|| prog.imported.enums.get(enum_name))
+                .or_else(|| {
+                    prog.imported
+                        .enums
+                        .get(enum_name)
+                        .map(|value| value.as_ref())
+                })
                 .ok_or_else(|| {
                     FlowError::unimplemented("matching a generic enum instantiation's variant is")
                 })?;
@@ -424,7 +429,12 @@ fn resolve_callee_fn<'p>(
         CalleeKey::Fn(name) => prog
             .fns
             .get(name)
-            .or_else(|| prog.imported.fns.get(name))
+            .or_else(|| {
+                prog.imported
+                    .fns
+                    .get(name)
+                    .map(|function| function.as_ref())
+            })
             .ok_or_else(|| missing_callee(prog, key)),
         CalleeKey::Method(sname, member) => {
             if let Some(s) = struct_by_name(prog, sname) {
@@ -444,7 +454,7 @@ fn resolve_callee_fn<'p>(
             let e = prog
                 .enums
                 .get(sname)
-                .or_else(|| prog.imported.enums.get(sname))
+                .or_else(|| prog.imported.enums.get(sname).map(|value| value.as_ref()))
                 .ok_or_else(|| missing_callee(prog, key))?;
             e.methods
                 .get(member)
@@ -640,6 +650,82 @@ pub fn lower_program_with(
         }
     }
     Ok(FlowWirProgram { fns })
+}
+
+/// Enumerate async symbols available from one typed module view. The closure
+/// linker uses this to lower each linked symbol in only its deterministic
+/// last-wins owner instead of repeating imported bodies in every module.
+pub fn async_lowering_candidates(
+    program: &TypedProgram,
+    opts: &crate::lower::LowerOpts,
+) -> std::collections::BTreeSet<String> {
+    let computed;
+    let reachable = match &opts.only {
+        Some(keys) => keys,
+        None => {
+            computed = crate::lower::guest_reachable_keys(program, opts);
+            &computed
+        }
+    };
+    let mut out = std::collections::BTreeSet::new();
+    let mut add = |key: String, function: &TypedFn| {
+        if function.is_async && reachable.contains(&key) {
+            out.insert(key);
+        }
+    };
+    for (name, function) in program.fns.iter().chain(
+        program
+            .imported
+            .fns
+            .iter()
+            .map(|(name, function)| (name, function.as_ref())),
+    ) {
+        add(name.clone(), function);
+    }
+    for (name, structure) in program
+        .structs
+        .iter()
+        .map(|(key, value)| (key, value))
+        .chain(
+            program
+                .imported
+                .structs
+                .iter()
+                .map(|(key, value)| (key, value.as_ref())),
+        )
+    {
+        for (member, function) in &structure.methods {
+            add(format!("{name}.{member}"), function);
+        }
+        for (member, function) in &structure.assoc_fns {
+            add(format!("{name}.{member}"), function);
+        }
+        if let Some(function) = &structure.init {
+            add(format!("{name}.init"), function);
+        }
+    }
+    for (key, instantiation) in program
+        .instantiations
+        .iter()
+        .chain(&program.imported.instantiations)
+    {
+        match instantiation {
+            TypedInstantiation::Fn(function) => add(key.clone(), function),
+            TypedInstantiation::Struct(structure) => {
+                for (member, function) in &structure.methods {
+                    add(format!("{key}.{member}"), function);
+                }
+                for (member, function) in &structure.assoc_fns {
+                    add(format!("{key}.{member}"), function);
+                }
+                if let Some(function) = &structure.init {
+                    add(format!("{key}.init"), function);
+                }
+            }
+            TypedInstantiation::Enum(_) => {}
+        }
+    }
+    out
 }
 
 fn lower_fn(f: &TypedFn, prog: &TypedProgram) -> Result<FlowWirFn, FlowError> {
@@ -2310,10 +2396,15 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 });
                 Ok(dst)
             } else if receiver.is_none()
-                && matches!(
+                && (matches!(
                     callee.spelling().as_str(),
                     "__wrela_pixels_f32_to_bits" | "__wrela_pixels_f32_from_bits"
-                )
+                ) || matches!(callee, CalleeKey::Fn(name)
+                    if matches!(name.as_str(), "pixels_f32_to_bits" | "pixels_f32_from_bits")
+                        && b.prog.fn_decl_modules.get(name).map(String::as_str)
+                            == Some("core.render_raster")
+                        && b.prog.fn_decl_names.get(name).map(String::as_str)
+                            == Some(name.as_str())))
                 && args.len() == 1
             {
                 let value = args[0]

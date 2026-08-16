@@ -622,6 +622,7 @@ mod time_prelude_tests {
 #[cfg(test)]
 mod runtime_module_tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn load_runtime_module_parses() {
@@ -652,10 +653,8 @@ mod runtime_module_tests {
     #[test]
     fn zero_renderer_pixels_stub_is_importable_and_reports_zero() {
         let src = "module app\n\n\
-                   from core.__image_pixels import N_RENDERERS, __wrela_pixels_program_validate\n\n\
-                   const COUNT: usize = N_RENDERERS\n\n\
-                   pub fn program_is_valid(renderer: usize) -> bool:\n\
-                   \x20   return __wrela_pixels_program_validate(renderer)\n";
+                   from core.__image_pixels import N_RENDERERS\n\n\
+                   const COUNT: usize = N_RENDERERS\n";
         let tokens = lexer::lex(src).expect("lex");
         let module = parser::parse(tokens).expect("parse");
         let key = vec!["app".to_string()];
@@ -685,8 +684,10 @@ mod runtime_module_tests {
             .iter()
             .map(|(key, loaded)| (key.clone(), loaded.file.display().to_string()))
             .collect::<BTreeMap<_, _>>();
+        let internal_sources = BTreeSet::from([pixels_key.clone()]);
         let programs =
-            crate::sema::check_program_typed(&ast, &paths).expect("type-check zero-renderer stub");
+            crate::sema::check_program_typed_with_internal_sources(&ast, &paths, &internal_sources)
+                .expect("type-check zero-renderer stub");
         assert!(programs[&key].consts.contains_key("COUNT"));
         assert!(
             crate::syntax::printer::pretty(&modules[&pixels_key].module)

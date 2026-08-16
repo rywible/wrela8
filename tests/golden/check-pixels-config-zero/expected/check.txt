@@ -1,6 +1,7 @@
 Module path=__image_pixels
   Const N_RENDERERS: usize
   Const N_RENDER_WORKERS: usize
+  Fn __wrela_pixels_p8r_packet_selftest() -> bool
   Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
   Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
   Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]

@@ -71,16 +71,22 @@ pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use mem::{LineId, MemLevel, MemState, MemVerdict};
 pub use oracles::{check_dimension_inventory, dimension_inventory_rows, inventory_rows};
 pub use owner::classify_owner;
-pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef, MemTarget};
+pub use rule::{
+    BankShape, CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef, MemTarget,
+    REG_BANK_COUNT, Reg, RegBank, check_bank_shape, gpr_operands,
+};
 pub use score::{
     BranchBias, CostReport, CrossExtra, FnCost, basic_block_ranges, block_schedule_lengths,
     block_schedule_lengths_with_counts, score_linked_program, score_program, score_program_at,
     score_program_at_with_hot,
 };
 pub use stage::{
-    CostStageClosure, TextScope, codegen_cost_stage, codegen_cost_stage_with_block_layout,
-    codegen_cost_stage_with_placement, codegen_shipped_program, linked_shipped_program,
-    load_cost_stage_closure, report_cost_stage_path, score_cost_stage_path,
+    CostStageClosure, TextScope, codegen_cost_stage, codegen_cost_stage_census,
+    codegen_cost_stage_census_snapshot, codegen_cost_stage_with_block_layout,
+    codegen_cost_stage_with_placement, codegen_cost_stage_with_placement_direct_fp,
+    codegen_shipped_program, linked_shipped_program, load_cost_stage_closure,
+    report_cost_stage_path, score_cost_stage_path, shipped_image_digest,
+    shipped_image_digest_census, shipped_image_digest_census_snapshot,
 };
 pub use sweep::{SweepPoint, endpoint_corners, record_reads};
 pub use table::{

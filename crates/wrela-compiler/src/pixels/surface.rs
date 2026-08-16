@@ -85,6 +85,13 @@ pub fn empty_image_pixels_source() -> String {
 /// into `core.__image_pixels`, in one table.
 pub const SURFACE: &[SurfaceSymbol] = &[
     SurfaceSymbol {
+        name: "__wrela_pixels_p8r_packet_selftest",
+        origin: SurfaceOrigin::ImagePixels,
+        signature: "() -> bool",
+        empty_body: "    return false",
+        injected: false,
+    },
+    SurfaceSymbol {
         name: "__wrela_pixels_f32_to_bits",
         origin: SurfaceOrigin::ImagePixels,
         signature: "(value: f32) -> u32",
@@ -1219,6 +1226,62 @@ pub const SURFACE: &[SurfaceSymbol] = &[
         injected: true,
     },
     SurfaceSymbol {
+        name: "__wrela_pixels_p8r_handler_class",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_polynomial_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_torus_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_smooth_band_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_clip_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_deformation_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_predicate_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
+        name: "__wrela_pixels_p8r_dispatch_handler",
+        origin: SurfaceOrigin::CoreRender,
+        signature: "",
+        empty_body: "",
+        injected: true,
+    },
+    SurfaceSymbol {
         name: "__wrela_pixels_p7_point_union_occupancy",
         origin: SurfaceOrigin::CoreRender,
         signature: "",
@@ -1518,11 +1581,37 @@ pub const SURFACE: &[SurfaceSymbol] = &[
 mod tests {
     use super::*;
 
+    /// Every renderer module's source, concatenated.
+    ///
+    /// The renderer is `stdlib/core/render.wr` plus its sibling
+    /// `render_*.wr` modules, so a symbol this table credits to the renderer
+    /// may be declared in any of them. Reading only `render.wr` would make
+    /// moving a helper between renderer modules look like deleting it.
     fn render_wr() -> String {
-        std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core/render.wr"),
-        )
-        .expect("stdlib/core/render.wr is readable")
+        let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core");
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&core)
+            .expect("stdlib/core is readable")
+            .map(|entry| entry.expect("stdlib/core entry").path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| extension == "wr")
+                    && path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .is_some_and(|stem| stem == "render" || stem.starts_with("render_"))
+            })
+            .collect();
+        paths.sort();
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.file_name().is_some_and(|name| name == "render.wr")),
+            "stdlib/core/render.wr must exist"
+        );
+        paths
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("renderer module is readable"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Every name any stdlib module imports from the generated image module.
@@ -1619,8 +1708,8 @@ mod tests {
                 || source.contains(&format!("enum {}:", symbol.name));
             assert!(
                 defined,
-                "the surface table injects `{}` from core.render, but \
-                 stdlib/core/render.wr does not define it",
+                "the surface table injects `{}` from the renderer, but no \
+                 stdlib/core/render*.wr module defines it",
                 symbol.name
             );
         }

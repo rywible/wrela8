@@ -14,6 +14,57 @@ ImageReport v0
     Mailbox value=4
   OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=131072 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=131072
+  Layout name=ConsoleRingAvailPage kind=runtime endian=little size=4 padding=0
+    Field name=avail_flags_idx type=u32 offset=0x0 size=4
+  Layout name=ConsoleRingDescPage kind=runtime endian=little size=65536 padding=0
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=65536
+  Layout name=ConsoleRingDoorbellPage kind=runtime endian=little size=8 padding=0
+    Field name=doorbell type=u64 offset=0x0 size=8
+  Layout name=GroupArena kind=runtime endian=little size=96 padding=0
+    Field name=slots type=[GroupSlot; GROUP_SLOTS] offset=0x0 size=96
+  Layout name=GroupSlot kind=runtime endian=little size=96 padding=8
+    Field name=in_use type=u64 offset=0x0 size=8
+    Field name=capacity type=u64 offset=0x8 size=8
+    Field name=active_children type=u64 offset=0x10 size=8
+    Field name=deadline_ns type=u64 offset=0x18 size=8
+    Field name=cancelled type=u64 offset=0x20 size=8
+    Field name=parent type=u64 offset=0x28 size=8
+    Field name=join_waiter type=u32 offset=0x30 size=4
+    Padding offset=0x34 size=4
+    Field name=owner_turn type=u32 offset=0x38 size=4
+    Padding offset=0x3c size=4
+    Field name=child0_tag type=u64 offset=0x40 size=8
+    Field name=child0_payload type=u64 offset=0x48 size=8
+    Field name=child1_tag type=u64 offset=0x50 size=8
+    Field name=child1_payload type=u64 offset=0x58 size=8
+  Layout name=InitSpan0Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan1Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan2Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan3Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan4Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan5Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan6Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InitSpan7Words kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=[u64; N_CORES] offset=0x0 size=8
+    Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
+    Field name=messages type=[u64; N_CORES] offset=0x10 size=8
+    Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
+    Field name=enabled type=u64 offset=0x0 size=8
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
     Padding offset=0x0 size=40
     Field name=next_deadline type=u64 offset=0x28 size=8
@@ -29,32 +80,114 @@ ImageReport v0
     Field name=vector0_observed type=u64 offset=0x200 size=8
     Field name=abort_latch type=u64 offset=0x208 size=8
     Field name=test_next type=u64 offset=0x210 size=8
-  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
-    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=Mb0Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB0_WORDS] offset=0x0 size=8
+  Layout name=Mb10Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB10_WORDS] offset=0x0 size=8
+  Layout name=Mb11Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB11_WORDS] offset=0x0 size=8
+  Layout name=Mb12Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB12_WORDS] offset=0x0 size=8
+  Layout name=Mb13Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB13_WORDS] offset=0x0 size=8
+  Layout name=Mb14Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB14_WORDS] offset=0x0 size=8
+  Layout name=Mb15Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB15_WORDS] offset=0x0 size=8
+  Layout name=Mb16Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB16_WORDS] offset=0x0 size=8
+  Layout name=Mb17Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB17_WORDS] offset=0x0 size=8
+  Layout name=Mb18Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB18_WORDS] offset=0x0 size=8
+  Layout name=Mb19Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB19_WORDS] offset=0x0 size=8
+  Layout name=Mb1Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB1_WORDS] offset=0x0 size=8
+  Layout name=Mb20Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB20_WORDS] offset=0x0 size=8
+  Layout name=Mb21Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB21_WORDS] offset=0x0 size=8
+  Layout name=Mb22Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB22_WORDS] offset=0x0 size=8
+  Layout name=Mb23Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB23_WORDS] offset=0x0 size=8
+  Layout name=Mb24Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB24_WORDS] offset=0x0 size=8
+  Layout name=Mb25Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB25_WORDS] offset=0x0 size=8
+  Layout name=Mb26Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB26_WORDS] offset=0x0 size=8
+  Layout name=Mb27Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB27_WORDS] offset=0x0 size=8
+  Layout name=Mb28Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB28_WORDS] offset=0x0 size=8
+  Layout name=Mb29Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB29_WORDS] offset=0x0 size=8
+  Layout name=Mb2Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB2_WORDS] offset=0x0 size=8
+  Layout name=Mb30Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB30_WORDS] offset=0x0 size=8
+  Layout name=Mb31Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB31_WORDS] offset=0x0 size=8
+  Layout name=Mb3Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB3_WORDS] offset=0x0 size=8
+  Layout name=Mb4Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB4_WORDS] offset=0x0 size=8
+  Layout name=Mb5Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB5_WORDS] offset=0x0 size=8
+  Layout name=Mb6Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB6_WORDS] offset=0x0 size=8
+  Layout name=Mb7Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB7_WORDS] offset=0x0 size=8
+  Layout name=Mb8Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB8_WORDS] offset=0x0 size=8
+  Layout name=Mb9Data kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; MB9_WORDS] offset=0x0 size=8
+  Layout name=MbCtl kind=runtime endian=little size=24 padding=0
+    Field name=head type=u64 offset=0x0 size=8
+    Field name=tail type=u64 offset=0x8 size=8
+    Field name=count type=u64 offset=0x10 size=8
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
   Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
     Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
     Padding offset=0x100 size=1792
     Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
-  Layout name=ConsoleRingDescPage kind=runtime endian=little size=65536 padding=0
-    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=65536
-  Layout name=ConsoleRingAvailPage kind=runtime endian=little size=4 padding=0
-    Field name=avail_flags_idx type=u32 offset=0x0 size=4
-  Layout name=ConsoleRingDoorbellPage kind=runtime endian=little size=8 padding=0
-    Field name=doorbell type=u64 offset=0x0 size=8
-  Layout name=ConsoleDataPage kind=runtime endian=little size=131072 padding=0
-    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=131072
+  Layout name=RingCtl kind=runtime endian=little size=24 padding=0
+    Field name=head type=u64 offset=0x0 size=8
+    Field name=tail type=u64 offset=0x8 size=8
+    Field name=count type=u64 offset=0x10 size=8
+  Layout name=RingsCtl kind=runtime endian=little size=24 padding=0
+    Field name=edges type=[RingCtl; N_RINGS_LEN] offset=0x0 size=24
+  Layout name=RingsData kind=runtime endian=little size=8 padding=0
+    Field name=words type=[u64; RINGS_DATA_WORDS] offset=0x0 size=8
+  Layout name=RuntimeTables kind=runtime endian=little size=128 padding=0
+    Field name=turns type=[TurnArea; N_TURNS_LEN] offset=0x0 size=128
+  Layout name=SchedCore kind=runtime endian=little size=16 padding=0
+    Field name=ready type=[u64; READY_QUEUE_CAPACITY] offset=0x0 size=8
+    Field name=rr_cursor type=u64 offset=0x8 size=8
+  Layout name=SchedStripe kind=runtime endian=little size=16 padding=0
+    Field name=cores type=[SchedCore; N_CORES] offset=0x0 size=16
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
-  Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
-    Field name=turns type=[u64; N_CORES] offset=0x0 size=8
-    Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
-    Field name=messages type=[u64; N_CORES] offset=0x10 size=8
-    Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
-    Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
+  Layout name=TurnArea kind=runtime endian=little size=128 padding=47
+    Field name=busy type=u64 offset=0x0 size=8
+    Field name=suspended type=u64 offset=0x8 size=8
+    Field name=resume_ready type=u64 offset=0x10 size=8
+    Field name=reply type=u64 offset=0x18 size=8
+    Field name=waker_turn type=u32 offset=0x20 size=4
+    Field name=waker_core type=u32 offset=0x24 size=4
+    Field name=cur_method type=u64 offset=0x28 size=8
+    Field name=reply_slot_turn type=u32 offset=0x30 size=4
+    Field name=reply_slot_off type=u32 offset=0x34 size=4
+    Field name=reply_tag type=u64 offset=0x38 size=8
+    Field name=ambient_group type=u64 offset=0x40 size=8
+    Field name=lineage_deadline type=u64 offset=0x48 size=8
+    Padding offset=0x50 size=47
+    Field name=_tail type=u8 offset=0x7f size=1
+  Layout name=WakeTables kind=runtime endian=little size=8 padding=0
+    Field name=wake_pending type=[u64; N_WAKE_DRAINS_LEN] offset=0x0 size=8
   Section name=pages base=0x40000000 size=245760
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
@@ -160,7 +293,7 @@ ImageReport v0
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=184
-  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=9704 rank_cycles=9704 schedule_cycles=9704 footprint_cycles=0 executable_words=12959 executable_code_bytes=51836 fetched_text_bytes=51904 rodata_bytes=485 image_bytes=4194488 sync_frame_max_bytes=1328 async_frame_total_bytes=0 ghz=2.4
+  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=9704 rank_cycles=9704 schedule_cycles=9704 footprint_cycles=0 executable_words=12959 executable_code_bytes=51836 fetched_text_bytes=51904 rodata_bytes=485 image_bytes=4194488 sync_frame_max_bytes=1328 async_frame_total_bytes=0 ghz=2.4
     Workload name=flat proxy_cycles=9704
     Owner name=app proxy_cycles=382
     Owner name=runtime proxy_cycles=9322

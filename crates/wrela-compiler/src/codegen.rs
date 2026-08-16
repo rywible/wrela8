@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cost::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
+use crate::cost::{self, CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef, Reg};
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::regalloc;
@@ -455,6 +455,14 @@ pub struct CodegenFn {
     pub frame_size: usize,
     pub code: Vec<EmittedWord>,
     pub relocs: Vec<Reloc>,
+    /// Hot-path census region boundaries, as `(word index, region id)` in
+    /// emission order.
+    ///
+    /// A marker records where a region begins in `code` and emits nothing, so
+    /// this vector is the only trace of it — `code` is byte-identical with
+    /// and without markers, which is what `region_markers_emit_no_words`
+    /// proves.
+    pub regions: Vec<(usize, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -489,7 +497,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
             ((value >> 32) & 0xffff) as u16,
             ((value >> 48) & 0xffff) as u16,
         ];
-        code.push(EmittedWord::new(
+        code.push(EmittedWord::gpr(
             encode::enc_movz(reg, halves[0], 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), halves[0]),
             CostRule::MovWide,
@@ -497,7 +505,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
             &[],
         ));
         for (shift, half) in [(16, halves[1]), (32, halves[2]), (48, halves[3])] {
-            code.push(EmittedWord::new(
+            code.push(EmittedWord::gpr(
                 encode::enc_movk(reg, half, shift, true),
                 format!("movk {}, #{half:#x}, lsl #{shift}", reg_name(reg)),
                 CostRule::MovWide,
@@ -516,7 +524,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
         label: &str,
     ) {
         code.push(
-            EmittedWord::new(
+            EmittedWord::gpr(
                 encode::enc_str_w_imm(data, base, offset),
                 format!("str w{data}, [{}, #{offset}]  ; {label}", reg_name(base)),
                 CostRule::Store,
@@ -536,7 +544,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
         label: &str,
     ) {
         code.push(
-            EmittedWord::new(
+            EmittedWord::gpr(
                 encode::enc_str_x_imm(data, base, offset),
                 format!(
                     "str {}, [{}, #{offset}]  ; {label}",
@@ -655,7 +663,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
         "present control address",
     );
     code.push(
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_str_x_imm(10, 9, 0),
             "str x10, [x9]  ; transfer display frame".to_string(),
             CostRule::Store,
@@ -664,7 +672,7 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
         )
         .with_mem(MemRef::mmio(pixels::DOORBELL_ADDR, 0, 9)),
     );
-    code.push(EmittedWord::new(
+    code.push(EmittedWord::gpr(
         encode::enc_ret(30),
         "ret".to_string(),
         CostRule::Branch,
@@ -676,12 +684,15 @@ fn legacy_p1_plane_codegen_vector(seed_metadata: &[u8; 80], semantic_seed: &[u8;
         frame_size: 0,
         code,
         relocs: Vec::new(),
+        regions: Vec::new(),
     }
 }
 
 struct RodataPool {
     entries: Vec<Vec<u8>>,
     index: BTreeMap<Vec<u8>, usize>,
+    offsets: Vec<usize>,
+    total_len: usize,
 }
 
 impl RodataPool {
@@ -689,6 +700,8 @@ impl RodataPool {
         RodataPool {
             entries: Vec::new(),
             index: BTreeMap::new(),
+            offsets: Vec::new(),
+            total_len: 0,
         }
     }
 
@@ -704,12 +717,14 @@ impl RodataPool {
         }
         let i = self.entries.len();
         self.index.insert(bytes.clone(), i);
+        self.offsets.push(self.total_len);
+        self.total_len += bytes.len();
         self.entries.push(bytes);
         i
     }
 
     fn byte_offset(&self, idx: usize) -> usize {
-        self.entries[..idx].iter().map(Vec::len).sum()
+        self.offsets[idx]
     }
 }
 
@@ -815,6 +830,7 @@ fn is_float(ty: &Type) -> bool {
     matches!(strip_wrappers(ty), Type::F32 | Type::F64)
 }
 
+#[derive(Clone)]
 struct Frame {
     temp_offset: Vec<usize>,
     temp_size: Vec<usize>,
@@ -829,6 +845,33 @@ struct Frame {
     size: usize,
     frameless: bool,
     virt_to_reg: BTreeMap<usize, u8>,
+}
+
+/// Physical width of one value in the aliased S/D/Q register bank. A live
+/// value owns the whole architectural register number; widths may not alias
+/// one another concurrently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // FpSimd widths are activated only if the census admits P8R.4c.
+enum FpWidth {
+    S,
+    D,
+    Q,
+}
+
+/// Typed location contract for synchronous MachineWir values.
+///
+/// P8R.4b uses `Slot` for scalar floats and keeps the existing GPR residency
+/// for integer-like scalars. `FpSimd` is the representation used by the
+/// conditional call-free residency stage; `Immediate` records that constants
+/// are values rather than silently pretending they have a current frame
+/// home. FlowWir has its own state-frame plan and does not use this model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Immediate/FpSimd are sealed now; P8R.4b stores floats in slots.
+enum ValueLocation {
+    Slot { offset: usize, width: usize },
+    Gpr { reg: u8 },
+    FpSimd { reg: u8, width: FpWidth },
+    Immediate { bits: u64 },
 }
 
 const VIRT_SLOT_BASE: usize = 1 << 20;
@@ -850,7 +893,7 @@ fn round_up_16(n: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
-fn i32x4_aligned_temps(f: &MwirFn) -> BTreeSet<Temp> {
+fn packet_aligned_temps(f: &MwirFn) -> BTreeSet<Temp> {
     let mut aligned = BTreeSet::new();
     for inst in &f.body {
         match inst {
@@ -860,6 +903,29 @@ fn i32x4_aligned_temps(f: &MwirFn) -> BTreeSet<Temp> {
             Inst::I32x4FromLanes { dst, lanes } => {
                 aligned.extend([*dst, *lanes]);
             }
+            Inst::PacketFromLanes { dst, lanes, .. } => {
+                aligned.extend([*dst, *lanes]);
+            }
+            Inst::PacketSplat { dst, .. } => {
+                aligned.insert(*dst);
+            }
+            Inst::PacketBinary { dst, lhs, rhs, .. } => aligned.extend([*dst, *lhs, *rhs]),
+            Inst::PacketShiftRightArithmetic { dst, src, .. }
+            | Inst::PacketConvert { dst, src, .. } => aligned.extend([*dst, *src]),
+            Inst::PacketSelect {
+                dst,
+                lhs,
+                rhs,
+                if_true,
+                if_false,
+                ..
+            } => aligned.extend([*dst, *lhs, *rhs, *if_true, *if_false]),
+            Inst::PacketFma {
+                dst,
+                lhs,
+                rhs,
+                addend,
+            } => aligned.extend([*dst, *lhs, *rhs, *addend]),
             _ => {}
         }
     }
@@ -873,33 +939,44 @@ fn build_frame(
     entropy_scratch_size: usize,
     slot_bias: usize,
     assign: &regalloc::Assignment,
+    cluster_float_slots: bool,
     save_lr: bool,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
-    let i32x4_aligned = i32x4_aligned_temps(f);
-    let mut temp_offset = Vec::with_capacity(f.temp_types.len());
-    let mut temp_size = Vec::with_capacity(f.temp_types.len());
+    let packet_aligned = packet_aligned_temps(f);
+    let temp_size = f
+        .temp_types
+        .iter()
+        .map(|ty| mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut temp_offset = vec![usize::MAX; f.temp_types.len()];
     let mut virt_to_reg: BTreeMap<usize, u8> = BTreeMap::new();
     let mut next_virt = VIRT_SLOT_BASE;
-    for (t, ty) in f.temp_types.iter().enumerate() {
-        let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-        match assign.of(t) {
-            Some(reg) => {
-                temp_offset.push(next_virt);
-                virt_to_reg.insert(next_virt, reg);
-                next_virt += FRAME_SLOT_BYTES as usize;
-                temp_size.push(sz);
-            }
-            None => {
-                if i32x4_aligned.contains(&Temp(t)) {
-                    offset = round_up_16(offset);
-                }
-                temp_offset.push(offset);
-                temp_size.push(sz);
-                offset += sz;
-            }
+    for t in 0..f.temp_types.len() {
+        if let Some(reg) = assign.of(t) {
+            temp_offset[t] = next_virt;
+            virt_to_reg.insert(next_virt, reg);
+            next_virt += FRAME_SLOT_BYTES as usize;
         }
     }
+    let mut physical_temps = (0..f.temp_types.len())
+        .filter(|&t| assign.of(t).is_none())
+        .collect::<Vec<_>>();
+    if cluster_float_slots {
+        // Direct scalar-FP memory operands have finite scaled-immediate reach.
+        // Put their eight-byte canonical slots first, preserving temp order
+        // within each group, so large aggregates do not force needless address
+        // materialization in renderer hot functions.
+        physical_temps.sort_by_key(|&t| !is_float(&f.temp_types[t]));
+    }
+    for t in physical_temps {
+        if packet_aligned.contains(&Temp(t)) {
+            offset = round_up_16(offset);
+        }
+        temp_offset[t] = offset;
+        offset += temp_size[t];
+    }
+    debug_assert!(temp_offset.iter().all(|&slot| slot != usize::MAX));
     let self_ptr_off = if f.receiver.is_some() {
         let o = offset;
         offset += 8;
@@ -974,6 +1051,17 @@ impl Frame {
 
     fn size_of_temp(&self, t: Temp) -> usize {
         self.temp_size[t.0]
+    }
+
+    fn location_of(&self, t: Temp) -> ValueLocation {
+        let offset = self.off(t);
+        match self.reg_at(offset) {
+            Some(reg) => ValueLocation::Gpr { reg },
+            None => ValueLocation::Slot {
+                offset,
+                width: self.size_of_temp(t),
+            },
+        }
     }
 
     fn reg_at(&self, off: usize) -> Option<u8> {
@@ -1058,6 +1146,8 @@ struct FnCtx<'a> {
     word_offsets: &'a [usize],
     words: Vec<EmittedWord>,
     relocs: Vec<Reloc>,
+    /// Hot-path census region boundaries recorded by `Inst::RegionMarker`.
+    regions: Vec<(usize, u32)>,
     slot_base: u8,
     slot_bias: usize,
     mem_function: u64,
@@ -1068,14 +1158,23 @@ struct FnCtx<'a> {
     home_def_ok: Option<u8>,
     elide_branch: bool,
     flow_cache: Option<FlowRegCache>,
+    /// True only for synchronous functions in the loader-authenticated
+    /// renderer closure. It selects P8R's direct scalar-FP slot contract.
+    direct_fp: bool,
 }
 
-fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
+fn check_push_shape(rule: CostRule, dst: Option<Reg>, srcs: &[Reg], mem: Option<&MemRef>) {
+    // The operand banks are part of the class contract: a `v` register that
+    // arrives labelled as a general register aliases an unrelated `x` value
+    // in the scheduler and in the allocator's touch sets.
+    if let Err(error) = crate::cost::check_bank_shape(rule, dst, srcs) {
+        panic!("{error}");
+    }
     if rule == CostRule::Call {
         assert_eq!(
             dst,
-            Some(0),
-            "Call must declare dst=Some(0) (x0 return/clobber)"
+            Some(Reg::gpr(0)),
+            "Call must declare dst=Some(x0) (x0 return/clobber)"
         );
     }
     if rule.is_load() {
@@ -1096,8 +1195,8 @@ fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&M
         if let Some(m) = mem {
             if let Some(base) = memref_nonunique_base(m) {
                 assert!(
-                    srcs.iter().any(|&r| r == base),
-                    "{rule:?} with non-unique MemRef requires base reg {base} ∈ srcs (got {srcs:?})"
+                    srcs.contains(&Reg::gpr(base)),
+                    "{rule:?} with non-unique MemRef requires base reg x{base} ∈ srcs (got {srcs:?})"
                 );
             }
         }
@@ -1122,13 +1221,41 @@ fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
 }
 
 impl<'a> FnCtx<'a> {
+    fn is_flowwir(&self) -> bool {
+        // FlowWir frames are addressed through the sealed persistent turn
+        // frame register; synchronous MachineWir frames are SP-relative.
+        self.slot_base == X_FRAME
+    }
+
+    /// Emit a word whose operands are all general registers.
+    ///
+    /// FP/SIMD emitters use [`FnCtx::push_banked`] /
+    /// [`FnCtx::push_banked_mem`]; `check_push_shape` refuses a class whose
+    /// bank shape disagrees either way, so neither door is a silent default.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+        self.push_banked(
+            word,
+            text,
+            rule,
+            dst.map(Reg::gpr),
+            &cost::gpr_operands(srcs),
+        );
+    }
+
+    fn push_banked(
+        &mut self,
+        word: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<Reg>,
+        srcs: &[Reg],
+    ) {
         let mem = if rule.is_load() || rule.is_store() {
             Some(self.alloc_unique_cold())
         } else {
             None
         };
-        self.push_mem(word, text, rule, dst, srcs, mem);
+        self.push_banked_mem(word, text, rule, dst, srcs, mem);
     }
 
     fn add_reg(&mut self, d: u8, a: u8, b: u8) {
@@ -1191,15 +1318,38 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         flags: FlagEffect,
     ) {
+        self.push_banked_flags(
+            word,
+            text,
+            rule,
+            dst.map(Reg::gpr),
+            &cost::gpr_operands(srcs),
+            flags,
+        );
+    }
+
+    fn push_banked_flags(
+        &mut self,
+        word: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<Reg>,
+        srcs: &[Reg],
+        flags: FlagEffect,
+    ) {
         check_push_shape(rule, dst, srcs, None);
         self.check_home_write(dst, &text);
-        let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
+        let mut ew = EmittedWord::banked(word, text, rule, dst, srcs);
         ew.flags = flags;
         self.words.push(ew);
     }
 
-    fn check_home_write(&mut self, dst: Option<u8>, text: &str) {
-        let Some(d) = dst else { return };
+    fn check_home_write(&mut self, dst: Option<Reg>, text: &str) {
+        // Register homes live in the general file; an FP destination cannot
+        // collide with one.
+        let Some(d) = dst.and_then(Reg::as_gpr) else {
+            return;
+        };
         if self.home_mask & (1u32 << (d & 31)) == 0 || self.home_def_ok == Some(d) {
             return;
         }
@@ -1216,6 +1366,25 @@ impl<'a> FnCtx<'a> {
         rule: CostRule,
         dst: Option<u8>,
         srcs: &[u8],
+        mem: Option<MemRef>,
+    ) {
+        self.push_banked_mem(
+            word,
+            text,
+            rule,
+            dst.map(Reg::gpr),
+            &cost::gpr_operands(srcs),
+            mem,
+        );
+    }
+
+    fn push_banked_mem(
+        &mut self,
+        word: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<Reg>,
+        srcs: &[Reg],
         mem: Option<MemRef>,
     ) {
         let mem = match mem {
@@ -1237,7 +1406,7 @@ impl<'a> FnCtx<'a> {
         };
         check_push_shape(rule, dst, srcs, mem.as_ref());
         self.check_home_write(dst, &text);
-        let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
+        let mut ew = EmittedWord::banked(word, text, rule, dst, srcs);
         ew.mem = mem;
         self.words.push(ew);
     }
@@ -1483,6 +1652,171 @@ impl<'a> FnCtx<'a> {
             CostRule::Store,
             None,
             &[reg, address],
+            Some(mem),
+        );
+    }
+
+    fn load_float_temp(&mut self, fp_reg: u8, temp: Temp, ty: &Type) -> Result<(), CodegenError> {
+        let double = matches!(strip_wrappers(ty), Type::F64);
+        if !is_float(ty) {
+            return Err(CodegenError::internal(
+                "load_float_temp received a non-floating type",
+            ));
+        }
+        // FlowWir and ordinary synchronous functions retain the established
+        // GPR bridge. Only loader-authenticated renderer functions use P8R's
+        // direct FP slot contract.
+        if self.is_flowwir() || !self.direct_fp {
+            let off = self.frame.off(temp);
+            let gpr = self.use_slot(X_A, off);
+            let suffix = if double { 'd' } else { 's' };
+            self.push_banked(
+                encode::enc_fmov_from_gpr(fp_reg, gpr, double),
+                format!(
+                    "fmov {suffix}{fp_reg}, {}{gpr}  ; scalar FP bridge",
+                    if double { 'x' } else { 'w' }
+                ),
+                CostRule::FpMove,
+                Some(Reg::fp(fp_reg)),
+                &[Reg::gpr(gpr)],
+            );
+            return Ok(());
+        }
+        match self.frame.location_of(temp) {
+            ValueLocation::Slot { offset, width } if width == FRAME_SLOT_BYTES as usize => {
+                self.load_fp_slot(fp_reg, offset, double);
+                Ok(())
+            }
+            ValueLocation::Gpr { reg } => Err(CodegenError::internal(format!(
+                "floating temp {temp} is resident in GPR x{reg}; scalar FP locations must be \
+                 typed before emission"
+            ))),
+            ValueLocation::FpSimd { reg, width } => Err(CodegenError::internal(format!(
+                "floating temp {temp} is resident in {width:?}{reg}, but fixed-register \
+                 scalar emission requested a frame reload"
+            ))),
+            ValueLocation::Immediate { bits } => Err(CodegenError::internal(format!(
+                "floating temp {temp} is immediate {bits:#x}, but fixed-register scalar \
+                 emission requested a frame reload"
+            ))),
+            ValueLocation::Slot { width, .. } => Err(CodegenError::internal(format!(
+                "floating temp {temp} has a noncanonical {width}-byte slot"
+            ))),
+        }
+    }
+
+    fn store_float_temp(&mut self, fp_reg: u8, temp: Temp, ty: &Type) -> Result<(), CodegenError> {
+        let double = matches!(strip_wrappers(ty), Type::F64);
+        if !is_float(ty) {
+            return Err(CodegenError::internal(
+                "store_float_temp received a non-floating type",
+            ));
+        }
+        // See `load_float_temp`: FlowWir's cache and ordinary synchronous
+        // register allocation must receive the write through the GPR bridge.
+        if self.is_flowwir() || !self.direct_fp {
+            let off = self.frame.off(temp);
+            let gpr = self.def_reg(X_A, off);
+            let suffix = if double { 'd' } else { 's' };
+            self.push_banked(
+                encode::enc_fmov_to_gpr(gpr, fp_reg, double),
+                format!(
+                    "fmov {}{gpr}, {suffix}{fp_reg}  ; scalar FP bridge",
+                    if double { 'x' } else { 'w' }
+                ),
+                CostRule::FpMove,
+                Some(Reg::gpr(gpr)),
+                &[Reg::fp(fp_reg)],
+            );
+            self.store_slot(gpr, off);
+            return Ok(());
+        }
+        match self.frame.location_of(temp) {
+            ValueLocation::Slot { offset, width } if width == FRAME_SLOT_BYTES as usize => {
+                self.store_fp_slot(fp_reg, offset, double);
+                Ok(())
+            }
+            other => Err(CodegenError::internal(format!(
+                "floating destination {temp} has unsupported location {other:?}"
+            ))),
+        }
+    }
+
+    fn load_fp_slot(&mut self, fp_reg: u8, off: usize, double: bool) {
+        self.slot_accesses
+            .push((off, regalloc::Touch::Read, self.words.len(), X_A));
+        if self.frame.is_stray_virtual(off) {
+            self.note_resident_misuse("load_fp_slot", off);
+            return;
+        }
+        let total = off + self.slot_bias;
+        let scale = if double { 8 } else { 4 };
+        let immediate_max = 4095 * scale;
+        let (address, immediate, mem) = if total <= immediate_max {
+            (
+                self.slot_base,
+                total as u16,
+                self.mem_ref(self.slot_base, total as u64),
+            )
+        } else {
+            self.materialize_slot_address(X_F, off);
+            (X_F, 0, self.mem_ref(X_F, 0))
+        };
+        let suffix = if double { 'd' } else { 's' };
+        self.push_banked_mem(
+            encode::enc_ldr_fp_imm(fp_reg, address, immediate, double),
+            format!(
+                "ldr {suffix}{fp_reg}, [{}, #{immediate}]",
+                reg_name(address)
+            ),
+            CostRule::FpLoad,
+            Some(Reg::fp(fp_reg)),
+            &[Reg::gpr(address)],
+            Some(mem),
+        );
+    }
+
+    fn store_fp_slot(&mut self, fp_reg: u8, off: usize, double: bool) {
+        self.slot_accesses
+            .push((off, regalloc::Touch::Write, self.words.len(), X_A));
+        if self.frame.is_stray_virtual(off) {
+            self.note_resident_misuse("store_fp_slot", off);
+            return;
+        }
+        let total = off + self.slot_bias;
+        // An f32 occupies a canonical eight-byte slot. Every producer admitted
+        // to this direct scalar path defines an S register (scalar arithmetic,
+        // conversion, or LDR S), which architecturally clears V[127:32]. No
+        // lane insert or DUP producer can reach this API. Storing the D alias
+        // therefore writes IEEE-bits || zero in one operation and has the same
+        // scaled-immediate reach as every other eight-byte frame-slot access.
+        let scale = 8;
+        let immediate_max = 4095 * scale;
+        let (address, immediate, mem) = if total <= immediate_max {
+            (
+                self.slot_base,
+                total as u16,
+                self.mem_ref(self.slot_base, total as u64),
+            )
+        } else {
+            let scratch = X_F;
+            self.materialize_slot_address(scratch, off);
+            (scratch, 0, self.mem_ref(scratch, 0))
+        };
+        self.push_banked_mem(
+            encode::enc_str_fp_imm(fp_reg, address, immediate, true),
+            format!(
+                "str d{fp_reg}, [{}, #{immediate}]{}",
+                reg_name(address),
+                if double {
+                    ""
+                } else {
+                    "  ; canonical f32 slot from zero-extending S producer"
+                }
+            ),
+            CostRule::FpStore,
+            None,
+            &[Reg::gpr(address), Reg::fp(fp_reg)],
             Some(mem),
         );
     }
@@ -2166,395 +2500,51 @@ fn emit_float_compare(
     rhs: Temp,
     dst: Temp,
 ) -> Result<(), CodegenError> {
-    let (width, full_mask, abs_mask, infinity, sign_bit) = match strip_wrappers(ty) {
-        Type::F32 => (
-            32_u8,
-            u64::from(u32::MAX),
-            u64::from(0x7fff_ffff_u32),
-            u64::from(f32::INFINITY.to_bits()),
-            u64::from(0x8000_0000_u32),
-        ),
-        Type::F64 => (
-            64_u8,
-            u64::MAX,
-            0x7fff_ffff_ffff_ffff,
-            f64::INFINITY.to_bits(),
-            0x8000_0000_0000_0000,
-        ),
-        _ => {
-            return Err(CodegenError::internal(
-                "floating comparison received a non-floating type",
-            ));
+    let double = matches!(strip_wrappers(ty), Type::F64);
+    if !is_float(ty) {
+        return Err(CodegenError::internal(
+            "floating comparison received a non-floating type",
+        ));
+    }
+    let suffix = if double { 'd' } else { 's' };
+    ctx.load_float_temp(0, lhs, ty)?;
+    ctx.load_float_temp(1, rhs, ty)?;
+    ctx.push_banked_flags(
+        encode::enc_fcmp(0, 1, double),
+        format!("fcmp {suffix}0, {suffix}1"),
+        CostRule::FpCompare,
+        None,
+        &[Reg::fp(0), Reg::fp(1)],
+        FlagEffect::Write,
+    );
+    // After FCMP, `mi` is the ordered-less-than predicate. `lt` would also
+    // accept the unordered NZCV state, so using the ordinary signed-integer
+    // condition there would make NaN < x incorrectly true.
+    let cond = match op {
+        BinOp::Eq => Cond::Eq,
+        BinOp::Ne => Cond::Ne,
+        BinOp::Lt => Cond::Mi,
+        BinOp::Le => Cond::Ls,
+        BinOp::Gt => Cond::Gt,
+        BinOp::Ge => Cond::Ge,
+        other => {
+            return Err(CodegenError::internal(format!(
+                "floating `Compare` with non-ordering op `{}`",
+                other.as_str()
+            )));
         }
     };
-    let a = ctx.use_slot(X_A, ctx.frame.off(lhs));
-    let b = ctx.use_slot(X_B, ctx.frame.off(rhs));
-
-    // IEEE comparisons are implemented with integer instructions so P5 does
-    // not introduce an unaccounted floating-point instruction family.  First
-    // form a single ordered predicate: abs(bits) <= infinity for both inputs.
-    ctx.load_imm(X_C, abs_mask as i64);
-    ctx.push(
-        encode::enc_and_reg(X_D, a, X_C, true),
-        format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
-        CostRule::Alu,
-        Some(X_D),
-        &[a, X_C],
-    );
-    ctx.load_imm(X_E, infinity as i64);
-    ctx.cmp_reg(X_D, X_E);
-    ctx.push_flags(
-        encode::enc_cset(X_F, Cond::Ls, true),
-        format!("cset {}, ls", reg_name(X_F)),
-        CostRule::Alu,
-        Some(X_F),
-        &[],
-        FlagEffect::Read,
-    );
-    ctx.push(
-        encode::enc_and_reg(X_D, b, X_C, true),
-        format!("and {}, {}, {}", reg_name(X_D), reg_name(b), reg_name(X_C)),
-        CostRule::Alu,
-        Some(X_D),
-        &[b, X_C],
-    );
-    ctx.cmp_reg(X_D, X_E);
-    ctx.push_flags(
-        encode::enc_cset(X_D, Cond::Ls, true),
-        format!("cset {}, ls", reg_name(X_D)),
-        CostRule::Alu,
-        Some(X_D),
-        &[],
-        FlagEffect::Read,
-    );
-    ctx.push(
-        encode::enc_and_reg(X_F, X_F, X_D, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_F),
-            reg_name(X_D)
-        ),
-        CostRule::Alu,
-        Some(X_F),
-        &[X_F, X_D],
-    );
-
-    if matches!(op, BinOp::Eq | BinOp::Ne) {
-        // IEEE treats the two zero encodings as equal.  NaNs compare unequal
-        // to every value, including themselves.
-        ctx.cmp_reg(a, b);
-        ctx.push_flags(
-            encode::enc_cset(X_E, Cond::Eq, true),
-            format!("cset {}, eq", reg_name(X_E)),
-            CostRule::Alu,
-            Some(X_E),
-            &[],
-            FlagEffect::Read,
-        );
-        ctx.load_imm(X_C, abs_mask as i64);
-        ctx.push(
-            encode::enc_and_reg(X_D, a, X_C, true),
-            format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
-            CostRule::Alu,
-            Some(X_D),
-            &[a, X_C],
-        );
-        ctx.push(
-            encode::enc_and_reg(X_C, b, X_C, true),
-            format!("and {}, {}, {}", reg_name(X_C), reg_name(b), reg_name(X_C)),
-            CostRule::Alu,
-            Some(X_C),
-            &[b, X_C],
-        );
-        ctx.push(
-            encode::enc_orr_reg(X_D, X_D, X_C, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_D),
-                reg_name(X_D),
-                reg_name(X_C)
-            ),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_D, X_C],
-        );
-        ctx.cmp_reg(X_D, X_ZR);
-        ctx.push_flags(
-            encode::enc_cset(X_D, Cond::Eq, true),
-            format!("cset {}, eq", reg_name(X_D)),
-            CostRule::Alu,
-            Some(X_D),
-            &[],
-            FlagEffect::Read,
-        );
-        ctx.push(
-            encode::enc_orr_reg(X_E, X_E, X_D, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_E),
-                reg_name(X_E),
-                reg_name(X_D)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_E, X_D],
-        );
-        ctx.push(
-            encode::enc_and_reg(X_E, X_E, X_F, true),
-            format!(
-                "and {}, {}, {}",
-                reg_name(X_E),
-                reg_name(X_E),
-                reg_name(X_F)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_E, X_F],
-        );
-        if op == BinOp::Ne {
-            ctx.load_imm(X_D, 1);
-            ctx.push(
-                encode::enc_eor_reg(X_E, X_E, X_D, true),
-                format!(
-                    "eor {}, {}, {}",
-                    reg_name(X_E),
-                    reg_name(X_E),
-                    reg_name(X_D)
-                ),
-                CostRule::Alu,
-                Some(X_E),
-                &[X_E, X_D],
-            );
-        }
-    } else {
-        // Preserve the IEEE signed-zero equivalence in bit 1 while bit 0
-        // continues to carry the ordered/non-NaN predicate.
-        ctx.load_imm(X_C, abs_mask as i64);
-        ctx.push(
-            encode::enc_and_reg(X_D, a, X_C, true),
-            format!("and {}, {}, {}", reg_name(X_D), reg_name(a), reg_name(X_C)),
-            CostRule::Alu,
-            Some(X_D),
-            &[a, X_C],
-        );
-        ctx.push(
-            encode::enc_and_reg(X_E, b, X_C, true),
-            format!("and {}, {}, {}", reg_name(X_E), reg_name(b), reg_name(X_C)),
-            CostRule::Alu,
-            Some(X_E),
-            &[b, X_C],
-        );
-        ctx.push(
-            encode::enc_orr_reg(X_D, X_D, X_E, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_D),
-                reg_name(X_D),
-                reg_name(X_E)
-            ),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_D, X_E],
-        );
-        ctx.cmp_reg(X_D, X_ZR);
-        ctx.push_flags(
-            encode::enc_cset(X_D, Cond::Eq, true),
-            format!("cset {}, eq", reg_name(X_D)),
-            CostRule::Alu,
-            Some(X_D),
-            &[],
-            FlagEffect::Read,
-        );
-        ctx.push(
-            encode::enc_add_reg(X_D, X_D, X_D, true),
-            format!("lsl {}, {}, #1", reg_name(X_D), reg_name(X_D)),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_D],
-        );
-        ctx.push(
-            encode::enc_orr_reg(X_F, X_F, X_D, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_F),
-                reg_name(X_F),
-                reg_name(X_D)
-            ),
-            CostRule::Alu,
-            Some(X_F),
-            &[X_F, X_D],
-        );
-
-        // Map the IEEE sign-magnitude encoding to a monotonically increasing
-        // unsigned key: negative values are complemented within their width,
-        // while nonnegative values have the sign bit toggled.
-        ctx.push(
-            encode::enc_lsr_imm(X_C, a, width - 1, true),
-            format!("lsr {}, {}, #{}", reg_name(X_C), reg_name(a), width - 1),
-            CostRule::Alu,
-            Some(X_C),
-            &[a],
-        );
-        ctx.push(
-            encode::enc_sub_reg(X_D, X_ZR, X_C, true),
-            format!("neg {}, {}", reg_name(X_D), reg_name(X_C)),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_ZR, X_C],
-        );
-        ctx.load_imm(X_E, full_mask as i64);
-        ctx.push(
-            encode::enc_and_reg(X_D, X_D, X_E, true),
-            format!(
-                "and {}, {}, {}",
-                reg_name(X_D),
-                reg_name(X_D),
-                reg_name(X_E)
-            ),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_D, X_E],
-        );
-        ctx.load_imm(X_E, sign_bit as i64);
-        ctx.push(
-            encode::enc_orr_reg(X_D, X_D, X_E, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_D),
-                reg_name(X_D),
-                reg_name(X_E)
-            ),
-            CostRule::Alu,
-            Some(X_D),
-            &[X_D, X_E],
-        );
-        ctx.push(
-            encode::enc_eor_reg(X_C, a, X_D, true),
-            format!("eor {}, {}, {}", reg_name(X_C), reg_name(a), reg_name(X_D)),
-            CostRule::Alu,
-            Some(X_C),
-            &[a, X_D],
-        );
-
-        ctx.push(
-            encode::enc_lsr_imm(X_D, b, width - 1, true),
-            format!("lsr {}, {}, #{}", reg_name(X_D), reg_name(b), width - 1),
-            CostRule::Alu,
-            Some(X_D),
-            &[b],
-        );
-        ctx.push(
-            encode::enc_sub_reg(X_E, X_ZR, X_D, true),
-            format!("neg {}, {}", reg_name(X_E), reg_name(X_D)),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_ZR, X_D],
-        );
-        ctx.load_imm(X_A, full_mask as i64);
-        ctx.push(
-            encode::enc_and_reg(X_E, X_E, X_A, true),
-            format!(
-                "and {}, {}, {}",
-                reg_name(X_E),
-                reg_name(X_E),
-                reg_name(X_A)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_E, X_A],
-        );
-        ctx.load_imm(X_A, sign_bit as i64);
-        ctx.push(
-            encode::enc_orr_reg(X_E, X_E, X_A, true),
-            format!(
-                "orr {}, {}, {}",
-                reg_name(X_E),
-                reg_name(X_E),
-                reg_name(X_A)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_E, X_A],
-        );
-        ctx.push(
-            encode::enc_eor_reg(X_D, b, X_E, true),
-            format!("eor {}, {}, {}", reg_name(X_D), reg_name(b), reg_name(X_E)),
-            CostRule::Alu,
-            Some(X_D),
-            &[b, X_E],
-        );
-        ctx.cmp_reg(X_C, X_D);
-        let cond = match op {
-            BinOp::Lt => Cond::Cc,
-            BinOp::Le => Cond::Ls,
-            BinOp::Gt => Cond::Hi,
-            BinOp::Ge => Cond::Cs,
-            _ => unreachable!("equality comparisons handled above"),
-        };
-        ctx.push_flags(
-            encode::enc_cset(X_E, cond, true),
-            format!("cset {}, {}", reg_name(X_E), cond_mnemonic(cond)),
-            CostRule::Alu,
-            Some(X_E),
-            &[],
-            FlagEffect::Read,
-        );
-        ctx.load_imm(X_D, 3);
-        ctx.cmp_reg(X_F, X_D);
-        ctx.load_imm(X_D, i64::from(matches!(op, BinOp::Le | BinOp::Ge)));
-        ctx.push_flags(
-            encode::enc_csel(X_E, X_D, X_E, Cond::Eq, true),
-            format!(
-                "csel {}, {}, {}, eq",
-                reg_name(X_E),
-                reg_name(X_D),
-                reg_name(X_E)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_D, X_E],
-            FlagEffect::Read,
-        );
-        ctx.load_imm(X_D, 1);
-        ctx.push(
-            encode::enc_and_reg(X_F, X_F, X_D, true),
-            format!(
-                "and {}, {}, {}",
-                reg_name(X_F),
-                reg_name(X_F),
-                reg_name(X_D)
-            ),
-            CostRule::Alu,
-            Some(X_F),
-            &[X_F, X_D],
-        );
-        ctx.push(
-            encode::enc_and_reg(X_E, X_E, X_F, true),
-            format!(
-                "and {}, {}, {}",
-                reg_name(X_E),
-                reg_name(X_E),
-                reg_name(X_F)
-            ),
-            CostRule::Alu,
-            Some(X_E),
-            &[X_E, X_F],
-        );
-    }
-
     let dst_off = ctx.frame.off(dst);
-    let d = ctx.def_reg(X_E, dst_off);
-    if d != X_E {
-        ctx.push(
-            encode::enc_mov_reg(d, X_E, true),
-            format!("mov {}, {}", reg_name(d), reg_name(X_E)),
-            CostRule::Alu,
-            Some(d),
-            &[X_E],
-        );
-    }
-    ctx.store_slot(d, dst_off);
+    let result = ctx.def_reg(X_C, dst_off);
+    ctx.push_flags(
+        encode::enc_cset(result, cond, true),
+        format!("cset {}, {}", reg_name(result), cond_mnemonic(cond)),
+        CostRule::Alu,
+        Some(result),
+        &[],
+        FlagEffect::Read,
+    );
+    ctx.store_slot(result, dst_off);
     Ok(())
 }
 
@@ -2567,43 +2557,43 @@ enum SkipKind {
 
 impl FnCtx<'_> {
     fn emit_skip(&mut self, _kind: SkipKind) -> usize {
-        let w = self.cur_word();
+        let word = self.cur_word();
         self.words
-            .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
-        w
+            .push(EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]));
+        word
     }
 
     fn patch_skip(&mut self, word: usize, kind: SkipKind) {
         let target = self.cur_word();
         let delta = (target as i64 - word as i64) as i32 * 4;
-        let (enc, text, srcs, flags) = match kind {
-            SkipKind::Cond(c) => {
-                let flags = match c {
+        let (encoded, text, srcs, flags) = match kind {
+            SkipKind::Cond(cond) => {
+                let flags = match cond {
                     Cond::Al | Cond::Nv => FlagEffect::None,
                     _ => FlagEffect::Read,
                 };
                 (
-                    encode::enc_b_cond(c, delta),
-                    format!("b.{} #{delta}", cond_mnemonic(c)),
+                    encode::enc_b_cond(cond, delta),
+                    format!("b.{} #{delta}", cond_mnemonic(cond)),
                     Vec::<u8>::new(),
                     flags,
                 )
             }
-            SkipKind::Cbz(r) => (
-                encode::enc_cbz(r, delta, true),
-                format!("cbz {}, #{delta}", reg_name(r)),
-                vec![r],
+            SkipKind::Cbz(reg) => (
+                encode::enc_cbz(reg, delta, true),
+                format!("cbz {}, #{delta}", reg_name(reg)),
+                vec![reg],
                 FlagEffect::None,
             ),
-            SkipKind::Cbnz(r) => (
-                encode::enc_cbnz(r, delta, true),
-                format!("cbnz {}, #{delta}", reg_name(r)),
-                vec![r],
+            SkipKind::Cbnz(reg) => (
+                encode::enc_cbnz(reg, delta, true),
+                format!("cbnz {}, #{delta}", reg_name(reg)),
+                vec![reg],
                 FlagEffect::None,
             ),
         };
         self.words[word] =
-            EmittedWord::new(enc, text, CostRule::Branch, None, &srcs).with_flags(flags);
+            EmittedWord::gpr(encoded, text, CostRule::Branch, None, &srcs).with_flags(flags);
     }
 
     fn check_int_range_or_abort(&mut self, value_reg: u8, bits: u32, signed: bool, message: &str) {
@@ -2636,13 +2626,13 @@ impl FnCtx<'_> {
             return;
         }
         let mask = !((1u64 << bits) - 1);
-        let Some(enc) = encode::enc_tst_imm(value_reg, mask) else {
+        let Some(encoded) = encode::enc_tst_imm(value_reg, mask) else {
             let (min, max) = int_bounds_for(bits, signed);
             self.check_bounds_i64_or_abort(value_reg, min, max, message);
             return;
         };
         self.push_flags(
-            enc,
+            encoded,
             format!("tst {}, #{mask:#x}", reg_name(value_reg)),
             CostRule::Alu,
             None,
@@ -2657,14 +2647,14 @@ impl FnCtx<'_> {
     fn check_bounds_i64_or_abort(&mut self, value_reg: u8, min: i64, max: i64, message: &str) {
         self.load_imm(X_D, min);
         self.cmp_reg(value_reg, X_D);
-        let skip1 = self.emit_skip(SkipKind::Cond(Cond::Ge));
+        let lower_ok = self.emit_skip(SkipKind::Cond(Cond::Ge));
         self.abort_fixed(message);
-        self.patch_skip(skip1, SkipKind::Cond(Cond::Ge));
+        self.patch_skip(lower_ok, SkipKind::Cond(Cond::Ge));
         self.load_imm(X_D, max);
         self.cmp_reg(value_reg, X_D);
-        let skip2 = self.emit_skip(SkipKind::Cond(Cond::Le));
+        let upper_ok = self.emit_skip(SkipKind::Cond(Cond::Le));
         self.abort_fixed(message);
-        self.patch_skip(skip2, SkipKind::Cond(Cond::Le));
+        self.patch_skip(upper_ok, SkipKind::Cond(Cond::Le));
     }
 
     fn check_flags_or_abort(&mut self, fail_cond: Cond, message: &str) {
@@ -2678,29 +2668,29 @@ impl FnCtx<'_> {
 fn emit_i32x4_add(ctx: &mut FnCtx, dst_off: usize, lhs_off: usize, rhs_off: usize) {
     for (address, offset, vector) in [(X_A, lhs_off, 0_u8), (X_B, rhs_off, 1_u8)] {
         ctx.materialize_slot_address(address, offset);
-        ctx.push_mem(
+        ctx.push_banked_mem(
             encode::enc_ldr_q_imm(vector, address, 0),
             format!("ldr q{vector}, [{}, #0]", reg_name(address)),
-            CostRule::Load,
-            Some(vector),
-            &[address],
+            CostRule::FpLoadQ,
+            Some(Reg::fp(vector)),
+            &[Reg::gpr(address)],
             Some(MemRef::flow_frame(0, offset as u64, address)),
         );
     }
-    ctx.push(
+    ctx.push_banked(
         encode::enc_add_v4s(2, 0, 1),
         "add v2.4s, v0.4s, v1.4s".to_string(),
-        CostRule::Neon,
-        Some(2),
-        &[0, 1],
+        CostRule::AsimdInt,
+        Some(Reg::fp(2)),
+        &[Reg::fp(0), Reg::fp(1)],
     );
     ctx.materialize_slot_address(X_C, dst_off);
-    ctx.push_mem(
+    ctx.push_banked_mem(
         encode::enc_str_q_imm(2, X_C, 0),
         format!("str q2, [{}, #0]", reg_name(X_C)),
-        CostRule::Store,
+        CostRule::FpStoreQ,
         None,
-        &[X_C, 2],
+        &[Reg::gpr(X_C), Reg::fp(2)],
         Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
     );
 }
@@ -2708,12 +2698,12 @@ fn emit_i32x4_add(ctx: &mut FnCtx, dst_off: usize, lhs_off: usize, rhs_off: usiz
 fn emit_i32x4_from_lanes(ctx: &mut FnCtx, dst_off: usize, lanes_off: usize) {
     ctx.materialize_slot_address(X_A, lanes_off);
     for (immediate, vector) in [(0_u16, 0_u8), (16_u16, 1_u8)] {
-        ctx.push_mem(
+        ctx.push_banked_mem(
             encode::enc_ldr_q_imm(vector, X_A, immediate),
             format!("ldr q{vector}, [{}, #{immediate}]", reg_name(X_A)),
-            CostRule::Load,
-            Some(vector),
-            &[X_A],
+            CostRule::FpLoadQ,
+            Some(Reg::fp(vector)),
+            &[Reg::gpr(X_A)],
             Some(MemRef::flow_frame(
                 0,
                 (lanes_off + usize::from(immediate)) as u64,
@@ -2721,22 +2711,257 @@ fn emit_i32x4_from_lanes(ctx: &mut FnCtx, dst_off: usize, lanes_off: usize) {
             )),
         );
     }
-    ctx.push(
+    ctx.push_banked(
         encode::enc_uzp1_v4s(0, 0, 1),
         "uzp1 v0.4s, v0.4s, v1.4s".to_string(),
-        CostRule::Neon,
-        Some(0),
-        &[0, 1],
+        CostRule::AsimdPermute,
+        Some(Reg::fp(0)),
+        &[Reg::fp(0), Reg::fp(1)],
     );
     ctx.materialize_slot_address(X_C, dst_off);
-    ctx.push_mem(
+    ctx.push_banked_mem(
         encode::enc_str_q_imm(0, X_C, 0),
         format!("str q0, [{}, #0]", reg_name(X_C)),
-        CostRule::Store,
+        CostRule::FpStoreQ,
         None,
-        &[X_C, 0],
+        &[Reg::gpr(X_C), Reg::fp(0)],
         Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
     );
+}
+
+fn load_packet(ctx: &mut FnCtx, vector: u8, temp: Temp) {
+    let offset = ctx.frame.off(temp);
+    debug_assert_eq!(offset % 16, 0, "packet frame slot must be 16-byte aligned");
+    ctx.materialize_slot_address(X_A, offset);
+    ctx.push_banked_mem(
+        encode::enc_ldr_q_imm(vector, X_A, 0),
+        format!("ldr q{vector}, [{}, #0]", reg_name(X_A)),
+        CostRule::FpLoadQ,
+        Some(Reg::fp(vector)),
+        &[Reg::gpr(X_A)],
+        Some(MemRef::flow_frame(ctx.mem_function, offset as u64, X_A)),
+    );
+}
+
+fn store_packet(ctx: &mut FnCtx, vector: u8, temp: Temp) {
+    let offset = ctx.frame.off(temp);
+    debug_assert_eq!(offset % 16, 0, "packet frame slot must be 16-byte aligned");
+    ctx.materialize_slot_address(X_C, offset);
+    ctx.push_banked_mem(
+        encode::enc_str_q_imm(vector, X_C, 0),
+        format!("str q{vector}, [{}, #0]", reg_name(X_C)),
+        CostRule::FpStoreQ,
+        None,
+        &[Reg::gpr(X_C), Reg::fp(vector)],
+        Some(MemRef::flow_frame(ctx.mem_function, offset as u64, X_C)),
+    );
+}
+
+fn emit_packet_from_lanes(ctx: &mut FnCtx, dst: Temp, lanes: Temp) {
+    emit_i32x4_from_lanes(ctx, ctx.frame.off(dst), ctx.frame.off(lanes));
+}
+
+fn emit_packet_splat(
+    ctx: &mut FnCtx,
+    kind: mwir::PacketKind,
+    dst: Temp,
+    scalar: Temp,
+) -> Result<(), CodegenError> {
+    match kind {
+        mwir::PacketKind::F32x4 => ctx.load_float_temp(0, scalar, &Type::F32)?,
+        mwir::PacketKind::I32x4 => {
+            let gpr = ctx.use_slot(X_A, ctx.frame.off(scalar));
+            ctx.push_banked(
+                encode::enc_fmov_from_gpr(0, gpr, false),
+                format!("fmov s0, w{gpr}  ; packet splat scalar"),
+                CostRule::FpMove,
+                Some(Reg::fp(0)),
+                &[Reg::gpr(gpr)],
+            );
+        }
+    }
+    ctx.push_banked(
+        encode::enc_dup_v4s_element0(1, 0),
+        "dup v1.4s, v0.s[0]".to_string(),
+        CostRule::AsimdPermute,
+        Some(Reg::fp(1)),
+        &[Reg::fp(0)],
+    );
+    store_packet(ctx, 1, dst);
+    Ok(())
+}
+
+fn emit_packet_binary(
+    ctx: &mut FnCtx,
+    kind: mwir::PacketKind,
+    op: mwir::PacketBinaryOp,
+    dst: Temp,
+    lhs: Temp,
+    rhs: Temp,
+) -> Result<(), CodegenError> {
+    load_packet(ctx, 0, lhs);
+    load_packet(ctx, 1, rhs);
+    let (word, text, rule) = match (kind, op) {
+        (mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Add) => (
+            encode::enc_fadd_v4s(2, 0, 1),
+            "fadd v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpAddSub,
+        ),
+        (mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Sub) => (
+            encode::enc_fsub_v4s(2, 0, 1),
+            "fsub v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpAddSub,
+        ),
+        (mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Mul) => (
+            encode::enc_fmul_v4s(2, 0, 1),
+            "fmul v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpMul,
+        ),
+        (mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Min) => (
+            encode::enc_fmin_v4s(2, 0, 1),
+            "fmin v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpCmp,
+        ),
+        (mwir::PacketKind::F32x4, mwir::PacketBinaryOp::Max) => (
+            encode::enc_fmax_v4s(2, 0, 1),
+            "fmax v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpCmp,
+        ),
+        (mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Add) => (
+            encode::enc_add_v4s(2, 0, 1),
+            "add v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdInt,
+        ),
+        (mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Sub) => (
+            encode::enc_sub_v4s(2, 0, 1),
+            "sub v2.4s, v0.4s, v1.4s",
+            CostRule::AsimdInt,
+        ),
+        (mwir::PacketKind::I32x4, mwir::PacketBinaryOp::And) => (
+            encode::enc_and_v16b(2, 0, 1),
+            "and v2.16b, v0.16b, v1.16b",
+            CostRule::AsimdInt,
+        ),
+        (mwir::PacketKind::I32x4, mwir::PacketBinaryOp::Or) => (
+            encode::enc_orr_v16b(2, 0, 1),
+            "orr v2.16b, v0.16b, v1.16b",
+            CostRule::AsimdInt,
+        ),
+        _ => {
+            return Err(CodegenError::internal(format!(
+                "unsupported packet binary pair {kind:?}/{op:?}"
+            )));
+        }
+    };
+    ctx.push_banked(
+        word,
+        text.to_string(),
+        rule,
+        Some(Reg::fp(2)),
+        &[Reg::fp(0), Reg::fp(1)],
+    );
+    store_packet(ctx, 2, dst);
+    Ok(())
+}
+
+fn emit_packet_select(
+    ctx: &mut FnCtx,
+    kind: mwir::PacketKind,
+    op: mwir::PacketSelectOp,
+    dst: Temp,
+    lhs: Temp,
+    rhs: Temp,
+    if_true: Temp,
+    if_false: Temp,
+) -> Result<(), CodegenError> {
+    load_packet(ctx, 0, lhs);
+    load_packet(ctx, 1, rhs);
+    let (compare, text, rule) = match (kind, op) {
+        (mwir::PacketKind::F32x4, mwir::PacketSelectOp::Ge) => (
+            encode::enc_fcmge_v4s(4, 0, 1),
+            "fcmge v4.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpCmp,
+        ),
+        (mwir::PacketKind::F32x4, mwir::PacketSelectOp::Gt) => (
+            encode::enc_fcmgt_v4s(4, 0, 1),
+            "fcmgt v4.4s, v0.4s, v1.4s",
+            CostRule::AsimdFpCmp,
+        ),
+        (mwir::PacketKind::I32x4, mwir::PacketSelectOp::Gt) => (
+            encode::enc_cmgt_v4s(4, 0, 1),
+            "cmgt v4.4s, v0.4s, v1.4s",
+            CostRule::AsimdInt,
+        ),
+        _ => {
+            return Err(CodegenError::internal(format!(
+                "unsupported packet select pair {kind:?}/{op:?}"
+            )));
+        }
+    };
+    ctx.push_banked(
+        compare,
+        text.to_string(),
+        rule,
+        Some(Reg::fp(4)),
+        &[Reg::fp(0), Reg::fp(1)],
+    );
+    load_packet(ctx, 2, if_true);
+    load_packet(ctx, 3, if_false);
+    ctx.push_banked(
+        encode::enc_bsl_v16b(4, 2, 3),
+        "bsl v4.16b, v2.16b, v3.16b".to_string(),
+        CostRule::AsimdInt,
+        Some(Reg::fp(4)),
+        &[Reg::fp(4), Reg::fp(2), Reg::fp(3)],
+    );
+    store_packet(ctx, 4, dst);
+    Ok(())
+}
+
+fn emit_packet_fma(ctx: &mut FnCtx, dst: Temp, lhs: Temp, rhs: Temp, addend: Temp) {
+    load_packet(ctx, 0, lhs);
+    load_packet(ctx, 1, rhs);
+    load_packet(ctx, 2, addend);
+    ctx.push_banked(
+        encode::enc_fmla_v4s(2, 0, 1),
+        "fmla v2.4s, v0.4s, v1.4s".to_string(),
+        CostRule::AsimdFpFma,
+        Some(Reg::fp(2)),
+        &[Reg::fp(2), Reg::fp(0), Reg::fp(1)],
+    );
+    store_packet(ctx, 2, dst);
+}
+
+fn emit_packet_convert(
+    ctx: &mut FnCtx,
+    from: mwir::PacketKind,
+    to: mwir::PacketKind,
+    dst: Temp,
+    src: Temp,
+) -> Result<(), CodegenError> {
+    load_packet(ctx, 0, src);
+    let (word, text) = match (from, to) {
+        (mwir::PacketKind::F32x4, mwir::PacketKind::I32x4) => {
+            (encode::enc_fcvtzs_v4s(1, 0), "fcvtzs v1.4s, v0.4s")
+        }
+        (mwir::PacketKind::I32x4, mwir::PacketKind::F32x4) => {
+            (encode::enc_scvtf_v4s(1, 0), "scvtf v1.4s, v0.4s")
+        }
+        _ => {
+            return Err(CodegenError::internal(format!(
+                "unsupported packet conversion {from:?}->{to:?}"
+            )));
+        }
+    };
+    ctx.push_banked(
+        word,
+        text.to_string(),
+        CostRule::AsimdFpCvt,
+        Some(Reg::fp(1)),
+        &[Reg::fp(0)],
+    );
+    store_packet(ctx, 1, dst);
+    Ok(())
 }
 
 fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
@@ -2799,6 +3024,59 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::I32x4FromLanes { dst, lanes } => {
             emit_i32x4_from_lanes(ctx, ctx.frame.off(*dst), ctx.frame.off(*lanes));
+        }
+        Inst::PacketFromLanes { dst, lanes, .. } => {
+            emit_packet_from_lanes(ctx, *dst, *lanes);
+        }
+        Inst::PacketSplat { kind, dst, scalar } => {
+            emit_packet_splat(ctx, *kind, *dst, *scalar)?;
+        }
+        Inst::PacketBinary {
+            kind,
+            op,
+            dst,
+            lhs,
+            rhs,
+        } => emit_packet_binary(ctx, *kind, *op, *dst, *lhs, *rhs)?,
+        Inst::PacketShiftRightArithmetic {
+            dst,
+            src,
+            immediate,
+        } => {
+            load_packet(ctx, 0, *src);
+            ctx.push_banked(
+                encode::enc_sshr_v4s(1, 0, *immediate),
+                format!("sshr v1.4s, v0.4s, #{immediate}"),
+                CostRule::AsimdInt,
+                Some(Reg::fp(1)),
+                &[Reg::fp(0)],
+            );
+            store_packet(ctx, 1, *dst);
+        }
+        Inst::PacketSelect {
+            kind,
+            op,
+            dst,
+            lhs,
+            rhs,
+            if_true,
+            if_false,
+        } => emit_packet_select(ctx, *kind, *op, *dst, *lhs, *rhs, *if_true, *if_false)?,
+        Inst::PacketFma {
+            dst,
+            lhs,
+            rhs,
+            addend,
+        } => emit_packet_fma(ctx, *dst, *lhs, *rhs, *addend),
+        Inst::PacketConvert { from, to, dst, src } => {
+            emit_packet_convert(ctx, *from, *to, *dst, *src)?;
+        }
+        Inst::RegionMarker { region } => {
+            // Records where a census region begins and emits nothing. The
+            // word index is the current end of the stream, so the region
+            // owns every word emitted from here on.
+            let at = ctx.cur_word();
+            ctx.regions.push((at, *region));
         }
         Inst::MakeAggregate { dst, elems } => {
             let dst_off = ctx.frame.off(*dst);
@@ -3198,27 +3476,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             abort,
         } => {
             if is_float(ty) {
-                let sign_bit = match strip_wrappers(ty) {
-                    Type::F32 => i64::from(0x8000_0000_u32),
-                    Type::F64 => i64::MIN,
-                    _ => {
-                        return Err(CodegenError::internal(
-                            "floating negation received a non-floating type",
-                        ));
-                    }
-                };
-                let a = ctx.use_slot(X_A, ctx.frame.off(*src));
-                ctx.load_imm(X_D, sign_bit);
-                let dst_off = ctx.frame.off(*dst);
-                let d = ctx.def_reg(X_C, dst_off);
-                ctx.push(
-                    encode::enc_eor_reg(d, a, X_D, true),
-                    format!("eor {}, {}, {}", reg_name(d), reg_name(a), reg_name(X_D)),
-                    CostRule::Alu,
-                    Some(d),
-                    &[a, X_D],
+                let double = matches!(strip_wrappers(ty), Type::F64);
+                let suffix = if double { 'd' } else { 's' };
+                ctx.load_float_temp(0, *src, ty)?;
+                ctx.push_banked(
+                    encode::enc_fneg(1, 0, double),
+                    format!("fneg {suffix}1, {suffix}0"),
+                    CostRule::FpAddSub,
+                    Some(Reg::fp(1)),
+                    &[Reg::fp(0)],
                 );
-                ctx.store_slot(d, dst_off);
+                ctx.store_float_temp(1, *dst, ty)?;
                 return Ok(());
             }
             let (_, signed) = int_shape(ty)
@@ -4422,27 +4690,25 @@ fn emit_arith_wrapping(
     if is_float(ty) {
         let double = matches!(strip_wrappers(ty), Type::F64);
         let suffix = if double { 'd' } else { 's' };
-        let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
-        let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
-        ctx.push(
-            encode::enc_fmov_from_gpr(0, x_a, double),
-            format!("fmov {suffix}0, {}", reg_name(x_a)),
-            CostRule::Alu,
-            None,
-            &[x_a],
-        );
-        ctx.push(
-            encode::enc_fmov_from_gpr(1, x_b, double),
-            format!("fmov {suffix}1, {}", reg_name(x_b)),
-            CostRule::Alu,
-            None,
-            &[x_b],
-        );
-        let (word, mnemonic) = match op {
-            BinOp::Add => (encode::enc_fadd(2, 0, 1, double), "fadd"),
-            BinOp::Sub => (encode::enc_fsub(2, 0, 1, double), "fsub"),
-            BinOp::Mul => (encode::enc_fmul(2, 0, 1, double), "fmul"),
-            BinOp::Div => (encode::enc_fdiv(2, 0, 1, double), "fdiv"),
+        ctx.load_float_temp(0, lhs, ty)?;
+        ctx.load_float_temp(1, rhs, ty)?;
+        let (word, mnemonic, rule) = match op {
+            BinOp::Add => (
+                encode::enc_fadd(2, 0, 1, double),
+                "fadd",
+                CostRule::FpAddSub,
+            ),
+            BinOp::Sub => (
+                encode::enc_fsub(2, 0, 1, double),
+                "fsub",
+                CostRule::FpAddSub,
+            ),
+            BinOp::Mul => (encode::enc_fmul(2, 0, 1, double), "fmul", CostRule::FpMul),
+            BinOp::Div => (
+                encode::enc_fdiv(2, 0, 1, double),
+                "fdiv",
+                CostRule::FpDivSqrt,
+            ),
             BinOp::Rem => {
                 return Err(CodegenError::unimplemented("floating-point remainder"));
             }
@@ -4453,23 +4719,14 @@ fn emit_arith_wrapping(
                 )));
             }
         };
-        ctx.push(
+        ctx.push_banked(
             word,
             format!("{mnemonic} {suffix}2, {suffix}0, {suffix}1"),
-            CostRule::Alu,
-            None,
-            &[],
+            rule,
+            Some(Reg::fp(2)),
+            &[Reg::fp(0), Reg::fp(1)],
         );
-        let dst_off = ctx.frame.off(dst);
-        let x_c = ctx.def_reg(X_C, dst_off);
-        ctx.push(
-            encode::enc_fmov_to_gpr(x_c, 2, double),
-            format!("fmov {}, {suffix}2", reg_name(x_c)),
-            CostRule::Alu,
-            Some(x_c),
-            &[],
-        );
-        ctx.store_slot(x_c, dst_off);
+        ctx.store_float_temp(2, dst, ty)?;
         return Ok(());
     }
     let (bits, signed) = int_shape(ty)
@@ -4755,7 +5012,7 @@ fn emit_convert(
         let double = matches!(strip_wrappers(target_ty), Type::F64);
         let wide = sbits == 64;
         let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
-        ctx.push(
+        ctx.push_banked(
             encode::enc_int_to_float(0, x_a, ssigned, double, wide),
             format!(
                 "{}cvtf {}0, {}{}",
@@ -4764,25 +5021,11 @@ fn emit_convert(
                 if wide { 'x' } else { 'w' },
                 x_a
             ),
-            CostRule::Alu,
-            None,
-            &[x_a],
+            CostRule::FpConvert,
+            Some(Reg::fp(0)),
+            &[Reg::gpr(x_a)],
         );
-        let dst_off = ctx.frame.off(dst);
-        let x_c = ctx.def_reg(X_C, dst_off);
-        ctx.push(
-            encode::enc_fmov_to_gpr(x_c, 0, double),
-            format!(
-                "fmov {}{}, {}0",
-                if double { 'x' } else { 'w' },
-                x_c,
-                if double { 'd' } else { 's' }
-            ),
-            CostRule::Alu,
-            Some(x_c),
-            &[],
-        );
-        ctx.store_slot(x_c, dst_off);
+        ctx.store_float_temp(0, dst, target_ty)?;
         return Ok(());
     }
     if !is_float(target_ty) && is_float(&src_ty) {
@@ -4790,19 +5033,7 @@ fn emit_convert(
             .ok_or_else(|| CodegenError::internal(format!("`Convert` target {target_ty:?}")))?;
         let double = matches!(strip_wrappers(&src_ty), Type::F64);
         let wide = tbits == 64;
-        let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
-        ctx.push(
-            encode::enc_fmov_from_gpr(0, x_a, double),
-            format!(
-                "fmov {}0, {}{}",
-                if double { 'd' } else { 's' },
-                if double { 'x' } else { 'w' },
-                x_a
-            ),
-            CostRule::Alu,
-            None,
-            &[x_a],
-        );
+        ctx.load_float_temp(0, src, &src_ty)?;
         let exponent = i32::try_from(tbits).expect("integer widths fit i32");
         let magnitude = if tsigned {
             2_f64.powi(exponent - 1)
@@ -4819,7 +5050,7 @@ fn emit_convert(
                 u64::from((bound as f32).to_bits())
             };
             ctx.load_imm(X_D, bits as i64);
-            ctx.push(
+            ctx.push_banked(
                 encode::enc_fmov_from_gpr(1, X_D, double),
                 format!(
                     "fmov {}1, {}{}  ; conversion {label} bound",
@@ -4827,20 +5058,20 @@ fn emit_convert(
                     if double { 'x' } else { 'w' },
                     X_D
                 ),
-                CostRule::Alu,
-                None,
-                &[X_D],
+                CostRule::FpMove,
+                Some(Reg::fp(1)),
+                &[Reg::gpr(X_D)],
             );
-            ctx.push_flags(
+            ctx.push_banked_flags(
                 encode::enc_fcmp(0, 1, double),
                 format!(
                     "fcmp {}0, {}1",
                     if double { 'd' } else { 's' },
                     if double { 'd' } else { 's' }
                 ),
-                CostRule::Alu,
+                CostRule::FpCompare,
                 None,
-                &[],
+                &[Reg::fp(0), Reg::fp(1)],
                 FlagEffect::Write,
             );
             let skip = ctx.emit_skip(SkipKind::Cond(pass));
@@ -4849,7 +5080,7 @@ fn emit_convert(
         }
         let dst_off = ctx.frame.off(dst);
         let x_c = ctx.def_reg(X_C, dst_off);
-        ctx.push(
+        ctx.push_banked(
             encode::enc_float_to_int(x_c, 0, tsigned, double, wide),
             format!(
                 "fcvtz{} {}{}, {}0",
@@ -4858,9 +5089,9 @@ fn emit_convert(
                 x_c,
                 if double { 'd' } else { 's' }
             ),
-            CostRule::Alu,
-            Some(x_c),
-            &[],
+            CostRule::FpConvert,
+            Some(Reg::gpr(x_c)),
+            &[Reg::fp(0)],
         );
         ctx.narrow_to_width(x_c, tbits, tsigned);
         ctx.store_slot(x_c, dst_off);
@@ -4869,55 +5100,27 @@ fn emit_convert(
     if is_float(target_ty) && is_float(&src_ty) {
         let target_double = matches!(strip_wrappers(target_ty), Type::F64);
         let source_double = matches!(strip_wrappers(&src_ty), Type::F64);
-        let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
         let dst_off = ctx.frame.off(dst);
-        let x_c = ctx.def_reg(X_C, dst_off);
         if target_double == source_double {
-            ctx.push(
-                encode::enc_mov_reg(x_c, x_a, true),
-                format!("mov {}, {}", reg_name(x_c), reg_name(x_a)),
-                CostRule::Alu,
-                Some(x_c),
-                &[x_a],
-            );
+            // Equal-width float conversion is a canonical full-slot copy.
+            // Keeping all eight bytes preserves the f32 zero-upper-half
+            // convention without introducing an unnecessary FP operation.
+            ctx.copy_slot_to_slot(dst_off, ctx.frame.off(src), FRAME_SLOT_BYTES as usize);
         } else {
-            ctx.push(
-                encode::enc_fmov_from_gpr(0, x_a, source_double),
-                format!(
-                    "fmov {}0, {}{}",
-                    if source_double { 'd' } else { 's' },
-                    if source_double { 'x' } else { 'w' },
-                    x_a
-                ),
-                CostRule::Alu,
-                None,
-                &[x_a],
-            );
-            ctx.push(
+            ctx.load_float_temp(0, src, &src_ty)?;
+            ctx.push_banked(
                 encode::enc_fcvt(1, 0, target_double),
                 format!(
                     "fcvt {}1, {}0",
                     if target_double { 'd' } else { 's' },
                     if source_double { 'd' } else { 's' }
                 ),
-                CostRule::Alu,
-                None,
-                &[],
+                CostRule::FpConvert,
+                Some(Reg::fp(1)),
+                &[Reg::fp(0)],
             );
-            ctx.push(
-                encode::enc_fmov_to_gpr(x_c, 1, target_double),
-                format!(
-                    "fmov {}{}, {}1",
-                    if target_double { 'x' } else { 'w' },
-                    x_c,
-                    if target_double { 'd' } else { 's' }
-                ),
-                CostRule::Alu,
-                Some(x_c),
-                &[],
-            );
+            ctx.store_float_temp(1, dst, target_ty)?;
         }
-        ctx.store_slot(x_c, dst_off);
         return Ok(());
     }
     let (tbits, tsigned) = int_shape(target_ty)
@@ -5360,13 +5563,14 @@ fn probe_fn_facts(
     rodata: &mut RodataPool,
     frame: &Frame,
     block_ids: &[Option<u32>],
+    direct_fp: bool,
 ) -> Result<regalloc::FnFacts, CodegenError> {
     let plan = &TailPlan::none(f.body.len());
     let no_elision = vec![false; f.body.len()];
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut points: Vec<regalloc::PointFacts> = Vec::with_capacity(f.body.len() + 2);
 
-    let finish = |ctx: FnCtx| -> regalloc::PointFacts {
+    let finish = |ctx: &FnCtx| -> regalloc::PointFacts {
         let mut touches = Vec::new();
         for &(off, how, word, reg) in &ctx.slot_accesses {
             if let Some((temp, is_base)) = frame.temp_at_offset(off) {
@@ -5390,11 +5594,14 @@ fn probe_fn_facts(
                 });
                 call_words.push(regalloc::CallWord { word: i, callee });
             }
-            if let Some(d) = w.dst {
+            // The allocator owns general registers only; an FP/SIMD operand
+            // of the same number is a different register and must not join
+            // this set (P8R.1 bank-aware operands).
+            if let Some(d) = w.dst.and_then(Reg::as_gpr) {
                 regs.insert(d);
                 word_regs.push((i, d));
             }
-            for &s in &w.srcs[..w.src_len as usize] {
+            for s in w.gpr_srcs() {
                 regs.insert(s);
                 word_regs.push((i, s));
             }
@@ -5406,75 +5613,50 @@ fn probe_fn_facts(
             word_regs,
         }
     };
-
-    {
-        let mut ctx = FnCtx {
-            frame,
-            layout,
-            rodata,
-            word_offsets: &dummy_targets,
-            words: Vec::new(),
-            relocs: Vec::new(),
-            slot_base: X_SP,
-            slot_bias: 0,
-            mem_function: 0,
-            cold_seq: 0,
-            slot_accesses: Vec::new(),
-            resident_misuse: None,
-            home_mask: frame.home_mask(),
-            home_def_ok: None,
-            elide_branch: false,
-            flow_cache: None,
-        };
-        emit_prologue(f, frame, &mut ctx)?;
-        points.push(finish(ctx));
-    }
-
+    let mut ctx = FnCtx {
+        frame,
+        layout,
+        rodata,
+        word_offsets: &dummy_targets,
+        words: Vec::new(),
+        relocs: Vec::new(),
+        regions: Vec::new(),
+        slot_base: X_SP,
+        slot_bias: 0,
+        mem_function: 0,
+        cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
+        elide_branch: false,
+        flow_cache: None,
+        direct_fp,
+    };
+    let reset = |ctx: &mut FnCtx<'_>| {
+        ctx.words.clear();
+        ctx.relocs.clear();
+        ctx.regions.clear();
+        ctx.slot_base = X_SP;
+        ctx.slot_bias = 0;
+        ctx.mem_function = 0;
+        ctx.cold_seq = 0;
+        ctx.slot_accesses.clear();
+        ctx.resident_misuse = None;
+        ctx.home_def_ok = None;
+        ctx.elide_branch = false;
+        ctx.flow_cache = None;
+    };
+    emit_prologue(f, frame, &mut ctx)?;
+    points.push(finish(&ctx));
+    reset(&mut ctx);
     for i in 0..f.body.len() {
-        let mut ctx = FnCtx {
-            frame,
-            layout,
-            rodata,
-            word_offsets: &dummy_targets,
-            words: Vec::new(),
-            relocs: Vec::new(),
-            slot_base: X_SP,
-            slot_bias: 0,
-            mem_function: 0,
-            cold_seq: 0,
-            slot_accesses: Vec::new(),
-            resident_misuse: None,
-            home_mask: frame.home_mask(),
-            home_def_ok: None,
-            elide_branch: false,
-            flow_cache: None,
-        };
         emit_body_inst(i, f, &mut ctx, plan, block_ids, &no_elision)?;
-        points.push(finish(ctx));
+        points.push(finish(&ctx));
+        reset(&mut ctx);
     }
-
-    {
-        let mut ctx = FnCtx {
-            frame,
-            layout,
-            rodata,
-            word_offsets: &dummy_targets,
-            words: Vec::new(),
-            relocs: Vec::new(),
-            slot_base: X_SP,
-            slot_bias: 0,
-            mem_function: 0,
-            cold_seq: 0,
-            slot_accesses: Vec::new(),
-            resident_misuse: None,
-            home_mask: frame.home_mask(),
-            home_def_ok: None,
-            elide_branch: false,
-            flow_cache: None,
-        };
-        emit_epilogue(f, frame, &mut ctx)?;
-        points.push(finish(ctx));
-    }
+    emit_epilogue(f, frame, &mut ctx)?;
+    points.push(finish(&ctx));
 
     let mut back_edges = Vec::new();
     for (i, inst) in f.body.iter().enumerate() {
@@ -5670,13 +5852,22 @@ fn prepare_fn(
     f: &MwirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
+    direct_fp: bool,
 ) -> Result<PreparedFn, CodegenError> {
     let naive = regalloc::Assignment::none(f.temp_types.len());
-    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true).map_err(
-        |error| CodegenError {
-            message: format!("function `{key}`: {}", error.message),
-        },
-    )?;
+    let frame = build_frame(
+        f,
+        layout,
+        0,
+        mwir_entropy_scratch_size(f),
+        0,
+        &naive,
+        direct_fp,
+        true,
+    )
+    .map_err(|error| CodegenError {
+        message: format!("function `{key}`: {}", error.message),
+    })?;
 
     let block_ids = if block_count_instruments(key) {
         assign_mwir_block_ids(&f.body)?
@@ -5695,11 +5886,15 @@ fn prepare_fn(
         });
     }
 
-    let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids)?;
+    let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids, direct_fp)?;
     let scalar_slot: Vec<bool> = frame
         .temp_size
         .iter()
-        .map(|&s| s == FRAME_SLOT_BYTES as usize)
+        .zip(&f.temp_types)
+        // Direct-FP renderer temps must stay out of the GPR allocator because
+        // their slot is canonical. Ordinary sync functions keep the legacy
+        // GPR-resident behavior.
+        .map(|(&size, ty)| size == FRAME_SLOT_BYTES as usize && (!direct_fp || !is_float(ty)))
         .collect();
     let has_returning_call = facts.opaque_calls
         || facts.points.iter().enumerate().any(|(p, pf)| {
@@ -5734,6 +5929,7 @@ fn prepare_sync_fns(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
+    proofs_current: bool,
 ) -> Result<
     (
         BTreeMap<String, PreparedFn>,
@@ -5743,8 +5939,13 @@ fn prepare_sync_fns(
 > {
     let mut prepared: BTreeMap<String, PreparedFn> = BTreeMap::new();
     for (key, f) in &mwir.fns {
-        crate::range::validate_proven_sites(f).map_err(CodegenError::internal)?;
-        prepared.insert(key.clone(), prepare_fn(key, f, layout, rodata)?);
+        if !proofs_current {
+            crate::range::validate_proven_sites(f).map_err(CodegenError::internal)?;
+        }
+        prepared.insert(
+            key.clone(),
+            prepare_fn(key, f, layout, rodata, mwir.direct_fp_fns.contains(key))?,
+        );
     }
     let inputs: BTreeMap<String, regalloc::FnInput> = prepared
         .iter()
@@ -5765,6 +5966,7 @@ fn emit_fn(
     rodata: &mut RodataPool,
     prepared: &PreparedFn,
     convention: Option<&regalloc::Convention>,
+    direct_fp: bool,
 ) -> Result<CodegenFn, CodegenError> {
     let block_ids = &prepared.block_ids;
     let assign = match convention {
@@ -5779,6 +5981,7 @@ fn emit_fn(
         mwir_entropy_scratch_size(f),
         0,
         assign,
+        direct_fp,
         save_lr,
     )?;
     if frameless_fns() && !save_lr {
@@ -5787,7 +5990,16 @@ fn emit_fn(
         // eight or more cache lines the extra spill can warm a symbolic stack
         // line and alter the schedule; retaining it is the conservative,
         // monotone choice there.
-        let saved_frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, assign, true)?;
+        let saved_frame = build_frame(
+            f,
+            layout,
+            0,
+            mwir_entropy_scratch_size(f),
+            0,
+            assign,
+            direct_fp,
+            true,
+        )?;
         if saved_frame.size == frame.size && frame.size >= FRAME_SPILL_MODEL_GUARD_BYTES {
             frame = saved_frame;
         }
@@ -5802,67 +6014,15 @@ fn emit_fn(
 
     let elide = sync_branch_elision(&f.body);
 
-    let empty: [usize; 0] = [];
-    let mut probe_pro = FnCtx {
-        frame: &frame,
-        layout,
-        rodata,
-        word_offsets: &empty,
-        words: Vec::new(),
-        relocs: Vec::new(),
-        slot_base: X_SP,
-        slot_bias: 0,
-        mem_function: 0,
-        cold_seq: 0,
-        slot_accesses: Vec::new(),
-        resident_misuse: None,
-        home_mask: frame.home_mask(),
-        home_def_ok: None,
-        elide_branch: false,
-        flow_cache: None,
-    };
-    emit_prologue(f, &frame, &mut probe_pro)?;
-    let prologue_len = probe_pro.words.len();
-
     let dummy_targets = vec![0usize; f.body.len() + 1];
-    let mut counts = Vec::with_capacity(f.body.len());
-    for i in 0..f.body.len() {
-        let mut probe = FnCtx {
-            frame: &frame,
-            layout,
-            rodata,
-            word_offsets: &dummy_targets,
-            words: Vec::new(),
-            relocs: Vec::new(),
-            slot_base: X_SP,
-            slot_bias: 0,
-            mem_function: 0,
-            cold_seq: 0,
-            slot_accesses: Vec::new(),
-            resident_misuse: None,
-            home_mask: frame.home_mask(),
-            home_def_ok: None,
-            elide_branch: false,
-            flow_cache: None,
-        };
-        emit_body_inst(i, f, &mut probe, plan, block_ids, &elide)?;
-        counts.push(probe.words.len());
-    }
-    let mut word_offsets = vec![0usize; f.body.len() + 1];
-    let mut acc = prologue_len;
-    for (i, c) in counts.iter().enumerate() {
-        word_offsets[i] = acc;
-        acc += c;
-    }
-    word_offsets[f.body.len()] = acc;
-
     let mut ctx = FnCtx {
         frame: &frame,
         layout,
         rodata,
-        word_offsets: &word_offsets,
+        word_offsets: &dummy_targets,
         words: Vec::new(),
         relocs: Vec::new(),
+        regions: Vec::new(),
         slot_base: X_SP,
         slot_bias: 0,
         mem_function: 0,
@@ -5873,13 +6033,48 @@ fn emit_fn(
         home_def_ok: None,
         elide_branch: false,
         flow_cache: None,
+        direct_fp,
     };
     emit_prologue(f, &frame, &mut ctx)?;
-    debug_assert_eq!(ctx.words.len(), prologue_len);
+    let mut word_offsets = vec![0usize; f.body.len() + 1];
+    // Synchronous MWIR has exactly two source-level branch forms. Emit the
+    // function once, remember their final word positions, and patch them when
+    // every instruction offset is known. Internal skip branches are already
+    // local to one instruction and continue to patch themselves immediately.
+    let mut branch_fixups: Vec<(usize, usize, Option<u8>)> = Vec::new();
     for i in 0..f.body.len() {
+        word_offsets[i] = ctx.words.len();
         emit_body_inst(i, f, &mut ctx, plan, block_ids, &elide)?;
+        if plan.suppressed[i] {
+            continue;
+        }
+        match &f.body[i] {
+            Inst::Jump { target } if !elide[i] => {
+                branch_fixups.push((ctx.words.len() - 1, *target, None));
+            }
+            Inst::JumpIfFalse { target, .. } => {
+                let word = ctx.words.len() - 1;
+                let reg = (ctx.words[word].word & 0x1f) as u8;
+                branch_fixups.push((word, *target, Some(reg)));
+            }
+            Inst::Return { .. } if !elide[i] => {
+                branch_fixups.push((ctx.words.len() - 1, f.body.len(), None));
+            }
+            _ => {}
+        }
     }
-    debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
+    word_offsets[f.body.len()] = ctx.words.len();
+    for (word, target, cbz_reg) in branch_fixups {
+        let delta = (word_offsets[target] as i64 - word as i64) as i32 * 4;
+        let emitted = &mut ctx.words[word];
+        if let Some(reg) = cbz_reg {
+            emitted.word = encode::enc_cbz(reg, delta, true);
+            emitted.text = format!("cbz {}, #{delta}", reg_name(reg));
+        } else {
+            emitted.word = encode::enc_b(delta);
+            emitted.text = format!("b #{delta}");
+        }
+    }
     emit_epilogue(f, &frame, &mut ctx)?;
 
     if let Some(what) = ctx.resident_misuse.take() {
@@ -5894,6 +6089,7 @@ fn emit_fn(
         frame_size: frame.size,
         code: ctx.words,
         relocs: ctx.relocs,
+        regions: ctx.regions,
     })
 }
 
@@ -6248,6 +6444,7 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         flow_entropy_scratch_size(f),
         TURN_RECORD_SIZE as usize,
         &regalloc::Assignment::none(synthetic.temp_types.len()),
+        false,
         true,
     )?;
     if frame_coloring() {
@@ -7036,7 +7233,7 @@ fn emit_group_create(
 
         let j = ctx.words.len();
         ctx.words
-            .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+            .push(EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]));
         to_after.push(j);
         ctx.patch_skip(skip_try_next, SkipKind::Cbnz(X_D));
     }
@@ -7048,7 +7245,7 @@ fn emit_group_create(
     let after = ctx.cur_word();
     for j in to_after {
         let delta = (after as i64 - j as i64) as i32 * 4;
-        ctx.words[j] = EmittedWord::new(
+        ctx.words[j] = EmittedWord::gpr(
             encode::enc_b(delta),
             format!("b #{delta}"),
             CostRule::Branch,
@@ -7120,7 +7317,7 @@ fn emit_group_start(
     );
     let to_after = ctx.words.len();
     ctx.words
-        .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+        .push(EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]));
     ctx.patch_skip(skip_admit, SkipKind::Cbz(X_C));
 
     let word = ctx.cur_word();
@@ -7365,7 +7562,7 @@ fn emit_group_start(
     ctx.patch_skip(skip_still_running, SkipKind::Cond(Cond::Eq));
     let after = ctx.cur_word();
     let delta = (after as i64 - to_after as i64) as i32 * 4;
-    ctx.words[to_after] = EmittedWord::new(
+    ctx.words[to_after] = EmittedWord::gpr(
         encode::enc_b(delta),
         format!("b #{delta}"),
         CostRule::Branch,
@@ -7450,7 +7647,7 @@ fn emit_group_close(
     ctx.store_slot(X_D, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
     let to_free = ctx.cur_word();
     ctx.words
-        .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+        .push(EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]));
 
     ctx.patch_skip(skip_no_parent, SkipKind::Cond(Cond::Eq));
     ctx.store_slot(X_ZR, ctx.frame.off(LINEAGE_GROUP_SLOT));
@@ -7458,7 +7655,7 @@ fn emit_group_close(
 
     let free = ctx.cur_word();
     let delta = (free as i64 - to_free as i64) as i32 * 4;
-    ctx.words[to_free] = EmittedWord::new(
+    ctx.words[to_free] = EmittedWord::gpr(
         encode::enc_b(delta),
         format!("b #{delta}"),
         CostRule::Branch,
@@ -8588,6 +8785,7 @@ fn emit_flowwir_fn(
         word_offsets: &dummy_targets,
         words: Vec::new(),
         relocs: Vec::new(),
+        regions: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         mem_function: stable_symbol_id(fn_key),
@@ -8598,6 +8796,7 @@ fn emit_flowwir_fn(
         home_def_ok: None,
         elide_branch: false,
         flow_cache: None,
+        direct_fp: false,
     };
     emit_async_entry(
         &synthetic,
@@ -8623,6 +8822,7 @@ fn emit_flowwir_fn(
         word_offsets: &dummy_targets,
         words: Vec::new(),
         relocs: Vec::new(),
+        regions: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         mem_function: stable_symbol_id(fn_key),
@@ -8633,6 +8833,7 @@ fn emit_flowwir_fn(
         home_def_ok: None,
         elide_branch: false,
         flow_cache: None,
+        direct_fp: false,
     };
     let mut counts = Vec::with_capacity(total);
     for (i, entry) in flat.iter().enumerate() {
@@ -8684,6 +8885,7 @@ fn emit_flowwir_fn(
         word_offsets: &dummy_targets,
         words: Vec::new(),
         relocs: Vec::new(),
+        regions: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         mem_function: stable_symbol_id(fn_key),
@@ -8694,6 +8896,7 @@ fn emit_flowwir_fn(
         home_def_ok: None,
         elide_branch: false,
         flow_cache: None,
+        direct_fp: false,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -8705,6 +8908,7 @@ fn emit_flowwir_fn(
         word_offsets: &word_offsets,
         words: Vec::new(),
         relocs: Vec::new(),
+        regions: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         mem_function: stable_symbol_id(fn_key),
@@ -8715,6 +8919,7 @@ fn emit_flowwir_fn(
         home_def_ok: None,
         elide_branch: false,
         flow_cache: None,
+        direct_fp: false,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -8770,6 +8975,9 @@ fn emit_flowwir_fn(
         frame_size: frame.size,
         code: ctx.words,
         relocs: ctx.relocs,
+        // FlowWir state frames never carry census regions in P8R: markers are
+        // a synchronous-renderer mechanism, matching the P8R.4/P8R.5 scope.
+        regions: Vec::new(),
     })
 }
 
@@ -8922,7 +9130,7 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
                 rule: CostRule,
                 dst: Option<u8>,
                 srcs: &[u8]| {
-        words.push(EmittedWord::new(w, text, rule, dst, srcs));
+        words.push(EmittedWord::gpr(w, text, rule, dst, srcs));
     };
     let load_imm = |words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str| {
         let h0 = (value & 0xFFFF) as u16;
@@ -8985,7 +9193,7 @@ fn push(
     dst: Option<u8>,
     srcs: &[u8],
 ) {
-    words.push(EmittedWord::new(w, text, rule, dst, srcs));
+    words.push(EmittedWord::gpr(w, text, rule, dst, srcs));
 }
 
 fn push_rodata_addr(
@@ -9404,8 +9612,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
             ew.text = format!("cbz x9, .ok ({delta})");
             ew.rule = CostRule::Branch;
             ew.dst = None;
-            ew.srcs = [9, 0, 0, 0];
-            ew.src_len = 1;
+            ew.set_srcs(&[Reg::gpr(9)]);
         }
     } else {
         bl_key(&mut words, &mut relocs, &call.key);
@@ -9454,6 +9661,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
         frame_size: 16,
         code: words,
         relocs,
+        regions: Vec::new(),
     }
 }
 
@@ -9481,35 +9689,35 @@ pub struct CheckpointEmitResult {
 
 pub fn emit_checkpoint_lr_frame() -> Vec<EmittedWord> {
     vec![
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_sub_imm(31, 31, 16, true),
             "sub sp, sp, #16  ; floor cat2".into(),
             CostRule::Alu,
             Some(31),
             &[31],
         ),
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_str_x_imm(30, 31, 0),
             "str x30, [sp]  ; floor cat2".into(),
             CostRule::Store,
             None,
             &[30, 31],
         ),
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_ldr_x_imm(30, 31, 0),
             "ldr x30, [sp]  ; floor cat2".into(),
             CostRule::Load,
             Some(30),
             &[31],
         ),
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_add_imm(31, 31, 16, true),
             "add sp, sp, #16  ; floor cat2".into(),
             CostRule::Alu,
             Some(31),
             &[31],
         ),
-        EmittedWord::new(
+        EmittedWord::gpr(
             encode::enc_ret(30),
             "ret  ; floor cat2".into(),
             CostRule::Branch,
@@ -9626,6 +9834,7 @@ fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
         frame_size: 16,
         code: words,
         relocs,
+        regions: Vec::new(),
     }
 }
 
@@ -9714,6 +9923,7 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
         frame_size: 16,
         code: words,
         relocs,
+        regions: Vec::new(),
     }
 }
 
@@ -9788,6 +9998,7 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
         frame_size: 16,
         code: words,
         relocs,
+        regions: Vec::new(),
     }
 }
 
@@ -9884,6 +10095,7 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
         frame_size: 32,
         code: words,
         relocs,
+        regions: Vec::new(),
     }
 }
 
@@ -9895,6 +10107,17 @@ pub fn codegen_program_with_async(
     group_arena_capacity: u64,
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
+    let timings = std::env::var_os("WRELA_COMPILER_TIMINGS").is_some();
+    let mut last = std::time::Instant::now();
+    let mut timing = |stage: &str| {
+        if timings {
+            eprintln!(
+                "compiler-timing: {:.3}s codegen-{stage}",
+                last.elapsed().as_secs_f64()
+            );
+        }
+        last = std::time::Instant::now();
+    };
     let mut transformed_flow = None;
     if crate::mwir_opt::sroa() {
         transformed_flow = Some(
@@ -9909,9 +10132,15 @@ pub fn codegen_program_with_async(
             Some(crate::range::apply_flow_program_proofs(input).map_err(CodegenError::internal)?);
     }
     let flow = transformed_flow.as_ref().unwrap_or(flow);
-    let optimized = crate::mwir_opt::optimize_checked(mwir, Some(flow), layout)
+    let optimized = crate::mwir_opt::optimize_for_codegen_checked(mwir, Some(flow), layout)
         .map_err(CodegenError::internal)?;
-    let mwir = optimized.as_ref().unwrap_or(mwir);
+    let proofs_current = optimized
+        .as_ref()
+        .is_some_and(crate::mwir_opt::CodegenOptimized::proofs_current);
+    let mwir = optimized
+        .as_ref()
+        .map_or(mwir, crate::mwir_opt::CodegenOptimized::as_program);
+    timing("optimize");
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
     }
@@ -9927,7 +10156,8 @@ pub fn codegen_program_with_async(
         child_index,
     };
     let mut fns = BTreeMap::new();
-    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata)?;
+    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata, proofs_current)?;
+    timing("prepare-sync");
     for (key, f) in &mwir.fns {
         fns.insert(
             key.clone(),
@@ -9938,15 +10168,18 @@ pub fn codegen_program_with_async(
                 &mut rodata,
                 &prepared[key],
                 conventions.get(key),
+                mwir.direct_fp_fns.contains(key),
             )?,
         );
     }
+    timing("emit-sync");
     for (key, f) in &flow.fns {
         fns.insert(
             key.clone(),
             emit_flowwir_fn(key, f, layout, &mut rodata, method_index, &gctx)?,
         );
     }
+    timing("emit-flow");
     let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
@@ -9956,6 +10189,7 @@ pub fn codegen_program_with_async(
     validate_pixels_i32x4_raster_a64(&out)?;
     verify_conventions(&out).map_err(CodegenError::internal)?;
     crate::cost::audit::audit_program(&out).map_err(CodegenError::internal)?;
+    timing("validate");
     Ok(out)
 }
 
@@ -9963,9 +10197,14 @@ pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
-    let optimized =
-        crate::mwir_opt::optimize_checked(mwir, None, layout).map_err(CodegenError::internal)?;
-    let mwir = optimized.as_ref().unwrap_or(mwir);
+    let optimized = crate::mwir_opt::optimize_for_codegen_checked(mwir, None, layout)
+        .map_err(CodegenError::internal)?;
+    let proofs_current = optimized
+        .as_ref()
+        .is_some_and(crate::mwir_opt::CodegenOptimized::proofs_current);
+    let mwir = optimized
+        .as_ref()
+        .map_or(mwir, crate::mwir_opt::CodegenOptimized::as_program);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
     }
@@ -9975,7 +10214,7 @@ pub fn codegen_program(
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
     let mut fns = BTreeMap::new();
-    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata)?;
+    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata, proofs_current)?;
     for (key, f) in &mwir.fns {
         let cf = emit_fn(
             key,
@@ -9984,6 +10223,7 @@ pub fn codegen_program(
             &mut rodata,
             &prepared[key],
             conventions.get(key),
+            mwir.direct_fp_fns.contains(key),
         )?;
         fns.insert(key.clone(), cf);
     }
@@ -10010,7 +10250,7 @@ fn validate_pixels_i32x4_raster_a64(program: &CodegenProgram) -> Result<(), Code
         .filter(|word| {
             word.word == encode::enc_add_v4s(2, 0, 1)
                 && word.text == "add v2.4s, v0.4s, v1.4s"
-                && word.rule == CostRule::Neon
+                && word.rule == CostRule::AsimdInt
         })
         .count();
     let vector_loads = raster
@@ -10018,7 +10258,7 @@ fn validate_pixels_i32x4_raster_a64(program: &CodegenProgram) -> Result<(), Code
         .iter()
         .filter(|word| {
             word.text.starts_with("ldr q")
-                && word.rule == CostRule::Load
+                && word.rule == CostRule::FpLoadQ
                 && word.access_bytes == 16
                 && word.mem.is_some()
         })
@@ -10028,7 +10268,7 @@ fn validate_pixels_i32x4_raster_a64(program: &CodegenProgram) -> Result<(), Code
         .iter()
         .filter(|word| {
             word.text.starts_with("str q")
-                && word.rule == CostRule::Store
+                && word.rule == CostRule::FpStoreQ
                 && word.access_bytes == 16
                 && word.mem.is_some()
         })
@@ -10039,7 +10279,7 @@ fn validate_pixels_i32x4_raster_a64(program: &CodegenProgram) -> Result<(), Code
         .filter(|word| {
             word.word == encode::enc_uzp1_v4s(0, 0, 1)
                 && word.text == "uzp1 v0.4s, v0.4s, v1.4s"
-                && word.rule == CostRule::Neon
+                && word.rule == CostRule::AsimdPermute
         })
         .count();
     // Three from-lanes constructions establish q/q-advance state and two
@@ -10122,10 +10362,10 @@ pub fn verify_conventions(program: &CodegenProgram) -> Result<(), String> {
         };
         let mut actual: regalloc::RegSet = 0;
         for w in &f.code {
-            if let Some(d) = w.dst {
+            if let Some(d) = w.dst.and_then(Reg::as_gpr) {
                 actual |= regalloc::reg_bit(d);
             }
-            for &sr in &w.srcs[..w.src_len as usize] {
+            for sr in w.gpr_srcs() {
                 actual |= regalloc::reg_bit(sr);
             }
         }
@@ -10371,6 +10611,88 @@ mod tests {
         (mwir_program, layout)
     }
 
+    /// The census's region markers must not change one emitted byte.
+    ///
+    /// This is the whole justification for choosing non-emitting MachineWir
+    /// markers over block labels or helper-function boundaries: the measured
+    /// code is the shipped code. The test emits the same program twice —
+    /// once with markers threaded through every statement boundary of a
+    /// function, once with them stripped — and requires the word streams to
+    /// be identical while only the region table differs.
+    #[test]
+    fn region_markers_emit_no_words() {
+        let (mwir_program, layout) = compile(concat!(
+            "module examples.codegen_region_test\n\n",
+            "pub fn total(a: u64, b: u64) -> u64:\n",
+            "    c = a +% b\n",
+            "    d = c *% 3\n",
+            "    return d +% a\n",
+        ));
+        let stripped = codegen_program(&mwir_program, &layout).expect("codegen without markers");
+
+        let mut marked = mwir_program.clone();
+        let f = marked.fns.get_mut("total").expect("fixture fn");
+        // One marker before every instruction, plus one at the very end, so
+        // no emission site is left unbracketed.
+        let regions = [1_u32, 2, 3, 4, 5, 6];
+        let mut body = Vec::new();
+        for (index, inst) in f.body.iter().enumerate() {
+            body.push(Inst::RegionMarker {
+                region: regions[index % regions.len()],
+            });
+            body.push(inst.clone());
+        }
+        body.push(Inst::RegionMarker { region: 4 });
+        f.body = body;
+        let with_markers = codegen_program(&marked, &layout).expect("codegen with markers");
+
+        for (key, plain) in &stripped.fns {
+            let annotated = with_markers.fns.get(key).expect("same fn set");
+            assert_eq!(
+                plain.code.iter().map(|w| w.word).collect::<Vec<_>>(),
+                annotated.code.iter().map(|w| w.word).collect::<Vec<_>>(),
+                "fn `{key}`: markers changed the emitted words"
+            );
+            assert_eq!(plain.frame_size, annotated.frame_size, "fn `{key}` frame");
+            assert_eq!(plain.relocs, annotated.relocs, "fn `{key}` relocs");
+            assert!(plain.regions.is_empty(), "fn `{key}` had no markers");
+        }
+        let annotated = &with_markers.fns["total"];
+        assert!(
+            !annotated.regions.is_empty(),
+            "the marked program must record its regions"
+        );
+        assert!(
+            annotated
+                .regions
+                .iter()
+                .all(|(at, _)| *at <= annotated.code.len()),
+            "every marker indexes into the emitted stream: {:?}",
+            annotated.regions
+        );
+        crate::pixels::hot_census::check_regions(&with_markers).expect("sealed regions");
+    }
+
+    #[test]
+    fn an_unsealed_region_id_fails_lowering_closed() {
+        let (mwir_program, layout) = compile(concat!(
+            "module examples.codegen_region_seal\n\n",
+            "pub fn one(a: u64) -> u64:\n",
+            "    return a +% 1\n",
+        ));
+        let mut marked = mwir_program.clone();
+        marked
+            .fns
+            .get_mut("one")
+            .expect("fixture fn")
+            .body
+            .insert(0, Inst::RegionMarker { region: 9_999 });
+        let program = codegen_program(&marked, &layout).expect("codegen accepts any marker");
+        let error = crate::pixels::hot_census::check_regions(&program)
+            .expect_err("the census refuses an unsealed id");
+        assert!(error.contains("sealed vocabulary"), "{error}");
+    }
+
     #[test]
     fn rodata_dump_escapes_trailing_spaces() {
         assert_eq!(render_bytes(b"index "), "index\\x20");
@@ -10438,14 +10760,53 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("build_frame");
+        let frame = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("build_frame");
         assert_eq!(frame.temp_offset, vec![0, 8, 16]);
         assert_eq!(frame.temp_size, vec![8, 8, 8]);
         assert_eq!(frame.self_ptr_off, None);
         assert_eq!(frame.ret_ptr_off, None);
         assert_eq!(frame.lr_off, 24);
         assert_eq!(frame.size, 32);
+    }
+
+    #[test]
+    fn direct_fp_frames_cluster_float_slots_before_large_aggregates() {
+        let large = Type::Array(
+            Type::U64.into(),
+            ast::Expr::Int(ast::Span::default(), "5000".to_string()).into(),
+        );
+        let f = MwirFn {
+            receiver: None,
+            params: vec![],
+            ret: Type::Unit,
+            temp_types: vec![large, Type::F32, Type::F64],
+            body: vec![Inst::Return { value: None }],
+        };
+        let layout = LayoutCtx::default();
+        let assignment = regalloc::Assignment::none(64);
+        let ordinary =
+            build_frame(&f, &layout, 0, 0, 0, &assignment, false, true).expect("ordinary frame");
+        let direct_fp =
+            build_frame(&f, &layout, 0, 0, 0, &assignment, true, true).expect("direct-FP frame");
+
+        assert_eq!(ordinary.temp_offset, vec![0, 40_000, 40_008]);
+        assert_eq!(direct_fp.temp_offset, vec![16, 0, 8]);
+        assert_eq!(ordinary.temp_size, direct_fp.temp_size);
+        assert_eq!(ordinary.size, direct_fp.size);
+        assert!(
+            direct_fp.off(Temp(1)) <= 4095 * 4,
+            "clustered f32 loads retain their narrower immediate reach"
+        );
     }
 
     #[test]
@@ -10478,8 +10839,17 @@ mod tests {
         layout
             .structs
             .insert("I32x4".to_string(), vec![Type::I64, Type::I64]);
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("build_frame");
+        let frame = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("build_frame");
         assert_eq!(frame.temp_offset, vec![0, 16, 48, 64, 80]);
         for temp in [Temp(1), Temp(2), Temp(3), Temp(4)] {
             assert_eq!(frame.off(temp) % 16, 0);
@@ -10487,24 +10857,240 @@ mod tests {
     }
 
     #[test]
+    fn closed_packet_substrate_emits_only_declared_a64_obligations() {
+        let f32x4 = Type::Named("F32x4".to_string(), vec![]);
+        let i32x4 = Type::Named("I32x4".to_string(), vec![]);
+        let temp_types = vec![
+            Type::F32,
+            Type::I32,
+            f32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            f32x4.clone(),
+            i32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            i32x4.clone(),
+            f32x4.clone(),
+            f32x4.clone(),
+            i32x4.clone(),
+            f32x4.clone(),
+            i32x4.clone(),
+            f32x4.clone(),
+        ];
+        let params = (0..8)
+            .map(|index| (Temp(index), AccessMode::Read))
+            .collect();
+        let body = vec![
+            Inst::PacketSplat {
+                kind: mwir::PacketKind::F32x4,
+                dst: Temp(8),
+                scalar: Temp(0),
+            },
+            Inst::PacketSplat {
+                kind: mwir::PacketKind::I32x4,
+                dst: Temp(9),
+                scalar: Temp(1),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketBinaryOp::Add,
+                dst: Temp(10),
+                lhs: Temp(2),
+                rhs: Temp(3),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketBinaryOp::Sub,
+                dst: Temp(11),
+                lhs: Temp(2),
+                rhs: Temp(3),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketBinaryOp::Mul,
+                dst: Temp(12),
+                lhs: Temp(2),
+                rhs: Temp(3),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketBinaryOp::Min,
+                dst: Temp(13),
+                lhs: Temp(2),
+                rhs: Temp(3),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketBinaryOp::Max,
+                dst: Temp(14),
+                lhs: Temp(2),
+                rhs: Temp(3),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::I32x4,
+                op: mwir::PacketBinaryOp::Add,
+                dst: Temp(15),
+                lhs: Temp(5),
+                rhs: Temp(6),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::I32x4,
+                op: mwir::PacketBinaryOp::Sub,
+                dst: Temp(16),
+                lhs: Temp(5),
+                rhs: Temp(6),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::I32x4,
+                op: mwir::PacketBinaryOp::And,
+                dst: Temp(17),
+                lhs: Temp(5),
+                rhs: Temp(6),
+            },
+            Inst::PacketBinary {
+                kind: mwir::PacketKind::I32x4,
+                op: mwir::PacketBinaryOp::Or,
+                dst: Temp(18),
+                lhs: Temp(5),
+                rhs: Temp(6),
+            },
+            Inst::PacketShiftRightArithmetic {
+                dst: Temp(19),
+                src: Temp(5),
+                immediate: 7,
+            },
+            Inst::PacketSelect {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketSelectOp::Ge,
+                dst: Temp(20),
+                lhs: Temp(2),
+                rhs: Temp(3),
+                if_true: Temp(4),
+                if_false: Temp(2),
+            },
+            Inst::PacketSelect {
+                kind: mwir::PacketKind::F32x4,
+                op: mwir::PacketSelectOp::Gt,
+                dst: Temp(21),
+                lhs: Temp(2),
+                rhs: Temp(3),
+                if_true: Temp(4),
+                if_false: Temp(2),
+            },
+            Inst::PacketSelect {
+                kind: mwir::PacketKind::I32x4,
+                op: mwir::PacketSelectOp::Gt,
+                dst: Temp(22),
+                lhs: Temp(5),
+                rhs: Temp(6),
+                if_true: Temp(7),
+                if_false: Temp(5),
+            },
+            Inst::PacketFma {
+                dst: Temp(23),
+                lhs: Temp(2),
+                rhs: Temp(3),
+                addend: Temp(4),
+            },
+            Inst::PacketConvert {
+                from: mwir::PacketKind::F32x4,
+                to: mwir::PacketKind::I32x4,
+                dst: Temp(24),
+                src: Temp(2),
+            },
+            Inst::PacketConvert {
+                from: mwir::PacketKind::I32x4,
+                to: mwir::PacketKind::F32x4,
+                dst: Temp(25),
+                src: Temp(5),
+            },
+            Inst::Return { value: None },
+        ];
+        let mut program = MwirProgram::default();
+        program.fns.insert(
+            "packet_obligations".to_string(),
+            MwirFn {
+                receiver: None,
+                params,
+                ret: Type::Unit,
+                temp_types,
+                body,
+            },
+        );
+        let mut layout = LayoutCtx::default();
+        layout
+            .structs
+            .insert("F32x4".to_string(), vec![Type::I64, Type::I64]);
+        layout
+            .structs
+            .insert("I32x4".to_string(), vec![Type::I64, Type::I64]);
+        let generated = codegen_program(&program, &layout).expect("packet obligation codegen");
+        let code = &generated.fns["packet_obligations"].code;
+        let text = code
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>();
+        for obligation in [
+            "dup v1.4s",
+            "fadd v2.4s",
+            "fsub v2.4s",
+            "fmul v2.4s",
+            "fmin v2.4s",
+            "fmax v2.4s",
+            "add v2.4s",
+            "sub v2.4s",
+            "and v2.16b",
+            "orr v2.16b",
+            "sshr v1.4s",
+            "fcmge v4.4s",
+            "fcmgt v4.4s",
+            "cmgt v4.4s",
+            "bsl v4.16b",
+            "fmla v2.4s",
+            "fcvtzs v1.4s",
+            "scvtf v1.4s",
+        ] {
+            assert!(
+                text.iter().any(|line| line.starts_with(obligation)),
+                "missing {obligation}: {text:?}"
+            );
+        }
+        assert!(
+            code.iter()
+                .all(|word| crate::cost::audit::audit_word("packet_obligations", 0, word).is_ok())
+        );
+    }
+
+    #[test]
     fn pixels_raster_a64_audit_rejects_scalarization_or_missing_stack_traffic() {
         let vector_load = |vector: u8| {
-            EmittedWord::new(
+            EmittedWord::banked(
                 encode::enc_ldr_q_imm(vector, X_A, 0),
                 format!("ldr q{vector}, [x9, #0]"),
-                CostRule::Load,
-                Some(vector),
-                &[X_A],
+                CostRule::FpLoadQ,
+                Some(Reg::fp(vector)),
+                &[Reg::gpr(X_A)],
             )
             .with_mem(MemRef::flow_frame(0, 0, X_A))
         };
         let vector_store = |vector: u8| {
-            EmittedWord::new(
+            EmittedWord::banked(
                 encode::enc_str_q_imm(vector, X_C, 0),
                 format!("str q{vector}, [x11, #0]"),
-                CostRule::Store,
+                CostRule::FpStoreQ,
                 None,
-                &[X_C, vector],
+                &[Reg::gpr(X_C), Reg::fp(vector)],
             )
             .with_mem(MemRef::flow_frame(0, 0, X_C))
         };
@@ -10512,24 +11098,24 @@ mod tests {
         for _ in 0..3 {
             code.push(vector_load(0));
             code.push(vector_load(1));
-            code.push(EmittedWord::new(
+            code.push(EmittedWord::banked(
                 encode::enc_uzp1_v4s(0, 0, 1),
                 "uzp1 v0.4s, v0.4s, v1.4s".to_string(),
-                CostRule::Neon,
-                Some(0),
-                &[0, 1],
+                CostRule::AsimdPermute,
+                Some(Reg::fp(0)),
+                &[Reg::fp(0), Reg::fp(1)],
             ));
             code.push(vector_store(0));
         }
         for _ in 0..2 {
             code.push(vector_load(0));
             code.push(vector_load(1));
-            code.push(EmittedWord::new(
+            code.push(EmittedWord::banked(
                 encode::enc_add_v4s(2, 0, 1),
                 "add v2.4s, v0.4s, v1.4s".to_string(),
-                CostRule::Neon,
-                Some(2),
-                &[0, 1],
+                CostRule::AsimdInt,
+                Some(Reg::fp(2)),
+                &[Reg::fp(0), Reg::fp(1)],
             ));
             code.push(vector_store(2));
         }
@@ -10540,6 +11126,7 @@ mod tests {
                 frame_size: 16,
                 code,
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         validate_pixels_i32x4_raster_a64(&program).expect("canonical emitted packet raster");
@@ -10568,8 +11155,17 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("build_frame");
+        let frame = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("build_frame");
         assert_eq!(frame.temp_offset, vec![0]);
         assert_eq!(frame.temp_size, vec![16]);
         assert_eq!(frame.self_ptr_off, Some(16));
@@ -10790,13 +11386,31 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("build_frame");
+        let none = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("build_frame");
+        let staged = build_frame(
+            &f,
+            &layout,
+            24,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
         assert_eq!(staged.size, 48);
@@ -10815,8 +11429,17 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
-            .expect("large slots use a materialized address");
+        let frame = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            0,
+            &regalloc::Assignment::none(64),
+            false,
+            true,
+        )
+        .expect("large slots use a materialized address");
         assert!(frame.size > FRAME_X_IMMEDIATE_MAX_BYTES);
     }
 
@@ -10842,6 +11465,7 @@ mod tests {
             0,
             bias,
             &regalloc::Assignment::none(64),
+            false,
             true,
         ) else {
             panic!("the same frame must be refused once biased past the turn record");
@@ -10866,6 +11490,7 @@ mod tests {
             0,
             bias,
             &regalloc::Assignment::none(64),
+            false,
             true,
         )
         .expect("fits under the compiler frame limit with the bias");
@@ -10991,6 +11616,7 @@ mod tests {
                 },
             )]),
             rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
         }
     }
 
@@ -11050,11 +11676,12 @@ pub fn r(a: u64, b: u64) -> u64:
                         divides += 1;
                         assert_eq!(
                             ew.dst,
-                            Some(X_C),
+                            Some(Reg::gpr(X_C)),
                             "the divide must declare its quotient register"
                         );
                         assert!(
-                            ew.src_slice().contains(&X_A) && ew.src_slice().contains(&X_B),
+                            ew.src_slice().contains(&Reg::gpr(X_A))
+                                && ew.src_slice().contains(&Reg::gpr(X_B)),
                             "the divide must declare both operands, got {:?}",
                             ew.src_slice()
                         );
@@ -11062,7 +11689,7 @@ pub fn r(a: u64, b: u64) -> u64:
                     CostRule::Mul => {
                         msubs += 1;
                         assert!(
-                            ew.src_slice().contains(&X_A),
+                            ew.src_slice().contains(&Reg::gpr(X_A)),
                             "msub must declare its accumulator source, got {:?}",
                             ew.src_slice()
                         );
@@ -11168,6 +11795,7 @@ pub fn r(a: u64, b: u64) -> u64:
                 },
             )]),
             rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
         };
         let layout = LayoutCtx::default();
 
@@ -11208,6 +11836,68 @@ pub fn r(a: u64, b: u64) -> u64:
     }
 
     #[test]
+    fn single_pass_sync_emission_patches_forward_backward_and_return_branches() {
+        fn signed_field(word: u32, bits: u32) -> i32 {
+            ((word << (32 - bits)) as i32) >> (32 - bits)
+        }
+        fn b_target(word: u32, at: usize) -> usize {
+            (at as i32 + signed_field(word & 0x03ff_ffff, 26)) as usize
+        }
+        fn cbz_target(word: u32, at: usize) -> usize {
+            (at as i32 + signed_field((word >> 5) & 0x7ffff, 19)) as usize
+        }
+
+        let mwir = MwirProgram {
+            fns: BTreeMap::from([(
+                "branch_mix".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![],
+                    ret: Type::Unit,
+                    temp_types: vec![Type::Bool],
+                    body: vec![
+                        Inst::ConstBool {
+                            dst: Temp(0),
+                            value: true,
+                        },
+                        Inst::JumpIfFalse {
+                            cond: Temp(0),
+                            target: 4,
+                        },
+                        Inst::Jump { target: 0 },
+                        Inst::Return { value: None },
+                        Inst::Return { value: None },
+                    ],
+                },
+            )]),
+            rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
+        };
+        set_branch_cleanup(false);
+        let program = codegen_program(&mwir, &LayoutCtx::default()).expect("codegen");
+        let code = &program.fns["branch_mix"].code;
+        let cbz = code
+            .iter()
+            .position(|word| word.text.starts_with("cbz "))
+            .expect("conditional branch");
+        let branches: Vec<_> = code
+            .iter()
+            .enumerate()
+            .filter(|(_, word)| word.text.starts_with("b #"))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(branches.len(), 3, "back edge and two returns");
+        assert_eq!(cbz_target(code[cbz].word, cbz), branches[2]);
+        assert!(b_target(code[branches[0]].word, branches[0]) < cbz);
+        let first_epilogue = b_target(code[branches[1]].word, branches[1]);
+        assert_eq!(
+            b_target(code[branches[2]].word, branches[2]),
+            first_epilogue
+        );
+        assert!(first_epilogue > branches[2]);
+    }
+
+    #[test]
     fn block_count_emits_hit_calls_at_leaders() {
         let mwir = MwirProgram {
             fns: BTreeMap::from([(
@@ -11236,6 +11926,7 @@ pub fn r(a: u64, b: u64) -> u64:
                 },
             )]),
             rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
         };
         let layout = LayoutCtx::default();
 
@@ -11313,6 +12004,7 @@ pub fn r(a: u64, b: u64) -> u64:
                 .map(|k| ((*k).to_string(), two_block_fn()))
                 .collect(),
             rodata: vec![],
+            direct_fp_fns: BTreeSet::new(),
         };
         let layout = LayoutCtx::default();
 
@@ -11420,8 +12112,8 @@ pub fn r(a: u64, b: u64) -> u64:
             .find(|ew| ew.text.starts_with("adds "))
             .expect("expected adds in add body");
         assert_eq!(adds.rule, CostRule::Alu);
-        assert_eq!(adds.dst, Some(X_C));
-        assert_eq!(adds.src_slice(), &[X_A, X_B]);
+        assert_eq!(adds.dst, Some(Reg::gpr(X_C)));
+        assert_eq!(adds.src_slice(), &[Reg::gpr(X_A), Reg::gpr(X_B)]);
     }
 
     #[test]
@@ -11801,33 +12493,39 @@ async fn parent() -> u64:
         assert_ne!(stable.key & (1u64 << 63), 0);
     }
 
+    /// `check_push_shape` over general-register operands, for the shape
+    /// tests that predate banked operands.
+    fn check_push_shape_gpr(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
+        check_push_shape(rule, dst.map(Reg::gpr), &cost::gpr_operands(srcs), mem);
+    }
+
     #[test]
     fn push_shape_call_requires_x0_dst() {
-        check_push_shape(CostRule::Call, Some(0), &[], None);
-        check_push_shape(CostRule::Call, Some(0), &[1, 2], None);
+        check_push_shape_gpr(CostRule::Call, Some(0), &[], None);
+        check_push_shape_gpr(CostRule::Call, Some(0), &[1, 2], None);
     }
 
     #[test]
-    #[should_panic(expected = "Call must declare dst=Some(0)")]
+    #[should_panic(expected = "Call must declare dst=Some(x0)")]
     fn push_shape_call_without_x0_dst_fails() {
-        check_push_shape(CostRule::Call, None, &[], None);
+        check_push_shape_gpr(CostRule::Call, None, &[], None);
     }
 
     #[test]
-    #[should_panic(expected = "Call must declare dst=Some(0)")]
+    #[should_panic(expected = "Call must declare dst=Some(x0)")]
     fn push_shape_call_wrong_dst_fails() {
-        check_push_shape(CostRule::Call, Some(1), &[], None);
+        check_push_shape_gpr(CostRule::Call, Some(1), &[], None);
     }
 
     #[test]
     fn push_shape_load_known_addr_needs_src() {
-        check_push_shape(
+        check_push_shape_gpr(
             CostRule::Load,
             Some(0),
             &[MEM_SP_REG],
             Some(&MemRef::stack(8)),
         );
-        check_push_shape(
+        check_push_shape_gpr(
             CostRule::Load,
             Some(0),
             &[X_A],
@@ -11838,23 +12536,23 @@ async fn parent() -> u64:
     #[test]
     #[should_panic(expected = "Load with known address")]
     fn push_shape_load_known_addr_without_src_fails() {
-        check_push_shape(CostRule::Load, Some(0), &[], Some(&MemRef::stack(8)));
+        check_push_shape_gpr(CostRule::Load, Some(0), &[], Some(&MemRef::stack(8)));
     }
 
     #[test]
     fn push_shape_load_unique_cold_empty_srcs_ok() {
-        check_push_shape(CostRule::Load, Some(0), &[], Some(&MemRef::cold_unique(0)));
+        check_push_shape_gpr(CostRule::Load, Some(0), &[], Some(&MemRef::cold_unique(0)));
     }
 
     #[test]
     fn push_shape_store_nonunique_requires_base_in_srcs() {
-        check_push_shape(
+        check_push_shape_gpr(
             CostRule::Store,
             None,
             &[0, MEM_SP_REG],
             Some(&MemRef::stack(16)),
         );
-        check_push_shape(
+        check_push_shape_gpr(
             CostRule::Store,
             None,
             &[1, X_FRAME],
@@ -11865,12 +12563,12 @@ async fn parent() -> u64:
     #[test]
     #[should_panic(expected = "base reg")]
     fn push_shape_store_nonunique_missing_base_fails() {
-        check_push_shape(CostRule::Store, None, &[0], Some(&MemRef::stack(8)));
+        check_push_shape_gpr(CostRule::Store, None, &[0], Some(&MemRef::stack(8)));
     }
 
     #[test]
     fn push_shape_store_unique_cold_exempt_from_base() {
-        check_push_shape(CostRule::Store, None, &[0], Some(&MemRef::cold_unique(3)));
+        check_push_shape_gpr(CostRule::Store, None, &[0], Some(&MemRef::cold_unique(3)));
     }
 
     #[test]
@@ -11936,7 +12634,7 @@ async fn parent() -> u64:
                 assert_eq!(ew.word, encode::enc_bl(0));
                 assert_eq!(ew.text, "bl <add_one>");
                 assert_eq!(ew.rule, CostRule::Call);
-                assert_eq!(ew.dst, Some(0));
+                assert_eq!(ew.dst, Some(Reg::gpr(0)));
             }
             _ => unreachable!(),
         }
@@ -12100,6 +12798,346 @@ async fn parent() -> u64:
     }
 
     #[test]
+    fn direct_fp_is_scoped_to_explicit_renderer_functions() {
+        let (mut mwir_program, layout) = compile(concat!(
+            "module examples.codegen_direct_fp\n\n",
+            "pub fn add(a: f32, b: f32) -> f32:\n",
+            "    return a + b\n\n",
+            "pub fn negate(a: f64) -> f64:\n",
+            "    return -a\n\n",
+            "pub fn less(a: f32, b: f32) -> bool:\n",
+            "    return a < b\n\n",
+            "pub fn widen(a: f32) -> f64:\n",
+            "    return a.to[f64]()\n\n",
+            "pub fn from_i32(a: i32) -> f32:\n",
+            "    return a.to[f32]()\n",
+        ));
+        let ordinary = codegen_program(&mwir_program, &layout).expect("ordinary FP codegen");
+        for name in ["add", "negate", "less", "widen", "from_i32"] {
+            let text: Vec<&str> = ordinary.fns[name]
+                .code
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect();
+            assert!(
+                text.iter().any(|word| word.starts_with("fmov")),
+                "ordinary sync `{name}` must retain its scalar FP bridge: {text:?}"
+            );
+            assert!(
+                text.iter().all(|word| {
+                    !word.starts_with("ldr s")
+                        && !word.starts_with("ldr d")
+                        && !word.starts_with("str s")
+                        && !word.starts_with("str d")
+                }),
+                "ordinary sync `{name}` must not opt into renderer direct FP: {text:?}"
+            );
+        }
+
+        mwir_program
+            .direct_fp_fns
+            .extend(["add", "negate", "less", "widen", "from_i32"].map(str::to_string));
+        let program = codegen_program(&mwir_program, &layout).expect("direct FP codegen");
+
+        let add = &program.fns["add"].code;
+        let add_text: Vec<&str> = add.iter().map(|word| word.text.as_str()).collect();
+        assert!(add_text.iter().any(|text| text.starts_with("ldr s0")));
+        assert!(add_text.iter().any(|text| text.starts_with("ldr s1")));
+        assert!(add_text.iter().any(|text| text.starts_with("fadd s2")));
+        assert!(add_text.iter().any(|text| text.starts_with("str d2")));
+        assert!(
+            add_text
+                .iter()
+                .any(|text| text.contains("canonical f32 slot")),
+            "every f32 store must pin the canonical-slot invariant: {add_text:?}"
+        );
+        assert!(
+            add_text.iter().all(|text| !text.starts_with("fmov")),
+            "live float arithmetic must not round-trip through a GPR: {add_text:?}"
+        );
+
+        let negate = &program.fns["negate"].code;
+        assert!(negate.iter().any(|word| word.text.starts_with("ldr d0")));
+        assert!(negate.iter().any(|word| word.text == "fneg d1, d0"));
+        assert!(negate.iter().any(|word| word.text.starts_with("str d1")));
+
+        let less = &program.fns["less"].code;
+        assert!(less.iter().any(|word| word.text == "fcmp s0, s1"));
+        assert!(
+            less.iter()
+                .any(|word| word.text.starts_with("cset ") && word.text.ends_with(", mi")),
+            "ordered less-than must reject FCMP's unordered state"
+        );
+
+        let widen = &program.fns["widen"].code;
+        assert!(widen.iter().any(|word| word.text == "fcvt d1, s0"));
+        assert!(widen.iter().all(|word| !word.text.starts_with("fmov")));
+
+        let from_i32 = &program.fns["from_i32"].code;
+        assert!(
+            from_i32
+                .iter()
+                .any(|word| word.text.starts_with("scvtf s0"))
+        );
+        assert!(from_i32.iter().all(|word| !word.text.starts_with("fmov")));
+    }
+
+    #[test]
+    fn direct_fp_canonical_slot_reaches_compiled_observer_paths() {
+        let (mut mwir_program, layout) = compile(concat!(
+            "module examples.codegen_direct_fp_slot_observers\n\n",
+            "pub struct FloatBox:\n",
+            "    pub value: f32\n",
+            "    pub guard: u64\n\n",
+            "pub enum FloatOutcome:\n",
+            "    Value(f32)\n",
+            "    Empty\n\n",
+            "pub fn produce(a: f32, b: f32) -> f32:\n",
+            "    return a + b\n\n",
+            "pub fn through_copy(a: f32, b: f32) -> f32:\n",
+            "    value = produce(a, b)\n",
+            "    copied: f32 = value\n",
+            "    return copied\n\n",
+            "pub fn through_aggregate(a: f32, b: f32) -> f32:\n",
+            "    value = produce(a, b)\n",
+            "    boxed = FloatBox(value=value, guard=7)\n",
+            "    boxed.value = value\n",
+            "    return boxed.value\n\n",
+            "pub fn through_enum(a: f32, b: f32) -> f32:\n",
+            "    outcome: FloatOutcome = .Value(produce(a, b))\n",
+            "    match outcome:\n",
+            "        case .Value(value):\n",
+            "            return value\n",
+            "        case .Empty:\n",
+            "            return 0.0\n\n",
+            "pub fn through_compare(a: f32, b: f32) -> bool:\n",
+            "    return produce(a, b) < 0.0\n",
+        ));
+        let observer_names = [
+            "produce",
+            "through_copy",
+            "through_aggregate",
+            "through_enum",
+            "through_compare",
+        ];
+        mwir_program
+            .direct_fp_fns
+            .extend(observer_names.map(str::to_string));
+
+        let has_inst = |name: &str, predicate: &dyn Fn(&Inst) -> bool| {
+            mwir_program.fns[name].body.iter().any(predicate)
+        };
+        assert!(has_inst("through_copy", &|inst| matches!(
+            inst,
+            Inst::Call { .. }
+        )));
+        assert!(has_inst("through_copy", &|inst| matches!(
+            inst,
+            Inst::Copy { .. }
+        )));
+        assert!(has_inst("through_aggregate", &|inst| matches!(
+            inst,
+            Inst::MakeAggregate { .. }
+        )));
+        assert!(has_inst("through_aggregate", &|inst| matches!(
+            inst,
+            Inst::SetField { .. }
+        )));
+        assert!(has_inst("through_aggregate", &|inst| matches!(
+            inst,
+            Inst::Project { .. }
+        )));
+        assert!(has_inst("through_enum", &|inst| matches!(
+            inst,
+            Inst::MakeEnum { .. }
+        )));
+        assert!(has_inst("through_enum", &|inst| matches!(
+            inst,
+            Inst::EnumPayload { .. }
+        )));
+        assert!(has_inst("through_compare", &|inst| matches!(
+            inst,
+            Inst::Compare { .. }
+        )));
+        for name in observer_names {
+            assert!(has_inst(name, &|inst| matches!(inst, Inst::Return { .. })));
+        }
+
+        let program = codegen_program(&mwir_program, &layout).expect("direct FP codegen");
+        let code = &program.fns["produce"].code;
+        let store = code
+            .iter()
+            .find(|word| {
+                word.text.starts_with("str d2") && word.text.contains("canonical f32 slot")
+            })
+            .expect("one canonical eight-byte f32 result store");
+        assert!(
+            code.iter().all(|word| !word.text.starts_with("str wzr")),
+            "direct f32 stores must not retain a redundant upper-word store: {code:?}"
+        );
+
+        // Decode and execute the actual unsigned-immediate STR D against a
+        // dirty frame. The admitted S-form producer defines the entire V
+        // register as IEEE bits followed by zeros, which the D alias stores.
+        let fp_store = store.word;
+        assert_eq!(fp_store & 0xffc0_0000, 0xfd00_0000, "STR D encoding");
+        let low = ((fp_store >> 10) & 0xfff) as usize * 8;
+
+        let result_bits = (-13.25f32).to_bits();
+        let producer_d_bits = u64::from(result_bits);
+        let mut frame = vec![0xa5; low + 8];
+        frame[low..low + 8].copy_from_slice(&producer_d_bits.to_le_bytes());
+        let slot: [u8; 8] = frame[low..low + 8].try_into().expect("one frame slot");
+        assert_eq!(u64::from_le_bytes(slot), u64::from(result_bits));
+
+        // These are the compiler's real observer paths, not hand-written byte
+        // copies. Each named lowering above must emit at least one complete
+        // stack-slot transfer. Execute an actual adjacent LDR-X/STR-X pair
+        // from each path against the canonical producer bytes.
+        for name in ["through_copy", "through_aggregate", "through_enum"] {
+            let emitted = &program.fns[name].code;
+            let pair = emitted
+                .windows(2)
+                .find(|pair| {
+                    pair[0].rule == CostRule::Load
+                        && u64::from(pair[0].access_bytes) == FRAME_SLOT_BYTES
+                        && pair[1].rule == CostRule::Store
+                        && u64::from(pair[1].access_bytes) == FRAME_SLOT_BYTES
+                        && pair[0].dst.is_some()
+                        && pair[1].srcs[..usize::from(pair[1].src_len)]
+                            .contains(&pair[0].dst.unwrap())
+                })
+                .unwrap_or_else(|| {
+                    panic!("{name} emitted no full-slot observer copy: {emitted:?}")
+                });
+            assert!(pair[0].text.starts_with("ldr x"), "{}", pair[0].text);
+            assert!(pair[1].text.starts_with("str x"), "{}", pair[1].text);
+            assert_eq!(pair[0].word & 0xffc0_0000, 0xf940_0000, "LDR X");
+            assert_eq!(pair[1].word & 0xffc0_0000, 0xf900_0000, "STR X");
+            assert_eq!((pair[0].word >> 5) & 0x1f, u32::from(X_SP));
+            assert_eq!((pair[1].word >> 5) & 0x1f, u32::from(X_SP));
+            assert_eq!(pair[0].word & 0x1f, pair[1].word & 0x1f);
+            let source = ((pair[0].word >> 10) & 0xfff) as usize * 8;
+            let destination = ((pair[1].word >> 10) & 0xfff) as usize * 8;
+            assert_ne!(source, destination, "{name} observer copy is vacuous");
+            let mut observer_frame = vec![0xa5; source.max(destination) + 8];
+            observer_frame[source..source + 8].copy_from_slice(&slot);
+            let loaded = u64::from_le_bytes(
+                observer_frame[source..source + 8]
+                    .try_into()
+                    .expect("one loaded slot"),
+            );
+            observer_frame[destination..destination + 8].copy_from_slice(&loaded.to_le_bytes());
+            assert_eq!(
+                &observer_frame[destination..destination + 8],
+                &slot,
+                "{name}"
+            );
+        }
+
+        let copied_code = &program.fns["through_copy"].code;
+        assert!(
+            copied_code
+                .iter()
+                .any(|word| word.text.starts_with("ldr x0"))
+        );
+        assert!(copied_code.iter().any(|word| word.text == "bl <produce>"));
+        assert!(
+            copied_code
+                .iter()
+                .any(|word| word.text.starts_with("str x0"))
+        );
+
+        let comparison = &program.fns["through_compare"].code;
+        assert!(comparison.iter().any(|word| word.text.starts_with("ldr s")));
+        assert!(
+            comparison
+                .iter()
+                .any(|word| word.text.starts_with("fcmp s"))
+        );
+        assert!(
+            comparison
+                .iter()
+                .filter(|word| word.text.starts_with("ldr s"))
+                .all(|word| word.access_bytes == 4)
+        );
+    }
+
+    #[test]
+    fn scalar_float_call_abi_crosses_the_gpr_bank_only_at_calls() {
+        let (mut mwir_program, layout) = compile(concat!(
+            "module examples.codegen_fp_call_abi\n\n",
+            "pub fn callee(a: f32) -> f32:\n",
+            "    return -a\n\n",
+            "pub fn caller(a: f32) -> f32:\n",
+            "    value = callee(a)\n",
+            "    return value + 1.0\n",
+        ));
+        mwir_program
+            .direct_fp_fns
+            .extend(["callee", "caller"].map(str::to_string));
+        let program = codegen_program(&mwir_program, &layout).expect("float call ABI codegen");
+        for name in ["callee", "caller"] {
+            let code = &program.fns[name].code;
+            let fmovs: Vec<&str> = code
+                .iter()
+                .filter(|word| word.text.starts_with("fmov"))
+                .map(|word| word.text.as_str())
+                .collect();
+            assert!(
+                fmovs.is_empty(),
+                "{name} emitted live-value bank moves: {fmovs:?}"
+            );
+        }
+        let caller = &program.fns["caller"].code;
+        assert!(caller.iter().any(|word| word.text == "bl <callee>"));
+        assert!(
+            caller.iter().any(|word| word.text.starts_with("ldr x0")),
+            "the current sealed ABI passes scalar float bits in x0"
+        );
+        assert!(
+            caller.iter().any(|word| word.text.starts_with("str x0")),
+            "the current sealed ABI receives scalar float bits in x0"
+        );
+        assert!(caller.iter().any(|word| word.text.starts_with("ldr s")));
+    }
+
+    #[test]
+    fn flowwir_float_values_keep_their_separate_gpr_cache_contract() {
+        let source = concat!(
+            "module examples.codegen_flow_fp_contract\n\n",
+            "async fn add(a: f32, b: f32) -> f32:\n",
+            "    value = a + b\n",
+            "    return value\n",
+        );
+        let tokens = lexer::lex(source).expect("test source must lex");
+        let module = parser::parse(tokens).expect("test source must parse");
+        let typed = sema::check_typed(&module, "<test>").expect("test source must check");
+        let mwir_program = crate::lower::lower_program(&typed).expect("sync source must lower");
+        let flow = crate::flowwir_lower::lower_program(&typed).expect("async source must lower");
+        let layout = mwir::build_layout_ctx(&module, &Default::default())
+            .expect("test source must build a layout ctx");
+        let program =
+            codegen_program_with_async(&mwir_program, &flow, &layout, &BTreeMap::new(), 1, &[])
+                .expect("FlowWir float source must emit");
+        let code = &program.fns["add"].code;
+        let text: Vec<&str> = code.iter().map(|word| word.text.as_str()).collect();
+        assert!(
+            text.iter().any(|word| word.contains("scalar FP bridge")),
+            "FlowWir floats must cross through its GPR cache: {text:?}"
+        );
+        assert!(
+            text.iter().all(|word| {
+                !word.starts_with("ldr s")
+                    && !word.starts_with("ldr d")
+                    && !word.starts_with("str s")
+                    && !word.starts_with("str d")
+            }),
+            "FlowWir must not bypass its cache with direct FP slot access: {text:?}"
+        );
+    }
+
+    #[test]
     fn more_than_eight_call_arguments_fails_closed() {
         let (mwir_program, layout) = compile(
             "module examples.codegen_too_many_args\n\npub fn nine(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64) -> u64:\n    return a\n\npub fn caller() -> u64:\n    return nine(1, 2, 3, 4, 5, 6, 7, 8, 9)\n",
@@ -12127,6 +13165,7 @@ async fn parent() -> u64:
                 frame_size: 16,
                 code: Vec::new(),
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         let err = validate(&program).unwrap_err();
@@ -12140,11 +13179,12 @@ async fn parent() -> u64:
             "fn:caller".to_string(),
             CodegenFn {
                 frame_size: 16,
-                code: vec![EmittedWord::new(0, String::new(), CostRule::Alu, None, &[])],
+                code: vec![EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[])],
                 relocs: vec![Reloc::Call {
                     word: 0,
                     key: "fn:ghost".to_string(),
                 }],
+                regions: Vec::new(),
             },
         );
         let err = validate(&program).unwrap_err();
@@ -12158,11 +13198,12 @@ async fn parent() -> u64:
             "fn:only".to_string(),
             CodegenFn {
                 frame_size: 16,
-                code: vec![EmittedWord::new(0, String::new(), CostRule::Alu, None, &[])],
+                code: vec![EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[])],
                 relocs: vec![Reloc::Call {
                     word: 5,
                     key: "fn:only".to_string(),
                 }],
+                regions: Vec::new(),
             },
         );
         let err = validate(&program).unwrap_err();
@@ -12177,13 +13218,14 @@ async fn parent() -> u64:
             CodegenFn {
                 frame_size: 16,
                 code: vec![
-                    EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]),
-                    EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]),
+                    EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]),
+                    EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[]),
                 ],
                 relocs: vec![Reloc::Rodata {
                     word_adrp: 0,
                     byte_offset: 100,
                 }],
+                regions: Vec::new(),
             },
         );
         program.rodata.push(b"hi".to_vec());
@@ -12201,8 +13243,9 @@ async fn parent() -> u64:
             "fn:only".to_string(),
             CodegenFn {
                 frame_size: 16,
-                code: vec![EmittedWord::new(0, String::new(), CostRule::Alu, None, &[])],
+                code: vec![EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[])],
                 relocs: vec![Reloc::AbortFixed { word: 3 }],
+                regions: Vec::new(),
             },
         );
         let err = validate(&program).unwrap_err();
@@ -12443,8 +13486,10 @@ pub fn used_twice(a: u64) -> u64:
         let prog = emit(TWICE, WITH);
         for (key, f) in &prog.fns {
             for w in &f.code {
-                let mut regs: Vec<u8> = w.srcs[..w.src_len as usize].to_vec();
-                if let Some(d) = w.dst {
+                // Reserved-register discipline is a general-register rule;
+                // v18/v28/v29 are ordinary vector registers.
+                let mut regs: Vec<u8> = w.gpr_srcs().collect();
+                if let Some(d) = w.dst.and_then(Reg::as_gpr) {
                     regs.push(d);
                 }
                 for r in regs {
@@ -12473,7 +13518,7 @@ pub fn used_twice(a: u64) -> u64:
             body: Vec::new(),
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &naive, true).expect("naive frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0, &naive, false, true).expect("naive frame");
         assert!(frame.virt_to_reg.is_empty());
         for t in 0..3 {
             assert!(
@@ -12785,8 +13830,9 @@ pub fn spans(a: u64) -> u64:
             frame_size: 0,
             code: Vec::new(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         };
-        f.code.push(EmittedWord::new(
+        f.code.push(EmittedWord::gpr(
             encode::enc_mov_reg(4, 9, true),
             "mov x4, x9".to_string(),
             CostRule::Alu,
@@ -12814,8 +13860,9 @@ pub fn spans(a: u64) -> u64:
             frame_size: 0,
             code: Vec::new(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         };
-        caller.code.push(EmittedWord::new(
+        caller.code.push(EmittedWord::gpr(
             encode::enc_bl(0),
             "bl <callee>".to_string(),
             CostRule::Call,
@@ -12833,6 +13880,7 @@ pub fn spans(a: u64) -> u64:
                 frame_size: 0,
                 code: Vec::new(),
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         program.conventions.insert(
@@ -12862,8 +13910,9 @@ pub fn spans(a: u64) -> u64:
             frame_size: 0,
             code: Vec::new(),
             relocs: Vec::new(),
+            regions: Vec::new(),
         };
-        caller.code.push(EmittedWord::new(
+        caller.code.push(EmittedWord::gpr(
             encode::enc_bl(0),
             "bl <glue>".to_string(),
             CostRule::Call,
@@ -12918,7 +13967,7 @@ mod item_i_tests {
             .code
             .iter()
             .filter(|w| w.text.starts_with("mov x") && w.text.contains(", x"))
-            .filter_map(|w| Some((w.dst?, *w.srcs[..w.src_len as usize].first()?)))
+            .filter_map(|w| Some((w.dst?.as_gpr()?, w.src_slice().first()?.as_gpr()?)))
             .collect()
     }
 

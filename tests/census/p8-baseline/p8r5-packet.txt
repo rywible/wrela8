@@ -1,0 +1,41 @@
+# pixels hot-path census
+schema = 4
+profile = a76-pi5
+table_digest = a3fc98dfe12bd132
+case = p8r5-packet
+source = stdlib/core/render_raster.wr
+phase = P8R.5-packet
+authority = immutable-emitted-kernel
+phase_backend = packet-a64
+source_tree_sha256 = de283aa644e16174fa0f17d7d90994d1eac1d2d326c4af3df7ff1cfb58ecb129
+kernel_words_sha256 = cf91d7db34d9f4346f2f848d282cd4ef603e3f1c65b8fb58429965168665fe8f
+codegen_dump_sha256 = e38ff3eb53bfd31ecd34ba7877063db5807abfa095d2311d6e492dbb1538d071
+cost_provenance = 96e1aad226833198
+
+## [M] measured counts
+
+[fn.pixels_packet_census]
+frame_size = 336
+word_sha256 = 8c5adbc25b25a6dd51d9842b6ac1a65e2ad930bba722ed1df2e9e663a4f17619
+region.unmarked words=154 calls=0 indirect_calls=0 frame_loads=40 frame_stores=22
+region.unmarked.class.alu = 57
+region.unmarked.class.asimd_fp_add_sub = 2
+region.unmarked.class.asimd_fp_cmp = 4
+region.unmarked.class.asimd_fp_cvt = 2
+region.unmarked.class.asimd_fp_fma = 1
+region.unmarked.class.asimd_fp_mul = 1
+region.unmarked.class.asimd_int = 9
+region.unmarked.class.asimd_permute = 3
+region.unmarked.class.branch = 2
+region.unmarked.class.fp_load_q = 36
+region.unmarked.class.fp_move = 3
+region.unmarked.class.fp_store_q = 19
+region.unmarked.class.load = 4
+region.unmarked.class.mov_wide = 8
+region.unmarked.class.store = 3
+
+## [I] modelled cycles
+# Derived from the [M] counts above through the A76 cost table.
+# Never summed with an [M] row; anything citing a cycle cites [I].
+fn.pixels_packet_census.proxy_cycles = 64
+fn.pixels_packet_census.region.unmarked.latency_weighted_cycles = 379

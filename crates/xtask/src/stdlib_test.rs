@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use wrela_compiler::eval;
@@ -12,7 +13,11 @@ use crate::root;
 pub(crate) fn stdlib_test() -> Result<(), String> {
     run_stdlib_tests_with_extra(
         &root().join("stdlib/tests"),
-        &[root().join("stdlib/core/field.wr")],
+        &[
+            root().join("stdlib/core/field.wr"),
+            root().join("stdlib/core/render_arrangement.wr"),
+            root().join("stdlib/core/render_raster.wr"),
+        ],
     )
 }
 
@@ -105,8 +110,21 @@ fn run_one_file(path: &Path) -> Result<(String, usize, bool), String> {
         .map(|(k, m)| (k, m.module))
         .collect();
 
-    let programs = sema::check_program_typed(&modules, &paths)
-        .map_err(|e| format!("stdlib-test: check {}: {}", display_path(path), e.message))?;
+    let internal_sources: BTreeSet<Vec<String>> = paths
+        .iter()
+        .filter_map(|(key, path)| {
+            matches!(
+                path.as_str(),
+                wrela_compiler::rtconfig::GENERATED_INPUT_PATH
+                    | loader::GENERATED_PIXELS_INPUT_PATH
+                    | loader::GENERATED_PIXELS_STUB_INPUT_PATH
+            )
+            .then(|| key.clone())
+        })
+        .collect();
+    let programs =
+        sema::check_program_typed_with_internal_sources(&modules, &paths, &internal_sources)
+            .map_err(|e| format!("stdlib-test: check {}: {}", display_path(path), e.message))?;
 
     let program = programs.get(&loaded.root).ok_or_else(|| {
         format!(

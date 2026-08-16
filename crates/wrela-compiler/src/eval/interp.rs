@@ -66,7 +66,7 @@ impl<'p> Interp<'p> {
     }
 
     fn abandon_missing(&self, name: &str, fallback: impl Into<String>) -> Unwind {
-        match self.program.imported.unresolvable.get(name) {
+        match self.program.unresolvable_import_note(name) {
             Some(note) => self.abandon(format!("`{name}` {note}")),
             None => self.abandon(fallback),
         }
@@ -271,17 +271,20 @@ fn unwind_to_error(u: Unwind) -> EvalError {
 }
 
 fn struct_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
-    program
-        .structs
-        .get(name)
-        .or_else(|| program.imported.structs.get(name))
+    program.structs.get(name).or_else(|| {
+        program
+            .imported
+            .structs
+            .get(name)
+            .map(|value| value.as_ref())
+    })
 }
 
 fn enum_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedEnum> {
     program
         .enums
         .get(name)
-        .or_else(|| program.imported.enums.get(name))
+        .or_else(|| program.imported.enums.get(name).map(|value| value.as_ref()))
 }
 
 fn instantiation_by_key<'p>(
@@ -296,10 +299,13 @@ fn instantiation_by_key<'p>(
 
 fn resolve_fn<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p TypedFn> {
     match key {
-        CalleeKey::Fn(name) => program
-            .fns
-            .get(name)
-            .or_else(|| program.imported.fns.get(name)),
+        CalleeKey::Fn(name) => program.fns.get(name).or_else(|| {
+            program
+                .imported
+                .fns
+                .get(name)
+                .map(|function| function.as_ref())
+        }),
         CalleeKey::FnInstance(ikey) => match instantiation_by_key(program, ikey) {
             Some(TypedInstantiation::Fn(f)) => Some(f),
             _ => None,
@@ -408,11 +414,13 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
             ))
         }),
         _ => {
-            let Some(en) = program
-                .enums
-                .get(enum_name)
-                .or_else(|| program.imported.enums.get(enum_name))
-            else {
+            let Some(en) = program.enums.get(enum_name).or_else(|| {
+                program
+                    .imported
+                    .enums
+                    .get(enum_name)
+                    .map(|value| value.as_ref())
+            }) else {
                 return Err(ctx.abandon_missing(
                     enum_name,
                     format!(
@@ -1072,6 +1080,57 @@ fn eval_call<'a, 'p>(
     loop_marker: usize,
     ctx: &mut Interp<'p>,
 ) -> R<Value> {
+    let callee_spelling = callee.spelling();
+    let callee_name = callee_spelling
+        .rsplit('.')
+        .next()
+        .unwrap_or(&callee_spelling);
+    let is_render_raster_fn = |expected: &str| {
+        matches!(callee, CalleeKey::Fn(name)
+            if ctx.program.fn_decl_modules.get(name).map(String::as_str)
+                == Some("core.render_raster")
+                && ctx.program.fn_decl_names.get(name).map(String::as_str) == Some(expected))
+    };
+    // Imported-body evaluation cannot currently resolve a callee's private
+    // transitive helpers. Keep the scalar entry point executable in external
+    // stdlib fixtures through the same integer-mantissa Rust oracle; the
+    // generated Wrela fallback itself has in-module regression tests.
+    if receiver.is_none()
+        && callee_name == "pixels_f32_fma_scalar"
+        && is_render_raster_fn("pixels_f32_fma_scalar")
+        && args.len() == 3
+    {
+        let mut values = Vec::with_capacity(3);
+        for arg in args {
+            let expr = arg.value.as_ref().ok_or_else(|| {
+                ctx.abandon("internal error: Pixels scalar FMA argument is missing")
+            })?;
+            let Value::F32(value) = eval_expr(expr, env, dstack, loop_marker, ctx)? else {
+                return Err(ctx.abandon("internal error: Pixels scalar FMA argument is not f32"));
+            };
+            values.push(value.to_bits());
+        }
+        return Ok(Value::F32(f32::from_bits(
+            crate::pixels::reference::raster::f32_fma_bits(values[0], values[1], values[2]),
+        )));
+    }
+    if receiver.is_none()
+        && matches!(callee_name, "pixels_f32_to_bits" | "pixels_f32_from_bits")
+        && is_render_raster_fn(callee_name)
+        && args.len() == 1
+    {
+        let expr = args[0].value.as_ref().ok_or_else(|| {
+            ctx.abandon("internal error: Pixels packet bitcast argument is missing")
+        })?;
+        return match (callee_name, eval_expr(expr, env, dstack, loop_marker, ctx)?) {
+            ("pixels_f32_to_bits", Value::F32(value)) => Ok(Value::U32(value.to_bits())),
+            ("pixels_f32_from_bits", Value::U32(bits)) => Ok(Value::F32(f32::from_bits(bits))),
+            _ => {
+                Err(ctx
+                    .abandon("internal error: Pixels packet bitcast has a noncanonical argument"))
+            }
+        };
+    }
     if let CalleeKey::Method(_, m) = callee {
         if m == "format" {
             if let Some(recv) = receiver {
@@ -1992,6 +2051,49 @@ fn eval_array_map_take<'a, 'p>(
     }
 }
 
+const GUEST_DEFAULT_NAN_F32_BITS: u32 = 0x7fc0_0000;
+const GUEST_DEFAULT_NAN_F64_BITS: u64 = 0x7ff8_0000_0000_0000;
+
+fn guest_fp_result_f32(value: f32) -> f32 {
+    if value.is_nan() {
+        f32::from_bits(GUEST_DEFAULT_NAN_F32_BITS)
+    } else {
+        value
+    }
+}
+
+fn guest_fp_result_f64(value: f64) -> f64 {
+    if value.is_nan() {
+        f64::from_bits(GUEST_DEFAULT_NAN_F64_BITS)
+    } else {
+        value
+    }
+}
+
+fn eval_guest_f32_binary(op: BinOp, lhs: f32, rhs: f32) -> f32 {
+    use BinOp::*;
+    guest_fp_result_f32(match op {
+        Add => lhs + rhs,
+        Sub => lhs - rhs,
+        Mul => lhs * rhs,
+        Div => lhs / rhs,
+        Rem => lhs % rhs,
+        _ => unreachable!("non-arithmetic f32 interpreter operation"),
+    })
+}
+
+fn eval_guest_f64_binary(op: BinOp, lhs: f64, rhs: f64) -> f64 {
+    use BinOp::*;
+    guest_fp_result_f64(match op {
+        Add => lhs + rhs,
+        Sub => lhs - rhs,
+        Mul => lhs * rhs,
+        Div => lhs / rhs,
+        Rem => lhs % rhs,
+        _ => unreachable!("non-arithmetic f64 interpreter operation"),
+    })
+}
+
 fn eval_binary<'a, 'p>(
     op: BinOp,
     l: &'a TypedExpr,
@@ -2015,33 +2117,15 @@ fn eval_binary<'a, 'p>(
                 }
             }
             match (&lv, &rv) {
-                (Value::F32(a), Value::F32(b)) => Ok(match op {
-                    Add => Value::F32(a + b),
-                    Sub => Value::F32(a - b),
-                    Mul => Value::F32(a * b),
-                    _ => unreachable!(),
-                }),
-                (Value::F64(a), Value::F64(b)) => Ok(match op {
-                    Add => Value::F64(a + b),
-                    Sub => Value::F64(a - b),
-                    Mul => Value::F64(a * b),
-                    _ => unreachable!(),
-                }),
+                (Value::F32(a), Value::F32(b)) => Ok(Value::F32(eval_guest_f32_binary(op, *a, *b))),
+                (Value::F64(a), Value::F64(b)) => Ok(Value::F64(eval_guest_f64_binary(op, *a, *b))),
                 _ => value::eval_ordinary(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
             }
         }
         AddW | SubW | MulW => value::eval_wrapping(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
         Div | Rem => match (&lv, &rv) {
-            (Value::F32(a), Value::F32(b)) => Ok(match op {
-                Div => Value::F32(a / b),
-                Rem => Value::F32(a % b),
-                _ => unreachable!(),
-            }),
-            (Value::F64(a), Value::F64(b)) => Ok(match op {
-                Div => Value::F64(a / b),
-                Rem => Value::F64(a % b),
-                _ => unreachable!(),
-            }),
+            (Value::F32(a), Value::F32(b)) => Ok(Value::F32(eval_guest_f32_binary(op, *a, *b))),
+            (Value::F64(a), Value::F64(b)) => Ok(Value::F64(eval_guest_f64_binary(op, *a, *b))),
             _ => value::eval_div_rem(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
         },
         Shl | Shr => value::eval_shift(op, &l.ty, &lv, &rv).map_err(|m| ctx.abandon(m)),
@@ -2064,6 +2148,42 @@ mod integration_tests {
         let tokens = lexer::lex(src).expect("test source must lex");
         let module = parser::parse(tokens).expect("test source must parse");
         sema::check_typed(&module, "<test>").expect("test source must check")
+    }
+
+    #[test]
+    fn interpreter_float_arithmetic_matches_guest_default_nan_mode() {
+        let f32_payload_nan = f32::from_bits(0x7f81_2345);
+        let f64_payload_nan = f64::from_bits(0x7ff0_0000_0001_2345);
+        for op in [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Rem] {
+            assert_eq!(
+                eval_guest_f32_binary(op, f32_payload_nan, 1.0).to_bits(),
+                GUEST_DEFAULT_NAN_F32_BITS,
+                "f32 {op:?}"
+            );
+            assert_eq!(
+                eval_guest_f64_binary(op, f64_payload_nan, 1.0).to_bits(),
+                GUEST_DEFAULT_NAN_F64_BITS,
+                "f64 {op:?}"
+            );
+        }
+        assert_eq!(
+            eval_guest_f32_binary(BinOp::Div, 0.0, 0.0).to_bits(),
+            GUEST_DEFAULT_NAN_F32_BITS
+        );
+        assert_eq!(
+            eval_guest_f64_binary(BinOp::Div, 0.0, 0.0).to_bits(),
+            GUEST_DEFAULT_NAN_F64_BITS
+        );
+
+        // DN does not imply flush-to-zero or erase ordinary sign bits.
+        assert_eq!(
+            eval_guest_f32_binary(BinOp::Add, f32::from_bits(1), 0.0).to_bits(),
+            1
+        );
+        assert_eq!(
+            eval_guest_f64_binary(BinOp::Mul, -0.0, 1.0).to_bits(),
+            (-0.0f64).to_bits()
+        );
     }
 
     #[test]
@@ -2106,6 +2226,30 @@ const RESULT: u64 = Point(x=3, y=4).sum()
         );
         let v = eval_const(&program, "RESULT").expect("must evaluate cleanly");
         assert_eq!(v, Value::U64(7));
+    }
+
+    #[test]
+    fn ordinary_user_functions_evaluate_their_bodies() {
+        let program = typed_program(
+            "module examples.eval_packet_spelling
+
+fn user_to_bits(value: f32) -> u32:
+    return 17
+
+fn user_from_bits(bits: u32) -> f32:
+    return 7.0
+
+fn user_fma(lhs: f32, rhs: f32, addend: f32) -> f32:
+    return 9.0
+
+const TO_BITS: u32 = user_to_bits(1.0)
+const FROM_BITS: f32 = user_from_bits(1065353216)
+const FMA: f32 = user_fma(2.0, 3.0, 4.0)
+",
+        );
+        assert_eq!(eval_const(&program, "TO_BITS").unwrap(), Value::U32(17));
+        assert_eq!(eval_const(&program, "FROM_BITS").unwrap(), Value::F32(7.0));
+        assert_eq!(eval_const(&program, "FMA").unwrap(), Value::F32(9.0));
     }
 
     #[test]

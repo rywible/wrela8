@@ -13,8 +13,7 @@ use super::rtdata::{
 };
 use super::{
     DeviceRegs, LayoutError, PoolPlacement, append_rodata, checkpoint_irq_shape,
-    closure_imported_types, closure_layout_types, cross_core_rings,
-    reject_unlowerable_cross_core_shapes,
+    closure_imported_types, cross_core_rings, reject_unlowerable_cross_core_shapes,
 };
 
 #[derive(Clone)]
@@ -812,7 +811,7 @@ impl RuntimeWiring {
                 (name, keys)
             })
             .collect();
-        let layouts = closure_layout_types(boot.modules, boot.programs)?;
+        let layouts = boot.layouts;
         let backings =
             crate::eval::image_checks::pool_backings(boot.graph, &layouts).map_err(|e| {
                 LayoutError::new(format!(
@@ -1013,6 +1012,7 @@ pub struct BootCtx<'a> {
     pub graph: &'a ImageGraph,
     pub modules: &'a BTreeMap<String, Module>,
     pub programs: &'a BTreeMap<String, TypedProgram>,
+    pub layouts: &'a BTreeMap<String, crate::sema::types::LayoutType>,
     pub layout_ctx: &'a LayoutCtx,
     pub async_frames: &'a BTreeMap<String, u64>,
     pub group_child_index: &'a BTreeMap<String, usize>,

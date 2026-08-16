@@ -237,7 +237,7 @@ fn param_domain(program: &TypedProgram, ty: &Type) -> Option<Vec<Value>> {
             let en = program
                 .enums
                 .get(name)
-                .or_else(|| program.imported.enums.get(name))?;
+                .or_else(|| program.imported.enums.get(name).map(|value| value.as_ref()))?;
             Some(
                 (0..en.variants.len())
                     .map(|i| Value::Enum(i, vec![]))
@@ -253,7 +253,7 @@ fn render_case_value(program: &TypedProgram, ty: &Type, v: &Value) -> String {
         (Type::Named(name, _), Value::Enum(idx, _)) => match program
             .enums
             .get(name)
-            .or_else(|| program.imported.enums.get(name))
+            .or_else(|| program.imported.enums.get(name).map(|value| value.as_ref()))
         {
             Some(en) => en
                 .variants

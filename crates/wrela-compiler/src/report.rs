@@ -765,7 +765,7 @@ pub fn caller(a: u64) -> u64:
             "checked_add".to_string(),
             CodegenFn {
                 frame_size: 0,
-                code: vec![EmittedWord::new(
+                code: vec![EmittedWord::gpr(
                     0,
                     String::new(),
                     CostRule::Alu,
@@ -773,6 +773,7 @@ pub fn caller(a: u64) -> u64:
                     &[0, 0],
                 )],
                 relocs: Vec::new(),
+                regions: Vec::new(),
             },
         );
         let program = CodegenProgram {

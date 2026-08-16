@@ -1441,14 +1441,16 @@ pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
     modules.insert(gen_key.clone(), gen_module);
     modules.insert(runtime_key.clone(), runtime_loaded.module);
     let mut paths = std::collections::BTreeMap::new();
-    paths.insert(gen_key, GENERATED_INPUT_PATH.to_string());
+    paths.insert(gen_key.clone(), GENERATED_INPUT_PATH.to_string());
     paths.insert(runtime_key, runtime_loaded.file.display().to_string());
-    crate::sema::check_program_typed(&modules, &paths).map_err(|e| {
-        format!(
-            "error[{}]: {} at {}:{}",
-            e.category, e.message, e.line, e.col
-        )
-    })?;
+    let internal_sources = std::collections::BTreeSet::from([gen_key]);
+    crate::sema::check_program_typed_with_internal_sources(&modules, &paths, &internal_sources)
+        .map_err(|e| {
+            format!(
+                "error[{}]: {} at {}:{}",
+                e.category, e.message, e.line, e.col
+            )
+        })?;
     Ok(())
 }
 
@@ -1672,7 +1674,13 @@ mod typecheck_live {
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
         );
-        let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
+        let internal_sources = std::collections::BTreeSet::from([gen_key]);
+        let programs = crate::sema::check_program_typed_with_internal_sources(
+            &modules,
+            &paths,
+            &internal_sources,
+        )
+        .expect("typed");
         let runtime = programs
             .iter()
             .find(|(k, _)| k.as_slice() == ["core", "runtime"])
@@ -1745,9 +1753,15 @@ mod typecheck_live {
         modules.insert(gen_key.clone(), gen_mod);
         modules.insert(runtime_key.clone(), runtime_loaded.module);
         let mut paths = BTreeMap::new();
-        paths.insert(gen_key, GENERATED_INPUT_PATH.to_string());
+        paths.insert(gen_key.clone(), GENERATED_INPUT_PATH.to_string());
         paths.insert(runtime_key, runtime_loaded.file.display().to_string());
-        let programs = crate::sema::check_program_typed(&modules, &paths).expect("typed");
+        let internal_sources = std::collections::BTreeSet::from([gen_key]);
+        let programs = crate::sema::check_program_typed_with_internal_sources(
+            &modules,
+            &paths,
+            &internal_sources,
+        )
+        .expect("typed");
         let image_rt = programs
             .iter()
             .find(|(k, _)| k.as_slice() == ["core", "__image_runtime"])

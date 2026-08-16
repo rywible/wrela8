@@ -18,7 +18,45 @@ pub enum CostRule {
     Adrp,
     Barrier,
     System,
-    Neon,
+    /// Scalar FP add/subtract (`FADD`, `FSUB`).
+    FpAddSub,
+    /// Scalar FP multiply (`FMUL`).
+    FpMul,
+    /// Scalar fused multiply-add (`FMADD`/`FMSUB`). Reachable only through an
+    /// explicitly sealed fused operation — never by contraction (D-P8R-04).
+    FpFma,
+    /// Scalar FP divide and square root (`FDIV`, `FSQRT`).
+    FpDivSqrt,
+    /// Scalar FP compare (`FCMP`): FP sources, no register destination, NZCV.
+    FpCompare,
+    /// Scalar FP/integer conversion (`FCVTZS`, `SCVTF`, `FCVT`). Distinct
+    /// from a compare: it writes a register, and it may cross banks.
+    FpConvert,
+    /// Register moves between the general and FP/SIMD files (`FMOV` general).
+    FpMove,
+    /// FP load of 32 or 64 bits (`ldr s`/`ldr d`).
+    FpLoad,
+    /// 128-bit FP/ASIMD load (`ldr q`).
+    FpLoadQ,
+    /// FP store of 32 or 64 bits (`str s`/`str d`).
+    FpStore,
+    /// 128-bit FP/ASIMD store (`str q`).
+    FpStoreQ,
+    /// ASIMD integer arithmetic and logic (`add v`, `sub v`, `and v`, `orr v`,
+    /// `sshr v`, `cmgt v`, `bsl v`).
+    AsimdInt,
+    /// ASIMD permutes and lane moves (`uzp1`, `dup`, `ins`).
+    AsimdPermute,
+    /// ASIMD FP add/subtract (`fadd v`, `fsub v`).
+    AsimdFpAddSub,
+    /// ASIMD FP multiply (`fmul v`).
+    AsimdFpMul,
+    /// ASIMD fused multiply-add (`fmla v`), sealed like [`CostRule::FpFma`].
+    AsimdFpFma,
+    /// ASIMD FP compare and min/max (`fcmge`, `fcmgt`, `fmin`, `fmax`).
+    AsimdFpCmp,
+    /// ASIMD FP/integer conversion (`fcvtzs v`, `scvtf v`).
+    AsimdFpCvt,
 }
 
 impl CostRule {
@@ -41,7 +79,24 @@ impl CostRule {
         CostRule::Adrp,
         CostRule::Barrier,
         CostRule::System,
-        CostRule::Neon,
+        CostRule::FpAddSub,
+        CostRule::FpMul,
+        CostRule::FpFma,
+        CostRule::FpDivSqrt,
+        CostRule::FpCompare,
+        CostRule::FpConvert,
+        CostRule::FpMove,
+        CostRule::FpLoad,
+        CostRule::FpLoadQ,
+        CostRule::FpStore,
+        CostRule::FpStoreQ,
+        CostRule::AsimdInt,
+        CostRule::AsimdPermute,
+        CostRule::AsimdFpAddSub,
+        CostRule::AsimdFpMul,
+        CostRule::AsimdFpFma,
+        CostRule::AsimdFpCmp,
+        CostRule::AsimdFpCvt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -64,33 +119,29 @@ impl CostRule {
             CostRule::Adrp => "adrp",
             CostRule::Barrier => "barrier",
             CostRule::System => "system",
-            CostRule::Neon => "neon",
+            CostRule::FpAddSub => "fp_add_sub",
+            CostRule::FpMul => "fp_mul",
+            CostRule::FpFma => "fp_fma",
+            CostRule::FpDivSqrt => "fp_div_sqrt",
+            CostRule::FpCompare => "fp_compare",
+            CostRule::FpConvert => "fp_convert",
+            CostRule::FpMove => "fp_move",
+            CostRule::FpLoad => "fp_load",
+            CostRule::FpLoadQ => "fp_load_q",
+            CostRule::FpStore => "fp_store",
+            CostRule::FpStoreQ => "fp_store_q",
+            CostRule::AsimdInt => "asimd_int",
+            CostRule::AsimdPermute => "asimd_permute",
+            CostRule::AsimdFpAddSub => "asimd_fp_add_sub",
+            CostRule::AsimdFpMul => "asimd_fp_mul",
+            CostRule::AsimdFpFma => "asimd_fp_fma",
+            CostRule::AsimdFpCmp => "asimd_fp_cmp",
+            CostRule::AsimdFpCvt => "asimd_fp_cvt",
         }
     }
 
     pub fn from_str(s: &str) -> Option<CostRule> {
-        Some(match s {
-            "alu" => CostRule::Alu,
-            "load" => CostRule::Load,
-            "load_acquire" => CostRule::LoadAcquire,
-            "store" => CostRule::Store,
-            "store_release" => CostRule::StoreRelease,
-            "branch" => CostRule::Branch,
-            "call" => CostRule::Call,
-            "abort" => CostRule::Abort,
-            "abort_val" => CostRule::AbortVal,
-            "mov_wide" => CostRule::MovWide,
-            "mul" => CostRule::Mul,
-            "mul_w" => CostRule::MulW,
-            "mul_high" => CostRule::MulHigh,
-            "sdiv" => CostRule::Sdiv,
-            "udiv" => CostRule::Udiv,
-            "adrp" => CostRule::Adrp,
-            "barrier" => CostRule::Barrier,
-            "system" => CostRule::System,
-            "neon" => CostRule::Neon,
-            _ => return None,
-        })
+        CostRule::ALL.iter().copied().find(|r| r.as_str() == s)
     }
 
     pub fn from_str_variant(s: &str) -> Option<CostRule> {
@@ -108,11 +159,119 @@ impl CostRule {
     }
 
     pub fn is_load(self) -> bool {
-        matches!(self, CostRule::Load | CostRule::LoadAcquire)
+        matches!(
+            self,
+            CostRule::Load | CostRule::LoadAcquire | CostRule::FpLoad | CostRule::FpLoadQ
+        )
     }
 
     pub fn is_store(self) -> bool {
-        matches!(self, CostRule::Store | CostRule::StoreRelease)
+        matches!(
+            self,
+            CostRule::Store | CostRule::StoreRelease | CostRule::FpStore | CostRule::FpStoreQ
+        )
+    }
+
+    /// True for every class that occupies the A76's FP/ASIMD pipes.
+    ///
+    /// Store *data* micro-ops occupy a V pipe too (the `[latency.store]`
+    /// `ports = "L,D"` split), but an integer store is not itself an FP
+    /// class; that contention is modelled by its port string, not here.
+    pub fn is_fp_simd(self) -> bool {
+        !matches!(self.bank_shape(), BankShape::AllGpr)
+    }
+
+    /// The operand banks this class is allowed to name.
+    pub fn bank_shape(self) -> BankShape {
+        match self {
+            CostRule::Alu
+            | CostRule::Load
+            | CostRule::LoadAcquire
+            | CostRule::Store
+            | CostRule::StoreRelease
+            | CostRule::Branch
+            | CostRule::Call
+            | CostRule::Abort
+            | CostRule::AbortVal
+            | CostRule::MovWide
+            | CostRule::Mul
+            | CostRule::MulW
+            | CostRule::MulHigh
+            | CostRule::Sdiv
+            | CostRule::Udiv
+            | CostRule::Adrp
+            | CostRule::Barrier
+            | CostRule::System => BankShape::AllGpr,
+            CostRule::FpAddSub
+            | CostRule::FpMul
+            | CostRule::FpFma
+            | CostRule::FpDivSqrt
+            | CostRule::FpCompare
+            | CostRule::AsimdInt
+            | CostRule::AsimdPermute
+            | CostRule::AsimdFpAddSub
+            | CostRule::AsimdFpMul
+            | CostRule::AsimdFpFma
+            | CostRule::AsimdFpCmp => BankShape::FpData,
+            // A convert may be FP→FP (`fcvt`), FP→GPR (`fcvtzs w, s`) or
+            // GPR→FP (`scvtf s, w`); all three are the same SOG group.
+            CostRule::FpConvert | CostRule::AsimdFpCvt => BankShape::FpMixed,
+            CostRule::FpMove => BankShape::GprFpTransfer,
+            CostRule::FpLoad | CostRule::FpLoadQ => BankShape::FpLoad,
+            CostRule::FpStore | CostRule::FpStoreQ => BankShape::FpStore,
+        }
+    }
+}
+
+/// Which register banks a cost class's operands may name.
+///
+/// This is the fail-closed half of bank-aware operands: a class states its
+/// shape once, and every emitted word is checked against it, so an FP
+/// emitter that reaches for general-register operands is a hard error rather
+/// than a scheduler that silently invents dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BankShape {
+    /// Every operand is a general register.
+    AllGpr,
+    /// Every operand is an FP/SIMD register (the destination may be absent
+    /// when the class writes NZCV instead).
+    FpData,
+    /// At least one operand is FP/SIMD; the rest may be either.
+    FpMixed,
+    /// Exactly one FP/SIMD operand and exactly one general operand.
+    GprFpTransfer,
+    /// FP/SIMD destination, general address sources.
+    FpLoad,
+    /// No destination; general address sources plus exactly one FP/SIMD data
+    /// source.
+    FpStore,
+}
+
+/// Check an emitted word's operand banks against its class's [`BankShape`].
+pub fn check_bank_shape(rule: CostRule, dst: Option<Reg>, srcs: &[Reg]) -> Result<(), String> {
+    let operands: Vec<Reg> = dst.into_iter().chain(srcs.iter().copied()).collect();
+    let fp = operands.iter().filter(|reg| reg.is_fp()).count();
+    let gpr = operands.len() - fp;
+    let fail = |why: &str| {
+        Err(format!(
+            "cost class `{}` requires {why}, got dst={dst:?} srcs={srcs:?}",
+            rule.as_str()
+        ))
+    };
+    match rule.bank_shape() {
+        BankShape::AllGpr if fp != 0 => fail("general-register operands only"),
+        BankShape::FpData if gpr != 0 => fail("FP/SIMD operands only"),
+        BankShape::FpMixed if fp == 0 => fail("at least one FP/SIMD operand"),
+        BankShape::GprFpTransfer if fp != 1 || gpr != 1 => {
+            fail("exactly one FP/SIMD and one general operand")
+        }
+        BankShape::FpLoad if !dst.is_some_and(Reg::is_fp) || srcs.iter().any(|reg| reg.is_fp()) => {
+            fail("an FP/SIMD destination and general address sources")
+        }
+        BankShape::FpStore if dst.is_some() || fp != 1 => {
+            fail("no destination and exactly one FP/SIMD data source")
+        }
+        _ => Ok(()),
     }
 }
 
@@ -240,16 +399,104 @@ impl MemRef {
         self.base
     }
 
-    pub fn require_base_in_srcs(self, srcs: &[u8]) -> Result<(), String> {
+    pub fn require_base_in_srcs(self, srcs: &[Reg]) -> Result<(), String> {
         let Some(base) = self.base_reg() else {
             return Ok(());
         };
-        if srcs.contains(&base) {
+        // An address base is always a general register; an FP/SIMD operand of
+        // the same number is a different register and does not satisfy it.
+        if srcs.contains(&Reg::gpr(base)) {
             Ok(())
         } else {
-            Err(format!("MemRef base register {base} not in srcs {srcs:?}"))
+            Err(format!("MemRef base register x{base} not in srcs {srcs:?}"))
         }
     }
+}
+
+/// The A76 register file an operand names.
+///
+/// AArch64's general and FP/SIMD register files are numbered independently:
+/// `x0` and `v0` are both "register 0" and share no state. A single `u8`
+/// operand therefore made `ldr q0, [x9]` look like it defined the same
+/// register `add x0, x1, x2` defines, so the scheduler invented dependencies
+/// between unrelated values and hid real ones. The bank is part of the
+/// operand's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RegBank {
+    /// `x`/`w` general registers, plus `sp` at number [`MEM_SP_REG`].
+    Gpr,
+    /// `b`/`h`/`s`/`d`/`q` (`v`) FP and ASIMD registers.
+    FpSimd,
+}
+
+impl RegBank {
+    pub const ALL: &'static [RegBank] = &[RegBank::Gpr, RegBank::FpSimd];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RegBank::Gpr => "gpr",
+            RegBank::FpSimd => "fpsimd",
+        }
+    }
+
+    /// Dense index into per-bank scheduler state.
+    pub fn index(self) -> usize {
+        match self {
+            RegBank::Gpr => 0,
+            RegBank::FpSimd => 1,
+        }
+    }
+}
+
+pub const REG_BANK_COUNT: usize = 2;
+
+/// One banked register operand of an emitted word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Reg {
+    pub bank: RegBank,
+    pub num: u8,
+}
+
+impl Reg {
+    pub const fn gpr(num: u8) -> Reg {
+        Reg {
+            bank: RegBank::Gpr,
+            num,
+        }
+    }
+
+    pub const fn fp(num: u8) -> Reg {
+        Reg {
+            bank: RegBank::FpSimd,
+            num,
+        }
+    }
+
+    pub fn is_gpr(self) -> bool {
+        self.bank == RegBank::Gpr
+    }
+
+    pub fn is_fp(self) -> bool {
+        self.bank == RegBank::FpSimd
+    }
+
+    /// The general register number, or `None` for an FP/SIMD operand.
+    ///
+    /// Consumers that reason about addresses, the stack pointer, or the
+    /// procedure-call ABI want this rather than a bare number: an FP operand
+    /// must not silently answer a question about `x`.
+    pub fn as_gpr(self) -> Option<u8> {
+        self.is_gpr().then_some(self.num)
+    }
+
+    pub fn is_sp(self) -> bool {
+        self.is_gpr() && self.num == MEM_SP_REG
+    }
+}
+
+/// Convert a slice of general register numbers into banked operands.
+pub fn gpr_operands(regs: &[u8]) -> Vec<Reg> {
+    regs.iter().copied().map(Reg::gpr).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -275,23 +522,44 @@ pub struct EmittedWord {
     pub word: u32,
     pub text: String,
     pub rule: CostRule,
-    pub dst: Option<u8>,
-    pub srcs: [u8; 4],
+    pub dst: Option<Reg>,
+    pub srcs: [Reg; 4],
     pub src_len: u8,
     pub mem: Option<MemRef>,
     pub flags: FlagEffect,
     pub access_bytes: u8,
 }
 
+/// Filler for the unused tail of [`EmittedWord::srcs`]. Only `..src_len` is
+/// ever read; this exists because the array is fixed-size.
+const SRC_FILLER: Reg = Reg::gpr(0);
+
 impl EmittedWord {
-    pub fn new(
+    /// Construct a word whose operands are all general registers.
+    ///
+    /// Named for its bank on purpose: an FP/SIMD emitter that reaches for the
+    /// obvious constructor gets a compile error rather than a silently
+    /// mis-banked operand. Use [`EmittedWord::banked`] for anything that
+    /// touches `v` registers.
+    pub fn gpr(
         word: u32,
         text: String,
         rule: CostRule,
         dst: Option<u8>,
         srcs: &[u8],
     ) -> EmittedWord {
-        let mut arr = [0u8; 4];
+        let banked: Vec<Reg> = srcs.iter().copied().map(Reg::gpr).collect();
+        EmittedWord::banked(word, text, rule, dst.map(Reg::gpr), &banked)
+    }
+
+    pub fn banked(
+        word: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<Reg>,
+        srcs: &[Reg],
+    ) -> EmittedWord {
+        let mut arr = [SRC_FILLER; 4];
         let n = srcs.len().min(4);
         arr[..n].copy_from_slice(&srcs[..n]);
         EmittedWord {
@@ -317,8 +585,27 @@ impl EmittedWord {
         self
     }
 
-    pub fn src_slice(&self) -> &[u8] {
+    pub fn src_slice(&self) -> &[Reg] {
         &self.srcs[..self.src_len as usize]
+    }
+
+    /// The general register numbers among the sources, dropping FP/SIMD
+    /// operands. Address and ABI reasoning wants exactly this.
+    pub fn gpr_srcs(&self) -> impl Iterator<Item = u8> + '_ {
+        self.src_slice().iter().filter_map(|reg| reg.as_gpr())
+    }
+
+    pub fn clear_srcs(&mut self) {
+        self.srcs = [SRC_FILLER; 4];
+        self.src_len = 0;
+    }
+
+    pub fn set_srcs(&mut self, srcs: &[Reg]) {
+        let mut arr = [SRC_FILLER; 4];
+        let n = srcs.len().min(4);
+        arr[..n].copy_from_slice(&srcs[..n]);
+        self.srcs = arr;
+        self.src_len = n as u8;
     }
 }
 
@@ -449,21 +736,21 @@ mod tests {
 
     #[test]
     fn emitted_word_new_has_no_mem() {
-        let ew = EmittedWord::new(0, String::new(), CostRule::Adrp, None, &[]);
+        let ew = EmittedWord::gpr(0, String::new(), CostRule::Adrp, None, &[]);
         assert_eq!(ew.mem, None);
         assert_eq!(ew.flags, FlagEffect::None);
     }
 
     #[test]
     fn emitted_word_with_mem_sets_tag() {
-        let ew = EmittedWord::new(0, String::new(), CostRule::Load, Some(0), &[31])
+        let ew = EmittedWord::gpr(0, String::new(), CostRule::Load, Some(0), &[31])
             .with_mem(MemRef::stack(8));
         assert_eq!(ew.mem, Some(MemRef::stack(8)));
     }
 
     #[test]
     fn emitted_word_with_flags_sets_nzcv() {
-        let ew = EmittedWord::new(0, String::new(), CostRule::Alu, None, &[0, 1])
+        let ew = EmittedWord::gpr(0, String::new(), CostRule::Alu, None, &[0, 1])
             .with_flags(FlagEffect::Write);
         assert!(ew.flags.writes());
         assert!(!ew.flags.reads());
@@ -479,11 +766,21 @@ mod tests {
     #[test]
     fn memref_require_base_in_srcs_fail_closed() {
         let stack = MemRef::stack(8);
-        assert!(stack.require_base_in_srcs(&[MEM_SP_REG, 0]).is_ok());
-        assert!(stack.require_base_in_srcs(&[0, 1]).is_err());
+        assert!(
+            stack
+                .require_base_in_srcs(&[Reg::gpr(MEM_SP_REG), Reg::gpr(0)])
+                .is_ok()
+        );
+        assert!(
+            stack
+                .require_base_in_srcs(&[Reg::gpr(0), Reg::gpr(1)])
+                .is_err()
+        );
         let cold = MemRef::cold_stable(28, 16);
-        assert!(cold.require_base_in_srcs(&[28]).is_ok());
-        assert!(cold.require_base_in_srcs(&[0]).is_err());
+        assert!(cold.require_base_in_srcs(&[Reg::gpr(28)]).is_ok());
+        assert!(cold.require_base_in_srcs(&[Reg::gpr(0)]).is_err());
+        // An FP operand of the same number is a different register.
+        assert!(cold.require_base_in_srcs(&[Reg::fp(28)]).is_err());
         assert!(MemRef::cold_unique(3).require_base_in_srcs(&[]).is_ok());
     }
 }

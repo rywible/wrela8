@@ -1,0 +1,703 @@
+module render_orchestrate
+
+from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_write, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
+from core.field import Rgb
+from core.render import FrameInputSnapshot, LightFrame, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P8RasterContext, RendererWorkerJob, __wrela_pixels_p8_charge_raster_run, __wrela_pixels_p8_derivative_bounds, __wrela_pixels_p8_raster_regular, __wrela_pixels_p8_raster_setup
+from core.render_arrangement import __wrela_pixels_p7_event_pixel_span, __wrela_pixels_p7_pixel_visibility_from_candidates
+from core.render_certify import __wrela_pixels_p7_certify_row, __wrela_pixels_p7_charge_run_telemetry, __wrela_pixels_p7_density_bin, __wrela_pixels_p7_revalidated_proposal_count, __wrela_pixels_p7_row_candidates_with_proposal
+from core.render_interval import Iv32
+from core.render_isolation import __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates
+from core.render_raster import EventId, EventPixel, IdSlice, RunId
+
+fn __wrela_pixels_p7_worker_error(error: u8, tile: u32) -> u64:
+    code = error
+    if error == 0:
+        code = 15
+    return (
+        9223372036854775808
+        | (code.to[u64]() << 32)
+        | tile.to[u64]()
+    )
+
+pub fn __wrela_pixels_p7_worker_error_code(value: u64) -> u8:
+    if (value & 9223372036854775808) != 0:
+        error = ((value >> 32) & 255).to[u8]()
+        if error > 0:
+            return error
+    if value == 18446744073709551615:
+        return 15
+    return 0
+
+pub fn __wrela_pixels_p7_worker_error_tile(value: u64) -> u32:
+    if (value & 9223372036854775808) != 0:
+        return (value & 4294967295).to[u32]()
+    return 0
+
+pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool) -> u64:
+    if job.tiles_start > job.tiles_end:
+        return __wrela_pixels_p7_worker_error(5, 0)
+    config = __wrela_pixels_p7_numeric_config(job.renderer_index)
+    meta = __wrela_pixels_p7_frame_snapshot_meta(job.renderer_index)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0 or config[6] < 0 or config[6] > 16 or meta[0] != 1 or meta[2].to[i64]() != config[6]:
+        return __wrela_pixels_p7_worker_error(8, 0)
+    post = __wrela_pixels_p7_frame_snapshot_post(job.renderer_index)
+    snapshot = FrameInputSnapshot(
+        params=__wrela_pixels_p7_frame_snapshot_params(job.renderer_index),
+        param_count=meta[2].to[u16](),
+        camera=__wrela_pixels_p7_frame_snapshot_camera(job.renderer_index),
+        lights=LightFrame.from_snapshot(
+            __wrela_pixels_p7_frame_snapshot_light_kinds(job.renderer_index),
+            __wrela_pixels_p7_frame_snapshot_light_scalars(job.renderer_index),
+        ),
+        exposure=post[0],
+        environment=Rgb(r=post[1], g=post[2], b=post[3]),
+        frame_index=meta[1],
+    )
+    width = config[1].to[u32]()
+    height = config[2].to[u32]()
+    tiles_x = (width + 15) / 16
+    tiles_y = (height + 15) / 16
+    tile_count = tiles_x * tiles_y
+    scanout_tiles_x = (width + 63) / 64
+    scanout_tiles_y = (height + 31) / 32
+    scanout_tile_count = scanout_tiles_x * scanout_tiles_y
+    if (
+        tiles_x == 0 or tiles_y == 0
+        or scanout_tiles_x == 0 or scanout_tiles_y == 0
+        or job.tiles_end > scanout_tile_count
+    ):
+        return __wrela_pixels_p7_worker_error(9, 0)
+    if not __wrela_pixels_p7_workspace_reset(
+        job.renderer_index,
+        job.worker_index,
+        snapshot.frame_index +% 1,
+    ):
+        return __wrela_pixels_p7_worker_error(11, 0)
+    telemetry_enabled = __wrela_pixels_p7_telemetry_reset(
+        job.renderer_index,
+        job.worker_index,
+    )
+    written: u64 = 0
+    tile: u32 = 0
+    @budget(bound=16777216)
+    while tile < tile_count:
+        tile_x = tile % tiles_x
+        tile_y = tile / tiles_x
+        x0 = tile_x * 16
+        y0 = tile_y * 16
+        scanout_tile = (y0 / 32) * scanout_tiles_x + x0 / 64
+        if scanout_tile < job.tiles_start or scanout_tile >= job.tiles_end:
+            tile = tile + 1
+            continue
+        x1 = x0 + 16
+        y1 = y0 + 16
+        if x1 > width:
+            x1 = width
+        if y1 > height:
+            y1 = height
+        y = y0
+        previous_candidates = P7RowCandidates(ok=false, error=5, ids=[0; 256], count=0)
+        previous_row = P7CertifiedRow.failure()
+        @budget(bound=16)
+        while y < y1:
+            structural_candidates = __wrela_pixels_p7_row_candidates(
+                job.renderer_index,
+                tile,
+                y,
+                snapshot,
+            )
+            if not structural_candidates.ok:
+                if structural_candidates.error == 1:
+                    return __wrela_pixels_p7_worker_error(16, tile)
+                return __wrela_pixels_p7_worker_error(8, tile)
+            proposed: u16 = 0
+            if proposals_enabled:
+                proposed = __wrela_pixels_p7_revalidated_proposal_count(
+                    previous_candidates,
+                    structural_candidates,
+                )
+            candidates = __wrela_pixels_p7_row_candidates_with_proposal(
+                previous_candidates,
+                structural_candidates,
+                proposals_enabled,
+            )
+            if not candidates.ok:
+                if candidates.error == 1:
+                    return __wrela_pixels_p7_worker_error(16, tile)
+                return __wrela_pixels_p7_worker_error(8, tile)
+            if not __wrela_pixels_p7_workspace_charge(
+                job.renderer_index,
+                job.worker_index,
+                0,
+                candidates.count.to[u64](),
+            ):
+                return __wrela_pixels_p7_worker_error(16, tile)
+            if proposed > 0 and not __wrela_pixels_p7_workspace_charge(
+                job.renderer_index,
+                job.worker_index,
+                5,
+                proposed.to[u64](),
+            ):
+                return __wrela_pixels_p7_worker_error(16, tile)
+            if telemetry_enabled:
+                # P7.11 requires these three to be distinguishable. `offered`
+                # is every record the previous row put forward, `proposed` is
+                # the subset the structural index still lists for this row —
+                # the guest's revalidation is exactly that membership test —
+                # and `new_records` is what this row discovered on its own.
+                # Charging one value to two bins, as this did, made the
+                # proposal path unmeasurable.
+                offered: u16 = 0
+                if previous_candidates.ok:
+                    offered = previous_candidates.count
+                new_records = candidates.count - proposed
+                event_count = __wrela_pixels_tile_event_count(job.renderer_index, tile)
+                if event_count != 4294967295:
+                    _ = __wrela_pixels_p7_telemetry_charge(
+                        job.renderer_index,
+                        job.worker_index,
+                        31.to[usize]() + __wrela_pixels_p7_density_bin(candidates.count.to[u32]()),
+                        1,
+                    )
+                    _ = __wrela_pixels_p7_telemetry_charge(
+                        job.renderer_index,
+                        job.worker_index,
+                        47.to[usize]() + __wrela_pixels_p7_density_bin(event_count),
+                        1,
+                    )
+                    _ = __wrela_pixels_p7_telemetry_charge(
+                        job.renderer_index,
+                        job.worker_index,
+                        139,
+                        offered.to[u64](),
+                    )
+                    _ = __wrela_pixels_p7_telemetry_charge(
+                        job.renderer_index,
+                        job.worker_index,
+                        140,
+                        proposed.to[u64](),
+                    )
+                    _ = __wrela_pixels_p7_telemetry_charge(
+                        job.renderer_index,
+                        job.worker_index,
+                        141,
+                        new_records.to[u64](),
+                    )
+            row = __wrela_pixels_p7_certify_row(
+                context=P7RowCertificationContext(
+                    renderer=job.renderer_index,
+                    worker=job.worker_index,
+                    tile=tile,
+                    y=y,
+                    x0=x0,
+                    x1=x1,
+                    proposal=previous_row,
+                    proposals_enabled=proposals_enabled,
+                ),
+                candidates=candidates,
+                snapshot=snapshot,
+            )
+            if not row.ok:
+                return __wrela_pixels_p7_worker_error(row.error, tile)
+            if telemetry_enabled:
+                _ = __wrela_pixels_p7_telemetry_charge(
+                    job.renderer_index,
+                    job.worker_index,
+                    39.to[usize]() + __wrela_pixels_p7_density_bin(row.root_count),
+                    1,
+                )
+                _ = __wrela_pixels_p7_telemetry_charge(
+                    job.renderer_index,
+                    job.worker_index,
+                    55.to[usize]() + __wrela_pixels_p7_density_bin(candidates.count.to[u32]()),
+                    1,
+                )
+                _ = __wrela_pixels_p7_telemetry_charge(
+                    job.renderer_index,
+                    job.worker_index,
+                    63.to[usize]() + __wrela_pixels_p7_density_bin(candidates.count.to[u32]()),
+                    1,
+                )
+                _ = __wrela_pixels_p7_telemetry_charge(
+                    job.renderer_index,
+                    job.worker_index,
+                    79,
+                    row.root_count.to[u64](),
+                )
+            if not __wrela_pixels_p7_workspace_charge(
+                job.renderer_index,
+                job.worker_index,
+                1,
+                row.root_count.to[u64](),
+            ) or not __wrela_pixels_p7_workspace_charge(
+                job.renderer_index,
+                job.worker_index,
+                4,
+                row.run_count.to[u64](),
+            ) or not __wrela_pixels_p7_workspace_charge(
+                job.renderer_index,
+                job.worker_index,
+                6,
+                row.corridor_count.to[u64](),
+            ):
+                return __wrela_pixels_p7_worker_error(17, tile)
+            index: u8 = 0
+            run_record: u32 = 0
+            corridor_record: u32 = 0
+            coverage_x = x0
+            @budget(bound=16)
+            while index < row.count:
+                sample = row.samples[index.to[usize]()]
+                x = row.starts[index.to[usize]()].to[u32]()
+                end = row.ends[index.to[usize]()].to[u32]()
+                if x != coverage_x or end <= x or end > x1:
+                    return __wrela_pixels_p7_worker_error(10, tile)
+                record = run_record
+                if sample.event:
+                    record = corridor_record
+                if not sample.ok:
+                    return __wrela_pixels_p7_worker_error(10, tile)
+                root_margin = sample.proof_margin
+                if sample.event:
+                    root_margin = 1
+                if root_margin < 0:
+                    root_margin = 0
+                if root_margin > 65535:
+                    root_margin = 65535
+                order_margin = sample.proof_margin
+                if sample.event:
+                    order_margin = 1
+                if order_margin < 0:
+                    order_margin = 0
+                if order_margin > 255:
+                    order_margin = 255
+                packed_proof = (
+                    sample.proof_method.to[u64]()
+                    | (sample.composition_shape.to[u64]() << 4)
+                    | (root_margin.to[u64]() << 8)
+                    | (order_margin.to[u64]() << 24)
+                )
+                model: [i64; 8] = [
+                    sample.q_lo.to[i64](),
+                    sample.q_hi.to[i64](),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]
+                if row.modeled and row.count == 1:
+                    model = [
+                        row.model[0].to[i64](),
+                        row.model[1].to[i64](),
+                        row.model[2].to[i64](),
+                        row.model[3].to[i64](),
+                        row.model[4].to[i64](),
+                        row.model[5].to[i64](),
+                        row.model[6].to[i64](),
+                        row.model[7].to[i64](),
+                    ]
+                normal_bounds: [i64; 6] = [
+                    -32767, 32767,
+                    -32767, 32767,
+                    -32767, 32767,
+                ]
+                # Evidence word 3 always carries the row coordinate. Normal
+                # components are meaningful only when `normal_bounds` is an
+                # exact point model; otherwise they remain zero.
+                evidence_aux_lo = y.to[i64]()
+                evidence_aux_hi: i64 = 0
+                evidence_point_witness: i64 = 0
+                normal: [f32; 4] = [0.0; 4]
+                raster_derivatives: [i64; 4] = [0; 4]
+                if sample.hit and not sample.event:
+                    center_x = x.to[f32]() + (end - x).to[f32]() * 0.5
+                    center_u = (
+                        ((center_x / width.to[f32]()) * 2.0 - 1.0)
+                        * width.to[f32]() / height.to[f32]()
+                    )
+                    center_v = 1.0 - (
+                        (y.to[f32]() + 0.5) / height.to[f32]()
+                    ) * 2.0
+                    if telemetry_enabled:
+                        point_sample = __wrela_pixels_p7_pixel_visibility_from_candidates(
+                            renderer=job.renderer_index,
+                            worker=job.worker_index,
+                            tile=tile,
+                            span=x | (end << 16),
+                            y=y,
+                            filter=[center_u, center_v, 0.0, 0.0],
+                            candidates=candidates,
+                            snapshot=snapshot,
+                        )
+                        if (
+                            point_sample.ok and point_sample.hit
+                            and point_sample.identity == sample.identity
+                            and point_sample.q_hi >= sample.q_lo
+                            and point_sample.q_lo <= sample.q_hi
+                        ):
+                            evidence_point_witness = 1
+                    normal = __wrela_pixels_p7_feature_normal(
+                        job.renderer_index,
+                        sample.root_count >> 16,
+                        center_u,
+                        center_v,
+                        __wrela_pixels_p7_raw_to_f32(
+                            sample.q_lo + (
+                                sample.q_hi - sample.q_lo
+                            ) / 2,
+                            config[3].to[i32](),
+                        ),
+                        snapshot.params,
+                        snapshot.camera,
+                    )
+                    # `__wrela_pixels_p7_feature_normal` only has a closed form
+                    # for a feature that *is* an unmodified root primitive. A
+                    # feature reached through a bounded deformation has no such
+                    # form: the displaced surface normal is grad(f_base) + grad(d),
+                    # not the primitive's. Status 0 therefore means "no normal
+                    # claim", not "corrupt state" — `normal_bounds` keeps its
+                    # full-range (vacuous) enclosure and the auxiliary evidence
+                    # remains non-authoritative. Substituting the
+                    # primitive normal here would seal a false point enclosure.
+                    if normal[0] == 1.0:
+                        nx = (normal[1] * 32767.0).to[i64]()
+                        ny = (normal[2] * 32767.0).to[i64]()
+                        nz = (normal[3] * 32767.0).to[i64]()
+                        if nx < -32767 or nx > 32767 or ny < -32767 or ny > 32767 or nz < -32767 or nz > 32767:
+                            return __wrela_pixels_p7_worker_error(12, tile)
+                        if sample.composition_shape == 1:
+                            normal_bounds = [nx, nx, ny, ny, nz, nz]
+                        evidence_aux_lo = y.to[i64]() | ((nx & 65535) << 16)
+                        evidence_aux_hi = (ny & 65535) | ((nz & 65535) << 16)
+                        derivative_bounds = __wrela_pixels_p8_derivative_bounds(
+                            sample.q_lo,
+                            sample.q_hi,
+                            normal,
+                            center_u,
+                            center_v,
+                            snapshot.camera,
+                        )
+                        if derivative_bounds[0] != 1:
+                            return __wrela_pixels_p7_worker_error(12, tile)
+                        raster_derivatives = [
+                            derivative_bounds[1], derivative_bounds[2],
+                            derivative_bounds[3], derivative_bounds[4],
+                        ]
+                    else:
+                        # Deformed/composed roots deliberately carry a
+                        # vacuous normal cone. Keep their compact derivatives
+                        # finite and conservative instead of inventing a
+                        # primitive normal: the P8 debug summary reconstructs
+                        # the lane but does not request normalized direction.
+                        derivative_envelope = sample.q_lo.to[i64]()
+                        if derivative_envelope < 0:
+                            derivative_envelope = -derivative_envelope
+                        q_hi_magnitude = sample.q_hi.to[i64]()
+                        if q_hi_magnitude < 0:
+                            q_hi_magnitude = -q_hi_magnitude
+                        if q_hi_magnitude > derivative_envelope:
+                            derivative_envelope = q_hi_magnitude
+                        derivative_envelope = derivative_envelope * height.to[i64]()
+                        if derivative_envelope > 2147483647:
+                            return __wrela_pixels_p7_worker_error(12, tile)
+                        raster_derivatives = [
+                            0 - derivative_envelope, derivative_envelope,
+                            0 - derivative_envelope, derivative_envelope,
+                        ]
+                evidence_meta = (
+                    sample.root_count.to[i64]()
+                    | (sample.proof_method.to[i64]() << 32)
+                    | (sample.composition_shape.to[i64]() << 40)
+                    | (sample.coverage.to[i64]() << 48)
+                    | (evidence_point_witness << 57)
+                )
+                if sample.event:
+                    evidence_meta = evidence_meta | (1 << 56)
+                slacks: [i64; 2] = [2147483647, 2147483647]
+                if sample.hit and not sample.event:
+                    if sample.proof_margin <= 0:
+                        return __wrela_pixels_p7_worker_error(12, tile)
+                    slacks = [
+                        sample.proof_margin.to[i64](),
+                        sample.proof_margin.to[i64](),
+                    ]
+                if telemetry_enabled:
+                    if not __wrela_pixels_p7_workspace_store_certified_run(
+                        job.renderer_index,
+                        job.worker_index,
+                        record,
+                        [
+                            row.starts[index.to[usize]()].to[i64](),
+                            row.ends[index.to[usize]()].to[i64](),
+                            sample.object.to[i64](),
+                            sample.identity.to[i64](),
+                            sample.q_lo.to[i64](),
+                            sample.q_hi.to[i64](),
+                            evidence_aux_lo,
+                            evidence_aux_hi,
+                        ],
+                        model,
+                        normal_bounds,
+                        slacks,
+                        evidence_meta,
+                    ):
+                        return __wrela_pixels_p7_worker_error(12, tile)
+                    _ = __wrela_pixels_p7_charge_run_telemetry(
+                        job.renderer_index,
+                        job.worker_index,
+                        sample,
+                        end - x,
+                    )
+                if sample.event:
+                    corridor_record = corridor_record + 1
+                else:
+                    run_record = run_record + 1
+                if sample.hit and sample.q_hi.to[i64]() < sample.q_lo.to[i64]():
+                    return __wrela_pixels_p7_worker_error(13, tile)
+                r: u8 = 0
+                g: u8 = 0
+                b: u8 = 0
+                a: u8 = 255
+                back: u32 = 0
+                if sample.hit:
+                    r = ((sample.identity >> 8) & 255).to[u8]()
+                    g = (sample.identity & 255).to[u8]()
+                    width_class = sample.q_hi.to[i64]() - sample.q_lo.to[i64]()
+                    if width_class < 0:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    if width_class > 126:
+                        width_class = 126
+                    b = (129 + width_class).to[u8]()
+                    if sample.event:
+                        # P8 event coverage uses a high-contrast debug
+                        # channel: after premultiplication the displayed blue
+                        # byte is exactly the certified coverage code. This
+                        # gives the independent conformance oracle a direct
+                        # guest-output byte rather than an inferred point
+                        # witness. Regular pixels retain the q-width code.
+                        b = 255
+                        a = sample.coverage
+                        if sample.proof_method & 128 != 0:
+                            secondary = sample.root_count >> 16
+                            back = (
+                                ((secondary >> 8) & 255)
+                                | ((secondary & 255) << 8)
+                                | (b.to[u32]() << 16)
+                            )
+                if sample.event:
+                    event_start = x
+                    @budget(bound=16)
+                    while x < end:
+                        # Materialize the compact event record against real,
+                        # per-pixel side-run and sealed-event arenas. Run IDs
+                        # 0 and 1 name the selected front and certified
+                        # secondary/background colors respectively; event_ids
+                        # contains every sealed event whose conservative span
+                        # owns this pixel. Rasterization below consumes these
+                        # references instead of the pre-lowering temporaries.
+                        event_side_runs: [u32; 2] = [
+                            r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
+                            back,
+                        ]
+                        # The sealed tile-event table is capped at 256 records.
+                        # The filtered view can legitimately retain more than
+                        # the analytic arrangement's crossing-curve limit: its
+                        # reset, ownership, and composite records remain real
+                        # event references and must not be discarded.
+                        # The arena is the deterministic filtered view of the
+                        # sealed tile-event table produced by the scan below.
+                        # IdSlice offsets index that view, so no second local
+                        # copy of the IDs is needed before immediate raster
+                        # consumption. Preserve its endpoint IDs in evidence.
+                        event_first_id: u16 = 0
+                        event_last_id: u16 = 0
+                        event_count = __wrela_pixels_tile_event_count(
+                            job.renderer_index,
+                            tile,
+                        )
+                        if event_count == 4294967295 or event_count > 256:
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        event_arena_count: u16 = 0
+                        event_arena_digest: u32 = 2166136261
+                        event_ordinal: u32 = 0
+                        @budget(bound=256)
+                        while event_ordinal < event_count:
+                            sealed_event = __wrela_pixels_tile_event(
+                                job.renderer_index,
+                                tile,
+                                event_ordinal,
+                            )
+                            if sealed_event[0] != 1 or sealed_event[1] > 65535:
+                                return __wrela_pixels_p7_worker_error(13, tile)
+                            sealed_event_id = sealed_event[1].to[u32]()
+                            sealed_span = __wrela_pixels_p7_event_pixel_span(
+                                job.renderer_index,
+                                sealed_event_id,
+                                x,
+                                y,
+                            )
+                            if sealed_span[0] != 1:
+                                return __wrela_pixels_p7_worker_error(13, tile)
+                            if sealed_span[1] == 1:
+                                if event_arena_count >= 256:
+                                    return __wrela_pixels_p7_worker_error(13, tile)
+                                if event_arena_count == 0:
+                                    event_first_id = sealed_event_id.to[u16]()
+                                event_last_id = sealed_event_id.to[u16]()
+                                event_arena_digest = (
+                                    event_arena_digest *% 16777619
+                                ) ^ sealed_event_id
+                                event_arena_count = event_arena_count + 1
+                            event_ordinal = event_ordinal + 1
+                        # Store the unique 1/256 coverage code whose sealed
+                        # ties-to-nearest byte encoding reproduces `a`.
+                        coverage_raw = ((a.to[u32]() * 256 + 127) / 255).to[i32]()
+                        event = EventPixel(
+                            x=x.to[u16](),
+                            coverage=Iv32.point(coverage_raw),
+                            front_run=RunId(value=0),
+                            back_run=RunId(value=1),
+                            event_ids=IdSlice[EventId](
+                                first=0,
+                                count=event_arena_count,
+                            ),
+                        )
+                        referenced_events_ok = (
+                            event.event_ids.first == 0
+                            and event.event_ids.count == event_arena_count
+                            and event_arena_digest != 2166136261
+                        )
+                        event_front = event_side_runs[
+                            event.front_run.value.to[usize]()
+                        ]
+                        event_back = event_side_runs[
+                            event.back_run.value.to[usize]()
+                        ]
+                        event_coverage = (
+                            (event.coverage.lower().to[u32]() * 255 + 128) / 256
+                        ).to[u8]()
+                        event_references = event.front_run.value.to[u64]() | (
+                            event.back_run.value.to[u64]() << 16
+                        ) | (event.event_ids.count.to[u64]() << 32)
+                        event_id_bounds: u64 = 0
+                        if event.event_ids.count > 0:
+                            event_id_bounds = event_first_id.to[u64]() | (
+                                event_last_id.to[u64]() << 16
+                            ) | ((event_arena_digest & 1073741823).to[u64]() << 32)
+                        if (
+                            event.x.to[u32]() >= width
+                            or event.front_run.value >= 2
+                            or event.back_run.value >= 2
+                            or event.front_run.value == event.back_run.value
+                            or event.event_ids.count == 0
+                            or not referenced_events_ok
+                            or event.coverage.lower() < 0
+                            or event.coverage.upper() > 256
+                            or event_coverage != a
+                            or not __wrela_pixels_p8_raster_evidence_store(
+                                job.renderer_index,
+                                (y * width + event.x.to[u32]()).to[usize](),
+                                event_coverage.to[u64](),
+                                event_references,
+                                event_id_bounds,
+                                2,
+                            )
+                            or not __wrela_pixels_p8_write(
+                                job.renderer_index,
+                                job.worker_index,
+                                y * width + event.x.to[u32](),
+                                event_front,
+                                event_coverage,
+                                event_back,
+                            )
+                            or not __wrela_pixels_p7_workspace_charge(
+                            job.renderer_index,
+                            job.worker_index,
+                            3,
+                            1,
+                            )
+                        ):
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        written = written +% 1
+                        if written == 18446744073709551615:
+                            return __wrela_pixels_p7_worker_error(13, tile)
+                        x = x + 1
+                    if telemetry_enabled:
+                        _ = __wrela_pixels_p7_telemetry_charge(
+                            job.renderer_index,
+                            job.worker_index,
+                            148,
+                            (end - event_start).to[u64](),
+                        )
+                else:
+                    setup = __wrela_pixels_p8_raster_setup(
+                        sample,
+                        model,
+                        row.modeled and row.count == 1,
+                        x,
+                        end,
+                        config[3].to[i32](),
+                        height,
+                        raster_derivatives,
+                    )
+                    if not setup.ok:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    raster = setup.raster
+                    raster_written = __wrela_pixels_p8_raster_regular(
+                        P8RasterContext(
+                            renderer=job.renderer_index,
+                            worker=job.worker_index,
+                            y=y,
+                            width=width,
+                            height=height,
+                            camera=snapshot.camera,
+                            scale=__wrela_pixels_p7_raw_to_f32(1, config[3].to[i32]()),
+                            color=r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
+                        ),
+                        raster,
+                    )
+                    if raster_written == 18446744073709551615:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    __wrela_pixels_p8_charge_raster_run(
+                        job.renderer_index,
+                        job.worker_index,
+                        telemetry_enabled,
+                        y * width + x,
+                        end - x,
+                        raster.proof_code.bits & 8 != 0,
+                    )
+                    written = written +% raster_written
+                    if written < raster_written:
+                        return __wrela_pixels_p7_worker_error(13, tile)
+                    x = end
+                    coverage_x = x
+                    index = index + 1
+                    continue
+                coverage_x = x
+                index = index + 1
+            if coverage_x != x1:
+                return __wrela_pixels_p7_worker_error(14, tile)
+            if run_record != row.run_count.to[u32]() or corridor_record != row.corridor_count.to[u32]():
+                return __wrela_pixels_p7_worker_error(14, tile)
+            previous_candidates = structural_candidates
+            previous_row = row
+            y = y + 1
+        tile = tile + 1
+    return written
+
+pub fn __wrela_pixels_p7_job_value(take result: Result[u64, CallError[never]]) -> u64:
+    match result:
+        case .Ok(value):
+            return value
+        case .Err(call_error):
+            match call_error:
+                case .Cancelled:
+                    return __wrela_pixels_p7_worker_error(8, 0)
+                case .DeadlineExceeded:
+                    return __wrela_pixels_p7_worker_error(9, 0)
+                case .NotAdmitted(_, _):
+                    return __wrela_pixels_p7_worker_error(10, 0)
+                case .Op(_):
+                    return __wrela_pixels_p7_worker_error(12, 0)

@@ -49,14 +49,51 @@ machine only needs to be what the stdlib drivers speak.
 - No firmware-visible feature discovery: the baseline is the contract, and
   boot asserts it.
 
+> **D-P8R-02** (sealed 2026-08-15) — The flagship rendering topology is the
+> named product profile **`pi5-3worker`**: three guest vCPUs pinned to
+> rendering workers plus one host core for the VMM and display, on the
+> Raspberry Pi 5's four A76s. The cycle-proxy core count follows this
+> profile, so modeled per-worker budgets divide the 1080p60 pixel rate by
+> three. Current tree status, stated honestly: the generated renderer emits
+> **four** workers, development runs on macOS/Hypervisor.framework, and the
+> VMM performs **no physical-Pi vCPU pinning** — the profile is a deployment
+> target, not current functionality. Four-worker fixtures remain functional
+> fixtures and are not deprecated by this decision. Gap ownership: VMM
+> physical-Pi pinning is P13 roadmap work; reconciling the generated worker
+> count to the profile is the named follow-up **F-P8R-01** (owner: the P9
+> renderer-generation task that next regenerates worker placement), recorded
+> in the P8R tightening plan.
+
+> **D-P8R-04** (sealed 2026-08-15) — No implicit FMA contraction, ever. The
+> compiler never fuses a multiply and an add that source or lowering wrote
+> as two operations, on any bank, at any optimization level. Fused
+> arithmetic enters only as an explicit sealed operation carrying its own
+> bit-exact scalar reference, so the stored result of every expression is
+> the one its written rounding steps produce. Before the first guest
+> instruction, every machine-v1 host installs `FPCR = 0x0200_0000`: DN is
+> one, so arithmetic produces the architecture's positive quiet default NaN;
+> RMode is `00` (round to nearest, ties to even); FZ and FZ16 are zero
+> (gradual underflow); and AHP is zero. This environment applies to all guest
+> scalar and packet floating-point instructions, not only Pixels helpers. The
+> compile-time interpreter mirrors default-NaN results for ordinary `f32` and
+> `f64` arithmetic, so a NaN payload cannot become an eval/guest distinction
+> observable through a bitcast.
+
+> **D-P8R-05** (sealed 2026-08-15) — fp16 lanes are not part of the
+> machine-v1 ISA surface. Narrow precision may later enter only as *as-if*
+> candidate arithmetic whose conservative residual proves the stored output
+> byte unchanged, under the Pixels contract §0.1(8); that work is P9-era at
+> the earliest and telemetry-gated. Nothing in the baseline, the cost model,
+> or the renderer may depend on a half-precision lane.
+
 ## 2. Memory
 
 - One fixed guest-physical layout, published here per machine revision:
   image load base, per-core stacks, device shared-memory windows, and the
   framebuffer region at fixed addresses.
 - Within the sealed image, the actor runtime-tables section (`rtdata`)
-  begins at a fixed packing base **`RTDATA_BASE = IMAGE_BASE + 2 MiB`**
-  (`0x4054_0000`). `entry` / `code` / `rodata` / `abort` / `checkpoint`
+  begins at a fixed packing base **`RTDATA_BASE = IMAGE_BASE + 4 MiB`**
+  (`0x40a0_0000`). `entry` / `code` / `rodata` / `abort` / `checkpoint`
   pack below that base; layout steers the cursor there rather than
   bump-allocating after code. A build whose packed sections would overrun
   `RTDATA_BASE`, or whose `rtdata` alone exceeds **`RTDATA_SIZE_MAX`
@@ -64,6 +101,16 @@ machine only needs to be what the stdlib drivers speak.
   unbounded image-authored integer. This is an in-image packing constant;
   guest-visible pages, stacks, and entry are unchanged, so it is not a
   machine-revision bump.
+
+> **D-P8R-09** (sealed 2026-08-15) — `RTDATA_BASE` is `IMAGE_BASE + 4 MiB`
+> (`0x40a0_0000`). This chapter previously stated 2 MiB (`0x4054_0000`)
+> while `wrela_machine::layout::RTDATA_BASE` and the Pixels implementation
+> plan's packing-window text both stated 4 MiB. The implementation is the
+> winner: P7's generated visibility evaluator already needs more than 2 MiB
+> of text below the base, so the smaller value was never buildable. This
+> chapter is corrected; no constant, image byte, or layout behavior changes.
+> The plan lint checks this chapter's stated base against the machine
+> constant so the two cannot drift apart again.
 - The flagship profile is **1 GiB**. The image report's peak-memory ceiling
   must fit the profile or the build fails; the VMM allocates exactly the
   reservation (hugepage-backed, never overcommitted, no balloon device).

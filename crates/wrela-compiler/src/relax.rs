@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::codegen::{CodegenFn, CodegenProgram, Reloc};
-use crate::cost::{CostRule, EmittedWord};
+use crate::cost::{CostRule, EmittedWord, Reg};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelaxTarget {
@@ -304,21 +304,21 @@ fn make_word(reg: u8, value: u64, enc: &Encoding, old: &EmittedWord) -> Vec<Emit
     let mut out = Vec::new();
     let text = |name: &str| format!("{name} x{reg}, #{value:#x}");
     match enc {
-        Encoding::LogicalImmediate => out.push(EmittedWord::new(
+        Encoding::LogicalImmediate => out.push(EmittedWord::gpr(
             crate::encode::enc_mov_bitmask_imm(reg, value).expect("selected logical immediate"),
             text("mov"),
             CostRule::Alu,
             Some(reg),
             &[],
         )),
-        Encoding::MovZ { shift } => out.push(EmittedWord::new(
+        Encoding::MovZ { shift } => out.push(EmittedWord::gpr(
             crate::encode::enc_movz(reg, ((value >> *shift) & 0xffff) as u16, *shift, true),
             text("movz"),
             CostRule::MovWide,
             Some(reg),
             &[],
         )),
-        Encoding::MovN { shift } => out.push(EmittedWord::new(
+        Encoding::MovN { shift } => out.push(EmittedWord::gpr(
             crate::encode::enc_movn(reg, ((!value >> *shift) & 0xffff) as u16, *shift, true),
             text("movn"),
             CostRule::MovWide,
@@ -336,7 +336,7 @@ fn make_word(reg: u8, value: u64, enc: &Encoding, old: &EmittedWord) -> Vec<Emit
                 .find(|lane| !keep_lanes.contains(lane))
                 .unwrap_or(0);
             if *base_n {
-                out.push(EmittedWord::new(
+                out.push(EmittedWord::gpr(
                     crate::encode::enc_movn(
                         reg,
                         ((!value >> (base * 16)) & 0xffff) as u16,
@@ -349,7 +349,7 @@ fn make_word(reg: u8, value: u64, enc: &Encoding, old: &EmittedWord) -> Vec<Emit
                     &[],
                 ));
             } else {
-                out.push(EmittedWord::new(
+                out.push(EmittedWord::gpr(
                     crate::encode::enc_movz(
                         reg,
                         ((value >> (base * 16)) & 0xffff) as u16,
@@ -363,7 +363,7 @@ fn make_word(reg: u8, value: u64, enc: &Encoding, old: &EmittedWord) -> Vec<Emit
                 ));
             }
             for lane in keep_lanes {
-                out.push(EmittedWord::new(
+                out.push(EmittedWord::gpr(
                     crate::encode::enc_movk(
                         reg,
                         ((value >> (*lane * 16)) & 0xffff) as u16,
@@ -505,19 +505,24 @@ fn remap_recorded_block_spans(
 }
 
 pub fn relax_immediates(program: &CodegenProgram) -> Result<RelaxedProgram, String> {
-    let mut fragments = make_fragments(program);
-    let mut relaxed = program.clone();
+    relax_immediates_owned(program.clone())
+}
+
+pub(crate) fn relax_immediates_owned(
+    mut relaxed: CodegenProgram,
+) -> Result<RelaxedProgram, String> {
+    let mut fragments = make_fragments(&relaxed);
     let mut dump = String::new();
     for (key, parts) in &mut fragments.fns {
-        let blocked = program
+        let (blocked, relocs) = relaxed
             .fns
             .get(key)
-            .is_some_and(|f| f.code.iter().any(is_control_word));
-        let relocs = program
-            .fns
-            .get(key)
-            .map(|f| f.relocs.clone())
-            .unwrap_or_default();
+            .map_or((false, Vec::new()), |function| {
+                (
+                    function.code.iter().any(is_control_word),
+                    function.relocs.clone(),
+                )
+            });
         let mut code = Vec::new();
         let mut old_cursor = 0usize;
         let mut ranges: Vec<(usize, usize, usize, usize)> = Vec::new();
@@ -621,12 +626,8 @@ pub fn relax_immediates(program: &CodegenProgram) -> Result<RelaxedProgram, Stri
             }
             ranges.push((old_start, old_cursor, new_start, code.len()));
         }
-        let original = program
-            .fns
-            .get(key)
-            .ok_or_else(|| format!("relaxation lost function `{key}`"))?;
-        let mut new_relocs = Vec::with_capacity(original.relocs.len());
-        for reloc in &original.relocs {
+        let mut new_relocs = Vec::with_capacity(relocs.len());
+        for reloc in &relocs {
             let old = reloc_word(reloc);
             let Some(&(old_start, old_end, new_start, new_end)) = ranges
                 .iter()
@@ -678,6 +679,7 @@ pub fn relax_linked_immediates(
                     frame_size: f.frame_size as usize,
                     code: f.code.clone(),
                     relocs: f.relocs.clone(),
+                    regions: Vec::new(),
                 },
             )]),
             rodata: Vec::new(),
@@ -889,6 +891,92 @@ fn patch_local_branches(
     Ok(())
 }
 
+fn patch_local_branches_after_edits(
+    code: &mut [EmittedWord],
+    branches: &[(usize, usize)],
+    edits: &[(usize, usize, usize)],
+) -> Result<(), String> {
+    for &(old_from, old_target) in branches {
+        let mut from = old_from;
+        let mut target = old_target;
+        for &(at, old_width, new_width) in edits {
+            from = remap_index(from, at, old_width, new_width);
+            target = remap_index(target, at, old_width, new_width);
+        }
+        let delta = (target as i64 - from as i64) * 4;
+        if delta < i32::MIN as i64 || delta > i32::MAX as i64 {
+            return Err("local branch displacement overflow during relaxation".to_string());
+        }
+        let word = code
+            .get(from)
+            .ok_or_else(|| "local branch moved outside relaxed function".to_string())?
+            .word;
+        let patched = if word & 0x8000_0000 == 0 && word & 0x7c00_0000 == 0x1400_0000 {
+            crate::encode::enc_b(delta as i32)
+        } else if word & 0xff00_0010 == 0x5400_0000 {
+            let imm = ((delta / 4) as u32) & 0x7ffff;
+            (word & !(0x7ffff << 5)) | (imm << 5)
+        } else if word & 0x7e00_0000 == 0x3400_0000 {
+            let imm = ((delta / 4) as u32) & 0x7ffff;
+            (word & !(0x7ffff << 5)) | (imm << 5)
+        } else {
+            return Err("unsupported local control transfer during relaxation".to_string());
+        };
+        code[from].word = patched;
+        let text = &mut code[from].text;
+        if let Some(hash) = text.rfind('#') {
+            text.truncate(hash + 1);
+            let _ = write!(text, "{delta}");
+        }
+    }
+    Ok(())
+}
+
+/// Apply a descending set of independent ADRP+ADD-to-ADR shrinks to one
+/// function. Local branches are decoded before the first edit and repatched
+/// once after the last; repatching after every site made address relaxation
+/// quadratic in both branch count and formatting allocations.
+fn shrink_rodata_sites(
+    f: &mut crate::linked::LinkedFn,
+    sites: &[(usize, usize)],
+) -> Result<(), String> {
+    if sites.windows(2).any(|pair| pair[0].0 <= pair[1].0) {
+        return Err("batched address-relaxation sites are not strictly descending".to_string());
+    }
+    let branches: Vec<(usize, usize)> = f
+        .code
+        .iter()
+        .enumerate()
+        .filter_map(|(from, ew)| branch_target_index(ew.word, from).map(|target| (from, target)))
+        .collect();
+    let edits = sites
+        .iter()
+        .map(|(word, _)| (*word, 2usize, 1usize))
+        .collect::<Vec<_>>();
+    for (_, start, end) in &mut f.origin_word_ranges {
+        for &(word, old_width, new_width) in &edits {
+            *start = remap_index(*start, word, old_width, new_width);
+            *end = remap_index(*end, word, old_width, new_width);
+        }
+    }
+    for &(word, byte_offset) in sites {
+        if word + 1 >= f.code.len() {
+            return Err(format!("ADR site at word {word} has no ADRP+ADD pair"));
+        }
+        let reg = rd(&f.code[word]);
+        let mut adr = f.code[word].clone();
+        adr.word = crate::encode::enc_adr(reg, 0);
+        adr.text = format!("adr x{reg}, rodata+{byte_offset:#x}");
+        adr.rule = CostRule::Adrp;
+        adr.dst = Some(Reg::gpr(reg));
+        adr.clear_srcs();
+        f.code[word] = adr;
+        f.code.remove(word + 1);
+        f.relocs = remap_site_relocs(&f.relocs, word, 2, 1)?;
+    }
+    patch_local_branches_after_edits(&mut f.code, &branches, &edits)
+}
+
 fn change_rodata_site(
     f: &mut crate::linked::LinkedFn,
     word: usize,
@@ -916,9 +1004,8 @@ fn change_rodata_site(
         adr.word = crate::encode::enc_adr(reg, 0);
         adr.text = format!("adr x{reg}, rodata+{byte_offset:#x}");
         adr.rule = CostRule::Adrp;
-        adr.dst = Some(reg);
-        adr.srcs = [0; 4];
-        adr.src_len = 0;
+        adr.dst = Some(Reg::gpr(reg));
+        adr.clear_srcs();
         f.code[word] = adr;
         f.code.remove(word + 1);
         patch_local_branches(&mut f.code, &branches, word, old_width, new_width)?;
@@ -933,10 +1020,9 @@ fn change_rodata_site(
         adrp.word = crate::encode::enc_adrp(reg, 0);
         adrp.text = format!("adrp x{reg}, rodata+{byte_offset:#x}");
         adrp.rule = CostRule::Adrp;
-        adrp.dst = Some(reg);
-        adrp.srcs = [0; 4];
-        adrp.src_len = 0;
-        let add = EmittedWord::new(
+        adrp.dst = Some(Reg::gpr(reg));
+        adrp.clear_srcs();
+        let add = EmittedWord::gpr(
             crate::encode::enc_add_imm(reg, reg, 0, true),
             format!("add x{reg}, x{reg}, rodata+{byte_offset:#x}"),
             CostRule::Alu,
@@ -1356,22 +1442,55 @@ pub fn relax_linked_addresses(
             // Shrinks are monotone, so try the whole descending-index set in
             // one transaction. If an existing blocked address would stop
             // fitting, fall back to the conservative one-site transactions
-            // below and freeze only the responsible sites.
-            let mut trial = out.clone();
+            // below and freeze only the responsible sites. Snapshot only the
+            // functions the transaction edits plus the addresses relayout can
+            // move; cloning the complete linked image here duplicated every
+            // emitted word in the ordinary all-shrinks-succeed path.
+            let mut by_function: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
             for (key, word, byte_offset, _, _) in shrinks {
-                let f = trial
+                by_function
+                    .entry(key)
+                    .or_default()
+                    .push((word, byte_offset));
+            }
+            let saved_sections: Vec<_> = out
+                .sections
+                .iter()
+                .map(|section| (section.byte_address, section.padding_before))
+                .collect();
+            let saved_addresses: Vec<_> = out
+                .fns
+                .iter()
+                .map(|(key, function)| (key.clone(), function.byte_address))
+                .collect();
+            let mut saved_functions = Vec::with_capacity(by_function.len());
+            for (key, sites) in by_function {
+                let f = out
                     .fns
                     .get_mut(&key)
                     .ok_or_else(|| format!("missing linked function `{key}`"))?;
-                change_rodata_site(f, word, byte_offset, true)?;
+                saved_functions.push((key, f.clone()));
+                shrink_rodata_sites(f, &sites)?;
             }
-            relayout_linked_executable_sections(&mut trial)?;
-            repack_linked_sections(&mut trial)?;
-            relayout_linked_executable_sections(&mut trial)?;
-            if blocked_address_sites_fit(&trial)? {
-                patch_linked_addresses(&mut trial)?;
-                out = trial;
+            relayout_linked_executable_sections(&mut out)?;
+            repack_linked_sections(&mut out)?;
+            relayout_linked_executable_sections(&mut out)?;
+            if blocked_address_sites_fit(&out)? {
+                patch_linked_addresses(&mut out)?;
                 continue;
+            }
+            for (key, function) in saved_functions {
+                out.fns.insert(key, function);
+            }
+            for (key, address) in saved_addresses {
+                out.fns
+                    .get_mut(&key)
+                    .ok_or_else(|| format!("missing linked function `{key}` during rollback"))?
+                    .byte_address = address;
+            }
+            for (section, (address, padding)) in out.sections.iter_mut().zip(saved_sections) {
+                section.byte_address = address;
+                section.padding_before = padding;
             }
         }
         for (key, word, byte_offset, shrink, ordinal) in actions {
@@ -1401,9 +1520,11 @@ pub fn relax_linked_addresses(
             "address relaxation exceeded its monotone iteration cap ({cap})"
         ));
     }
-    rebuild_linked_executable_sections(&mut out)?;
+    // Payload sizing reads function bodies directly, so no executable section
+    // materialization is needed until addresses and relocation words are
+    // final. The old sequence rebuilt the complete section stream three times.
     repack_linked_sections(&mut out)?;
-    rebuild_linked_executable_sections(&mut out)?;
+    relayout_linked_executable_sections(&mut out)?;
     patch_linked_addresses(&mut out)?;
     rebuild_linked_executable_sections(&mut out)?;
     out.validate()?;
@@ -1546,7 +1667,7 @@ mod tests {
     use super::*;
 
     fn ew(word: u32) -> EmittedWord {
-        EmittedWord::new(word, String::new(), CostRule::MovWide, Some(9), &[])
+        EmittedWord::gpr(word, String::new(), CostRule::MovWide, Some(9), &[])
     }
 
     #[test]
@@ -1585,21 +1706,21 @@ mod tests {
     fn immediate_relaxation_preserves_value_and_movk_dependencies() {
         let code = vec![
             ew(crate::encode::enc_movz(9, 0x40, 0, true)),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 16, true),
                 String::new(),
                 CostRule::MovWide,
                 Some(9),
                 &[9],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 32, true),
                 String::new(),
                 CostRule::MovWide,
                 Some(9),
                 &[9],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 48, true),
                 String::new(),
                 CostRule::MovWide,
@@ -1614,11 +1735,15 @@ mod tests {
                     frame_size: 0,
                     code,
                     relocs: Vec::new(),
+                    regions: Vec::new(),
                 },
             )]),
             ..CodegenProgram::default()
         };
         let r = relax_immediates(&p).expect("relax");
+        let owned = relax_immediates_owned(p).expect("owned relax");
+        assert_eq!(owned.program, r.program);
+        assert_eq!(owned.dump, r.dump);
         assert_eq!(r.program.fns["f"].code.len(), 1);
         assert!(r.dump.contains("saved_words=3"));
     }
@@ -1627,21 +1752,21 @@ mod tests {
     fn shortening_remaps_relocations_after_the_site() {
         let code = vec![
             ew(crate::encode::enc_movz(9, 0x40, 0, true)),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 16, true),
                 String::new(),
                 CostRule::MovWide,
                 Some(9),
                 &[9],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 32, true),
                 String::new(),
                 CostRule::MovWide,
                 Some(9),
                 &[9],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_movk(9, 0, 48, true),
                 String::new(),
                 CostRule::MovWide,
@@ -1661,6 +1786,7 @@ mod tests {
                         word: 5,
                         key: "turn".into(),
                     }],
+                    regions: Vec::new(),
                 },
             )]),
             ..CodegenProgram::default()
@@ -1679,14 +1805,14 @@ mod tests {
     #[test]
     fn linked_address_relaxation_shrinks_and_remaps_rodata_sites() {
         let code = vec![
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_adrp(9, 0),
                 "adrp x9, rodata".to_string(),
                 CostRule::Adrp,
                 Some(9),
                 &[],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_add_imm(9, 9, 0, true),
                 "add x9, x9, rodata".to_string(),
                 CostRule::Alu,
@@ -1747,14 +1873,14 @@ mod tests {
     fn linked_address_relaxation_batches_multiple_shrinks() {
         let pair = |reg| {
             [
-                EmittedWord::new(
+                EmittedWord::gpr(
                     crate::encode::enc_adrp(reg, 0),
                     format!("adrp x{reg}, rodata"),
                     CostRule::Adrp,
                     Some(reg),
                     &[],
                 ),
-                EmittedWord::new(
+                EmittedWord::gpr(
                     crate::encode::enc_add_imm(reg, reg, 0, true),
                     format!("add x{reg}, x{reg}, rodata"),
                     CostRule::Alu,
@@ -1763,7 +1889,19 @@ mod tests {
                 ),
             ]
         };
-        let code: Vec<_> = pair(9).into_iter().chain(pair(10)).collect();
+        // The forward branch crosses both two-word sites. Applying the two
+        // shrinks as one batch must still retarget it to the same source word.
+        let code: Vec<_> = std::iter::once(EmittedWord::gpr(
+            crate::encode::enc_b(20),
+            "b #20".to_string(),
+            CostRule::Branch,
+            None,
+            &[],
+        ))
+        .chain(pair(9))
+        .chain(pair(10))
+        .chain(std::iter::once(raw_word_for_test(7)))
+        .collect();
         let linked = crate::linked::LinkedProgram::from_parts(
             vec![
                 crate::linked::LinkedSection {
@@ -1795,11 +1933,11 @@ mod tests {
                     code,
                     relocs: vec![
                         Reloc::Rodata {
-                            word_adrp: 0,
+                            word_adrp: 1,
                             byte_offset: 0,
                         },
                         Reloc::Rodata {
-                            word_adrp: 2,
+                            word_adrp: 3,
                             byte_offset: 4,
                         },
                     ],
@@ -1811,13 +1949,14 @@ mod tests {
         .expect("linked program");
 
         let (out, dump) = relax_linked_addresses(&linked).expect("address relax");
-        assert_eq!(out.fns["f"].code.len(), 2);
+        assert_eq!(out.fns["f"].code.len(), 4);
         assert_eq!(out.sections[0].code, out.fns["f"].code);
+        assert_eq!(branch_target_index(out.fns["f"].code[0].word, 0), Some(3));
         assert!(matches!(
             out.fns["f"].relocs.as_slice(),
             [
-                Reloc::RodataAdr { word: 0, .. },
-                Reloc::RodataAdr { word: 1, .. }
+                Reloc::RodataAdr { word: 1, .. },
+                Reloc::RodataAdr { word: 2, .. }
             ]
         ));
         assert_eq!(dump.matches("encoding=adr").count(), 2);
@@ -1827,21 +1966,21 @@ mod tests {
     #[test]
     fn address_shrink_patches_local_branch_targets() {
         let code = vec![
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_adrp(9, 0),
                 "adrp x9, rodata".to_string(),
                 CostRule::Adrp,
                 Some(9),
                 &[],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_add_imm(9, 9, 0, true),
                 "add x9, x9, rodata".to_string(),
                 CostRule::Alu,
                 Some(9),
                 &[9],
             ),
-            EmittedWord::new(
+            EmittedWord::gpr(
                 crate::encode::enc_b(8),
                 "b #8".to_string(),
                 CostRule::Branch,
@@ -1876,7 +2015,7 @@ mod tests {
     }
 
     fn raw_word_for_test(value: u32) -> EmittedWord {
-        EmittedWord::new(value, format!("word {value}"), CostRule::Alu, None, &[])
+        EmittedWord::gpr(value, format!("word {value}"), CostRule::Alu, None, &[])
     }
 
     #[test]
