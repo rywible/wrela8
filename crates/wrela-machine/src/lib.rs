@@ -10,7 +10,11 @@ pub const MACHINE_REVISION_STR: &str = "wrela-machine-v1";
 pub const CORE_SLOTS: usize = 32;
 
 pub mod layout {
-    pub const DRAM_SIZE: u64 = 1 << 30;
+    /// The fixed guest reservation on the 1 GiB Rasputin product host.
+    ///
+    /// Half of physical memory remains host-owned so Linux, KVM, the VMM,
+    /// display, and measurement tooling never depend on swap or overcommit.
+    pub const DRAM_SIZE: u64 = 512 << 20;
 
     pub const DRAM_BASE: u64 = 0x4000_0000;
 
@@ -42,7 +46,7 @@ pub mod layout {
 
     pub const PIXELS_DATA_BASE_MIN: u64 = RTDATA_BASE;
     pub const PIXELS_PROGRAM_BYTES_MAX: u64 = 64 << 20;
-    pub const PIXELS_STATE_BYTES_MAX: u64 = 512 << 20;
+    pub const PIXELS_STATE_BYTES_MAX: u64 = 256 << 20;
     pub const PIXELS_FRAMEBUFFER_BYTES_MAX: u64 = 128 << 20;
     pub const PIXELS_REGION_ALIGNMENT: u64 = 64 << 10;
     pub const PIXELS_STATE_PAGE_ALIGNMENT: u64 = 4096;
@@ -322,8 +326,14 @@ mod tests {
     #[test]
     fn image_base_leaves_room_before_dram_end() {
         let dram_end = layout::DRAM_BASE + layout::DRAM_SIZE;
+        let first_stack = layout::core_stack_base_n(0, crate::CORE_SLOTS);
         assert!(layout::IMAGE_BASE < dram_end);
-        assert!(dram_end - layout::IMAGE_BASE > 512 * (1 << 20));
+        assert!(
+            first_stack - layout::IMAGE_BASE
+                > layout::PIXELS_PROGRAM_BYTES_MAX
+                    + layout::PIXELS_STATE_BYTES_MAX
+                    + layout::PIXELS_FRAMEBUFFER_BYTES_MAX
+        );
     }
 
     #[test]
@@ -338,7 +348,7 @@ mod tests {
     #[test]
     fn core_stack_base_n_is_high_dram_from_the_end() {
         let dram_end = layout::dram_end();
-        assert_eq!(dram_end, 0x8000_0000);
+        assert_eq!(dram_end, 0x6000_0000);
         assert_eq!(
             layout::core_stack_base_n(0, 1),
             dram_end - layout::CORE_STACK_SIZE

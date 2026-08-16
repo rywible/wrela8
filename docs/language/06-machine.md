@@ -30,8 +30,10 @@ machine only needs to be what the stdlib drivers speak.
   N the same way other layout ceilings fail closed, but that is not "the
   machine has K cores." The VMM refuses at boot if the host cannot
   provide N vCPUs (short host is a VMM error, never a guest probe — §3).
-  The flagship housekeeping arithmetic (`host cores − 1`) remains advice
-  for choosing N on a Pi 5, not a contract constant the image must equal.
+  Rasputin is the sole product host: its product profile admits at most
+  **three guest vCPUs**, leaving its fourth physical core to Linux, the VMM,
+  display, and device service. Portable format fixtures may retain other
+  counts, but they are not deployable product profiles.
 - ISA baseline: **AArch64 ARMv8.2-A + NEON/ASIMD**, the intersection of
   Cortex-A76 and Apple Silicon. Conforming hosts run the same sealed
   words; images often run faster on M-series. The flagship **A76** is the
@@ -56,10 +58,11 @@ machine only needs to be what the stdlib drivers speak.
 > profile, so modeled per-worker budgets divide the 1080p60 pixel rate by
 > three. Current tree status, stated honestly: the generated renderer emits
 > **four** workers, development runs on macOS/Hypervisor.framework, and the
-> VMM performs **no physical-Pi vCPU pinning** — the profile is a deployment
-> target, not current functionality. Four-worker fixtures remain functional
+> Rasputin's host profile isolates physical cores 1–3 for those vCPUs and
+> keeps core 0 for housekeeping; the VMM does **not yet bind its vCPU threads**
+> to those isolated cores. Four-worker fixtures remain functional
 > fixtures and are not deprecated by this decision. Gap ownership: VMM
-> physical-Pi pinning is P13 roadmap work; reconciling the generated worker
+> VMM thread pinning is P13 roadmap work; reconciling the generated worker
 > count to the profile is the named follow-up **F-P8R-01** (owner: the P9
 > renderer-generation task that next regenerates worker placement), recorded
 > in the P8R tightening plan.
@@ -111,9 +114,14 @@ machine only needs to be what the stdlib drivers speak.
 > chapter is corrected; no constant, image byte, or layout behavior changes.
 > The plan lint checks this chapter's stated base against the machine
 > constant so the two cannot drift apart again.
-- The flagship profile is **1 GiB**. The image report's peak-memory ceiling
-  must fit the profile or the build fails; the VMM allocates exactly the
-  reservation (hugepage-backed, never overcommitted, no balloon device).
+- The physical flagship has **1 GiB** of RAM and exposes **1,038,827,520
+  bytes** to Linux. The guest reservation is **512 MiB**
+  (`0x4000_0000..0x6000_0000`); the remainder stays host-owned for Linux,
+  KVM, the VMM, display, and measurement. Swap is never counted as product
+  memory. The image report's peak-memory ceiling must fit 512 MiB or the build
+  fails; the VMM allocates exactly that reservation, never overcommits it,
+  and exposes no balloon device. The target kernel has no HugeTLB support, so
+  product hardening must prefault and lock ordinary pages before guest entry.
 
 ## 3. Boot
 
@@ -304,7 +312,11 @@ frame and digest class.
 
 ## 9. Hosts, packaging, trust
 
-- **Flagship**: Raspberry Pi 5 (4×A76, 1 GiB usable for the guest). The
+- **Flagship**: Rasputin, a Raspberry Pi 5 Model B Rev 1.1 with 4×A76,
+  1 GiB physical RAM, three guest vCPUs, one housekeeping core, and a
+  512 MiB guest reservation. The canonical observed host configuration is
+  recorded in [the Rasputin target profile](../designs/rasputin-target-profile.md).
+  The
   shipped artifact is a triple — a minimal read-only Linux host (kernel +
   VMM, nothing else), the VMM, and the wrela image — all built and
   digest-pinned by the toolchain, so byte-for-byte reproducibility covers

@@ -754,7 +754,7 @@ fn lay_out_struct(
         return Err(layout_error(
             format!(
                 "`@layout` struct `{name}` covers {} bytes, more than the {MAX_LAYOUT_BYTES} this \
-                 compiler will lay out in one declaration; the machine has 1 GiB in total, so a \
+                 compiler will lay out in one declaration; the machine has 512 MiB in total, so a \
                  single exact-bytes declaration this large is a mistake in the declaration rather \
                  than a table (03-hardware.md §3)",
                 walk.cursor

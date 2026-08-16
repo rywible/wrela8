@@ -2,10 +2,11 @@
 
 ## 1. Purpose
 
-wrela builds fixed-function appliance images: sealed systems whose complete
-behavior is known at build time. Its flagship product is **wrela OS** — an
-appliance operating system for creatives that runs on a Raspberry Pi 5 with
-1 GiB of memory, every app built in statically, nothing downloadable, with
+Wrela builds fixed-function appliance images: sealed systems whose complete
+behavior is known at build time. Its flagship product is **Wrela OS** — an
+appliance operating system for creatives that runs on the 1 GiB Raspberry Pi
+5 named Rasputin, with a fixed 512 MiB guest reservation, every app built in
+statically, nothing downloadable, with
 instant boot, deterministic latency, and reproducible-to-the-pixel
 execution as the claims that beat a general-purpose OS on its own hardware
 class.

@@ -1,7 +1,10 @@
 # Repository Guidelines
 
 Wrela is a new language for building appliance OS images.
-The flagship product is a game console that runs on Raspberry Pi 5.
+The flagship product is a game console that runs on Rasputin, the canonical
+1 GiB Raspberry Pi 5 target: four Cortex-A76 cores, three guest vCPUs, one
+housekeeping core, and a 512 MiB guest DRAM reservation. The observed host
+profile is recorded in `docs/designs/rasputin-target-profile.md`.
 
 ## Project Structure & Module Organization
 

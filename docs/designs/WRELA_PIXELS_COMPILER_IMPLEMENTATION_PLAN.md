@@ -12486,7 +12486,7 @@ For `RenderProfile.AaaByteExact`:
 - include scheduler/orchestration/display submission and memory traffic;
 - compare against frame-period budget at configured/pinned flagship clock using conservative cost endpoint and existing core load/placement;
 - reserve explicit headroom factor in `bench/thresholds.toml`; set v1 admission to at most 80% of modeled per-core frame budget, leaving 20% for model error/interrupt/display variance;
-- check the sealed guest layout, including image/runtime/framebuffer/probe state and explicit stack/failure reserve, fits the machine-v1 1 GiB guest address-space profile;
+- check the sealed guest layout, including image/runtime/framebuffer/probe state and explicit stack/failure reserve, fits the machine-v1 512 MiB guest reservation;
 - check first-frame initialization against separate renderer initialization deadline (default 2 seconds, source-configurable only downward in flagship profile);
 - include the all-invalid dynamic-probe workload (`probe_count × 32` complete secondary rays plus accumulation) in initialization and frame admission; reject or require static/disabled probes when it cannot fit;
 - refuse image with a detailed cost why-chain if any fails.
@@ -12929,7 +12929,7 @@ Each script forces valid camera/animation changes every frame and includes cuts/
 - zero `RenderError`;
 - exact expected frame and rolling image digest;
 - exact proxy trace digest;
-- guest memory within the sealed 1 GiB guest profile;
+- guest memory within the sealed 512 MiB guest profile;
 - complete ISA/workload/proxy coverage.
 
 Do not average frames, use p95, or subtract “idle” work. One over-budget frame fails. If this task fails, fix implementation, instruction selection, code shape, or exact workload bounds while preserving prior correctness and quality contracts. Do not enable kinetic mode, lower resolution/refresh, loosen output proof, or edit the script to hide work.

@@ -57,9 +57,10 @@ and memory-traffic effects; they bound ambition, they do not admit anything.
 P8R calibrates a cost model; it does not convert modeled timing into physical
 Raspberry Pi timing, and no P8R artifact may claim otherwise. Peak-FLOP
 comparisons against unrelated hardware and workloads are not used in this
-plan. Three pinned guest vCPUs are a deployment target, not current
-functionality: the VMM's physical-Pi pinning is roadmap work, and the sealed
-profile of D-P8R-02 must state the current proxy honestly.
+plan. Rasputin now isolates physical cores 1–3 for three guest vCPUs and keeps
+core 0 for host housekeeping. Explicit VMM vCPU-thread affinity remains
+roadmap work, and the sealed profile of D-P8R-02 must state that boundary
+honestly.
 
 ## Closed decisions for P8R
 
@@ -147,7 +148,8 @@ document that owns it, with a dated decision line. Additionally:
   it stops circulating.
 - Topology status [S/D]: record, as part of D-P8R-02, what the current tree
   actually provides (generated four-worker renderer; HVF-hosted development
-  VMM; no physical-Pi pinning) versus the deployment target, and which
+  VMM; Rasputin host isolation but no VMM vCPU-thread affinity) versus the
+  deployment target, and which
   milestone owns each gap. If reconciling the generated worker count exceeds
   documentation scope, record the generation change as a named follow-up
   with an owner.

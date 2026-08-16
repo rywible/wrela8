@@ -743,7 +743,7 @@ pub fn pool_backings(
         return Err(build_error(format!(
             "this image's pools reserve {total} bytes of backing, past the {MAX_POOL_BYTES}-byte \
              ceiling this compiler will place — pool backing is zeroed image bytes (like the \
-             actor runtime tables), and guest DRAM is 1 GiB (06-machine.md §2). Failing closed \
+             actor runtime tables), and guest DRAM is 512 MiB (06-machine.md §2). Failing closed \
              rather than emitting an image no machine can load"
         )));
     }

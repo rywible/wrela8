@@ -55,6 +55,11 @@ MMIO is Device memory, text is RX, writable data is NX, and `SCTLR_EL1.WXN` is
 enabled. Host stage-2 protections remain defense in depth; they do not define
 different guest machines.
 
+The sole physical target is the 1 GiB board documented in the
+[Rasputin target profile](rasputin-target-profile.md): four physical A76
+cores, three guest vCPUs, one housekeeping core, and a 512 MiB guest DRAM
+reservation. Larger Pi variants are not alternate product profiles.
+
 ```text
 source / Wrela Forge
         |
@@ -1823,8 +1828,9 @@ fixtures.
 **Contract/dump delta:** no guest-visible delta; final host profile records
 name the enforced Linux or macOS isolation profile and its provenance.
 
-**Work:** reserve full DRAM before entry through a preallocated HugeTLB
-reservation as the single product mechanism; run the Linux VMM as a dedicated
+**Work:** reserve the full 512 MiB guest DRAM before entry by prefaulting and
+locking the ordinary-page mapping as the single product mechanism (Rasputin's
+pinned kernel has `CONFIG_HUGETLBFS` disabled); run the Linux VMM as a dedicated
 user on a read-only root with mount/PID namespaces, a seccomp allowlist,
 cgroup CPU/memory policy, explicit `/dev/kvm` and `/dev/dri` device access,
 and no network; run the signed Mac VMM/Forge child under App Sandbox — a

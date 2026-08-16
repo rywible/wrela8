@@ -6,11 +6,11 @@ case = check-pixels-normal-moments
 source = tests/golden/check-pixels-normal-moments/src/examples/check_pixels_normal_moments.wr
 phase = P8R.7-final
 phase_backend = direct-fp
-source_tree_sha256 = 2265671fb4c76906f078a998faac4633bf76d077d26b308394a4cc443f231233
+source_tree_sha256 = 004aece58b21c7fb92c73cdf5809ce18c39a2d411c317aee326dbad6e02c2970
 kernel_words_sha256 = e2f90e45cd9bd7d08a8dc36e8d2c5fbbd910c447fd93924ae5a1bd7921fee9af
 codegen_dump_sha256 = 624fe4d85479020f5bfcecf0e64fa9c1404e98e399248f805d41e555053d3273
 cost_provenance = 96e1aad226833198
-image_sha256 = d0db7b7535021ab784c33d359ac80de9342f3452d164bfe900ba9e8f8b7cc25b
+image_sha256 = 2b8d225ebe935d5545979a2e323cf4aaf1d977839a214f33892ba3acdd8a0d6b
 family.p8_write present=["__wrela_pixels_p8_write", "__wrela_pixels_p8_write4"] absent=[]
 family.sealed_numeric present=["sqrt_scalar", "rsqrt_scalar", "raster_rsqrt"] absent=[]
 

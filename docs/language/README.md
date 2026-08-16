@@ -4,8 +4,9 @@ wrela is a language for sealed, fixed-function appliance images: the
 compilation unit is the bootable machine image, the whole code graph is
 closed at build time, and everything — memory, tasks, mailboxes, DMA — has a
 proven build-time bound. Its flagship product is **wrela OS**, an appliance
-operating system for creatives on a Raspberry Pi 5 with 1 GiB of memory —
-all apps built in statically, software-rendered, instant-on, and
+operating system for creatives on the 1 GiB Raspberry Pi 5 named Rasputin,
+with 512 MiB reserved for the guest — all apps built in statically,
+software-rendered, instant-on, and
 reproducible to the pixel.
 
 ## Reading order

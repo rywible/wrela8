@@ -193,7 +193,7 @@ ImageReport v0
     Field name=wake_pending type=[u64; N_WAKE_DRAINS_LEN] offset=0x0 size=8
   Section name=pages base=0x40000000 size=245760
   Cores count=1
-  CoreStack core=0 base=0x7ff00000 size=0x100000
+  CoreStack core=0 base=0x5ff00000 size=0x100000
   Section name=entry base=0x40600000 size=80
   Section name=code base=0x40600050 size=52680
   Section name=rodata base=0x4060ce18 size=536
