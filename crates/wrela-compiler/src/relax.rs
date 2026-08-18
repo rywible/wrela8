@@ -1102,7 +1102,13 @@ fn repack_linked_sections(linked: &mut crate::linked::LinkedProgram) -> Result<(
         if fixed {
             continue;
         }
-        let alignment = if section.executable { 4 } else { 8 };
+        let alignment = if section.name == "rodata" {
+            wrela_machine::stage1::COMMON_PROTECTION_GRANULE
+        } else if section.executable {
+            4
+        } else {
+            8
+        };
         section.byte_address = cursor.div_ceil(alignment) * alignment;
         cursor = section
             .byte_address

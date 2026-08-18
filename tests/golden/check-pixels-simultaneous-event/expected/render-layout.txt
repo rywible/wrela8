@@ -1,11 +1,11 @@
 RenderLayout v1
   Renderer index=0
-    FrameProgram base=0x40a30000 size=83280
-    State base=0x40a50000 size=160434
+    FrameProgram base=0x40a70000 size=83280
+    State base=0x40a90000 size=160434
     Coordinator core=0 actor=__wrela_renderer_0_coordinator
-    Worker index=0 core=0 actor=__wrela_renderer_0_worker_0 tiles=[0,1) workspace_base=0x40a70660 workspace_bytes=8712
-    Buffer front=0x40a73000 back=0x40a75000 bytes_each=8192
-    Probe base=0x40a77000 bytes=0
+    Worker index=0 core=0 actor=__wrela_renderer_0_worker_0 tiles=[0,1) workspace_base=0x40ab0660 workspace_bytes=8712
+    Buffer front=0x40ab3000 back=0x40ab5000 bytes_each=8192
+    Probe base=0x40ab7000 bytes=0
     Telemetry offset=160440 production_bytes=0 instrumented_bytes=50352
     Scanout format=Bgra8Srgb tile=64x32 stride=256 allocation=8192 descriptor_bytes=24 generations=2 clear=boot-only
     Replay revision=display-v1 digests=[tile-descriptor,visible,raw-tile] vsync_checkpoint=true

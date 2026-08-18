@@ -32,7 +32,9 @@ Execution rules:
 
 Dependency policy:
 
-- “No new dependencies” means no new external Cargo dependencies.
+- “No new dependencies” means no new external Cargo dependencies except the
+  target-gated Linux/aarch64 KVM ABI bindings approved and audited by
+  `vmm-host-backends.md`; that exception does not extend to Pixels code.
 - Lean 4.30.0 and its pinned Mathlib revision are an explicitly approved proof-tool dependency outside the Cargo and shipped-image graphs.
 - Ordinary builds and tests must not require network access after the formal toolchain cache is installed and verified by P-1.1.
 - Section 12.1 is the authoritative final ownership map. Section 3.2 is only the P0/P1 seed layout.
@@ -9369,8 +9371,8 @@ crates/wrela-machine/src/pixels.rs # new at P-1 basis
 crates/wrela-vmm/src/devices.rs
 crates/wrela-vmm/src/display/mod.rs        # new at P-1 basis
 crates/wrela-vmm/src/display/headless.rs   # new at P-1 basis
-crates/wrela-vmm/src/display/hvf.rs        # new at P-1 basis
-crates/wrela-vmm/src/display/kvm.rs        # new at P-1 basis
+crates/wrela-vmm/src/display/metal.rs      # new at P-1 basis
+crates/wrela-vmm/src/display/drm.rs        # new at P-1 basis
 crates/wrela-vmm/src/replay.rs             # new at P-1 basis
 ```
 
@@ -9384,9 +9386,9 @@ crates/wrela-vmm/src/replay.rs             # new at P-1 basis
 
 **P8.8c — headless/replay backend.** Make the digest sink production-complete, including malformed-input recording and byte-identical replay.
 
-**P8.8d — macOS/HVF backend.** Create a `BGRA8Unorm_sRGB` Metal texture/layer path or equivalent platform surface, gather tile rows without changing bytes/color, and present on requested vsync. Backend execution belongs to the signed macOS lane. A local `HV_DENIED`/missing-entitlement result is an environment skip with recorded reason only during focused development; it is a hard failure in `verify-deep` on the configured signed runner.
+**P8.8d — macOS/Metal presenter.** Create a `BGRA8Unorm_sRGB` Metal texture/layer path or equivalent platform surface, gather tile rows without changing bytes/color, and present on requested vsync. Presentation is downstream of portable display validation and is independent of the HVF host adapter. Backend execution belongs to the signed macOS lane. A local `HV_DENIED`/missing-entitlement result is an environment skip with recorded reason only during focused development; it is a hard failure in `verify-deep` on the configured signed runner.
 
-**P8.8e — Linux/KVM backend.** Gather into a DRM dumb buffer/Mesa present path preserving byte format. There is no GPU shading or geometry.
+**P8.8e — Linux/DRM presenter.** Gather into a KMS dumb buffer preserving byte format. Presentation is downstream of portable display validation and is independent of the KVM host adapter. There is no Mesa/V3D dependency, GPU shading, or geometry.
 
 Host APIs already allowed by the VMM crate may be used; no renderer logic moves host-side.
 
@@ -12103,7 +12105,7 @@ crates/wrela-compiler/src/lower.rs
 crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/encode.rs
 crates/wrela-machine/src/lib.rs
-crates/wrela-vmm/src/hv.rs
+crates/wrela-vmm/src/host/hvf.rs
 crates/wrela-vmm/src/lib.rs
 stdlib/core/simd.wr # new at P-1 basis
 docs/language/05-library.md

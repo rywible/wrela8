@@ -212,6 +212,7 @@ pub fn attach_workloads(report: &mut CostReport, attach: &WorkloadAttach) -> Res
     report.workloads_digest = Some(attach.set.digest());
     report.workload_totals.clear();
     report.workload_coverage.clear();
+    report.workload_validation_bounds.clear();
 
     report
         .workload_totals
@@ -255,6 +256,9 @@ pub fn attach_workloads(report: &mut CostReport, attach: &WorkloadAttach) -> Res
         report
             .workload_coverage
             .insert(name.clone(), (m.matched, m.total));
+        report
+            .workload_validation_bounds
+            .insert(name.clone(), m.serial_cycles);
     }
     Ok(())
 }
@@ -262,6 +266,7 @@ pub fn attach_workloads(report: &mut CostReport, attach: &WorkloadAttach) -> Res
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockGrainMeasure {
     pub cycles: u64,
+    pub serial_cycles: u64,
     pub matched: u64,
     pub total: u64,
     pub resolved_keys: u64,
@@ -281,12 +286,16 @@ pub fn block_grain_fxs(
         match bridge.lookup(key)? {
             Resolved::Block(b) => {
                 m.cycles = m.cycles.saturating_add(f.saturating_mul(b.cycles));
+                m.serial_cycles = m
+                    .serial_cycles
+                    .saturating_add(f.saturating_mul(b.serial_cycles));
                 m.matched = m.matched.saturating_add(f);
                 m.resolved_keys += 1;
             }
             Resolved::UnknownFn => {
                 let c = f.saturating_mul(charge);
                 m.cycles = m.cycles.saturating_add(c);
+                m.serial_cycles = m.serial_cycles.saturating_add(c);
                 m.uncovered_cycles = m.uncovered_cycles.saturating_add(c);
                 m.unresolved_keys += 1;
             }
@@ -364,6 +373,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            workload_validation_bounds: BTreeMap::new(),
             footprint: Vec::new(),
         }
     }
@@ -617,13 +627,13 @@ Worker.report=2
         let m = block_grain_fxs(&report.fns, &bridge, &f.counts).expect("compose");
 
         assert!(bridge.block_count > 0);
-        assert_eq!(f.counts.len(), 216, "production-window non-zero blocks");
+        assert_eq!(f.counts.len(), 271, "production-window non-zero blocks");
         assert!(m.resolved_keys > 0);
         assert!(
             m.unresolved_keys > 0,
             "the closure diagnostic is intentionally unrankable"
         );
-        assert_eq!(m.total, 1512);
+        assert_eq!(m.total, 18278);
         assert_eq!(m.resolved_keys + m.unresolved_keys, f.counts.len() as u64);
         assert!(m.uncovered_cycles > 0);
     }
@@ -703,7 +713,7 @@ Worker.report=2
             measured.cycles
         );
 
-        assert_eq!(report.workload_coverage["boot-actors"], (28, 1512));
+        assert_eq!(report.workload_coverage["boot-actors"], (16742, 18278));
         assert_eq!(
             (measured.matched, measured.total),
             (under_flat_s.matched, under_flat_s.total)

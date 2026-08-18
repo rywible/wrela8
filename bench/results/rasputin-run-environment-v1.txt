@@ -1,0 +1,11 @@
+format=wrela-run-environment-v1
+acceptance_verdict=conforming
+actual_frequencies_khz=2400000,2400000,2400000,2400000
+available_memory_bytes=807600128
+context_switches=67784903
+display_mode=1280x720%0A1024x768%0A800x600%0A800x600%0A848x480%0A640x480
+irq_census=52820440
+observed_at_utc=2026-08-18T01:02:36Z
+online_cores=0,1,2,3
+temperature_millic=46300
+throttle_flags=throttled%3D0x0

@@ -13,4 +13,4 @@ test close_depth_uses_bounded_corridor: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=3d9d9ab803c201a4c2ce2d634033cdfa281c6dcf6a0ba65f7fbc1be741d53f7a visible=a0a1c7edf67e1787ce9bb7b9fc275bf33d982cb7f4a31350754b855beb8168af raw=a0a1c7edf67e1787ce9bb7b9fc275bf33d982cb7f4a31350754b855beb8168af vsync=6 checkpoint=6
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=e1f9cbdd5d4d25e61a9e533808dd09cbc1afbb9fe9c5e0f72f2deccc026cf626 visible=a0a1c7edf67e1787ce9bb7b9fc275bf33d982cb7f4a31350754b855beb8168af raw=a0a1c7edf67e1787ce9bb7b9fc275bf33d982cb7f4a31350754b855beb8168af vsync=6 checkpoint=6

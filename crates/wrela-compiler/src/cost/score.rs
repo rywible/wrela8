@@ -44,6 +44,7 @@ pub struct CostReport {
     pub workloads_digest: Option<String>,
     pub workload_totals: BTreeMap<String, u64>,
     pub workload_coverage: BTreeMap<String, (u64, u64)>,
+    pub workload_validation_bounds: BTreeMap<String, u64>,
     pub footprint: Vec<CoreBudget>,
 }
 
@@ -374,6 +375,7 @@ pub fn score_linked_program(
         workloads_digest: None,
         workload_totals: BTreeMap::new(),
         workload_coverage: BTreeMap::new(),
+        workload_validation_bounds: BTreeMap::new(),
         footprint: totals.footprint,
     })
 }
@@ -432,6 +434,7 @@ pub fn score_program_at_with_hot(
         workloads_digest: None,
         workload_totals: BTreeMap::new(),
         workload_coverage: BTreeMap::new(),
+        workload_validation_bounds: BTreeMap::new(),
         footprint: totals.footprint,
     })
 }
@@ -719,6 +722,116 @@ pub fn block_schedule_lengths_with_counts(
         out.push(s);
     }
     Ok(out)
+}
+
+/// Returns the modeled rule and memory-class census for each emitted-word
+/// basic block under the same pinned point used by the proxy schedule.
+/// Physical validation consumes this to compare PMU behavior with the model;
+/// it is evidence only and never feeds a cost constant.
+pub fn block_term_counts_with_counts(
+    fn_key: &str,
+    code: &[EmittedWord],
+    table: &CostTable,
+    placement: &PlacementTable,
+    counts: &BlockCounts<'_>,
+) -> Result<Vec<BTreeMap<String, u64>>, String> {
+    let ctx = ScoreCtx::new(table)?;
+    let point = SweepPoint::pinned(table);
+    let branch_terms = BranchTerms::compute(fn_key, code, table, &point, counts)?;
+    basic_block_ranges(code)
+        .into_iter()
+        .map(|(start, end)| {
+            score_words(
+                fn_key,
+                &code[start..end],
+                start,
+                table,
+                placement,
+                &point,
+                &ctx,
+                &branch_terms,
+                true,
+            )
+            .map(|(_, terms)| terms)
+        })
+        .collect()
+}
+
+/// Returns a deliberately serialized, all-upper-endpoint cycle bound for
+/// each emitted-word basic block. This is physical-validation evidence, not
+/// an optimizer input: it makes no overlap assumption and changes no pinned
+/// proxy ranking.
+pub fn block_serial_lengths_with_counts(
+    fn_key: &str,
+    code: &[EmittedWord],
+    table: &CostTable,
+    placement: &PlacementTable,
+    counts: &BlockCounts<'_>,
+) -> Result<Vec<u64>, String> {
+    let ctx = ScoreCtx::new(table)?;
+    let point = SweepPoint::upper(table);
+    let branch_terms = BranchTerms::compute(fn_key, code, table, &point, counts)?;
+    basic_block_ranges(code)
+        .into_iter()
+        .map(|(start, end)| {
+            serial_words(
+                fn_key,
+                &code[start..end],
+                start,
+                table,
+                placement,
+                &point,
+                &ctx,
+                &branch_terms,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serial_words(
+    fn_key: &str,
+    code: &[EmittedWord],
+    word_base: usize,
+    table: &CostTable,
+    placement: &PlacementTable,
+    point: &SweepPoint,
+    ctx: &ScoreCtx,
+    branch_terms: &BranchTerms,
+) -> Result<u64, String> {
+    let mut mem = MemState::new(table, point);
+    let mut cycles = 0u64;
+    for (i, ew) in code.iter().enumerate() {
+        check_mem_base_in_srcs(ew)?;
+        let exec_lat = ctx.rule_latency(ew.rule, point);
+        let mut lat = match ew.rule {
+            CostRule::Branch => exec_lat
+                .saturating_add(branch_mispredict_charge(
+                    table,
+                    point,
+                    branch_terms.bias_at(word_base + i),
+                ))
+                .saturating_add(branch_terms.frontend_at(word_base + i)),
+            r if r.is_load() || r.is_store() => {
+                let verdict = mem_access(ew, &mut mem);
+                match verdict.level {
+                    MemLevel::L1dHit | MemLevel::Unresolved => verdict.latency.max(exec_lat),
+                    _ => verdict.latency,
+                }
+            }
+            _ => exec_lat,
+        };
+        let cross = crosscore_extra(fn_key, ew, table, point, placement);
+        lat = lat.saturating_add(cross.extra_cycles);
+        lat = lat.saturating_add(alignment_penalty(ew, table, point)?);
+        cycles = cycles.saturating_add(lat.max(1));
+        if ew.rule == CostRule::Call {
+            mem.call_boundary();
+        } else if ew.rule == CostRule::Barrier {
+            mem.barrier();
+        }
+    }
+    Ok(cycles)
 }
 
 fn score_fn(

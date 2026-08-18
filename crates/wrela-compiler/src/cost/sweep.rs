@@ -42,6 +42,20 @@ impl SweepPoint {
         SweepPoint { values }
     }
 
+    /// The all-upper-endpoint point is reserved for physical validation.
+    /// It is deliberately separate from `pinned`: optimizer and admission
+    /// ranking continue to use the reviewed pinned point.
+    pub fn upper(table: &CostTable) -> SweepPoint {
+        let mut values = BTreeMap::new();
+        for dim in table.sweep_dimensions() {
+            let row = table.sweep(dim).unwrap_or_else(|| {
+                panic!("sweep dimension `{dim}` vanished between listing and read")
+            });
+            values.insert(dim.to_string(), row.hi);
+        }
+        SweepPoint { values }
+    }
+
     pub fn get(&self, dim: &str) -> u64 {
         READS.with(|c| {
             if let Some(set) = c.borrow_mut().as_mut() {
@@ -189,6 +203,16 @@ mod tests {
                 "pinned point disagrees with the table on `{d}`"
             );
         }
+    }
+
+    #[test]
+    fn upper_point_matches_every_committed_upper_endpoint() {
+        let table = load_default().expect("committed profile");
+        let p = SweepPoint::upper(&table);
+        for d in table.sweep_dimensions() {
+            assert_eq!(p.get(d), table.sweep(d).expect("row").hi, "`{d}`");
+        }
+        assert_eq!(p, SweepPoint::upper(&table), "upper point must be stable");
     }
 
     #[test]

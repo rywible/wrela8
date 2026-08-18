@@ -2029,3 +2029,16 @@ pub fn is_wake_intrinsic(key: &str) -> bool {
 pub fn is_interrupt_cell_type(ty: &Type) -> bool {
     matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
 }
+
+pub fn interrupt_cell_element_type(ty: &Type) -> Option<&Type> {
+    let Type::Named(name, args) = ty else {
+        return None;
+    };
+    if name != "InterruptCell" {
+        return None;
+    }
+    match args.first() {
+        Some(types::TypeArg::Type(inner)) => Some(inner),
+        _ => None,
+    }
+}

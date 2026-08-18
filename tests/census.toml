@@ -115,7 +115,7 @@ names = [
 ]
 
 [internal_error]
-total = 211
+total = 213
 
 [internal_error.sites_by_file]
 "layout.rs" = 58
@@ -134,10 +134,10 @@ total = 211
 # plans/M20.md item C: `cost::bridge` asserts score.rs's own contract that
 # `block_schedule_lengths` yields one length per `basic_block_ranges` entry —
 # a violation is a producer bug in the scorer, not a bridge outcome.
-"cost/bridge.rs" = 1
+"cost/bridge.rs" = 3
 
 [emitted_a64]
-encode_enc_site_total = 441
+encode_enc_site_total = 464
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -149,9 +149,10 @@ non_inventory = ["codegen.rs::load_imm", "layout.rs::expand_rodata_adr_sites", "
 wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
-"codegen.rs" = 380
+"codegen.rs" = 388
 "layout.rs" = 11
 "layout/harness.rs" = 30
+"layout/stage1.rs" = 15
 "linked.rs" = 2
 "relax.rs" = 18
 
@@ -212,7 +213,7 @@ category = "floor"
 note = "decision 852; SP + OFF_TEST_CONTINUATION arm + BL boot + brk"
 
 [placed_static]
-fixed_core_names = ["CLOCK", "CONSOLE_DATA", "CONSOLE_RING_AVAIL", "CONSOLE_RING_DESC", "CONSOLE_RING_DOORBELL", "DISPLAY_DOORBELL", "DISPLAY_MEMORY", "EXIT", "GROUPS", "LANE1", "LANE2", "MACHINE_INFO", "PARK", "PENDING", "RELEASE", "RINGS_CTL", "RINGS_DATA", "RT", "SCHED", "TEST_LINE_BUF", "WAKE"]
+fixed_core_names = ["CLOCK", "CONSOLE_DATA", "CONSOLE_RING_AVAIL", "CONSOLE_RING_DESC", "CONSOLE_RING_DOORBELL", "DISPLAY_DOORBELL", "DISPLAY_MEMORY", "EXIT", "GROUPS", "INPUT", "LANE1", "LANE2", "LANE2_SNAPSHOT", "MACHINE_INFO", "PARK", "PENDING", "RELEASE", "RINGS_CTL", "RINGS_DATA", "RT", "SCHED", "TEST_LINE_BUF", "WAKE"]
 
 [[guest_fn_key.zero_fn_dumps]]
 path = "err-boot-dma-region-handoff-group/expected/asm.txt"
@@ -389,6 +390,10 @@ keys = ["Store.fill", "Store.init", "guest_list", "struct:List[u64, 2].init", "s
 [[guest_fn_key.required]]
 path = "check-list-backend/expected/mwir.txt"
 keys = ["Store.fill", "Store.init", "struct:List[u64, 2].init", "struct:List[u64, 2].len", "struct:List[u64, 2].push"]
+
+[[guest_fn_key.required]]
+path = "check-mmio-access/expected/mwir.txt"
+keys = ["BlkDriver.ack_low", "BlkDriver.consume_level", "BlkDriver.last_handled", "BlkDriver.on_queue_irq"]
 
 [[guest_fn_key.required]]
 path = "check-map-take-backend/expected/asm.txt"

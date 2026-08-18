@@ -1,25 +1,44 @@
 use wrela_machine::layout::DRAM_BASE;
 
-pub const LANE2_BASE: u64 = 0x4000_8800;
+pub const LANE2_BASE: u64 = wrela_machine::lane2::BASE;
 
-pub const LANE2_POOL_COUNT: usize = 3072;
+pub const LANE2_POOL_COUNT: usize = wrela_machine::lane2::BLOCK_CAPACITY;
 
 pub type HitVec = Vec<(u32, u64)>;
 
 pub fn read_lane2_hits(host_ram: *const u8) -> HitVec {
-    let base_off = (LANE2_BASE - DRAM_BASE) as usize;
-    let enabled = unsafe { read_u64(host_ram, base_off) };
-    if enabled == 0 {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for i in 0..LANE2_POOL_COUNT {
-        let c = unsafe { read_u64(host_ram, base_off + 8 + i * 8) };
-        if c != 0 {
-            out.push((i as u32, c));
+    let per_core = read_lane2_hits_per_core(host_ram);
+    let mut totals = vec![0_u64; LANE2_POOL_COUNT];
+    for hits in per_core {
+        for (id, count) in hits {
+            totals[id as usize] = totals[id as usize].saturating_add(count);
         }
     }
-    out
+    totals
+        .into_iter()
+        .enumerate()
+        .filter_map(|(id, count)| (count != 0).then_some((id as u32, count)))
+        .collect()
+}
+
+pub fn read_lane2_hits_per_core(host_ram: *const u8) -> Vec<HitVec> {
+    let base_off = (LANE2_BASE - DRAM_BASE) as usize;
+    let mut cores = Vec::with_capacity(wrela_machine::lane2::CORE_CAPACITY);
+    for core in 0..wrela_machine::lane2::CORE_CAPACITY {
+        let mut out = Vec::new();
+        for i in 0..LANE2_POOL_COUNT {
+            let off = base_off
+                + wrela_machine::lane2::HITS_OFFSET as usize
+                + core * wrela_machine::lane2::CORE_STRIDE as usize
+                + i * 8;
+            let c = unsafe { read_u64(host_ram, off) };
+            if c != 0 {
+                out.push((i as u32, c));
+            }
+        }
+        cores.push(out);
+    }
+    cores
 }
 
 unsafe fn read_u64(host_ram: *const u8, off: usize) -> u64 {

@@ -21,7 +21,13 @@ Place Rust unit tests beside implementation code in `#[cfg(test)]` modules. Ever
 ## Rules for working here
 
 - No CI
-- No new dependencies
+- No new dependencies except the exact Linux/aarch64 host-ABI bindings
+  approved by `docs/designs/vmm-host-backends.md`: `kvm-ioctls = 0.25.0`
+  and `kvm-bindings = 0.14.1`, with default features disabled. They must stay
+  target-gated to `cfg(all(target_os = "linux", target_arch = "aarch64"))`;
+  no rust-vmm type may enter `wrela-machine`, a stable format, a device-model
+  API, or a Forge interface. Version, feature, license, source-integrity, and
+  locked-transitive-closure changes require a design amendment and review.
 - The pinned Lean/Mathlib project under `formal/pixels/` is an approved
   non-Cargo proof-tool dependency. It is outside the shipped image and the
   Cargo dependency graph.

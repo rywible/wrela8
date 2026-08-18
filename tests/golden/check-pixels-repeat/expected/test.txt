@@ -13,4 +13,4 @@ test repeat_events_resolve_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=d909f7144681e6ec62e6aec30f18142b8761a430aded2913fe4e1750c0552629 visible=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 raw=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 vsync=4 checkpoint=4
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=50873f018803b0aa0cdf93746ba5ba958e2c4b93ca2308e404b8f42891009bbe visible=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 raw=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 vsync=4 checkpoint=4

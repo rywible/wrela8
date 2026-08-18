@@ -24,6 +24,7 @@ thread_local! {
     static BLOCK_COUNT: Cell<bool> = const { Cell::new(false) };
     static NEXT_BLOCK_ID: Cell<u32> = const { Cell::new(0) };
     static BLOCK_BRIDGE: Cell<bool> = const { Cell::new(false) };
+    static BLOCK_FILTER: RefCell<Option<BTreeSet<String>>> = const { RefCell::new(None) };
     static LATE_ADDRESS_RELAX: Cell<bool> = const { Cell::new(false) };
     static BLOCK_SPANS: RefCell<Vec<BlockSpan>> = const { RefCell::new(Vec::new()) };
 }
@@ -31,6 +32,14 @@ thread_local! {
 pub fn set_block_count(enabled: bool) {
     BLOCK_COUNT.with(|c| c.set(enabled));
     NEXT_BLOCK_ID.with(|c| c.set(0));
+}
+
+/// Restrict diagnostic block IDs and counters to a closed function universe.
+/// `None` retains the ordinary whole-program diagnostic used by focused unit
+/// tests; validation generation passes the shipped-program function set so
+/// test harness code cannot consume IDs or perturb the measured workload.
+pub fn set_block_filter(keys: Option<BTreeSet<String>>) {
+    BLOCK_FILTER.with(|filter| *filter.borrow_mut() = keys);
 }
 
 fn block_count() -> bool {
@@ -110,9 +119,19 @@ const BLOCK_HIT_KEY: &str = "__wrela_block_hit";
 
 fn block_count_instruments(key: &str) -> bool {
     block_ids_active()
+        && BLOCK_FILTER.with(|filter| {
+            filter
+                .borrow()
+                .as_ref()
+                .is_none_or(|keys| keys.contains(key))
+        })
         && !matches!(
             key,
-            BLOCK_HIT_KEY | "__wrela_lane2_begin" | "__wrela_lane2_end"
+            BLOCK_HIT_KEY
+                | "__wrela_lane2_begin"
+                | "__wrela_lane2_end"
+                | "__wrela_lane2_dump"
+                | "__wrela_lane2_exit"
         )
 }
 
@@ -1163,7 +1182,13 @@ struct FnCtx<'a> {
     direct_fp: bool,
 }
 
-fn check_push_shape(rule: CostRule, dst: Option<Reg>, srcs: &[Reg], mem: Option<&MemRef>) {
+fn check_push_shape(
+    word: u32,
+    rule: CostRule,
+    dst: Option<Reg>,
+    srcs: &[Reg],
+    mem: Option<&MemRef>,
+) {
     // The operand banks are part of the class contract: a `v` register that
     // arrives labelled as a general register aliases an unrelated `x` value
     // in the scheduler and in the allocator's touch sets.
@@ -1188,10 +1213,19 @@ fn check_push_shape(rule: CostRule, dst: Option<Reg>, srcs: &[Reg], mem: Option<
         }
     }
     if rule.is_store() {
-        assert_eq!(
-            dst, None,
-            "{rule:?} produces no register; its data register belongs in srcs"
-        );
+        let store_exclusive = word & 0x3fe0_fc00 == 0x0800_fc00;
+        if store_exclusive {
+            assert_eq!(
+                dst,
+                Some(Reg::gpr(((word >> 16) & 0x1f) as u8)),
+                "STLXR must declare its architectural status-register destination"
+            );
+        } else {
+            assert_eq!(
+                dst, None,
+                "{rule:?} produces no register; its data register belongs in srcs"
+            );
+        }
         if let Some(m) = mem {
             if let Some(base) = memref_nonunique_base(m) {
                 assert!(
@@ -1337,7 +1371,7 @@ impl<'a> FnCtx<'a> {
         srcs: &[Reg],
         flags: FlagEffect,
     ) {
-        check_push_shape(rule, dst, srcs, None);
+        check_push_shape(word, rule, dst, srcs, None);
         self.check_home_write(dst, &text);
         let mut ew = EmittedWord::banked(word, text, rule, dst, srcs);
         ew.flags = flags;
@@ -1404,7 +1438,7 @@ impl<'a> FnCtx<'a> {
             }
             m => m,
         };
-        check_push_shape(rule, dst, srcs, mem.as_ref());
+        check_push_shape(word, rule, dst, srcs, mem.as_ref());
         self.check_home_write(dst, &text);
         let mut ew = EmittedWord::banked(word, text, rule, dst, srcs);
         ew.mem = mem;
@@ -2283,8 +2317,56 @@ impl<'a> FnCtx<'a> {
     }
 
     fn emit_block_hit(&mut self, id: u32) {
-        self.load_imm_naive(0, id as i64);
-        self.bl_symbolic_call("__wrela_block_hit", &[0]);
+        // Keep diagnostic instrumentation out of call analysis and frame
+        // planning. Save x0 and the intra-procedure-call scratch x17 as one
+        // pair. Reserved platform register x18 carries the VMM-installed
+        // per-core census offset, avoiding both races and a system-register
+        // read at every block. The dump function itself is excluded from
+        // instrumentation, so setting `LANE2.enabled = 2` freezes the census
+        // before it reads the counters. None of these words writes NZCV, so
+        // the probe preserves source state, SP, call depth, and tail edges.
+        let address =
+            wrela_machine::lane2::BASE + wrela_machine::lane2::HITS_OFFSET + u64::from(id) * 8;
+        self.push_mem(
+            encode::enc_stp_x_pre(0, 17, 31, -16),
+            "stp x0, x17, [sp, #-16]!  ; block-hit preserve".to_string(),
+            CostRule::Store,
+            None,
+            &[0, 17, 31],
+            Some(MemRef::stack(0)),
+        );
+        self.load_imm(17, address as i64);
+        self.push_mem(
+            encode::enc_ldr_x_reg(0, 17, 18),
+            "ldr x0, [x17, x18]  ; block-hit per-core count".to_string(),
+            CostRule::Load,
+            Some(0),
+            &[17, 18],
+            Some(MemRef::static_ref(address, 0, 17)),
+        );
+        self.push(
+            encode::enc_add_imm(0, 0, 1, true),
+            "add x0, x0, #1  ; block-hit increment".to_string(),
+            CostRule::Alu,
+            Some(0),
+            &[0],
+        );
+        self.push_mem(
+            encode::enc_str_x_reg(0, 17, 18),
+            "str x0, [x17, x18]  ; block-hit per-core count".to_string(),
+            CostRule::Store,
+            None,
+            &[0, 17, 18],
+            Some(MemRef::static_ref(address, 0, 17)),
+        );
+        self.push_mem(
+            encode::enc_ldp_x_post(0, 17, 31, 16),
+            "ldp x0, x17, [sp], #16  ; block-hit restore".to_string(),
+            CostRule::Load,
+            Some(0),
+            &[31],
+            Some(MemRef::stack(0)),
+        );
     }
 
     fn abort_fixed(&mut self, message: &str) {
@@ -2338,9 +2420,9 @@ impl<'a> FnCtx<'a> {
         let addr = wrela_machine::pending::core_word_addr(0);
         self.load_imm(X_A, addr as i64);
         self.push_mem(
-            encode::enc_ldr_x_imm(X_B, X_A, 0),
-            format!("ldr {}, [{}]", reg_name(X_B), reg_name(X_A)),
-            CostRule::Load,
+            encode::enc_ldar_x(X_B, X_A),
+            format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
+            CostRule::LoadAcquire,
             Some(X_B),
             &[X_A],
             Some(MemRef::for_base_imm(X_A, 0)),
@@ -3772,7 +3854,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => {
             let value_off = ctx.frame.off(*value);
             let dst_off = ctx.frame.off(*dst);
-            emit_interrupt_cell_rmw(ctx, *field_off, *width, value_off, InterruptCellRmw::Swap)?;
+            emit_interrupt_cell_rmw(
+                ctx,
+                Some(*field_off),
+                *width,
+                value_off,
+                InterruptCellRmw::Swap,
+            )?;
             ctx.store_slot(X_C, dst_off);
         }
         Inst::InterruptCellFetchOrRelease {
@@ -3785,12 +3873,148 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let dst_off = ctx.frame.off(*dst);
             emit_interrupt_cell_rmw(
                 ctx,
-                *field_off,
+                Some(*field_off),
                 *width,
                 value_off,
                 InterruptCellRmw::FetchOr,
             )?;
             ctx.store_slot(X_C, dst_off);
+        }
+        Inst::PlacedInterruptCellLoadAcquire {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+        } => {
+            emit_placed_index_addr(
+                ctx,
+                ctx.frame.off(*base),
+                *field_offset,
+                ctx.frame.off(*index),
+                *len,
+                *elem_stride,
+                X_A,
+                true,
+            );
+            let word = match *width {
+                4 => encode::enc_ldar_w(X_B, X_A),
+                8 => encode::enc_ldar_x(X_B, X_A),
+                other => {
+                    return Err(CodegenError::internal(format!(
+                        "placed InterruptCell load width {other}"
+                    )));
+                }
+            };
+            ctx.push_mem(
+                word,
+                format!(
+                    "ldar {}, [{}]",
+                    if *width == 8 {
+                        reg_name(X_B)
+                    } else {
+                        format!("w{X_B}")
+                    },
+                    reg_name(X_A)
+                ),
+                CostRule::LoadAcquire,
+                Some(X_B),
+                &[X_A],
+                None,
+            );
+            ctx.store_slot(X_B, ctx.frame.off(*dst));
+        }
+        Inst::PlacedInterruptCellStoreRelease {
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        } => {
+            emit_placed_index_addr(
+                ctx,
+                ctx.frame.off(*base),
+                *field_offset,
+                ctx.frame.off(*index),
+                *len,
+                *elem_stride,
+                X_A,
+                true,
+            );
+            ctx.load_slot(X_B, ctx.frame.off(*value));
+            let word = match *width {
+                4 => encode::enc_stlr_w(X_B, X_A),
+                8 => encode::enc_stlr_x(X_B, X_A),
+                other => {
+                    return Err(CodegenError::internal(format!(
+                        "placed InterruptCell store width {other}"
+                    )));
+                }
+            };
+            ctx.push_mem(
+                word,
+                format!(
+                    "stlr {}, [{}]",
+                    if *width == 8 {
+                        reg_name(X_B)
+                    } else {
+                        format!("w{X_B}")
+                    },
+                    reg_name(X_A)
+                ),
+                CostRule::StoreRelease,
+                None,
+                &[X_A, X_B],
+                None,
+            );
+        }
+        Inst::PlacedInterruptCellSwapAcquire {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        }
+        | Inst::PlacedInterruptCellFetchOrRelease {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        } => {
+            let fetch_or = matches!(inst, Inst::PlacedInterruptCellFetchOrRelease { .. });
+            emit_placed_index_addr(
+                ctx,
+                ctx.frame.off(*base),
+                *field_offset,
+                ctx.frame.off(*index),
+                *len,
+                *elem_stride,
+                X_A,
+                true,
+            );
+            emit_interrupt_cell_rmw(
+                ctx,
+                None,
+                *width,
+                ctx.frame.off(*value),
+                if fetch_or {
+                    InterruptCellRmw::FetchOr
+                } else {
+                    InterruptCellRmw::Swap
+                },
+            )?;
+            ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::Dmb { option } => {
             if omit_dmb() {
@@ -4468,7 +4692,12 @@ fn emit_index_addr(
     out_reg: u8,
     checked: bool,
 ) {
-    let x_a = ctx.use_slot(X_A, index_off);
+    // Keep the index in a dedicated scratch. In particular the placed
+    // InterruptCell path requests X_A as its output address; reusing X_A for
+    // the index and then loading the base into X_A multiplied the base by the
+    // element stride and produced an out-of-DRAM address under stage 1.
+    let x_a = X_F;
+    ctx.load_slot(x_a, index_off);
     if checked {
         ctx.load_imm(X_B, len as i64);
         ctx.cmp_reg(x_a, X_B);
@@ -4514,7 +4743,10 @@ fn emit_placed_index_addr(
     out_reg: u8,
     checked: bool,
 ) {
-    let x_a = ctx.use_slot(X_A, index_off);
+    // `out_reg` is X_A for interrupt cells. Keep the index in a distinct
+    // scratch register so loading the placed base cannot clobber it.
+    let x_a = X_F;
+    ctx.load_slot(x_a, index_off);
     if checked {
         ctx.load_imm(X_B, len as i64);
         ctx.cmp_reg(x_a, X_B);
@@ -5342,35 +5574,28 @@ fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), Cod
 
 fn emit_interrupt_cell_rmw(
     ctx: &mut FnCtx,
-    field_off: usize,
+    field_off: Option<usize>,
     width: u8,
     value_off: usize,
     kind: InterruptCellRmw,
 ) -> Result<(), CodegenError> {
-    emit_interrupt_cell_addr(ctx, field_off)?;
+    if let Some(field_off) = field_off {
+        emit_interrupt_cell_addr(ctx, field_off)?;
+    }
     ctx.load_slot(X_B, value_off);
-    let mem = Some(interrupt_cell_memref(field_off));
+    let loop_start = ctx.cur_word();
     match width {
         4 => {
             ctx.push_mem(
-                encode::enc_ldar_w(X_C, X_A),
-                format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
+                encode::enc_ldaxr_w(X_C, X_A),
+                format!("ldaxr w{}, [{}]", X_C, reg_name(X_A)),
                 CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
-                mem,
+                None,
             );
-            match kind {
-                InterruptCellRmw::Swap => {
-                    ctx.push_mem(
-                        encode::enc_stlr_w(X_B, X_A),
-                        format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
-                        CostRule::StoreRelease,
-                        None,
-                        &[X_A, X_B],
-                        mem,
-                    );
-                }
+            let new = match kind {
+                InterruptCellRmw::Swap => X_B,
                 InterruptCellRmw::FetchOr => {
                     ctx.push(
                         encode::enc_orr_reg(X_D, X_C, X_B, false),
@@ -5379,49 +5604,42 @@ fn emit_interrupt_cell_rmw(
                         Some(X_D),
                         &[X_C, X_B],
                     );
-                    ctx.push_mem(
-                        encode::enc_stlr_w(X_D, X_A),
-                        format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
-                        CostRule::StoreRelease,
-                        None,
-                        &[X_A, X_D],
-                        mem,
-                    );
+                    X_D
                 }
-            }
+            };
+            ctx.push_mem(
+                encode::enc_stlxr_w(X_E, new, X_A),
+                format!("stlxr w{}, w{}, [{}]", X_E, new, reg_name(X_A)),
+                CostRule::StoreRelease,
+                Some(X_E),
+                &[X_A, new],
+                None,
+            );
         }
         8 => {
             ctx.push_mem(
-                encode::enc_ldar_x(X_C, X_A),
-                format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
+                encode::enc_ldaxr_x(X_C, X_A),
+                format!("ldaxr {}, [{}]", reg_name(X_C), reg_name(X_A)),
                 CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
-                mem,
+                None,
             );
-            match kind {
-                InterruptCellRmw::Swap => {
-                    ctx.push_mem(
-                        encode::enc_stlr_x(X_B, X_A),
-                        format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
-                        CostRule::StoreRelease,
-                        None,
-                        &[X_A, X_B],
-                        mem,
-                    );
-                }
+            let new = match kind {
+                InterruptCellRmw::Swap => X_B,
                 InterruptCellRmw::FetchOr => {
                     ctx.orr_reg(X_D, X_C, X_B);
-                    ctx.push_mem(
-                        encode::enc_stlr_x(X_D, X_A),
-                        format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
-                        CostRule::StoreRelease,
-                        None,
-                        &[X_A, X_D],
-                        mem,
-                    );
+                    X_D
                 }
-            }
+            };
+            ctx.push_mem(
+                encode::enc_stlxr_x(X_E, new, X_A),
+                format!("stlxr w{}, {}, [{}]", X_E, reg_name(new), reg_name(X_A)),
+                CostRule::StoreRelease,
+                Some(X_E),
+                &[X_A, new],
+                None,
+            );
         }
         w => {
             return Err(CodegenError::internal(format!(
@@ -5429,6 +5647,15 @@ fn emit_interrupt_cell_rmw(
             )));
         }
     }
+    let here = ctx.cur_word();
+    let back = (loop_start as i64 - here as i64) as i32 * 4;
+    ctx.push(
+        encode::enc_cbnz(X_E, back, false),
+        format!("cbnz w{}, #{back}", X_E),
+        CostRule::Branch,
+        None,
+        &[X_E],
+    );
     Ok(())
 }
 
@@ -5898,7 +6125,9 @@ fn prepare_fn(
         .collect();
     let has_returning_call = facts.opaque_calls
         || facts.points.iter().enumerate().any(|(p, pf)| {
-            !pf.call_words.is_empty()
+            pf.call_words
+                .iter()
+                .any(|call| call.callee.as_deref() != Some(BLOCK_HIT_KEY))
                 && match p.checked_sub(1) {
                     Some(i) if i < plan.at.len() => plan.at[i].is_none(),
                     _ => true,
@@ -11934,7 +12163,7 @@ pub fn r(a: u64, b: u64) -> u64:
         let off = codegen_program(&mwir, &layout).expect("off");
         let off_dump = dump(&off);
         assert!(
-            !off_dump.contains("bl <__wrela_block_hit>"),
+            !off_dump.contains("block-hit increment"),
             "default must not instrument:\n{off_dump}"
         );
 
@@ -11948,8 +12177,8 @@ pub fn r(a: u64, b: u64) -> u64:
             dump(&on_b),
             "block-count emission must be deterministic across two runs"
         );
-        let hits = on_dump.matches("bl <__wrela_block_hit>").count();
-        assert_eq!(hits, 4, "expected one hit call per leader:\n{on_dump}");
+        let hits = on_dump.matches("block-hit increment").count();
+        assert_eq!(hits, 4, "expected one hit increment per leader:\n{on_dump}");
         assert!(
             on_a.fns["branchy"].code.len() > off.fns["branchy"].code.len(),
             "instrumented body must grow"
@@ -12017,7 +12246,7 @@ pub fn r(a: u64, b: u64) -> u64:
             let hits = on.fns[k]
                 .code
                 .iter()
-                .filter(|w| w.text == "bl <__wrela_block_hit>")
+                .filter(|w| w.text == "add x0, x0, #1  ; block-hit increment")
                 .count();
             assert_eq!(
                 hits,
@@ -12029,13 +12258,22 @@ pub fn r(a: u64, b: u64) -> u64:
         let self_hits = on.fns["__wrela_block_hit"]
             .code
             .iter()
-            .filter(|w| w.text == "bl <__wrela_block_hit>")
+            .filter(|w| w.text == "add x0, x0, #1  ; block-hit increment")
             .count();
         assert_eq!(
             self_hits, 0,
             "the counter helper must never be instrumented — that is unbounded self-recursion"
         );
         assert_eq!(ids, 9, "one id per instrumented leader, helper excluded");
+    }
+
+    #[test]
+    fn block_count_excludes_the_lane2_snapshot_routines() {
+        set_block_filter(None);
+        set_block_count(true);
+        assert!(!block_count_instruments("__wrela_lane2_dump"));
+        assert!(!block_count_instruments("__wrela_lane2_exit"));
+        set_block_count(false);
     }
 
     #[test]
@@ -12055,13 +12293,13 @@ pub fn r(a: u64, b: u64) -> u64:
             .map(|f| {
                 f.code
                     .iter()
-                    .filter(|w| w.text == "bl <__wrela_block_hit>")
+                    .filter(|w| w.text == "add x0, x0, #1  ; block-hit increment")
                     .count()
             })
             .sum();
         assert_eq!(
             hits, ids as usize,
-            "every allocated id must emit exactly one hit call"
+            "every allocated id must emit exactly one hit increment"
         );
         assert_eq!(
             ids, 184,
@@ -12496,7 +12734,14 @@ async fn parent() -> u64:
     /// `check_push_shape` over general-register operands, for the shape
     /// tests that predate banked operands.
     fn check_push_shape_gpr(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
-        check_push_shape(rule, dst.map(Reg::gpr), &cost::gpr_operands(srcs), mem);
+        // The shape-only tests model 64-bit encodings, whose sf bit is set.
+        check_push_shape(
+            1 << 31,
+            rule,
+            dst.map(Reg::gpr),
+            &cost::gpr_operands(srcs),
+            mem,
+        );
     }
 
     #[test]
@@ -13669,6 +13914,29 @@ pub fn use_it(x: u64) -> u64:
             "the tail call must not cost words: {} -> {}",
             before.fns["use_it"].code.len(),
             after.fns["use_it"].code.len()
+        );
+    }
+
+    #[test]
+    fn inline_block_instrumentation_preserves_the_tail_edge_and_has_no_call() {
+        set_block_count(true);
+        let instrumented = emit(TAIL, &release_without_item_j());
+        set_block_count(false);
+
+        let words = mnems(&instrumented, "use_it");
+        assert!(
+            words
+                .iter()
+                .any(|word| word.contains("block-hit increment")),
+            "fixture must exercise block instrumentation: {words:?}"
+        );
+        assert!(
+            words.iter().all(|word| *word != "bl <__wrela_block_hit>"),
+            "inline instrumentation must not change call facts: {words:?}"
+        );
+        assert!(
+            words.iter().any(|word| word.starts_with("b <add_one>")),
+            "the diagnostic call must not disable the tail branch: {words:?}"
         );
     }
 

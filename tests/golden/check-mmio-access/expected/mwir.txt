@@ -1,0 +1,77 @@
+Program
+  Fn key=BlkDriver.ack_low ret=unit temps=4 receiver=t0:read params=[t1]
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=u16
+    Temp t2 ty=Mmio[VirtioLowAckMmio]
+    Temp t3 ty=unit
+    Body
+      0000: Project dst=t2 base=t0 index=1
+      0001: MmioWrite base=t2 offset=0x100 ty=u16 value=t1
+      0002: ConstUnit dst=t3
+      0003: Return
+  Fn key=BlkDriver.consume_level ret=u32 temps=12 receiver=t0:mut
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=Mmio[VirtioIrqMmio]
+    Temp t2 ty=usize
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=Mmio[VirtioIrqMmio]
+    Temp t6 ty=usize
+    Temp t7 ty=u32
+    Temp t8 ty=u32
+    Temp t9 ty=Mmio[VirtioIrqMmio]
+    Temp t10 ty=usize
+    Temp t11 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: ConstInt dst=t2 ty=usize value=0
+      0002: PlacedInterruptCellLoadAcquire dst=t3 base=t1 field_offset=0x68 index=t2 len=1 elem_stride=4 width=4
+      0003: Copy dst=t4 src=t3
+      0004: Project dst=t5 base=t0 index=0
+      0005: ConstInt dst=t6 ty=usize value=0
+      0006: ConstInt dst=t7 ty=u32 value=2
+      0007: PlacedInterruptCellFetchOrRelease dst=t8 base=t5 field_offset=0x68 index=t6 len=1 elem_stride=4 width=4 value=t7
+      0008: Project dst=t9 base=t0 index=0
+      0009: ConstInt dst=t10 ty=usize value=0
+      0010: PlacedInterruptCellSwapAcquire dst=t11 base=t9 field_offset=0x68 index=t10 len=1 elem_stride=4 width=4 value=t4
+      0011: Return value=t11
+      0012: Return
+  Fn key=BlkDriver.last_handled ret=u32 temps=2 receiver=t0:read
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=u32
+    Body
+      0000: Project dst=t1 base=t0 index=2
+      0001: Return value=t1
+      0002: Return
+  Fn key=BlkDriver.on_queue_irq ret=unit temps=13 receiver=t0:mut
+    Temp t0 ty=BlkDriver
+    Temp t1 ty=Mmio[VirtioIrqMmio]
+    Temp t2 ty=u32
+    Temp t3 ty=u32
+    Temp t4 ty=u32
+    Temp t5 ty=u32
+    Temp t6 ty=u32
+    Temp t7 ty=u32
+    Temp t8 ty=u32
+    Temp t9 ty=u32
+    Temp t10 ty=bool
+    Temp t11 ty=Mmio[VirtioIrqMmio]
+    Temp t12 ty=unit
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: MmioRead dst=t2 base=t1 offset=0x60 ty=u32
+      0002: Copy dst=t3 src=t2
+      0003: ConstInt dst=t4 ty=u32 value=1
+      0004: ConstInt dst=t5 ty=u32 value=2
+      0005: Bitwise op=| ty=u32 dst=t6 lhs=t4 rhs=t5
+      0006: Bitwise op=& ty=u32 dst=t7 lhs=t3 rhs=t6
+      0007: Copy dst=t8 src=t7
+      0008: ConstInt dst=t9 ty=u32 value=0
+      0009: Compare op=!= ty=u32 dst=t10 lhs=t8 rhs=t9
+      0010: JumpIfFalse cond=t10 target=0016
+      0011: SetField base=t0 index=2 value=t8
+      0012: Project dst=t11 base=t0 index=0
+      0013: MmioWrite base=t11 offset=0x64 ty=u32 value=t8
+      0014: ConstUnit dst=t12
+      0015: Jump target=0016
+      0016: Return

@@ -98,6 +98,7 @@ pub enum ChoiceEntry {
     EntropyRead {
         bytes: Vec<u8>,
     },
+    InputEvent(wrela_machine::input::InputEventV1),
     FramePresent {
         sequence: u64,
         digest: String,
@@ -115,6 +116,7 @@ impl ChoiceEntry {
             ChoiceEntry::DeviceCompletion { .. } => "DeviceCompletion",
             ChoiceEntry::Progress { .. } => "Progress",
             ChoiceEntry::EntropyRead { .. } => "EntropyRead",
+            ChoiceEntry::InputEvent(_) => "InputEvent",
             ChoiceEntry::FramePresent { .. } => "FramePresent",
             ChoiceEntry::FrameOutputV1(_) => "FrameOutputV1",
         }
@@ -148,6 +150,13 @@ impl ChoiceEntry {
                     bytes_to_lowercase_hex(bytes)
                 )
             }
+            ChoiceEntry::InputEvent(event) => format!(
+                "InputEvent sequence={} player={} control={} value={}",
+                event.sequence,
+                event.player,
+                wrela_machine::input::control_name(event.control),
+                event.value
+            ),
             ChoiceEntry::FramePresent { sequence, digest } => {
                 format!("FramePresent sequence={sequence} digest={digest}")
             }
@@ -250,6 +259,24 @@ impl ChoiceEntry {
                 let bytes =
                     lowercase_hex_to_bytes(hex).map_err(|e| format!("bad EntropyRead hex: {e}"))?;
                 Ok(ChoiceEntry::EntropyRead { bytes })
+            }
+            "InputEvent" => {
+                let event = wrela_machine::input::InputEventV1 {
+                    sequence: field("sequence")?
+                        .parse()
+                        .map_err(|e| format!("bad InputEvent sequence: {e}"))?,
+                    player: field("player")?
+                        .parse()
+                        .map_err(|e| format!("bad InputEvent player: {e}"))?,
+                    control: wrela_machine::input::parse_control(field("control")?)
+                        .ok_or_else(|| "bad InputEvent control".to_string())?,
+                    value: field("value")?
+                        .parse()
+                        .map_err(|e| format!("bad InputEvent value: {e}"))?,
+                };
+                wrela_machine::input::validate_event(event)
+                    .map_err(|error| format!("bad InputEvent: {error}"))?;
+                Ok(ChoiceEntry::InputEvent(event))
             }
             "FramePresent" => {
                 let sequence = field("sequence")?
@@ -380,6 +407,7 @@ pub enum ChoiceRequest {
     EntropyRead {
         len: u64,
     },
+    InputEvent,
     FramePresent {
         sequence: u64,
         digest: String,
@@ -397,6 +425,7 @@ impl ChoiceRequest {
             ChoiceRequest::Admission { .. } => "Admission",
             ChoiceRequest::Progress { .. } => "Progress",
             ChoiceRequest::EntropyRead { .. } => "EntropyRead",
+            ChoiceRequest::InputEvent => "InputEvent",
             ChoiceRequest::FramePresent { .. } => "FramePresent",
             ChoiceRequest::FrameOutputV1(_) => "FrameOutputV1",
         }
@@ -437,6 +466,14 @@ impl ChoiceRequest {
                 ChoiceEntry::EntropyRead {
                     bytes: vec![0; *len as usize],
                 }
+            }
+            ChoiceRequest::InputEvent => {
+                ChoiceEntry::InputEvent(wrela_machine::input::InputEventV1 {
+                    sequence: 0,
+                    player: 0,
+                    control: wrela_machine::input::Control::Start,
+                    value: 0,
+                })
             }
             ChoiceRequest::FramePresent { sequence, digest } => ChoiceEntry::FramePresent {
                 sequence: *sequence,
@@ -617,6 +654,7 @@ pub struct Chooser {
     log: Vec<ChoiceEntry>,
     divergences: Vec<Divergence>,
     strict: bool,
+    input_sequence: u64,
 }
 
 impl Chooser {
@@ -626,6 +664,7 @@ impl Chooser {
             log: Vec::new(),
             divergences: Vec::new(),
             strict: false,
+            input_sequence: 0,
         }
     }
 
@@ -647,6 +686,7 @@ impl Chooser {
             log: Vec::new(),
             divergences: Vec::new(),
             strict: false,
+            input_sequence: 0,
         }
     }
 
@@ -656,6 +696,45 @@ impl Chooser {
 
     pub fn is_replaying(&self) -> bool {
         matches!(self.mode, ChooserMode::Replay { .. })
+    }
+
+    pub fn replay_input_pending(&self) -> bool {
+        match &self.mode {
+            ChooserMode::Record => false,
+            ChooserMode::Replay { log, idx, .. } => log
+                .get(*idx)
+                .is_some_and(|entry| matches!(entry, ChoiceEntry::InputEvent(_))),
+        }
+    }
+
+    pub fn choose_input(
+        &mut self,
+        live: Option<wrela_machine::input::InputEventV1>,
+    ) -> Result<Option<wrela_machine::input::InputEventV1>, crate::VmmError> {
+        if self.is_recording() && live.is_none() {
+            return Ok(None);
+        }
+        if self.is_replaying() && !self.replay_input_pending() {
+            return Ok(None);
+        }
+        let fallback = live
+            .map(ChoiceEntry::InputEvent)
+            .unwrap_or_else(|| ChoiceRequest::InputEvent.fallback());
+        let chosen = self.choose_checked(ChoiceRequest::InputEvent, || fallback)?;
+        let ChoiceEntry::InputEvent(event) = chosen else {
+            unreachable!("InputEvent request always returns its own shape")
+        };
+        if event.sequence != self.input_sequence {
+            return Err(crate::VmmError::GuestFault(format!(
+                "input replay sequence mismatch: expected {}, got {}",
+                self.input_sequence, event.sequence
+            )));
+        }
+        self.input_sequence = self
+            .input_sequence
+            .checked_add(1)
+            .ok_or_else(|| crate::VmmError::GuestFault("input sequence overflow".into()))?;
+        Ok(Some(event))
     }
 
     pub fn strict(mut self) -> Chooser {
@@ -1021,6 +1100,16 @@ pub fn replay(
     img_path: &Path,
     recorded: &RecordFile,
 ) -> Result<Vec<Divergence>, VmmError> {
+    replay_with_outcome(report_path, img_path, recorded).map(|(_, divergences)| divergences)
+}
+
+/// Replay a recording and retain the resulting boot outcome for process-level
+/// consumers that must reproduce the guest's observable transcript.
+pub fn replay_with_outcome(
+    report_path: &Path,
+    img_path: &Path,
+    recorded: &RecordFile,
+) -> Result<(crate::BootOutcome, Vec<Divergence>), VmmError> {
     let (outcome, mut divergences) =
         boot_image_core(report_path, img_path, Some(recorded.choices.clone()))?;
     let actual_digest = digest_hex(&outcome.transcript);
@@ -1062,7 +1151,7 @@ pub fn replay(
                 .to_string(),
         });
     }
-    Ok(divergences)
+    Ok((outcome, divergences))
 }
 
 #[cfg(test)]
@@ -1147,6 +1236,12 @@ mod tests {
                 ChoiceEntry::EntropyRead {
                     bytes: vec![0xde, 0xad, 0xbe, 0xef],
                 },
+                ChoiceEntry::InputEvent(wrela_machine::input::InputEventV1 {
+                    sequence: 0,
+                    player: 2,
+                    control: wrela_machine::input::Control::Primary,
+                    value: 1,
+                }),
                 ChoiceEntry::FramePresent {
                     sequence: 0,
                     digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1158,7 +1253,7 @@ mod tests {
             exits: 3,
         };
         let expected = "ChoiceLog v1\n\
-             choice_count=8\n\
+             choice_count=9\n\
              choice[0]=ClockRead value=12345\n\
              choice[1]=DeadlineWake deadline_ns=500000\n\
              choice[2]=VectorRaise vector=0\n\
@@ -1166,7 +1261,8 @@ mod tests {
              choice[4]=Progress core=1\n\
              choice[5]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
              choice[6]=EntropyRead len=4 hex=deadbeef\n\
-             choice[7]=FramePresent sequence=0 digest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
+             choice[7]=InputEvent sequence=0 player=2 control=primary value=1\n\
+             choice[8]=FramePresent sequence=0 digest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              transcript_digest=0123456789abcdef\n\
              exit_code=0\n\
              exits=3\n";
@@ -1231,7 +1327,7 @@ mod tests {
     #[test]
     fn frame_present_choice_parses_and_round_trips() {
         let entry = ChoiceEntry::FramePresent {
-            sequence: 7,
+            sequence: 0,
             digest: wrela_machine::sha256::sha256_hex(b"frame"),
         };
         assert_eq!(entry.tag(), "FramePresent");
@@ -1239,6 +1335,40 @@ mod tests {
             ChoiceEntry::parse_fields(&entry.to_text_fields()).expect("parses"),
             entry
         );
+    }
+
+    #[test]
+    fn input_choice_round_trips_and_replay_suppresses_live_input() {
+        let event = wrela_machine::input::InputEventV1 {
+            sequence: 0,
+            player: 1,
+            control: wrela_machine::input::Control::Start,
+            value: 0,
+        };
+        let entry = ChoiceEntry::InputEvent(event);
+        assert_eq!(
+            ChoiceEntry::parse_fields(&entry.to_text_fields()).expect("parses"),
+            entry
+        );
+        assert!(
+            ChoiceEntry::parse_fields("InputEvent sequence=0 player=4 control=start value=1")
+                .is_err()
+        );
+        assert!(
+            ChoiceEntry::parse_fields("InputEvent sequence=0 player=0 control=start value=-1")
+                .is_err()
+        );
+
+        let live = wrela_machine::input::InputEventV1 {
+            sequence: 99,
+            player: 3,
+            control: wrela_machine::input::Control::Down,
+            value: 1,
+        };
+        let mut replay = Chooser::replayer(vec![entry]);
+        assert!(replay.replay_input_pending());
+        assert_eq!(replay.choose_input(Some(live)).unwrap(), Some(event));
+        assert!(!replay.replay_input_pending());
     }
 
     #[test]

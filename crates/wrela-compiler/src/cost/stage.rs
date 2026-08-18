@@ -728,10 +728,10 @@ mod tests {
             "the final linked executable is below L1I under actual addresses"
         );
         assert_eq!(i_charge, 0, "no synthetic padding charge remains");
-        // 13533 -> 13389: counted-loop aggregate copies replaced the unrolled
-        // load/store pair per word, so the shipped image is smaller. Re-locked
-        // against the new measurement.
-        assert_eq!(linked.executable_words(), 13389);
+        // Stage-1 vector handling and atomic pending-word consumption are part
+        // of the shipped executable footprint, even though fixed table bytes
+        // remain outside this instruction count.
+        assert_eq!(linked.executable_words(), 13628);
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
         let report = report_cost_stage_path(&case("boot-actors")).expect("linked report");
         assert_eq!(
             report.workload_coverage["boot-actors"],
-            (1512, 1512),
+            (18278, 18278),
             "production reports must use exact source-aware linked origins, never fallback charge"
         );
         assert!(report.workload_totals["boot-actors"] > 0);

@@ -1055,8 +1055,14 @@ Module path=runtime
   Static PARK: ParkMmio placed=0x8002000
   Static EXIT: ParkMmio placed=0x8001000
   Static RELEASE: ParkMmio placed=0x8003000
+  Struct InputMmio data
+    field status: u64
+    field event: u64
+  Static INPUT: InputMmio placed=0x8011000
+  Fn input_pending() -> bool
+  Fn input_next_packed() -> u64
   Struct PendingPage data
-    field words: [u64; CORE_SLOTS]
+    field words: [InterruptCell[u64]; CORE_SLOTS]
     field idle: [u64; CORE_SLOTS]
   Static PENDING: PendingPage placed=0x4003c000
   Struct ConsoleRingDescPage data
@@ -1096,11 +1102,15 @@ Module path=runtime
   Struct Lane2Counters data
     field enabled: u64
     field hits: [u64; BLOCK_POOL_COUNT]
-  Static LANE2: Lane2Counters placed=0x40008800
+  Static LANE2: Lane2Counters placed=0x40400000
+  Struct Lane2Snapshot data
+    field hits: [u64; BLOCK_POOL_COUNT]
+  Static LANE2_SNAPSHOT: Lane2Snapshot placed=0x40480000
   Fn __wrela_block_hit(id: read usize) -> unit
   Fn __wrela_lane2_begin() -> unit
   Fn __wrela_lane2_end() -> unit
   Fn __wrela_lane2_dump() -> unit
+  Fn __wrela_lane2_exit(code: read u64) -> unit
   Fn ascii_digit(d: read u64) -> u8
   Fn __wrela_fmt_dec(value: read u64, is_signed: read u64) -> u64
   Fn copy_line_buf_range(bump: read usize, n: read usize) -> unit

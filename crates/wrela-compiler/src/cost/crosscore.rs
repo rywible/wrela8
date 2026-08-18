@@ -678,6 +678,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            workload_validation_bounds: BTreeMap::new(),
         };
         let counts = ordering_word_counts(&report);
         assert_eq!(counts[&("a".to_string(), "barrier")], 2);

@@ -202,6 +202,13 @@ pub(crate) fn append_workload_rows(
                 &format!("coverage={matched}/{total} grain={grain}"),
             );
         }
+        if let Some(bound) = report.workload_validation_bounds.get(name) {
+            push_line(
+                out,
+                depth + 1,
+                &format!("validation_bound_cycles={bound} basis=published-upper-serial-v1"),
+            );
+        }
     }
 }
 
@@ -312,6 +319,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            workload_validation_bounds: BTreeMap::new(),
             footprint: Vec::new(),
         }
     }

@@ -187,6 +187,26 @@ pub(crate) fn inst_facts(inst: &Inst) -> InstFacts {
         | InterruptCellFetchOrRelease { dst, value, .. } => {
             InstFacts::new([*value], [*dst], [], Observable)
         }
+        PlacedInterruptCellLoadAcquire {
+            dst, base, index, ..
+        } => InstFacts::new([*base, *index], [*dst], [*base], Observable),
+        PlacedInterruptCellStoreRelease {
+            base, index, value, ..
+        } => InstFacts::new([*base, *index, *value], [], [*base], Observable),
+        PlacedInterruptCellSwapAcquire {
+            dst,
+            base,
+            index,
+            value,
+            ..
+        }
+        | PlacedInterruptCellFetchOrRelease {
+            dst,
+            base,
+            index,
+            value,
+            ..
+        } => InstFacts::new([*base, *index, *value], [*dst], [*base], Observable),
         Dmb { .. } | Wake { .. } => InstFacts::new([], [], [], Observable),
 
         Now { dst } | Entropy { dst, .. } => InstFacts::new([], [*dst], [], Observable),

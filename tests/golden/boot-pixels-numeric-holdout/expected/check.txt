@@ -1,0 +1,779 @@
+Module path=__image_pixels
+  Const N_RENDERERS: usize
+  Const N_RENDER_WORKERS: usize
+  Fn __wrela_pixels_p8r_packet_selftest() -> bool
+  Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
+  Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
+  Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
+  Fn __wrela_pixels_program_digest_byte(renderer: read usize, byte: read usize) -> u8
+  Fn __wrela_pixels_tile_feature_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_feature(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_tile_event_count(renderer: read usize, tile: read u32) -> u32
+  Fn __wrela_pixels_tile_event(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
+  Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
+  Fn __wrela_pixels_p7_abs(value: read f32) -> f32
+  Fn __wrela_pixels_p7_half_plane_byte(a: read i32, b: read i32, c: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_power(value: read f32, exponent: read u64) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_coefficient(renderer: read usize, target: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 2]
+  Fn __wrela_pixels_p7_root_polynomial_base(renderer: read usize) -> u32
+  Fn __wrela_pixels_p7_feature_polynomial(renderer: read usize, feature: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_feature_polynomial_uv_bounds(renderer: read usize, feature: read u32) -> [f32; 20]
+  Fn __wrela_pixels_p7_event_polynomial(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 11]
+  Fn __wrela_pixels_p7_torus_event_magnitudes(renderer: read usize, event: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 65]
+  Fn __wrela_pixels_p7_standard_torus_coefficients(renderer: read usize, event: read u32, camera: read [f32; 12]) -> [f32; 57]
+  Fn __wrela_pixels_p7_standard_interval_mul(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p7_standard_torus_cell_positive_hit(u: read f32, v: read f32, ru: read f32, rv: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_standard_torus_feature(renderer: read usize, feature: read u32) -> bool
+  Fn __wrela_pixels_p7_standard_torus_pixel_bounds(coefficients: read [f32; 57], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 8]
+  Fn __wrela_pixels_p7_standard_torus_value(coefficients: read [f32; 57], u: read f32, v: read f32) -> [f32; 3]
+  Fn __wrela_pixels_p7_standard_torus_discriminant(coefficients: read [f32; 57], pixel_bounds: read [f32; 8], u: read f32, v: read f32, ru: read f32, rv: read f32) -> [f32; 5]
+  Fn __wrela_pixels_p7_standard_torus_positive_hit(u: read f32, v: read f32, eye: read f32) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_polynomial_uv2_bounds(renderer: read usize, event: read u32, u: read f32, v: read f32, ru: read f32, rv: read f32, magnitudes: read [f32; 65]) -> [f32; 4]
+  Fn __wrela_pixels_p7_event_clip_q(renderer: read usize, event: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_event_predicate_curve(renderer: read usize, event: read u32, u: read f32, v: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 20]
+  Fn __wrela_pixels_p7_deformation_miss_model(renderer: read usize, event: read u32) -> [f32; 26]
+  Fn __wrela_pixels_p7_pinned_camera(renderer: read usize) -> [f32; 13]
+  Fn __wrela_pixels_p7_projected_union_mode(renderer: read usize) -> u64
+  Fn __wrela_pixels_p8_axis_box(renderer: read usize) -> [f32; 9]
+  Fn __wrela_pixels_p7_min(a: read f32, b: read f32) -> f32
+  Fn __wrela_pixels_p7_max(a: read f32, b: read f32) -> f32
+  Fn __wrela_pixels_p7_outward_low(value: read f32) -> f32
+  Fn __wrela_pixels_p7_outward_high(value: read f32) -> f32
+  Fn __wrela_pixels_p8_ratio_bounds(numerator_lo: read f32, numerator_hi: read f32, denominator_lo: read f32, denominator_hi: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p8_axis_box_coverage(renderer: read usize, x: read u32, y: read u32, camera: read [f32; 12]) -> [i64; 4]
+  Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
+  Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
+  Fn __wrela_pixels_p7_material_event_coverage(renderer: read usize, x: read u32, y: read u32, q: read f32, hit: read bool, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 3]
+  Fn __wrela_pixels_p7_feature_valid(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
+  Fn __wrela_pixels_p7_feature_valid_filter(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], exponent: read i32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
+  Fn __wrela_pixels_p7_feature_q_span(renderer: read usize, feature: read u32) -> [f32; 3]
+  Fn __wrela_pixels_p7_feature_world_bounds(renderer: read usize, feature: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p7_object_composed_root(renderer: read usize, object: read u32) -> bool
+  Fn __wrela_pixels_p7_object_support(renderer: read usize, object: read u32) -> [f32; 2]
+  Fn __wrela_pixels_p7_object_q_tube(renderer: read usize, object: read u32, uv: read [f32; 4], q_lo: read f32, q_hi: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 7]
+  Fn __wrela_pixels_p7_initial_inside(renderer: read usize, u: read f32, v: read f32, q_near: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [u64; 2]
+  Fn __wrela_pixels_p7_polynomial_at_q(polynomial: read [f32; 11], q: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p7_param_slot(renderer: read usize, path_key: read u64) -> [u64; 2]
+  Fn __wrela_pixels_p7_numeric_config(renderer: read usize) -> [i64; 14]
+  Fn __wrela_pixels_p7_csg_occupancy(renderer: read usize, inside_bits: read u64) -> [i64; 2]
+  Fn __wrela_pixels_p7_event_class(representation: read u64, kind: read u64) -> u64
+  Fn __wrela_pixels_p7_worker_error_class(error: read u8) -> u8
+  Fn __wrela_pixels_p7_csg_influence(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_frame_snapshot_store(renderer: read usize, params: read [f32; 16], param_count: read u16, camera: read [f32; 12], light_kinds: read [u64; 8], light_scalars: read [f32; 120], post: read [f32; 4], frame_index: read u64) -> bool
+  Fn __wrela_pixels_p7_frame_snapshot_params(renderer: read usize) -> [f32; 16]
+  Fn __wrela_pixels_p7_frame_snapshot_camera(renderer: read usize) -> [f32; 12]
+  Fn __wrela_pixels_p7_frame_snapshot_light_kinds(renderer: read usize) -> [u64; 8]
+  Fn __wrela_pixels_p7_frame_snapshot_light_scalars(renderer: read usize) -> [f32; 120]
+  Fn __wrela_pixels_p7_frame_snapshot_post(renderer: read usize) -> [f32; 4]
+  Fn __wrela_pixels_p7_frame_snapshot_meta(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p7_worker_assignment(renderer: read usize, worker: read u32) -> [u64; 7]
+  Fn __wrela_pixels_p7_framebuffer_reset(renderer: read usize) -> bool
+  Fn __wrela_pixels_p7_framebuffer_write(renderer: read usize, pixel: read u32, r: read u8, g: read u8, b: read u8, a: read u8) -> bool
+  Fn __wrela_pixels_p7_framebuffer_byte(renderer: read usize, byte: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_framebuffer_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p7_framebuffer_alpha_samples(renderer: read usize) -> u64
+  Fn __wrela_pixels_p7_framebuffer_pixel_written(renderer: read usize, pixel: read u32) -> bool
+  Fn __wrela_pixels_p8_initialize(renderer: read usize) -> bool
+  Fn __wrela_pixels_p8_begin(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p8_cancel(renderer: read usize) -> bool
+  Fn __wrela_pixels_p8_complete(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p8_write(renderer: read usize, worker: read u32, pixel: read u32, front: read u32, coverage: read u8, back: read u32) -> bool
+  Fn __wrela_pixels_p8_write4(renderer: read usize, worker: read u32, pixel: read u32, r: read u8, g: read u8, b: read u8) -> bool
+  Fn __wrela_pixels_p8_visible_byte(renderer: read usize, byte: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_visible_word(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_raw_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_descriptor_digest(renderer: read usize) -> [u64; 5]
+  Fn __wrela_pixels_p8_raster_evidence_store(renderer: read usize, pixel: read usize, q: read u64, derivatives: read u64, bounds: read u64, class: read u8) -> bool
+  Fn __wrela_pixels_p8_raster_evidence_word(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_present(renderer: read usize, frame_index: read u64) -> [u64; 3]
+  Fn __wrela_pixels_p8_display_doorbell(renderer: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p8_submit(doorbell_addr: read u64, control_addr: read u64) -> unit
+  Fn __wrela_pixels_p7_workspace_reset(renderer: read usize, worker: read u32, generation: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_charge(renderer: read usize, worker: read u32, slot: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_workspace_counter(renderer: read usize, worker: read u32, slot: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_coverage(renderer: read usize, worker: read u32, corridor: read bool, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_store_certified_run(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8], model: read [i64; 8], normal: read [i64; 6], slacks: read [i64; 2], sample_meta: read i64) -> bool
+  Fn __wrela_pixels_p7_workspace_load_certified_run_word(renderer: read usize, worker: read u32, record: read u32, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_workspace_store_root(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_workspace_store_root_tmp(renderer: read usize, worker: read u32, record: read u32, values: read [i64; 8]) -> bool
+  Fn __wrela_pixels_p7_workspace_load_root_tmp(renderer: read usize, worker: read u32, record: read u32) -> [i64; 9]
+  Fn __wrela_pixels_p7_telemetry_reset(renderer: read usize, worker: read u32) -> bool
+  Fn __wrela_pixels_p7_telemetry_charge(renderer: read usize, worker: read u32, counter: read usize, amount: read u64) -> bool
+  Fn __wrela_pixels_p7_telemetry_counter(renderer: read usize, worker: read u32, counter: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p7_aligned_deformation_depth_miss(cell: read [f32; 4], t_lo: read f32, t_hi: read f32, phase: read f32, model: read [f32; 26], camera: read [f32; 12]) -> bool
+Module path=field
+  Struct Vec2 data
+    pub field x: f32
+    pub field y: f32
+  Struct Vec3 data
+    pub field x: f32
+    pub field y: f32
+    pub field z: f32
+    fn add(read self, right: read Vec3) -> Vec3
+    fn subtract(read self, right: read Vec3) -> Vec3
+  Struct Vec4 data
+    pub field x: f32
+    pub field y: f32
+    pub field z: f32
+    pub field w: f32
+  Struct Rgb data
+    pub field r: f32
+    pub field g: f32
+    pub field b: f32
+  Struct Aabb data
+    pub field min: Vec3
+    pub field max: Vec3
+  Struct Field data
+    field value: f32
+    fn union(read self, right: read Field) -> Field
+  Fn abs_scalar(x: read f32) -> f32
+  Fn min_scalar(a: read f32, b: read f32) -> f32
+  Fn max_scalar(a: read f32, b: read f32) -> f32
+  Fn clamp_scalar(x: read f32, lo: read f32, hi: read f32) -> f32
+  Fn sqrt_scalar(x: read f32) -> f32
+  Fn rsqrt_scalar(x: read f32) -> f32
+  Fn length2(v: read Vec2) -> f32
+  Fn length3(v: read Vec3) -> f32
+  Fn dot3(a: read Vec3, b: read Vec3) -> f32
+  Fn cross3(a: read Vec3, b: read Vec3) -> Vec3
+  Fn normalize3(v: read Vec3) -> Vec3
+  Fn plane(p: read Vec3, normal: read Vec3, offset: read f32) -> Field
+  Fn sphere(p: read Vec3, center: read Vec3, radius: read f32) -> Field
+  Fn box(p: read Vec3, half: read Vec3) -> Field
+  Fn round_box(p: read Vec3, half: read Vec3, radius: read f32) -> Field
+  Fn capsule(p: read Vec3, a: read Vec3, b: read Vec3, radius: read f32) -> Field
+  Fn finite_cylinder(p: read Vec3, radius: read f32, half_height: read f32) -> Field
+  Fn finite_cone(p: read Vec3, radius: read f32, half_height: read f32) -> Field
+  Fn torus(p: read Vec3, major_radius: read f32, minor_radius: read f32) -> Field
+  Fn translate(p: read Vec3, by: read Vec3) -> Vec3
+  Fn rotate(p: read Vec3, row_x: read Vec3, row_y: read Vec3, row_z: read Vec3) -> Vec3
+  Fn rigid_transform(p: read Vec3, translation: read Vec3, row_x: read Vec3, row_y: read Vec3, row_z: read Vec3) -> Vec3
+  Fn uniform_scale(field: read Field, scale: read f32) -> Field
+  Fn finite_repeat_axis(value: read f32, first: read i32, count: read u32, period: read f32) -> f32
+  Fn finite_repeat_x(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn finite_repeat_y(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn finite_repeat_z(p: read Vec3, first: read i32, count: read u32, period: read f32) -> Vec3
+  Fn union(a: read Field, b: read Field) -> Field
+  Fn intersection(a: read Field, b: read Field) -> Field
+  Fn subtract(a: read Field, b: read Field) -> Field
+  Fn smooth_union(a: read Field, b: read Field, k: read f32) -> Field
+  Fn smooth_intersection(a: read Field, b: read Field, k: read f32) -> Field
+  Fn smooth_subtract(a: read Field, b: read Field, k: read f32) -> Field
+  Fn mark[O, M](field: read Field, object: read O, material: read M) -> Field
+  Fn sin_scalar(angle: read f32) -> f32
+  Fn cos_scalar(angle: read f32) -> f32
+  Fn sinusoidal_displace(field: read Field, p: read Vec3, amplitude: read f32, frequency: read f32, phase: read f32) -> Field
+  Fn scalar_length_semantics_cover_large_exact_radius() -> unit
+  Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
+Module path=render_certificate
+  Fn certify_quadratic_discriminant(power: read [Iv32; 9], domain: read FixedDomain) -> [i64; 3]
+  Fn certify_monotone_root(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> [i64; 3]
+Module path=render_coverage
+  Enum CoverageOutcome data
+    variant Value(Iv32)
+    variant Error
+  Fn coverage_line_twice_area(a: read i32, b: read i32, c: read i32) -> CoverageOutcome
+  Fn coverage_quadratic(chord: read Iv32, strip: read i32) -> Iv32
+  Fn coverage_quadratic_strip(a: read i32, b: read i32, c: read i32, strip: read i32) -> CoverageOutcome
+  Fn coverage_quadratic_split(c: read i32, b: read i32, a: read i32) -> Iv32
+  Fn coverage_quadratic_graph(c: read i32, b: read i32, a: read i32, strip: read i32, foreground_below: read bool, owner_lower_or_left: read bool) -> CoverageOutcome
+  Fn coverage_color_error(coverage: read Iv32, contrast: read Iv32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_display
+  Enum QuantizeOutcome data
+    variant Value(i32)
+    variant Error
+  Enum ByteSingletonOutcome data
+    variant Value(i32)
+    variant NotSingleton
+    variant Error
+  Fn quantize_ties_even(value: read i32, fraction_bits: read i32) -> QuantizeOutcome
+  Fn exposure_channel(value: read Iv32, multiplier: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn color_matrix_channel(c0: read Iv32, c1: read Iv32, c2: read Iv32, m0: read Iv32, m1: read Iv32, m2: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn monotone_lut17(value: read Iv32, table: read [u16; 17], fraction_bits: read i32) -> NumericOutcome
+  Fn byte_singleton(value: read Iv32, fraction_bits: read i32) -> ByteSingletonOutcome
+  Enum RgbSingletonOutcome data
+    variant Value([i32; 3])
+    variant NotSingleton
+    variant Error
+  Fn rgb_singleton(color: read [Iv32; 3], fraction_bits: read i32) -> RgbSingletonOutcome
+Module path=render_events
+  Fn root_is_identically_zero(coefficients: read [Iv32; 3]) -> bool
+  Fn root_bracket_step(lo: read i32, hi: read i32, lo_negative: read bool, mid_negative: read bool) -> Iv32
+  Fn root_count(sign0: read i32, sign1: read i32, sign2: read i32) -> i32
+  Struct RootSet8 data
+    field lows: [i32; 16]
+    field highs: [i32; 16]
+    field unique: [bool; 16]
+    field count: u8
+    fn root_count_value(read self) -> u8
+    fn root_low(read self, index: read usize) -> i32
+    fn root_high(read self, index: read usize) -> i32
+    fn root_unique(read self, index: read usize) -> bool
+  Enum RootOutcome8 data
+    variant Roots(RootSet8)
+    variant CertifiedNone
+    variant Unresolved(i32)
+    variant Error
+  Struct RootIsolationConfig data
+    field q_domain: Iv32
+    field domain: FixedDomain
+    field tolerance_raw: u32
+    field max_depth: u8
+    field root_capacity: u8
+    field use_taylor: bool
+    field remainder: Iv32
+  Fn root_isolate8(coefficients: read [Iv32; 9], degree: read u8, q_domain: read Iv32, domain: read FixedDomain, tolerance_raw: read u32, max_depth: read u8, root_capacity: read u8) -> RootOutcome8
+  Fn root_isolate_taylor8(coefficients: read [Iv32; 9], degree: read u8, remainder: read Iv32, q_domain: read Iv32, domain: read FixedDomain, tolerance_raw: read u32, max_depth: read u8, root_capacity: read u8) -> RootOutcome8
+  Fn root_isolate_program8(coefficients: read [Iv32; 9], degree: read u8, config: read RootIsolationConfig) -> RootOutcome8
+Module path=render_interval
+  Struct FixedDomain data
+    field exponent: i32
+    field min_raw: i32
+    field max_raw: i32
+    fn full(exponent: read i32) -> FixedDomain
+    fn contains_raw(read self, value: read i32) -> bool
+    fn exponent_value(read self) -> i32
+  Enum FixedDomainOutcome data
+    variant Value(FixedDomain)
+    variant Error
+  Fn fixed_domain(exponent: read i32, min_raw: read i32, max_raw: read i32) -> FixedDomainOutcome
+  Struct Iv32 data
+    field lo: i32
+    field hi: i32
+    fn point(raw: read i32) -> Iv32
+    fn range(lo: read i32, hi: read i32) -> Iv32
+    fn lower(read self) -> i32
+    fn upper(read self) -> i32
+  Enum NumericOutcome data
+    variant Value(Iv32)
+    variant Empty
+    variant Error
+  Fn interval_valid(value: read Iv32, domain: read FixedDomain) -> bool
+  Fn interval_narrow(lo: read i64, hi: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_add(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_sub(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_contains_zero(value: read Iv32) -> bool
+  Fn interval_strict_positive(value: read Iv32) -> bool
+  Fn interval_strict_negative(value: read Iv32) -> bool
+  Fn interval_negate(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_floor_div(value: read i64, scale: read i64) -> i64
+  Fn interval_ceil_div(value: read i64, scale: read i64) -> i64
+  Fn interval_mul(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_square(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_scale_pow2(value: read Iv32, shift: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_intersect(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_hull(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_min(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_max(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_abs(value: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_affine(input: read Iv32, scale: read Iv32, bias: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn interval_convert(value: read Iv32, source: read FixedDomain, destination: read FixedDomain) -> NumericOutcome
+  Fn interval_from_f32_bits(bits: read u32, radius_raw: read u32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_material
+  Struct Iv3 data
+    field x: Iv32
+    field y: Iv32
+    field z: Iv32
+    fn z_lower(read self) -> i32
+    fn x_lower(read self) -> i32
+    fn x_upper(read self) -> i32
+    fn y_lower(read self) -> i32
+    fn y_upper(read self) -> i32
+    fn z_upper(read self) -> i32
+  Fn normal_vector(x: read Iv32, y: read Iv32, z: read Iv32) -> Iv3
+  Struct NormalCone data
+    field direction: Iv3
+    field norm_squared: Iv32
+    fn direction_value(read self) -> Iv3
+    fn norm_value(read self) -> Iv32
+  Enum NormalConeOutcome data
+    variant Value(NormalCone)
+    variant Rejected
+    variant Error
+  Enum Iv3Outcome data
+    variant Value(Iv3)
+    variant Error
+  Struct NormalRawRange data
+    field lo: i64
+    field hi: i64
+    field valid: bool
+  Fn normal_raw_product(a: read Iv32, b: read Iv32) -> NormalRawRange
+  Fn normal_raw_square(value: read Iv32) -> NormalRawRange
+  Fn normal_raw_add(a: read NormalRawRange, b: read NormalRawRange) -> NormalRawRange
+  Fn normal_raw_dot(a: read Iv3, b: read Iv3) -> NormalRawRange
+  Fn normal_raw_norm_squared(value: read Iv3) -> NormalRawRange
+  Fn normal_bound(q: read Iv32, qu: read Iv32, qv: read Iv32, uqu: read Iv32, vqv: read Iv32) -> Iv3Outcome
+  Fn normal_cone(u: read Iv32, v: read Iv32, q: read Iv32, qu: read Iv32, qv: read Iv32, domain: read FixedDomain) -> NormalConeOutcome
+  Fn normal_norm_squared(value: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn normal_safe(value: read Iv3, domain: read FixedDomain) -> bool
+  Fn normal_dot(a: read Iv3, b: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn normal_floor_sqrt(value: read i64) -> i64
+  Fn normal_cone_dot(a: read Iv3, b: read Iv3, domain: read FixedDomain) -> NumericOutcome
+  Fn material_affine(center: read Iv32, du: read Iv32, dv: read Iv32, offset_u: read Iv32, offset_v: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn material_affine_vector(center: read Iv3, du: read Iv3, dv: read Iv3, offset_u: read Iv32, offset_v: read Iv32, domain: read FixedDomain) -> Iv3Outcome
+  Fn material_footprint(du: read Iv32, dv: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Enum MaterialPredicateOutcome data
+    variant Value(bool)
+    variant Error
+  Fn material_residual(residual: read Iv32, radius: read i32, budget: read i32, domain: read FixedDomain) -> MaterialPredicateOutcome
+  Struct CenteredMoments data
+    field mean: Iv32
+    field first: Iv32
+    field second: Iv32
+    fn mean_value(read self) -> Iv32
+    fn first_value(read self) -> Iv32
+    fn second_value(read self) -> Iv32
+  Enum MomentOutcome data
+    variant Value(CenteredMoments)
+    variant Error
+  Fn material_affine_moments(center: read Iv32, slope: read Iv32, centered_first: read Iv32, centered_second: read Iv32, domain: read FixedDomain) -> MomentOutcome
+  Fn material_quadratic_moments(center: read Iv32, slope: read Iv32, curvature: read Iv32, centered_first: read Iv32, centered_second: read Iv32, half: read Iv32, domain: read FixedDomain) -> MomentOutcome
+Module path=render_program
+  Enum ProgramViewError data
+    variant ProgramIndex
+    variant InvalidHeader
+    variant InvalidRecord
+  Struct FrameProgramHeader data
+    pub field renderer_index: u16
+    pub field total_bytes: u32
+    pub field table_count: u16
+    pub field numeric_revision: u32
+    pub field formal_revision: u32
+  Struct ProgramRecord data
+    pub field stable_id: u32
+    pub field tag: u16
+    pub field flags: u16
+    pub field operand_count: u16
+  Struct FeatureId data
+    pub field value: u32
+  Struct TileId data
+    pub field value: u32
+  Struct FeatureIdSlice data
+    field renderer: usize
+    field tile: u32
+    field count: u32
+    fn length(read self) -> u32
+    fn get(read self, ordinal: read u32) -> Result[FeatureId, ProgramViewError]
+  Struct CoeffSnapshot data
+    field values: [f32; 16]
+    field count: u16
+    fn zero() -> CoeffSnapshot
+    fn packed(values: read [f32; 16], count: read u16) -> Result[CoeffSnapshot, ProgramViewError]
+  Struct FrameProgramView data
+    field renderer: usize
+    fn initialize(renderer: read usize) -> Result[FrameProgramView, ProgramViewError]
+    fn header(read self) -> FrameProgramHeader
+    fn debug_digest(read self) -> [u8; 32]
+    fn record(read self, table: read u16, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn feature(read self, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn tile_features(read self, tile: read TileId) -> Result[FeatureIdSlice, ProgramViewError]
+    fn event(read self, id: read u32) -> Result[ProgramRecord, ProgramViewError]
+    fn operand(read self, table: read u16, id: read u32, ordinal: read u16) -> Result[u64, ProgramViewError]
+    fn coeff(read self, id: read u32, snapshot: read CoeffSnapshot) -> Result[f32, ProgramViewError]
+  Fn open_frame_program(renderer: read usize) -> Result[FrameProgramView, ProgramViewError]
+  Struct FrameProgramHeaderV1 data
+    field magic: [u8; 8]
+    field version: u16
+    field header_bytes: u16
+    field flags: u32
+    field total_bytes: u32
+    field renderer_index: u16
+    field reserved0: u16
+    field numeric_revision: u32
+    field formal_revision: u32
+    field table_count: u16
+    field reserved1: [u8; 14]
+    field digest: [u8; 32]
+  Struct FrameProgramTableV1 data
+    field kind: u16
+    field record_bytes: u16
+    field count: u32
+    field offset: u32
+    field byte_len: u32
+  Struct FrameProgramRecordV1 data
+    field stable_id: u32
+    field tag: u16
+    field flags: u16
+    field operand_offset: u32
+    field operand_count: u16
+    field reserved: u16
+  Struct FrameProgramImmediateV1 data
+    field owner_kind: u16
+    field reserved0: u16
+    field owner_id: u32
+    field ordinal: u32
+    field reserved1: u32
+    field value: u64
+  Fn program_floor_div(value: read i64, scale: read i64) -> i64
+  Fn program_ceil_div(value: read i64, scale: read i64) -> i64
+  Enum BernsteinOutcome3 data
+    variant Value([Iv32; 3])
+    variant Error
+  Enum BernsteinSplitOutcome3 data
+    variant Value([Iv32; 6])
+    variant Error
+  Struct Polynomial9 data
+    field coefficients: [Iv32; 9]
+    field degree: u8
+    fn coefficient(read self, index: read usize) -> Iv32
+    fn degree_value(read self) -> u8
+  Struct BernsteinSplit9 data
+    field left: [Iv32; 9]
+    field right: [Iv32; 9]
+    field degree: u8
+    fn left_coefficient(read self, index: read usize) -> Iv32
+    fn right_coefficient(read self, index: read usize) -> Iv32
+  Enum Polynomial9Outcome data
+    variant Value(Polynomial9)
+    variant Error
+  Enum BernsteinSplit9Outcome data
+    variant Value(BernsteinSplit9)
+    variant Error
+  Struct SparseTerm data
+    field coefficient: Iv32
+    field powers: [u8; 4]
+    fn make(coefficient: read Iv32, powers: read [u8; 4]) -> SparseTerm
+  Fn polynomial_horner9(coefficients: read [Iv32; 9], degree: read u8, x: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_derivative9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_multiply9(left: read Polynomial9, right: read Polynomial9, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_compose9(outer_coefficients: read [Iv32; 9], outer_degree: read u8, candidate_coefficients: read [Iv32; 9], candidate_degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn polynomial_sparse32(terms: read [SparseTerm; 32], count: read u8, variables: read [Iv32; 4], domain: read FixedDomain) -> NumericOutcome
+  Fn program_binomial(n: read i32, k: read i32) -> i64
+  Fn program_gcd(a: read i64, b: read i64) -> i64
+  Fn bernstein_from_power9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> Polynomial9Outcome
+  Fn bernstein_subdivide9(coefficients: read [Iv32; 9], degree: read u8, domain: read FixedDomain) -> BernsteinSplit9Outcome
+  Fn bernstein_compose(a0: read i32, a1: read i32, a2: read i32, domain: read FixedDomain) -> BernsteinOutcome3
+  Fn bernstein_sign(coefficients: read [Iv32; 3]) -> i32
+  Fn bernstein_average(a: read Iv32, b: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_lerp_ratio(a: read Iv32, b: read Iv32, numerator: read i64, denominator: read i64, domain: read FixedDomain) -> NumericOutcome
+  Fn bernstein_subdivide(coefficients: read [Iv32; 3], domain: read FixedDomain) -> BernsteinSplitOutcome3
+  Enum QuadraticRangeOutcome data
+    variant Value([i32; 2])
+    variant Error
+  Enum QuadraticRangeWideOutcome data
+    variant Value([i64; 2])
+    variant Error
+  Fn quadratic_range_wide(c: read i64, b: read i64, a: read i64) -> QuadraticRangeWideOutcome
+  Fn quadratic_range(c: read i32, b: read i32, a: read i32) -> QuadraticRangeOutcome
+  Fn quadratic_range2(c: read i32, bu: read i32, bv: read i32, buu: read i32, buv: read i32, bvv: read i32) -> QuadraticRangeOutcome
+  Fn polynomial_sparse(c0: read i32, c1: read i32, u: read i32, t: read i32, domain: read FixedDomain) -> NumericOutcome
+  Fn polynomial_taylor(c0: read i32, c1: read i32, x: read i32, remainder_radius: read i32, domain: read FixedDomain) -> NumericOutcome
+Module path=render_raster
+  Fn pixels_f32_to_bits(value: read f32) -> u32
+  Fn pixels_f32_from_bits(bits: read u32) -> f32
+  Struct IdentitySetId data
+    pub field value: u32
+  Struct MaterialSummaryId data
+    pub field value: u32
+  Struct LightSummaryId data
+    pub field value: u32
+  Struct RunId data
+    pub field value: u16
+  Struct EventId data
+    pub field value: u16
+  Struct IdSlice[T] data
+    pub field first: u16
+    pub field count: u16
+  Struct AffineRunSetup data
+    pub field value: i32
+    pub field delta: i32
+    pub field error_radius: i32
+  Struct OutputProofCode data
+    pub field bits: u8
+  Struct RasterRun data
+    pub field x0: u16
+    pub field x1: u16
+    pub field q: QRunScalar
+    pub field q_u: AffineRunSetup
+    pub field q_v: AffineRunSetup
+    pub field identity: IdentitySetId
+    pub field material_summary: MaterialSummaryId
+    pub field light_summary: LightSummaryId
+    pub field proof_code: OutputProofCode
+  Struct EventPixel data
+    pub field x: u16
+    pub field coverage: Iv32
+    pub field front_run: RunId
+    pub field back_run: RunId
+    pub field event_ids: IdSlice[EventId]
+  Struct I32x4 data
+    field words: [i64; 2]
+    fn from_lanes(lanes: read [i32; 4]) -> I32x4
+    fn lane(read self, index: read usize) -> i32
+  Struct F32x4 data
+    field words: [i64; 2]
+    fn from_bits(lanes: read [u32; 4]) -> F32x4
+    fn from_lanes(lanes: read [f32; 4]) -> F32x4
+    fn lane(read self, index: read usize) -> f32
+    fn lane_bits(read self, index: read usize) -> u32
+  Fn pixels_f32_min_scalar(lhs: read f32, rhs: read f32) -> f32
+  Fn pixels_f32_max_scalar(lhs: read f32, rhs: read f32) -> f32
+  Fn pixels_i32_select_gt_scalar(lhs: read i32, rhs: read i32, when_true: read i32, when_false: read i32) -> i32
+  Fn pixels_f32_select_ge_scalar(lhs: read f32, rhs: read f32, when_true: read f32, when_false: read f32) -> f32
+  Fn pixels_f32_select_gt_scalar(lhs: read f32, rhs: read f32, when_true: read f32, when_false: read f32) -> f32
+  Fn pixels_i32x4_backend_splat(value: read i32) -> I32x4
+  Const PIXELS_REGION_RASTER_SCALAR_PREFIX: u32
+  Const PIXELS_REGION_RASTER_PACKET_LOOP: u32
+  Const PIXELS_REGION_RASTER_SCALAR_SUFFIX: u32
+  Const PIXELS_REGION_RASTER_CHARGE: u32
+  Const PIXELS_REGION_COVERAGE_ENTRY: u32
+  Const PIXELS_REGION_COVERAGE_CELL_WALK: u32
+  Fn pixels_census_region(region: read u32) -> unit
+  Fn pixels_i32x4_backend_add(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_sub(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_shr_arith_imm(value: read I32x4, immediate: read u8) -> I32x4
+  Fn pixels_i32x4_backend_and(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_or(lhs: read I32x4, rhs: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_select_gt(lhs: read I32x4, rhs: read I32x4, when_true: read I32x4, when_false: read I32x4) -> I32x4
+  Fn pixels_i32x4_backend_to_f32x4(value: read I32x4) -> F32x4
+  Fn pixels_f32x4_backend_splat(value: read f32) -> F32x4
+  Fn pixels_f32x4_backend_add(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_sub(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_mul(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_min(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_max(lhs: read F32x4, rhs: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_select_ge(lhs: read F32x4, rhs: read F32x4, when_true: read F32x4, when_false: read F32x4) -> F32x4
+  Fn pixels_f32x4_backend_select_gt(lhs: read F32x4, rhs: read F32x4, when_true: read F32x4, when_false: read F32x4) -> F32x4
+  Fn __pixels_u128_zero() -> [u64; 2]
+  Fn __pixels_u128_from_u64(value: read u64) -> [u64; 2]
+  Fn __pixels_u128_is_zero(value: read [u64; 2]) -> bool
+  Fn __pixels_u128_compare(lhs: read [u64; 2], rhs: read [u64; 2]) -> i32
+  Fn __pixels_u128_add(lhs: read [u64; 2], rhs: read [u64; 2]) -> [u64; 2]
+  Fn __pixels_u128_sub(lhs: read [u64; 2], rhs: read [u64; 2]) -> [u64; 2]
+  Fn __pixels_u128_shift_left(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_shift_right(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_lower_bits_nonzero(value: read [u64; 2], count: read u32) -> bool
+  Fn __pixels_u128_bit(value: read [u64; 2], index: read u32) -> bool
+  Fn __pixels_u128_shift_right_jam(value: read [u64; 2], distance: read u32) -> [u64; 2]
+  Fn __pixels_u128_top_bit(value: read [u64; 2]) -> i32
+  Fn __pixels_u128_scale_to(value: read u64, exponent: read i32, target: read i32) -> [u64; 2]
+  Fn __pixels_u128_round_shift_even(value: read [u64; 2], distance: read u32) -> u64
+  Fn __pixels_f32_mantissa(bits: read u32) -> u64
+  Fn __pixels_f32_exponent(bits: read u32) -> i32
+  Fn pixels_f32_fma_bits_fallback(lhs_bits: read u32, rhs_bits: read u32, addend_bits: read u32) -> u32
+  Fn pixels_f32_fma_scalar(lhs: read f32, rhs: read f32, addend: read f32) -> f32
+  Fn generated_f32_fma_fallback_is_fused_and_bit_exact() -> unit
+  Fn pixels_f32x4_backend_fma(lhs: read F32x4, rhs: read F32x4, addend: read F32x4) -> F32x4
+  Fn pixels_f32_to_i32_scalar(value: read f32) -> i32
+  Fn pixels_f32x4_backend_to_i32x4(value: read F32x4) -> I32x4
+  Enum I32x4Outcome data
+    variant Value(I32x4)
+    variant Error
+  Struct ScalarRasterValues data
+    field values: [i32; 64]
+    field count: u8
+    fn length(read self) -> u8
+    fn value(read self, index: read usize) -> i32
+  Enum ScalarRasterOutcome data
+    variant Value(ScalarRasterValues)
+    variant Error
+  Fn raster_run_scalar(q: read i32, dq: read i32, ddq: read i32, width: read u8) -> ScalarRasterOutcome
+  Fn i32x4_add_checked(lhs: read I32x4, rhs: read I32x4) -> I32x4Outcome
+  Fn raster_run4(q: read i32, dq: read i32, ddq: read i32) -> I32x4Outcome
+  Fn raster_rsqrt(value: read f32) -> f32
+  Fn reconstruct_packet_normal(q: read f32, q_u: read f32, q_v: read f32, u: read f32, v: read f32, direction_required: read bool) -> Vec3
+  Fn reconstruct_packet_world_normal(q: read f32, q_u: read f32, q_v: read f32, u: read f32, v: read f32, right: read Vec3, up: read Vec3, forward: read Vec3, direction_required: read bool) -> Vec3
+  Fn reconstruct_packet_world_position(q: read f32, u: read f32, v: read f32, eye: read Vec3, right: read Vec3, up: read Vec3, forward: read Vec3) -> Vec3
+  Struct RasterGeometryLane data
+    pub field q_raw: i32
+    pub field q_error: i32
+    pub field q_u_raw: i32
+    pub field q_u_error: i32
+    pub field q_v_raw: i32
+    pub field q_v_error: i32
+    pub field q: f32
+    pub field q_u: f32
+    pub field q_v: f32
+    pub field u: f32
+    pub field v: f32
+  Fn raster_i32_enclosure_fits(raw: read i32, error: read i32) -> bool
+  Fn raster_geometry_lane_valid(lane: read RasterGeometryLane, material_dependencies: read u32, light_dependencies: read u32, camera: read [f32; 12]) -> bool
+  Struct QRunScalar data
+    field q: i32
+    field dq: i32
+    field ddq: i32
+    field domain: FixedDomain
+    field error_radius: i32
+    field microtile_width: u8
+    field step: u8
+    fn make(q: read i32, dq: read i32, ddq: read i32, error_radius: read i32) -> QRunScalar
+    fn certified(q: read i32, dq: read i32, ddq: read i32, domain: read FixedDomain, error_radius: read i32, microtile_width: read u8) -> QRunScalar
+    fn value(read self) -> i32
+    fn delta(read self) -> i32
+    fn second_delta(read self) -> i32
+    fn error(read self) -> i32
+    fn width(read self) -> u8
+    fn exponent(read self) -> i32
+  Enum QStep data
+    variant Value(QRunScalar)
+    variant Error
+  Enum QSetup data
+    variant Value(QRunScalar)
+    variant Error
+  Fn fixed_q_select_integer_domain(maximum_abs: read i64) -> i32
+  Fn fixed_q_quantize_integer(value: read i32, exponent: read i32) -> NumericOutcome
+  Fn fixed_q_recurrence_fits(q: read Iv32, dq: read Iv32, ddq: read Iv32, width: read u8, domain: read FixedDomain) -> bool
+  Fn fixed_q_setup(q: read i32, dq: read i32, ddq: read i32, requested_width: read u8, model_error_radius: read i32) -> QSetup
+  Fn fixed_q_step(run: read QRunScalar) -> QStep
+  Fn fixed_q_nearer(a_q: read i32, a_error: read i32, b_q: read i32, b_error: read i32) -> bool
+Module path=render_sweep
+  Enum RootCertMethod data
+    variant BernsteinFaces
+    variant MonotoneTube
+    variant Krawczyk
+  Struct RootCertificate data
+    field correction: Iv32
+    field derivative_margin: Iv32
+    field face_margin: Iv32
+    field contraction_margin: Iv32
+    field method: RootCertMethod
+    fn derivative_margin_value(read self) -> i32
+    fn face_margin_value(read self) -> i32
+    fn contraction_margin_value(read self) -> i32
+    fn method_tag(read self) -> i32
+  Enum RootCertificateOutcome data
+    variant Value(RootCertificate)
+    variant Rejected
+    variant Error
+  Struct RootCertifiedRun data
+    field certificate: RootCertificate
+    field composition_shape: i32
+    fn method_tag(read self) -> i32
+    fn composition_shape_tag(read self) -> i32
+    fn derivative_margin_value(read self) -> i32
+    fn face_margin_value(read self) -> i32
+    fn contraction_margin_value(read self) -> i32
+  Enum CertifiedRunOutcome data
+    variant Value(RootCertifiedRun)
+    variant Rejected
+    variant Error
+  Struct CertificateRequest data
+    pub field composition_shape: i32
+    pub field lower_coefficients: [Iv32; 3]
+    pub field upper_coefficients: [Iv32; 3]
+    pub field lower_face: Iv32
+    pub field upper_face: Iv32
+    pub field derivative: Iv32
+    pub field reciprocal_derivative: Iv32
+    pub field residual: Iv32
+    pub field correction: Iv32
+    pub field one: Iv32
+    pub field domain: FixedDomain
+  Fn strict_margin(value: read Iv32) -> i32
+  Fn monotone_certificate(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> RootCertificateOutcome
+  Fn bernstein_certificate(lower: read [Iv32; 3], upper: read [Iv32; 3], derivative: read Iv32) -> RootCertificateOutcome
+  Fn bernstein_face_margin3(lower: read [Iv32; 3], upper: read [Iv32; 3]) -> i32
+  Fn bernstein_certificate_subdivided(lower: read [Iv32; 3], upper: read [Iv32; 3], derivative: read Iv32, domain: read FixedDomain, maximum_depth: read u8) -> RootCertificateOutcome
+  Fn krawczyk_certificate(reciprocal_derivative: read Iv32, residual: read Iv32, derivative: read Iv32, correction: read Iv32, one: read Iv32, domain: read FixedDomain) -> RootCertificateOutcome
+  Fn certify_run(request: read CertificateRequest) -> CertifiedRunOutcome
+  Fn run_certificate(lower: read Iv32, upper: read Iv32, derivative: read Iv32) -> bool
+  Fn q_order(a: read Iv32, b: read Iv32) -> bool
+  Struct OrderedRoot data
+    field q: Iv32
+    field feature_id: u32
+    field orientation: i32
+    fn make(q: read Iv32, feature_id: read u32, orientation: read i32) -> OrderedRoot
+    fn q_value(read self) -> Iv32
+    fn feature(read self) -> u32
+    fn orientation_value(read self) -> i32
+  Struct OrderedRootSet64 data
+    field roots: [OrderedRoot; 64]
+    field count: u8
+    fn root(read self, index: read usize) -> OrderedRoot
+  Enum OrderedRootSetOutcome data
+    variant Value(OrderedRootSet64)
+    variant Error
+  Enum OrderedSlackOutcome data
+    variant Value(i32)
+    variant Error
+  Fn q_storage_before(a: read OrderedRoot, b: read OrderedRoot) -> bool
+  Fn q_feature_before(a: read OrderedRoot, b: read OrderedRoot) -> bool
+  Fn q_sort64(values: read [OrderedRoot; 64], count: read u8) -> OrderedRootSetOutcome
+  Fn q_adjacent_slack64(values: read [OrderedRoot; 64], count: read u8) -> OrderedSlackOutcome
+  Fn q_sort3(values: read [Iv32; 3]) -> [Iv32; 3]
+  Fn q_adjacent_slack3(values: read [Iv32; 3]) -> i32
+  Fn csg_transition(before: read bool, after: read bool) -> bool
+  Enum CsgEvaluateOutcome data
+    variant Value(bool)
+    variant Error
+  Enum CsgInfluenceOutcome data
+    variant Value(bool)
+    variant Error
+  Enum CsgTransitionOutcome data
+    variant Value(i32)
+    variant None
+    variant Error
+  Fn csg_evaluate64(program: read [i32; 64], count: read u8, inside_bits: read u64) -> CsgEvaluateOutcome
+  Enum CsgBitsOutcome data
+    variant Value(u64)
+    variant Error
+  Fn csg_oriented_toggle64(inside_bits: read u64, object: read i32, orientation: read i32) -> CsgBitsOutcome
+  Fn csg_boundary_influences64(program: read [i32; 64], count: read u8, inside_bits: read u64, object: read i32) -> CsgInfluenceOutcome
+  Fn csg_first_transition64(program: read [i32; 64], program_count: read u8, inside_bits: read u64, objects: read [i32; 64], orientations: read [i32; 64], crossing_count: read u8) -> CsgTransitionOutcome
+  Fn kinetic_slack(slack: read i32, perturbation: read i32) -> bool
+Module path=render_test_vectors
+  Const VECTOR_COUNT: u64
+  Const VECTOR_DIGEST: u64
+  Fn fold2(a: read i32, b: read i32) -> i64
+  Fn fold4(a: read i32, b: read i32, c: read i32, d: read i32) -> i64
+  Fn fold6(a: read i32, b: read i32, c: read i32, d: read i32, e: read i32, f: read i32) -> i64
+  Fn fold6_small(a: read i32, b: read i32, c: read i32, d: read i32, e: read i32, f: read i32) -> i64
+  Fn fold12(values: read [i32; 12]) -> i64
+  Fn bool_result(value: read bool) -> i64
+  Fn numeric_result(value: read NumericOutcome) -> i64
+  Enum VectorResult data
+    variant Value(i64)
+    variant Error
+  Fn vector_transfer_balanced(in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_transfer_replace(in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_order_roots(in0: read i32, count_input: read i32) -> [OrderedRoot; 64]
+  Fn vector_q_sort(in0: read i32, in3: read i32) -> i64
+  Fn vector_q_slack(in0: read i32, in3: read i32) -> i64
+  Fn vector_root_outcome_field(outcome: read RootOutcome8, requested_selector: read i32) -> i64
+  Fn vector_result_raw_low(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw_mid(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw_high(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result_raw(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> i64
+  Fn vector_result(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32) -> VectorResult
+  Fn vector_case_matches(kernel: read i32, in0: read i32, in1: read i32, in2: read i32, in3: read i32, expected: read i64, expect_error: read bool) -> bool
+  Fn run_vector_chunk_0() -> unit
+  Fn run_vector_chunk_1() -> unit
+  Fn run_vector_chunk_2() -> unit
+  Fn run_vector_chunk_3() -> unit
+  Fn run_vector_chunk_4() -> unit
+  Fn run_vector_chunk_5() -> unit
+  Fn run_vector_chunk_6() -> unit
+  Fn run_vector_chunk_7() -> unit
+  Fn run_vector_chunk_8() -> unit
+  Fn run_vector_chunk_9() -> unit
+  Fn run_vector_chunk_10() -> unit
+  Fn run_vector_chunk_11() -> unit
+  Fn run_vector_chunk_12() -> unit
+  Fn run_all_vectors() -> unit
+Module path=render_transfer
+  Struct Transfer data
+    field r: Iv32
+    field g: Iv32
+    field b: Iv32
+    field t: Iv32
+    fn make(r: read Iv32, g: read Iv32, b: read Iv32, t: read Iv32) -> Transfer
+    fn red_lower(read self) -> i32
+    fn red_upper(read self) -> i32
+    fn transmittance_lower(read self) -> i32
+    fn transmittance_upper(read self) -> i32
+  Enum TransferOutcome data
+    variant Value(Transfer)
+    variant Error
+  Fn transfer_channel(front: read Iv32, transmittance: read Iv32, back: read Iv32, rounding: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn transfer_compose(front: read Transfer, back: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced2(first: read Transfer, second: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace2(first: read Transfer, second: read Transfer, replacement: read Transfer, replace_second: read bool, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced64(layers: take [Transfer; 64], count: read u8, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace64(layers: take [Transfer; 64], count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transparency_tail(transmittance: read i32, maximum_radiance: read i32, budget: read i32) -> bool
+Module path=examples.boot_pixels_numeric
+  Fn pixels_numeric_vectors() -> unit

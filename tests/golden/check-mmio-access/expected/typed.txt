@@ -16,6 +16,33 @@ Program
             Str text=ack_low ty=Static[Str]
           Arg label=value
             Local name=bits ty=u16
+    Method name=consume_level ret=u32
+      Receiver mode=mut ty=BlkDriver
+      Body
+        Let name=before ty=u32
+          Intrinsic key=MmioAtomic.load_acquire type_arg=u32 ty=u32
+            Receiver
+              Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+                Local name=self ty=BlkDriver
+            Arg label=register
+              Str text=level_status ty=Static[Str]
+        Intrinsic key=MmioAtomic.fetch_or_release type_arg=u32 ty=u32
+          Receiver
+            Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+              Local name=self ty=BlkDriver
+          Arg label=register
+            Str text=level_status ty=Static[Str]
+          Arg label=value
+            Const name=INT_CONFIG ty=u32
+        Return
+          Intrinsic key=MmioAtomic.swap_acquire type_arg=u32 ty=u32
+            Receiver
+              Field name=irq_regs ty=Mmio[VirtioIrqMmio]
+                Local name=self ty=BlkDriver
+            Arg label=register
+              Str text=level_status ty=Static[Str]
+            Arg label=value
+              Local name=before ty=u32
     Method name=last_handled ret=u32
       Receiver mode=read ty=BlkDriver
       Body

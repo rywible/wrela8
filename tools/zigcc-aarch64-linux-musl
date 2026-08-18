@@ -1,0 +1,13 @@
+#!/bin/zsh
+set -eu
+# Zig supplies its pinned musl CRT. Rust also passes the target's
+# self-contained CRT objects, so retain exactly one copy while leaving Rust's
+# audited libraries and link flags untouched.
+typeset -a filtered
+for argument in "$@"; do
+    case "$argument" in
+        */self-contained/crt1.o|*/self-contained/crti.o|*/self-contained/crtbegin.o|*/self-contained/crtend.o|*/self-contained/crtn.o) ;;
+        *) filtered+=("$argument") ;;
+    esac
+done
+exec zig cc -target aarch64-linux-musl "${filtered[@]}"

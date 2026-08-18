@@ -4,7 +4,10 @@ use crate::codegen::{BlockSpan, CodegenProgram};
 use crate::placement::PlacementTable;
 
 use super::branch::{BlockCounts, BlockObs};
-use super::score::{basic_block_ranges, block_schedule_lengths_with_counts};
+use super::score::{
+    basic_block_ranges, block_schedule_lengths_with_counts, block_serial_lengths_with_counts,
+    block_term_counts_with_counts,
+};
 use super::table::CostTable;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +19,10 @@ pub struct BridgedBlock {
     pub first_word_block: usize,
     pub word_blocks: u64,
     pub cycles: u64,
+    pub serial_cycles: u64,
+    pub modeled_branch_paths: u64,
+    pub modeled_memory_accesses: u64,
+    pub modeled_memory_transitions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,12 +94,30 @@ impl BlockBridge {
             let ranges = basic_block_ranges(&f.code);
             let lengths =
                 block_schedule_lengths_with_counts(fn_key, &f.code, table, placement, counts)?;
+            let serial_lengths =
+                block_serial_lengths_with_counts(fn_key, &f.code, table, placement, counts)?;
+            let term_counts =
+                block_term_counts_with_counts(fn_key, &f.code, table, placement, counts)?;
             if ranges.len() != lengths.len() {
                 return Err(format!(
                     "bridge: internal error: fn `{fn_key}` has {} emitted-word block(s) but {} \
                      schedule length(s)",
                     ranges.len(),
                     lengths.len()
+                ));
+            }
+            if ranges.len() != serial_lengths.len() {
+                return Err(format!(
+                    "bridge: internal error: fn `{fn_key}` has {} emitted-word block(s) but {} serial length(s)",
+                    ranges.len(),
+                    serial_lengths.len()
+                ));
+            }
+            if ranges.len() != term_counts.len() {
+                return Err(format!(
+                    "bridge: internal error: fn `{fn_key}` has {} emitted-word block(s) but {} modeled-term row(s)",
+                    ranges.len(),
+                    term_counts.len()
                 ));
             }
             let leader_of: BTreeMap<usize, usize> = ranges
@@ -146,6 +171,10 @@ impl BlockBridge {
                             first_word_block: 0,
                             word_blocks: 0,
                             cycles: 0,
+                            serial_cycles: 0,
+                            modeled_branch_paths: 0,
+                            modeled_memory_accesses: 0,
+                            modeled_memory_transitions: 0,
                         },
                     );
                     continue;
@@ -167,12 +196,33 @@ impl BlockBridge {
                     ));
                 }
                 let mut cycles = 0u64;
+                let mut serial_cycles = 0u64;
                 let mut word_blocks = 0u64;
+                let mut modeled_branch_paths = 0u64;
+                let mut modeled_memory_accesses = 0u64;
+                let mut modeled_memory_transitions = 0u64;
                 for k in first..ranges.len() {
                     if ranges[k].0 >= span.word_end {
                         break;
                     }
                     cycles = cycles.saturating_add(lengths[k]);
+                    serial_cycles = serial_cycles.saturating_add(serial_lengths[k]);
+                    modeled_branch_paths = modeled_branch_paths
+                        .saturating_add(term_counts[k].get("branch").copied().unwrap_or(0))
+                        .saturating_add(term_counts[k].get("call").copied().unwrap_or(0));
+                    modeled_memory_accesses = modeled_memory_accesses.saturating_add(
+                        term_counts[k]
+                            .iter()
+                            .filter(|(name, _)| name.starts_with("Mem level="))
+                            .map(|(_, count)| *count)
+                            .sum::<u64>(),
+                    );
+                    modeled_memory_transitions = modeled_memory_transitions.saturating_add(
+                        term_counts[k]
+                            .get("Mem level=unresolved")
+                            .copied()
+                            .unwrap_or(0),
+                    );
                     word_blocks += 1;
                 }
                 covered_word_blocks += word_blocks;
@@ -186,6 +236,10 @@ impl BlockBridge {
                         first_word_block: first,
                         word_blocks,
                         cycles,
+                        serial_cycles,
+                        modeled_branch_paths,
+                        modeled_memory_accesses,
+                        modeled_memory_transitions,
                     },
                 );
             }
@@ -1031,12 +1085,10 @@ mod tests {
             .values()
             .map(|f| basic_block_ranges(&f.code).len() as u64)
             .sum();
-        // 304 -> 300: large aggregate copies became counted loops instead of an
-        // unrolled load/store pair per word, which removes straight-line words
-        // from the scored closure. Re-locked against the measurement, not
-        // widened to accommodate it.
+        // Stage-1 setup and atomic checkpoint handling add six explicit
+        // control-flow blocks to the measured closure.
         assert_eq!(
-            all_word_blocks, 300,
+            all_word_blocks, 306,
             "emitted-word blocks in the current scored closure"
         );
         assert!(

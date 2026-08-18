@@ -13,4 +13,4 @@ test displaced_surface_renders_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6148b70b282b413da9ff888bf92cb2ae67eead5e1e78492fe07318e70e17271e visible=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 raw=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 vsync=5 checkpoint=5
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=99ce423c1f6a9b6a67172cbef90ad9b888862491c0e39e6d82c15585b10f87c0 visible=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 raw=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 vsync=5 checkpoint=5

@@ -204,6 +204,7 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_lane1_sum_messages",
     "__wrela_lane1_sum_method_hits",
     "__wrela_lane2_dump",
+    "__wrela_lane2_exit",
     "__wrela_quiesce_before_halt",
     "__wrela_secondaries_idle",
     "__wrela_lane1_quiesce_timeout_line",
@@ -4246,6 +4247,88 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             type_arg,
             args,
             ..
+        } if crate::sema::bodies::is_mmio_atomic_intrinsic(key) => {
+            let Some(mmio) = receiver else {
+                return Err(LowerError::internal("atomic MMIO access has no receiver"));
+            };
+            let (layout_name, register) = mmio_access_names(&mmio.ty, args)?;
+            let field_offset = mmio_register_offset(&layout_name, &register, b.prog())?;
+            let width: u8 = match type_arg {
+                Some(Type::U32) => 4,
+                Some(Type::U64) => 8,
+                other => {
+                    return Err(LowerError::internal(format!(
+                        "atomic MMIO has unsupported scalar type {other:?}"
+                    )));
+                }
+            };
+            let base = lower_expr(mmio, b, env)?;
+            let index = b.fresh(Type::Usize);
+            b.emit(Inst::ConstInt {
+                dst: index,
+                ty: Type::Usize,
+                value: 0,
+            });
+            let mut value = || -> Result<Temp, LowerError> {
+                let (_, value) = args
+                    .iter()
+                    .find(|(label, _)| label == "value")
+                    .ok_or_else(|| LowerError::internal("atomic MMIO RMW has no value"))?;
+                lower_expr(value, b, env)
+            };
+            match key.as_str() {
+                "MmioAtomic.load_acquire" => {
+                    let dst = b.fresh(expr.ty.clone());
+                    b.emit(Inst::PlacedInterruptCellLoadAcquire {
+                        dst,
+                        base,
+                        field_offset,
+                        index,
+                        len: 1,
+                        elem_stride: u64::from(width),
+                        width,
+                    });
+                    Ok(dst)
+                }
+                "MmioAtomic.swap_acquire" | "MmioAtomic.fetch_or_release" => {
+                    let value = value()?;
+                    let dst = b.fresh(expr.ty.clone());
+                    if key == "MmioAtomic.swap_acquire" {
+                        b.emit(Inst::PlacedInterruptCellSwapAcquire {
+                            dst,
+                            base,
+                            field_offset,
+                            index,
+                            len: 1,
+                            elem_stride: u64::from(width),
+                            width,
+                            value,
+                        });
+                    } else {
+                        b.emit(Inst::PlacedInterruptCellFetchOrRelease {
+                            dst,
+                            base,
+                            field_offset,
+                            index,
+                            len: 1,
+                            elem_stride: u64::from(width),
+                            width,
+                            value,
+                        });
+                    }
+                    Ok(dst)
+                }
+                other => Err(LowerError::internal(format!(
+                    "unknown atomic MMIO intrinsic `{other}`"
+                ))),
+            }
+        }
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            type_arg,
+            args,
+            ..
         } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
             lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
@@ -5012,6 +5095,98 @@ fn lower_interrupt_cell_intrinsic(
             "`{key}` reached lowering with no receiver"
         )));
     };
+    let width = match bodies::interrupt_cell_element_type(&recv.ty) {
+        Some(Type::U32) => 4,
+        Some(Type::U64) => 8,
+        _ => {
+            return Err(LowerError::internal(format!(
+                "unsupported InterruptCell receiver type {:?}",
+                recv.ty
+            )));
+        }
+    };
+    if let TypedExprKind::Index(base, index_expr) = &recv.kind {
+        let Some((static_expr, field_offset, elem_stride, len)) =
+            placed_array_field_index(base, b.prog())?
+        else {
+            return Err(LowerError::unimplemented(
+                "an `InterruptCell` indexed outside a placed runtime array is",
+            ));
+        };
+        let base = lower_expr(&static_expr, b, env)?;
+        let index = lower_expr(index_expr, b, env)?;
+        let mut value = || -> Result<Temp, LowerError> {
+            let Some((_, value)) = args.iter().find(|(label, _)| label == "value") else {
+                return Err(LowerError::internal(format!(
+                    "`{key}` has no value argument"
+                )));
+            };
+            lower_expr(value, b, env)
+        };
+        return match key {
+            "InterruptCell.load_acquire" => {
+                let dst = b.fresh(ret_ty.clone());
+                b.emit(Inst::PlacedInterruptCellLoadAcquire {
+                    dst,
+                    base,
+                    field_offset,
+                    index,
+                    len,
+                    elem_stride,
+                    width,
+                });
+                Ok(dst)
+            }
+            "InterruptCell.store_release" => {
+                let value = value()?;
+                b.emit(Inst::PlacedInterruptCellStoreRelease {
+                    base,
+                    field_offset,
+                    index,
+                    len,
+                    elem_stride,
+                    width,
+                    value,
+                });
+                let dst = b.fresh(Type::Unit);
+                b.emit(Inst::ConstUnit { dst });
+                Ok(dst)
+            }
+            "InterruptCell.swap_acquire" => {
+                let value = value()?;
+                let dst = b.fresh(ret_ty.clone());
+                b.emit(Inst::PlacedInterruptCellSwapAcquire {
+                    dst,
+                    base,
+                    field_offset,
+                    index,
+                    len,
+                    elem_stride,
+                    width,
+                    value,
+                });
+                Ok(dst)
+            }
+            "InterruptCell.fetch_or_release" => {
+                let value = value()?;
+                let dst = b.fresh(ret_ty.clone());
+                b.emit(Inst::PlacedInterruptCellFetchOrRelease {
+                    dst,
+                    base,
+                    field_offset,
+                    index,
+                    len,
+                    elem_stride,
+                    width,
+                    value,
+                });
+                Ok(dst)
+            }
+            other => Err(LowerError::internal(format!(
+                "unknown InterruptCell intrinsic `{other}`"
+            ))),
+        };
+    }
     let TypedExprKind::Field(base, fname) = &recv.kind else {
         return Err(LowerError::unimplemented(
             "an `InterruptCell` op on a non-field place (only `self.<cell>` is supported) is",
@@ -5030,7 +5205,6 @@ fn lower_interrupt_cell_intrinsic(
     let base_ty = bodies::unwrap_own(base.ty.clone());
     let idx = field_index(b.prog(), &base_ty, fname)?;
     let field_off = interrupt_cell_field_off(b, &base_ty, idx)?;
-    let width = 4u8;
     match key {
         "InterruptCell.load_acquire" => {
             let dst = b.fresh(ret_ty.clone());

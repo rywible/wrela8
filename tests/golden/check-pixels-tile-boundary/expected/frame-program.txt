@@ -113,7 +113,7 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
   ExclusionProof id=proof15 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1514946864847605,0.7555702372789217] separation=0.10461968648476047]
   ExclusionProof id=proof16 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1514946864847605,0.7555702372789217] separation=0.10461968648476047]
   ExclusionProof id=proof17 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1514946864847605,0.7555702372789217] separation=0.10461968648476047]
-  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a30000 frameprog_bytes=181904 state_base=0x40a60000 state_bytes=324836
+  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a70000 frameprog_bytes=181904 state_base=0x40aa0000 state_bytes=324836
   GeneratedModule begin
     module __image_pixels
 
@@ -274,9 +274,9 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
     pub const N_RENDERERS: usize = 1
     pub const N_RENDER_WORKERS: usize = 1
 
-    const R0_FRAMEPROG_BASE: usize = 1084424192
+    const R0_FRAMEPROG_BASE: usize = 1084686336
     const R0_FRAMEPROG_BYTES: usize = 181904
-    const R0_STATE_BASE: usize = 1084620800
+    const R0_STATE_BASE: usize = 1084882944
     const R0_STATE_BYTES: usize = 324836
     const R0_WIDTH: usize = 128
     const R0_HEIGHT: usize = 31
@@ -384,212 +384,212 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
     const R0_WORKSPACE_SHADING_BYTES: usize = 7744
     const R0_WORKSPACE_TRANSPARENCY_OFFSET: usize = 28296
     const R0_WORKSPACE_TRANSPARENCY_BYTES: usize = 3872
-    const R0_STATE_HEADER_BASE: usize = 1084620800
+    const R0_STATE_HEADER_BASE: usize = 1084882944
     const R0_STATE_HEADER_BYTES: usize = 256
-    const R0_COEFFICIENT_SNAPSHOTS_BASE: usize = 1084621056
+    const R0_COEFFICIENT_SNAPSHOTS_BASE: usize = 1084883200
     const R0_COEFFICIENT_SNAPSHOTS_BYTES: usize = 0
-    const R0_FRAME_SNAPSHOTS_BASE: usize = 1084621056
+    const R0_FRAME_SNAPSHOTS_BASE: usize = 1084883200
     const R0_FRAME_SNAPSHOTS_BYTES: usize = 1376
-    const R0_FRAME_COMPLEXES_BASE: usize = 1084622432
+    const R0_FRAME_COMPLEXES_BASE: usize = 1084884576
     const R0_FRAME_COMPLEXES_BYTES: usize = 253952
-    const R0_WORKER_SCRATCH_BASE: usize = 1084876384
+    const R0_WORKER_SCRATCH_BASE: usize = 1085138528
     const R0_WORKER_SCRATCH_BYTES: usize = 32168
-    const R0_FRAMEBUFFERS_BASE: usize = 1084911616
+    const R0_FRAMEBUFFERS_BASE: usize = 1085173760
     const R0_FRAMEBUFFERS_BYTES: usize = 32768
-    const R0_PROBES_BASE: usize = 1084944384
+    const R0_PROBES_BASE: usize = 1085206528
     const R0_PROBES_BYTES: usize = 0
-    const R0_KINETIC_STATE_BASE: usize = 1084944384
+    const R0_KINETIC_STATE_BASE: usize = 1085206528
     const R0_KINETIC_STATE_BYTES: usize = 768
-    const R0_TILE_DESCRIPTORS_BASE: usize = 1084945152
+    const R0_TILE_DESCRIPTORS_BASE: usize = 1085207296
     const R0_TILE_DESCRIPTORS_BYTES: usize = 416
-    const R0_TILE_OWNERSHIP_BASE: usize = 1084945568
+    const R0_TILE_OWNERSHIP_BASE: usize = 1085207712
     const R0_TILE_OWNERSHIP_BYTES: usize = 4
-    const R0_FAILURE_BASE: usize = 1084945572
+    const R0_FAILURE_BASE: usize = 1085207716
     const R0_FAILURE_BYTES: usize = 64
-    const R0_TELEMETRY_BASE: usize = 1084945640
+    const R0_TELEMETRY_BASE: usize = 1085207784
     const R0_TELEMETRY_BYTES: usize = 0
-    const R0_FRAMEBUFFER_BASE: usize = 1084911616
+    const R0_FRAMEBUFFER_BASE: usize = 1085173760
     const R0_FRAMEBUFFER_BYTES: usize = 32768
-    const R0_PROBE_RESERVATION_BASE: usize = 1084944384
+    const R0_PROBE_RESERVATION_BASE: usize = 1085206528
     const R0_PROBE_RESERVATION_BYTES: usize = 0
     @layout(runtime, endian=little)
     struct R0DebugFramebufferChunk0View:
         words: [u64; 4096]
-    @placed(0x40aa7000)
+    @placed(0x40ae7000)
     static R0_DEBUG_FRAMEBUFFER_CHUNK_0: R0DebugFramebufferChunk0View
     @layout(runtime, endian=little)
     struct R0ScanoutStateView:
         words: [u64; 32]
-    @placed(0x40a60000)
+    @placed(0x40aa0000)
     static R0_SCANOUT_STATE: R0ScanoutStateView
     @layout(runtime, endian=little)
     struct R0DisplayListChunk0View:
         words: [u64; 52]
-    @placed(0x40aaf300)
+    @placed(0x40aef300)
     static R0_DISPLAY_LIST_CHUNK_0: R0DisplayListChunk0View
     @layout(runtime, endian=little)
     struct R0FrameSnapshotView:
         bits: [u32; 152]
         meta: [u64; 10]
-    @placed(0x40a60100)
+    @placed(0x40aa0100)
     static R0_FRAME_SNAPSHOT: R0FrameSnapshotView
     const R0_WORKER_0_CORE: usize = 0
     const R0_WORKER_0_TILES_START: usize = 0
     const R0_WORKER_0_TILES_END: usize = 2
-    const R0_WORKER_0_WORKSPACE_BASE: usize = 1084876384
+    const R0_WORKER_0_WORKSPACE_BASE: usize = 1085138528
     const R0_WORKER_0_WORKSPACE_BYTES: usize = 32168
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceHeaderView:
         words: [u64; 8]
-    @placed(0x40a9e660)
+    @placed(0x40ade660)
     static R0_WORKER_0_WORKSPACE_HEADER: R0Worker0WorkspaceHeaderView
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceACTIVE_FEATURESChunk0View:
         words: [u64; 48]
-    @placed(0x40a9e6a0)
+    @placed(0x40ade6a0)
     static R0_WORKER_0_WORKSPACE_ACTIVE_FEATURES_CHUNK_0: R0Worker0WorkspaceACTIVE_FEATURESChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOTSChunk0View:
         words: [u64; 96]
-    @placed(0x40a9e820)
+    @placed(0x40ade820)
     static R0_WORKER_0_WORKSPACE_ROOTS_CHUNK_0: R0Worker0WorkspaceROOTSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOTS_TMPChunk0View:
         words: [u64; 96]
-    @placed(0x40a9eb20)
+    @placed(0x40adeb20)
     static R0_WORKER_0_WORKSPACE_ROOTS_TMP_CHUNK_0: R0Worker0WorkspaceROOTS_TMPChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOT_STACKChunk0View:
         words: [u64; 48]
-    @placed(0x40a9ee20)
+    @placed(0x40adee20)
     static R0_WORKER_0_WORKSPACE_ROOT_STACK_CHUNK_0: R0Worker0WorkspaceROOT_STACKChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceACTIVE_SHEETSChunk0View:
         words: [u64; 48]
-    @placed(0x40a9efa0)
+    @placed(0x40adefa0)
     static R0_WORKER_0_WORKSPACE_ACTIVE_SHEETS_CHUNK_0: R0Worker0WorkspaceACTIVE_SHEETSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceEVENTSChunk0View:
         words: [u64; 228]
-    @placed(0x40a9f120)
+    @placed(0x40adf120)
     static R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_0: R0Worker0WorkspaceEVENTSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceEVENT_STACKChunk0View:
         words: [u64; 8]
-    @placed(0x40a9f840)
+    @placed(0x40adf840)
     static R0_WORKER_0_WORKSPACE_EVENT_STACK_CHUNK_0: R0Worker0WorkspaceEVENT_STACKChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk0View:
         words: [u64; 928]
-    @placed(0x40a9f880)
+    @placed(0x40adf880)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_0: R0Worker0WorkspaceRUNSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceREBUILDChunk0View:
         words: [u64; 363]
-    @placed(0x40aa1580)
+    @placed(0x40ae1580)
     static R0_WORKER_0_WORKSPACE_REBUILD_CHUNK_0: R0Worker0WorkspaceREBUILDChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceCORRIDORSChunk0View:
         words: [u64; 456]
-    @placed(0x40aa20d8)
+    @placed(0x40ae20d8)
     static R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_0: R0Worker0WorkspaceCORRIDORSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceFIXED_QChunk0View:
         words: [u64; 242]
-    @placed(0x40aa2f18)
+    @placed(0x40ae2f18)
     static R0_WORKER_0_WORKSPACE_FIXED_Q_CHUNK_0: R0Worker0WorkspaceFIXED_QChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceSHADINGChunk0View:
         words: [u64; 968]
-    @placed(0x40aa36a8)
+    @placed(0x40ae36a8)
     static R0_WORKER_0_WORKSPACE_SHADING_CHUNK_0: R0Worker0WorkspaceSHADINGChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceTRANSPARENCYChunk0View:
         words: [u64; 484]
-    @placed(0x40aa54e8)
+    @placed(0x40ae54e8)
     static R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_0: R0Worker0WorkspaceTRANSPARENCYChunk0View
-    const R0_SCALAR_BASE: usize = 0x40a30180
+    const R0_SCALAR_BASE: usize = 0x40a70180
     const R0_SCALAR_COUNT: usize = 24
     const R0_SCALAR_BYTES: usize = 384
     @layout(runtime, endian=little)
     struct R0ScalarTableView:
         records: [FrameProgramRecordV1; R0_SCALAR_COUNT]
-    @placed(0x40a30180)
+    @placed(0x40a70180)
     static R0_SCALAR_TABLE: R0ScalarTableView
-    const R0_FIELD_BASE: usize = 0x40a30300
+    const R0_FIELD_BASE: usize = 0x40a70300
     const R0_FIELD_COUNT: usize = 2
     const R0_FIELD_BYTES: usize = 32
     @layout(runtime, endian=little)
     struct R0FieldTableView:
         records: [FrameProgramRecordV1; R0_FIELD_COUNT]
-    @placed(0x40a30300)
+    @placed(0x40a70300)
     static R0_FIELD_TABLE: R0FieldTableView
-    const R0_OBJECT_BASE: usize = 0x40a30340
+    const R0_OBJECT_BASE: usize = 0x40a70340
     const R0_OBJECT_COUNT: usize = 1
     const R0_OBJECT_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0ObjectTableView:
         records: [FrameProgramRecordV1; R0_OBJECT_COUNT]
-    @placed(0x40a30340)
+    @placed(0x40a70340)
     static R0_OBJECT_TABLE: R0ObjectTableView
-    const R0_FEATURE_BASE: usize = 0x40a30380
+    const R0_FEATURE_BASE: usize = 0x40a70380
     const R0_FEATURE_COUNT: usize = 6
     const R0_FEATURE_BYTES: usize = 96
     @layout(runtime, endian=little)
     struct R0FeatureTableView:
         records: [FrameProgramRecordV1; R0_FEATURE_COUNT]
-    @placed(0x40a30380)
+    @placed(0x40a70380)
     static R0_FEATURE_TABLE: R0FeatureTableView
-    const R0_MATERIAL_BASE: usize = 0x40a30400
+    const R0_MATERIAL_BASE: usize = 0x40a70400
     const R0_MATERIAL_COUNT: usize = 1
     const R0_MATERIAL_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0MaterialTableView:
         records: [FrameProgramRecordV1; R0_MATERIAL_COUNT]
-    @placed(0x40a30400)
+    @placed(0x40a70400)
     static R0_MATERIAL_TABLE: R0MaterialTableView
     const R0_PARAMETER_BASE: usize = 0x0
     const R0_PARAMETER_COUNT: usize = 0
     const R0_PARAMETER_BYTES: usize = 0
-    const R0_EVENT_BASE: usize = 0x40a30440
+    const R0_EVENT_BASE: usize = 0x40a70440
     const R0_EVENT_COUNT: usize = 57
     const R0_EVENT_BYTES: usize = 912
     @layout(runtime, endian=little)
     struct R0EventTableView:
         records: [FrameProgramRecordV1; R0_EVENT_COUNT]
-    @placed(0x40a30440)
+    @placed(0x40a70440)
     static R0_EVENT_TABLE: R0EventTableView
-    const R0_CSG_BASE: usize = 0x40a30800
+    const R0_CSG_BASE: usize = 0x40a70800
     const R0_CSG_COUNT: usize = 1
     const R0_CSG_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0CsgTableView:
         records: [FrameProgramRecordV1; R0_CSG_COUNT]
-    @placed(0x40a30800)
+    @placed(0x40a70800)
     static R0_CSG_TABLE: R0CsgTableView
-    const R0_FIXED_DOMAIN_BASE: usize = 0x40a30840
+    const R0_FIXED_DOMAIN_BASE: usize = 0x40a70840
     const R0_FIXED_DOMAIN_COUNT: usize = 369
     const R0_FIXED_DOMAIN_BYTES: usize = 5904
     @layout(runtime, endian=little)
     struct R0FixedDomainTableView:
         records: [FrameProgramRecordV1; R0_FIXED_DOMAIN_COUNT]
-    @placed(0x40a30840)
+    @placed(0x40a70840)
     static R0_FIXED_DOMAIN_TABLE: R0FixedDomainTableView
-    const R0_IMMEDIATE_BASE: usize = 0x40a31f80
+    const R0_IMMEDIATE_BASE: usize = 0x40a71f80
     const R0_IMMEDIATE_COUNT: usize = 7242
     const R0_IMMEDIATE_BYTES: usize = 173808
     @layout(runtime, endian=little)
     struct R0ImmediateTableView:
         records: [FrameProgramImmediateV1; R0_IMMEDIATE_COUNT]
-    @placed(0x40a31f80)
+    @placed(0x40a71f80)
     static R0_IMMEDIATE_TABLE: R0ImmediateTableView
-    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40a5c680
+    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40a9c680
     const R0_CAMERA_LIGHT_POST_COUNT: usize = 1
     const R0_CAMERA_LIGHT_POST_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0CameraLightPostTableView:
         records: [FrameProgramRecordV1; R0_CAMERA_LIGHT_POST_COUNT]
-    @placed(0x40a5c680)
+    @placed(0x40a9c680)
     static R0_CAMERA_LIGHT_POST_TABLE: R0CameraLightPostTableView
     const R0_TEXTURE_BASE: usize = 0x0
     const R0_TEXTURE_COUNT: usize = 0
@@ -610,12 +610,12 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
     const R0_DEBUG_NAME_COUNT: usize = 0
     const R0_DEBUG_NAME_BYTES: usize = 0
 
-    @placed(0x40a30000)
+    @placed(0x40a70000)
     static R0_FRAME_PROGRAM_HEADER: FrameProgramHeaderV1
     @layout(runtime, endian=little)
     struct R0FrameProgramDirectoryView:
         records: [FrameProgramTableV1; 17]
-    @placed(0x40a30050)
+    @placed(0x40a70050)
     static R0_FRAME_PROGRAM_DIRECTORY: R0FrameProgramDirectoryView
     const R0_DIRECTORY_COUNT: usize = 17
 
@@ -2410,7 +2410,7 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
 
     pub fn __wrela_pixels_p7_worker_assignment(renderer: usize, worker: u32) -> [u64; 7]:
         if renderer == 0 and worker == 0:
-            return [1, 1084424192, 1084876384, 32168, 0, 2, 0]
+            return [1, 1084686336, 1085138528, 32168, 0, 2, 0]
         return [0; 7]
 
     pub fn __wrela_pixels_p7_framebuffer_store_byte(renderer: usize, byte: usize, value: u8) -> bool:
@@ -2916,7 +2916,7 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
         generation = active - 1
         sequence = R0_SCANOUT_STATE.words[2]
         list_offset = generation.to[usize]() * 208
-        tiles_addr = 1084945152 + generation * 208 + 160
+        tiles_addr = 1085207296 + generation * 208 + 160
         if (
             not __wrela_pixels_p8_list_store_word_r0(list_offset, 2.to[u64]() | (1.to[u64]() << 32) | (generation << 40) | (0.to[u64]() << 48))
             or not __wrela_pixels_p8_list_store_word_r0(list_offset + 8, 128.to[u64]() | (31.to[u64]() << 32))
@@ -2940,7 +2940,7 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
             if y + visible_height > 31:
                 visible_height = 31 - y
             descriptor = list_offset + 160 + tile.to[usize]() * 24
-            pixels_addr = 1084911616 + generation * 16384 + tile * 8192
+            pixels_addr = 1085173760 + generation * 16384 + tile * 8192
             if (
                 not __wrela_pixels_p8_list_store_word_r0(descriptor, pixels_addr)
                 or not __wrela_pixels_p8_list_store_word_r0(descriptor + 8, x | (y << 16) | (visible_width << 32) | (visible_height << 48))
@@ -2969,7 +2969,7 @@ FrameProgram v1 renderer=0 digest=f359620fe9db1009717b5a9ba34d7a5ffa118c12e983d7
         if not __wrela_pixels_p8_list_store_word_r0(list_offset + 152, 0):
             R0_SCANOUT_STATE.words[3] = 0
             return [0, 3, sequence]
-        return [2, 1084945152 + generation * 208, sequence]
+        return [2, 1085207296 + generation * 208, sequence]
 
     pub fn __wrela_pixels_p8_complete_r0() -> [u64; 3]:
         active = R0_SCANOUT_STATE.words[3]

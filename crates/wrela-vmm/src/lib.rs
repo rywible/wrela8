@@ -1,7 +1,11 @@
 use std::time::Duration;
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub mod hv;
+pub(crate) mod engine;
+pub(crate) mod guest_memory;
+pub(crate) mod guest_pmu;
+pub(crate) mod hardening;
+pub(crate) mod host;
+pub mod input;
 
 pub const WALL_CAP: Duration = Duration::from_secs(30);
 /// Hang detector for images carrying a Pixels renderer.
@@ -29,6 +33,29 @@ pub const PIXELS_WALL_CAP: Duration = Duration::from_secs(1800);
 /// backends must install the policy before executing any guest instruction.
 pub(crate) const GUEST_FPCR: u64 = 1 << 25;
 
+/// Stable, guest-independent capability rows consumed by the remote lab
+/// inventory. The adapter performs the same fail-closed checks used before a
+/// VM is created; this is not a second KVM probing implementation.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn host_capability_probe() -> Result<String, VmmError> {
+    Ok(crate::host::kvm::probe_capabilities()?.render())
+}
+
+/// Validate the selected product process boundary without creating a VM.
+///
+/// This narrow entry point exists for package acceptance: the signed binary
+/// must prove that the kernel sandbox is active before it is entrusted with
+/// an image. Diagnostic identities are deliberately refused.
+pub fn validate_product_host_profile() -> Result<(), VmmError> {
+    let profile = crate::hardening::HostProfile::selected()?;
+    if profile != crate::hardening::HostProfile::Product {
+        return Err(VmmError::HostProfile(
+            "package acceptance requires WRELA_HOST_PROFILE=product".into(),
+        ));
+    }
+    profile.validate_process()
+}
+
 pub(crate) const fn boot_wall_cap(has_pixels_renderer: bool) -> Duration {
     if has_pixels_renderer {
         PIXELS_WALL_CAP
@@ -51,21 +78,23 @@ pub enum VmmError {
     },
     MalformedReport(String),
     Io(String),
-    Hvf {
-        call: &'static str,
-        code: i32,
+    Host {
+        backend: host::BackendKind,
+        operation: &'static str,
+        code: i64,
+        detail: String,
     },
     BadImage(String),
     GuestFault(String),
     ReplayDivergence(String),
+    HostProfile(String),
     Timeout {
         core: usize,
+        /// The deadline that actually elapsed. A Pixels image runs under a
+        /// much longer cap than `WALL_CAP`, and reporting the wrong one makes
+        /// a timeout unreadable exactly when it is hardest to diagnose.
+        cap: Duration,
         transcript_so_far: Vec<u8>,
-    },
-    HostCoresRefuse {
-        requested: usize,
-        failed_at: usize,
-        code: i32,
     },
 }
 
@@ -79,52 +108,30 @@ impl std::fmt::Display for VmmError {
             ),
             VmmError::MalformedReport(msg) => write!(f, "malformed report: {msg}"),
             VmmError::Io(msg) => write!(f, "{msg}"),
-            VmmError::Hvf { call, code } => {
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                {
-                    write!(f, "{call} failed: {}", hv::describe_hv_return(*code))
-                }
-                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                {
-                    write!(f, "{call} failed: code {code}")
-                }
-            }
+            VmmError::Host {
+                backend,
+                operation,
+                code,
+                detail,
+            } => write!(
+                f,
+                "{} host operation `{operation}` failed (code {code}): {detail}",
+                backend.name()
+            ),
             VmmError::BadImage(msg) => write!(f, "bad image: {msg}"),
             VmmError::GuestFault(msg) => write!(f, "guest fault: {msg}"),
             VmmError::ReplayDivergence(msg) => write!(f, "replay divergence: {msg}"),
+            VmmError::HostProfile(msg) => write!(f, "host profile refusal: {msg}"),
             VmmError::Timeout {
                 core,
+                cap,
                 transcript_so_far,
             } => write!(
                 f,
-                "timeout after {:?} on core {core}: {} byte(s) of transcript captured before the \
-                 forced exit",
-                WALL_CAP,
+                "timeout after {cap:?} on core {core}: {} byte(s) of transcript captured before \
+                 the forced exit",
                 transcript_so_far.len()
             ),
-            VmmError::HostCoresRefuse {
-                requested,
-                failed_at,
-                code,
-            } => {
-                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                {
-                    write!(
-                        f,
-                        "host refused Cores count={requested}: hv_vcpu_create failed for core \
-                         {failed_at}: {}",
-                        hv::describe_hv_return(*code)
-                    )
-                }
-                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-                {
-                    write!(
-                        f,
-                        "host refused Cores count={requested}: hv_vcpu_create failed for core \
-                         {failed_at}: code {code}"
-                    )
-                }
-            }
         }
     }
 }
@@ -139,10 +146,19 @@ pub struct BootOutcome {
     pub exits: u64,
     pub core_marks: Vec<u64>,
     pub lane2_hits: Vec<(u32, u64)>,
+    pub lane2_hits_per_core: Vec<Vec<(u32, u64)>>,
     pub frames: Vec<wrela_machine::pixels::PresentedFrame>,
     /// Digest recomputed from the bytes staged by the selected host backend,
     /// one per successfully presented frame.
     pub frame_buffer_digests: Vec<[u8; 32]>,
+    /// Time spent inside the host vCPU-run primitive, by logical vCPU. This
+    /// excludes allocation, jail setup, SSH, device handling, and parking.
+    pub vcpu_run_ns: Vec<u64>,
+    /// Guest-only PMU values by vCPU in the canonical metrics-row order.
+    pub vcpu_guest_counters: Vec<[u64; 7]>,
+    /// `diagnostic-nonconforming` or the enforced product profile.
+    pub host_profile: &'static str,
+    pub translation_profile: &'static str,
 }
 
 pub use wrela_machine::report::{
@@ -186,6 +202,54 @@ pub(crate) fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Resu
             return Err(VmmError::BadImage(format!(
                 "input `{path}` sha256 mismatch: report declares {expected}, file hashes to {got}"
             )));
+        }
+    }
+    if let Some(stage1) = &parsed.stage1 {
+        let start = stage1
+            .tables_base
+            .checked_sub(wrela_machine::layout::IMAGE_BASE)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| VmmError::BadImage("stage1 tables begin below the image base".into()))?;
+        let size = usize::try_from(stage1.tables_size)
+            .map_err(|_| VmmError::BadImage("stage1 table size exceeds usize".into()))?;
+        let end = start
+            .checked_add(size)
+            .ok_or_else(|| VmmError::BadImage("stage1 table range overflows".into()))?;
+        let bytes = img.get(start..end).ok_or_else(|| {
+            VmmError::BadImage("stage1 table range is outside the image blob".into())
+        })?;
+        let got = wrela_machine::sha256::sha256_hex(bytes);
+        if got != stage1.tables_sha256 {
+            return Err(VmmError::BadImage(format!(
+                "stage1 table sha256 mismatch: report declares {}, table bytes hash to {got}",
+                stage1.tables_sha256
+            )));
+        }
+        let (canonical, used_pages) = wrela_machine::stage1::canonical_tables(&parsed.protections)
+            .map_err(|message| VmmError::BadImage(format!("invalid stage1 matrix: {message}")))?;
+        if stage1.used_pages != used_pages {
+            return Err(VmmError::BadImage(format!(
+                "stage1 used_pages={} does not match canonical table count {used_pages}",
+                stage1.used_pages
+            )));
+        }
+        if bytes != canonical {
+            return Err(VmmError::BadImage(
+                "stage1 table bytes do not implement the canonical identity map and protection matrix"
+                    .into(),
+            ));
+        }
+        if parsed.protections.iter().any(|range| {
+            range.class == "normal-rw-nx"
+                && parsed.protections.iter().any(|other| {
+                    other.class == "normal-ro-rx"
+                        && range.base < other.base.saturating_add(other.size)
+                        && other.base < range.base.saturating_add(range.size)
+                })
+        }) {
+            return Err(VmmError::BadImage(
+                "stage1 permission matrix overlaps executable and writable ranges".into(),
+            ));
         }
     }
     if parsed.frameprog_sections.is_empty() {
@@ -602,14 +666,14 @@ pub mod lane3;
 pub mod replay;
 
 pub(crate) use boot::boot_image_core;
-#[cfg(test)]
-pub(crate) use boot::host_cores_refuse;
-pub use boot::{boot_image, boot_image_with_display};
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use boot::{
-    boot_image_core_with_delayed_raise, core_sp_tops_from_report,
-    create_inject as vcpu_create_inject,
+pub(crate) use boot::boot_image_core_with_delayed_raise;
+pub use boot::{
+    boot_image, boot_image_diagnostic_mmu_off, boot_image_with_display,
+    boot_image_with_guest_counters,
 };
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use engine::{core_sp_tops_from_report, create_inject as vcpu_create_inject};
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use exit_loop::check_core_marks;
@@ -618,9 +682,6 @@ pub(crate) use exit_loop::drain_console;
 #[cfg(test)]
 pub(crate) use exit_loop::{AdmissionWitness, check_vector_in_range};
 
-#[cfg(target_os = "linux")]
-pub mod kvm {}
-
 pub mod devices;
 
 pub mod record;
@@ -628,6 +689,8 @@ pub mod record;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    use crate::host::hvf as hv;
 
     #[test]
     fn park_deadline_is_clamped_to_wall_cap() {
@@ -746,6 +809,62 @@ mod tests {
             matches!(err, VmmError::BadImage(ref msg) if msg.contains("image sha256 mismatch")),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn stage1_validation_rejects_self_consistent_noncanonical_tables() {
+        let protections = vec![wrela_machine::report::ProtectionRange {
+            base: wrela_machine::layout::DRAM_BASE,
+            size: wrela_machine::layout::DRAM_SIZE,
+            class: "invalid".into(),
+            owner: "unused".into(),
+        }];
+        let (canonical, used_pages) =
+            wrela_machine::stage1::canonical_tables(&protections).unwrap();
+        let table_offset = usize::try_from(
+            wrela_machine::layout::STAGE1_TABLES_BASE - wrela_machine::layout::IMAGE_BASE,
+        )
+        .unwrap();
+        let mut image = vec![0_u8; table_offset + canonical.len()];
+        image[table_offset..].copy_from_slice(&canonical);
+        // Remap the first MMIO page to its neighbour, then authenticate both
+        // the modified table region and whole image as an attacker able to
+        // rewrite a paired image/report would do.
+        let low_l3_entry = 3 * wrela_machine::stage1::GRANULE as usize;
+        let descriptor = u64::from_le_bytes(
+            image[table_offset + low_l3_entry..table_offset + low_l3_entry + 8]
+                .try_into()
+                .unwrap(),
+        );
+        image[table_offset + low_l3_entry..table_offset + low_l3_entry + 8]
+            .copy_from_slice(&(descriptor + wrela_machine::stage1::GRANULE).to_le_bytes());
+        let table_sha = wrela_machine::sha256::sha256_hex(&image[table_offset..]);
+        let image_sha = wrela_machine::sha256::sha256_hex(&image);
+        let allowlist = wrela_machine::sha256::sha256_hex(
+            wrela_machine::stage1::SYSTEM_INSTRUCTION_ALLOWLIST_V1.as_bytes(),
+        );
+        let report = format!(
+            "Machine revision={}\nInput path=x sha256={}\nImage sha256={image_sha}\n\
+             Section name=entry base={:#x} size=1\nEntry base={:#x}\n\
+             Stage1 tables_base={:#x} tables_bytes={} tables_sha256={table_sha} used_pages={used_pages} ttbr0_el1={:#x} tcr_el1={:#x} mair_el1={:#x} sctlr_el1={:#x} vbar_el1={:#x} system_allowlist_sha256={allowlist}\n\
+             Protection base={:#x} size={} class=invalid owner=unused\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            EMPTY_SHA256,
+            wrela_machine::layout::IMAGE_BASE,
+            wrela_machine::layout::IMAGE_BASE,
+            wrela_machine::layout::STAGE1_TABLES_BASE,
+            wrela_machine::layout::STAGE1_TABLES_SIZE,
+            wrela_machine::layout::STAGE1_TABLES_BASE,
+            wrela_machine::stage1::TCR_EL1,
+            wrela_machine::stage1::MAIR_EL1,
+            wrela_machine::stage1::SCTLR_EL1,
+            wrela_machine::layout::STAGE1_FAULT_BASE,
+            wrela_machine::layout::DRAM_BASE,
+            wrela_machine::layout::DRAM_SIZE,
+        );
+        let parsed = parse_report(&report).unwrap();
+        let error = validate_report_digests(&parsed, &image).unwrap_err();
+        assert!(error.to_string().contains("canonical identity map"));
     }
 
     fn frameprog_report(
@@ -1077,14 +1196,8 @@ mod tests {
         words.extend(load_imm_words(10, wrela_machine::mmio::EXIT_MMIO_ADDR));
         words.push(encode::enc_str_x_imm(2, 10, 0));
 
-        let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            report_identity("clock-test.wr", &img_bytes),
-            wrela_machine::layout::IMAGE_BASE,
-            img_bytes.len(),
-            wrela_machine::layout::IMAGE_BASE,
-        );
+        let raw: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let (img_bytes, report_text) = seal_hand_built_image(&raw, "clock-test");
 
         let tmp_dir = std::env::temp_dir().join(format!(
             "wrela-vmm-record-replay-test-{}",
@@ -1149,50 +1262,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn boot_hand_built_image(img_bytes: &[u8], tag: &str) -> BootOutcome {
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            report_identity(&format!("{tag}.wr"), img_bytes),
+    /// Seal a hand-assembled image through the compiler's own stage-1 path.
+    ///
+    /// These fixtures must run on the same sealed machine as compiler output:
+    /// identity-mapped stage 1, W^X, and the fault trampoline. A hand-written
+    /// report without the `Stage1` contract is refused before the guest runs,
+    /// which would quietly turn every fixture below into a test of that
+    /// refusal instead of the behaviour it names.
+    #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
+    fn seal_raw_image(
+        blob: &[u8],
+        sections: &[wrela_compiler::layout::Section],
+        tag: &str,
+    ) -> (Vec<u8>, String) {
+        let image = wrela_compiler::layout::layout_raw_image(
+            blob,
+            sections,
             wrela_machine::layout::IMAGE_BASE,
-            img_bytes.len(),
-            wrela_machine::layout::IMAGE_BASE,
-        );
-        let tmp_dir =
-            std::env::temp_dir().join(format!("wrela-vmm-{tag}-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
-        let img_path = tmp_dir.join(format!("{tag}.img"));
-        let report_path = tmp_dir.join(format!("{tag}.report.txt"));
-        std::fs::write(&img_path, &img_bytes).expect("write image");
-        std::fs::write(&report_path, &report_text).expect("write report");
-        let outcome = boot_image(&report_path, &img_path).expect("live boot");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        outcome
+            1,
+        )
+        .unwrap_or_else(|error| panic!("seal hand-built `{tag}` image: {}", error.message));
+        let mut report = report_identity(&format!("{tag}.wr"), &image.blob);
+        wrela_compiler::layout::render_layout_section(&mut report, &image);
+        (image.blob, report)
+    }
+
+    #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
+    fn seal_hand_built_image(img_bytes: &[u8], tag: &str) -> (Vec<u8>, String) {
+        seal_raw_image(
+            img_bytes,
+            &[wrela_compiler::layout::Section {
+                name: "entry",
+                base: wrela_machine::layout::IMAGE_BASE,
+                size: img_bytes.len() as u64,
+            }],
+            tag,
+        )
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn boot_hand_built_image(img_bytes: &[u8], tag: &str) -> BootOutcome {
+        let (report_path, img_path) = write_hand_built_image(img_bytes, tag);
+        let outcome = boot_image(&report_path, &img_path).expect("live boot");
+        let _ = std::fs::remove_dir_all(report_path.parent().expect("temp dir"));
+        outcome
+    }
+
+    #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
     fn write_hand_built_image(
         img_bytes: &[u8],
         tag: &str,
     ) -> (std::path::PathBuf, std::path::PathBuf) {
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            report_identity(&format!("{tag}.wr"), img_bytes),
-            wrela_machine::layout::IMAGE_BASE,
-            img_bytes.len(),
-            wrela_machine::layout::IMAGE_BASE,
-        );
+        let (blob, report_text) = seal_hand_built_image(img_bytes, tag);
         let tmp_dir =
             std::env::temp_dir().join(format!("wrela-vmm-{tag}-test-{}", std::process::id()));
         std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
         let img_path = tmp_dir.join(format!("{tag}.img"));
         let report_path = tmp_dir.join(format!("{tag}.report.txt"));
-        std::fs::write(&img_path, img_bytes).expect("write image");
+        std::fs::write(&img_path, &blob).expect("write image");
         std::fs::write(&report_path, &report_text).expect("write report");
         (report_path, img_path)
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
     fn load_imm_words(reg: u8, value: u64) -> Vec<u32> {
         use wrela_compiler::encode;
         let h0 = (value & 0xFFFF) as u16;
@@ -1205,6 +1337,93 @@ mod tests {
             encode::enc_movk(reg, h2, 32, true),
             encode::enc_movk(reg, h3, 48, true),
         ]
+    }
+
+    /// Permanent Rasputin regression for the in-guest KVM cancellation path.
+    ///
+    /// Unlike a synthetic EINTR test, this vCPU is already executing an
+    /// infinite guest branch when the watchdog fires. The only successful
+    /// outcome is the signal-assisted KVM kick returning through the engine as
+    /// a structured timeout while retaining the transcript already published
+    /// by the guest.
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn a_spinning_kvm_guest_times_out_with_its_transcript() {
+        use wrela_compiler::encode;
+        use wrela_machine::console;
+
+        const TRANSCRIPT: &[u8] = b"wedged\n";
+        let mut packed = [0_u8; 8];
+        packed[..TRANSCRIPT.len()].copy_from_slice(TRANSCRIPT);
+
+        let mut words = Vec::new();
+        // Publish one console descriptor without needing an MMIO exit. The
+        // watchdog's diagnostic drain reads this append-only ring directly.
+        words.extend(load_imm_words(0, u64::from_le_bytes(packed)));
+        words.extend(load_imm_words(9, console::DATA_BASE));
+        words.push(encode::enc_str_x_imm(0, 9, 0));
+
+        words.extend(load_imm_words(0, console::DATA_BASE));
+        words.extend(load_imm_words(9, console::RING_BASE));
+        words.push(encode::enc_str_x_imm(0, 9, 0));
+        words.extend(load_imm_words(0, TRANSCRIPT.len() as u64));
+        words.push(encode::enc_str_x_imm(0, 9, 8));
+
+        words.push(encode::enc_movz(0, 1, 0, false));
+        words.extend(load_imm_words(
+            9,
+            console::RING_BASE + console::AVAIL_OFFSET + 2,
+        ));
+        words.push(encode::enc_strh_imm(0, 9, 0));
+        words.push(encode::enc_b(0));
+
+        let image: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (report_path, image_path) = write_hand_built_image(&image, "kvm-watchdog-spin");
+        let cap = Duration::from_millis(250);
+        let _cap = crate::engine::watchdog_cap_for_test(cap);
+        let error = boot_image(&report_path, &image_path)
+            .expect_err("a spinning guest must be stopped by the in-VMM watchdog");
+        let _ = std::fs::remove_dir_all(report_path.parent().expect("temp directory"));
+
+        match error {
+            VmmError::Timeout {
+                core,
+                cap: applied,
+                transcript_so_far,
+            } => {
+                assert_eq!(core, 0);
+                assert_eq!(applied, cap);
+                assert_eq!(transcript_so_far, TRANSCRIPT);
+            }
+            other => panic!("expected structured KVM timeout, got {other:?}"),
+        }
+    }
+
+    /// One sealed negative fixture runs unchanged on both selected hosts. HVF
+    /// traps BRK directly, while KVM delivers it through the guest vector and
+    /// fault doorbell; neither observation path may leak into the semantic
+    /// fault class.
+    #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "HVF lane: run via `cargo xtask verify-deep`"
+    )]
+    #[test]
+    fn guest_brk_has_the_same_semantic_class_on_the_selected_host() {
+        let image = wrela_compiler::encode::enc_brk(0x42).to_le_bytes();
+        let (report_path, image_path) = write_hand_built_image(&image, "guest-brk-class");
+        let error = boot_image(&report_path, &image_path)
+            .expect_err("BRK is a fail-closed guest fault, never a clean exit");
+        let _ = std::fs::remove_dir_all(report_path.parent().expect("temp directory"));
+        let message = error.to_string();
+        assert!(
+            message.contains(wrela_machine::fault::GUEST_BRK),
+            "the selected host must report the cross-host BRK class: {message}"
+        );
+        assert!(
+            !message.contains(wrela_machine::fault::STAGE1_PERMISSION_FAULT),
+            "a BRK must not be mislabeled as a protection fault: {message}"
+        );
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1269,6 +1488,21 @@ mod tests {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn compile_test_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
+        compile_test_image_at(src, "<conformance>")
+    }
+
+    /// Compile an in-memory source under a caller-declared source path.
+    ///
+    /// A repository-owned fixture may name the compiler-reserved surface, but
+    /// only through the marker check, which is deliberately scoped to real
+    /// files under the fixture roots. A synthetic path would make such a
+    /// fixture unbuildable here even though the golden lane builds it, so the
+    /// real path is supplied rather than the check bypassed.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn compile_test_image_at(
+        src: &str,
+        source_path: &str,
+    ) -> (wrela_compiler::layout::ImageLayout, String) {
         use std::collections::{BTreeMap, BTreeSet};
         use wrela_compiler::sema::typed::TestKind;
         use wrela_compiler::sema::types::{Type, TypeArg};
@@ -1293,7 +1527,7 @@ mod tests {
         modules_vec.insert(runtime_key.clone(), runtime_loaded.module);
         modules_vec.insert(gen_key.clone(), gen_module);
         let mut paths = BTreeMap::new();
-        paths.insert(root_key.clone(), "<conformance>".to_string());
+        paths.insert(root_key.clone(), source_path.to_string());
         paths.insert(
             runtime_key.clone(),
             runtime_loaded.file.display().to_string(),
@@ -1413,16 +1647,7 @@ mod tests {
         .expect("layout_test_image");
 
         let mut report = report_identity("<conformance>", &image.blob);
-        for s in &image.sections {
-            report.push_str(&format!(
-                "Section name={} base={:#x} size={}\n",
-                s.name, s.base, s.size
-            ));
-        }
-        report.push_str(&format!("Entry base={:#x}\n", image.entry));
-        for (core, base) in &image.core_entries {
-            report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
-        }
+        layout::render_layout_section(&mut report, &image);
         (image, report)
     }
 
@@ -1473,16 +1698,7 @@ mod tests {
         let image = layout::layout_program(&compiled.program, Some(boot)).expect("layout_program");
 
         let mut report = report_identity("<conformance>", &image.blob);
-        for sec in &image.sections {
-            report.push_str(&format!(
-                "Section name={} base={:#x} size={}\n",
-                sec.name, sec.base, sec.size
-            ));
-        }
-        report.push_str(&format!("Entry base={:#x}\n", image.entry));
-        for (core, base) in &image.core_entries {
-            report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
-        }
+        layout::render_layout_section(&mut report, &image);
         (image, report)
     }
 
@@ -1970,10 +2186,12 @@ pub fn build() -> Image:
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[ignore = "HVF lane: run via `cargo xtask verify-deep`"]
     #[test]
-    fn an_el1_fault_into_the_absent_vector_table_names_the_original_esr_over_hvf() {
+    fn a_guest_fault_reaches_the_stage1_trampoline_with_its_original_syndrome_over_hvf() {
         use wrela_compiler::encode;
         use wrela_machine::layout as machine_layout;
 
+        // SCTLR_EL1.A is set by the sealed boot state, so an unaligned 64-bit
+        // load is an alignment fault, not a permission fault.
         let bad = machine_layout::DRAM_BASE + 0x8004;
         let mut w = Vec::new();
         w.extend(load_imm_words(9, bad));
@@ -1981,41 +2199,37 @@ pub fn build() -> Image:
         w.push(encode::enc_brk(0));
 
         let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            report_identity("el1-vector.wr", &img_bytes),
-            machine_layout::IMAGE_BASE,
-            img_bytes.len(),
-            machine_layout::IMAGE_BASE,
-        );
-        let tmp_dir =
-            std::env::temp_dir().join(format!("wrela-vmm-el1-vector-test-{}", std::process::id()));
-        std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
-        let img_path = tmp_dir.join("el1-vector.img");
-        let report_path = tmp_dir.join("el1-vector.report.txt");
-        std::fs::write(&img_path, &img_bytes).expect("write image");
-        std::fs::write(&report_path, &report_text).expect("write report");
+        let (report_path, img_path) = write_hand_built_image(&img_bytes, "el1-vector");
         let err = boot_image(&report_path, &img_path)
             .expect_err("an unaligned 64-bit load must fault, never boot cleanly");
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let _ = std::fs::remove_dir_all(report_path.parent().expect("temp dir"));
 
         let msg = err.to_string();
+        // The trampoline is the normative diagnostic path: it captures the
+        // original syndrome instead of letting a second fault in an unmapped
+        // vector page erase it.
         assert!(
-            msg.contains("pc=0x200"),
-            "the bare fault is still reported verbatim: {msg}"
+            msg.contains(wrela_machine::fault::MEMORY_ABORT),
+            "an alignment fault must be named as the abort it is: {msg}"
         );
         assert!(
-            msg.contains("VBAR_EL1(0x0) + 0x200"),
-            "the note must name the vector slot: {msg}"
+            !msg.contains(wrela_machine::fault::STAGE1_PERMISSION_FAULT),
+            "an ordinary abort must not be reported as a W^X protection win: {msg}"
         );
         assert!(
-            msg.contains("(EC=0x25)"),
-            "the note must carry the ORIGINAL fault's own ESR_EL1 exception class \
-             (0x25 = data abort, same EL): {msg}"
+            msg.contains(&format!("far={bad:#x}")),
+            "the record must carry the real faulting address: {msg}"
         );
-        assert!(
-            msg.contains(&format!("FAR_EL1={bad:#x}")),
-            "the note must carry the real faulting address: {msg}"
+        let esr = msg
+            .split("esr=0x")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .unwrap_or_else(|| panic!("the record must carry the original ESR: {msg}"));
+        assert_eq!(
+            (esr >> 26) & 0x3f,
+            0x25,
+            "the ORIGINAL fault's exception class (0x25 = data abort, same EL): {msg}"
         );
     }
 
@@ -2127,14 +2341,8 @@ pub fn build() -> Image:
 
         let mut words = Vec::new();
         push_halt(&mut words, 9, 10, GUEST_EXIT_CODE);
-        let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\nEntry base={:#x}\n",
-            report_identity("exit-code-contract.wr", &img_bytes),
-            wrela_machine::layout::IMAGE_BASE,
-            img_bytes.len(),
-            wrela_machine::layout::IMAGE_BASE,
-        );
+        let raw: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let (img_bytes, report_text) = seal_hand_built_image(&raw, "exit-code-contract");
         let tmp_dir = std::env::temp_dir().join(format!(
             "wrela-vmm-exit-code-contract-{}",
             std::process::id()
@@ -2171,6 +2379,10 @@ pub fn build() -> Image:
             Some(1),
             "a clean (non-diverging) replay must mirror the guest's own exit code exactly like a \
              plain boot, never unconditionally ExitCode::SUCCESS"
+        );
+        assert_eq!(
+            clean_replay.stdout, record_out.stdout,
+            "a clean replay must reproduce the recorded guest transcript byte-for-byte"
         );
 
         let record_text = std::fs::read_to_string(&record_path).expect("read record");
@@ -2435,16 +2647,29 @@ pub fn build() -> Image:
         put(&mut img, OFF_STATUS2, &[0xEE]);
         put(&mut img, OFF_SRC, &payload);
 
-        let report_text = format!(
-            "{}Section name=entry base={:#x} size={}\n\
-             Entry base={:#x}\n\
-             BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
+        // Seal through the compiler so the queue pages are a declared RW/NX
+        // region of the same stage-1 matrix the guest code runs under; the
+        // device window must be mapped, not left in an undeclared class.
+        let (img_bytes, mut report_text) = seal_raw_image(
+            &img,
+            &[
+                wrela_compiler::layout::Section {
+                    name: "entry",
+                    base: machine_layout::IMAGE_BASE,
+                    size: code_bytes,
+                },
+                wrela_compiler::layout::Section {
+                    name: "blk-queue",
+                    base: data_base,
+                    size: DATA_REGION_SIZE,
+                },
+            ],
+            "blk-conformance",
+        );
+        report_text.push_str(&format!(
+            "BlkDevice device=device#0 capacity_sectors=16 features={:#x} vector={BLK_VECTOR}\n\
              BlkQueue index=0 size={QUEUE_SIZE} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n\
              BlkPool name=BlockControl device=device#0 base={:#x} size={:#x}\n",
-            report_identity("blk-conformance.wr", &img),
-            machine_layout::IMAGE_BASE,
-            code_bytes,
-            machine_layout::IMAGE_BASE,
             devices::DEVICE_FEATURES,
             data_base + OFF_DESC,
             data_base + OFF_AVAIL,
@@ -2452,9 +2677,9 @@ pub fn build() -> Image:
             data_base + OFF_DOORBELL,
             data_base,
             DATA_REGION_SIZE,
-        );
+        ));
         BlkImage {
-            img_bytes: img,
+            img_bytes,
             report_text,
         }
     }
@@ -2942,26 +3167,6 @@ pub fn build() -> Image:
         );
     }
 
-    #[test]
-    fn host_cores_refuse_names_sealed_n() {
-        let err = host_cores_refuse(3, 2, 0xfae9_4005u32 as i32);
-        match err {
-            VmmError::HostCoresRefuse {
-                requested: 3,
-                failed_at: 2,
-                code,
-            } => {
-                assert_eq!(code as u32, 0xfae9_4005);
-            }
-            other => panic!("expected HostCoresRefuse, got {other}"),
-        }
-        let msg = err.to_string();
-        assert!(
-            msg.contains("host refused Cores count=3") && msg.contains("core 2"),
-            "{msg}"
-        );
-    }
-
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[ignore = "HVF lane: run via `cargo xtask verify-deep`"]
     #[test]
@@ -2982,16 +3187,19 @@ pub fn build() -> Image:
         std::fs::write(&report_path, &report).expect("report");
         let err = boot_image(&report_path, &img_path).expect_err("create inject must refuse");
         let _ = std::fs::remove_dir_all(&dir);
-        match err {
-            VmmError::HostCoresRefuse {
-                requested: 1,
-                failed_at: 0,
-                ..
-            } => {}
-            other => {
-                panic!("expected HostCoresRefuse {{ requested: 1, failed_at: 0 }}, got {other}")
-            }
-        }
+        let VmmError::Host {
+            backend,
+            operation,
+            code,
+            detail,
+        } = err
+        else {
+            panic!("expected structured host error, got {err}")
+        };
+        assert_eq!(backend, crate::host::BackendKind::Hvf);
+        assert_eq!(operation, "create vCPU");
+        assert_eq!(code as u32, 0xfae9_4005);
+        assert!(detail.contains("Cores count=1") && detail.contains("core 0"));
     }
 
     #[test]
@@ -3105,16 +3313,13 @@ pub fn build() -> Image:
             .find(|(c, _)| *c == 1)
             .expect("core 1 entry")
             .1;
-        let forged = report
-            .lines()
-            .find_map(|line| {
-                let rest = line.strip_prefix("Section name=entry ")?;
-                rest.split_whitespace().find_map(|p| {
-                    p.strip_prefix("base=")
-                        .map(|b| u64::from_str_radix(b.trim_start_matches("0x"), 16).unwrap())
-                })
-            })
-            .expect("entry section");
+        // Enter one instruction into core 1's private bring-up block. This is
+        // still aligned executable code and is distinct from every other core
+        // entry, so report validation accepts it and the test reaches the
+        // runtime bring-up diagnostic it exists to exercise.
+        // Skipping both low-half loads leaves x9 at zero before the remaining
+        // zero high-half loads install it as SP, so the first stack use faults.
+        let forged = core1 + 8;
         assert_ne!(forged, core1);
         let bad = report.replace(
             &format!("CoreEntry core=1 base={core1:#x}"),
@@ -3132,7 +3337,7 @@ pub fn build() -> Image:
         let msg = err.to_string();
         assert!(
             msg.contains("core 1 was released but never ran its own entry block")
-                || (msg.contains("core 1:") && msg.contains("unhandled exception")),
+                || (msg.contains("core 1:") && msg.contains(wrela_machine::fault::MEMORY_ABORT)),
             "{msg}"
         );
     }
@@ -3628,7 +3833,7 @@ pub fn build() -> Image:
         });
 
         wrela_compiler::codegen::set_block_count(true);
-        let (image, report) = compile_test_image(&src);
+        let (image, report) = compile_test_image_at(&src, &src_path.display().to_string());
         wrela_compiler::codegen::set_block_count(false);
 
         let outcome = boot_blob(&image.blob, &report, "lane3-boot-actors");
@@ -3639,12 +3844,19 @@ pub fn build() -> Image:
             String::from_utf8_lossy(&outcome.transcript)
         );
         let transcript = String::from_utf8_lossy(&outcome.transcript);
-        crate::lane3::agree_lane2_vs_host(&transcript, &outcome.lane2_hits).unwrap_or_else(|e| {
-            panic!("{e}\nfull transcript:\n{transcript}");
-        });
+        // The guest dump runs on the primary and therefore reads the primary's
+        // x18-relative counter bank. Lane 3 also exposes the aggregate for
+        // profiling, but comparing that sum to a core-0 transcript would count
+        // secondary execution only on the host side.
+        let host_core0_hits = outcome
+            .lane2_hits_per_core
+            .first()
+            .expect("boot-actors declares core 0");
+        crate::lane3::agree_lane2_vs_host(&transcript, host_core0_hits)
+            .unwrap_or_else(|e| panic!("{e}\nfull transcript:\n{transcript}"));
         assert!(
-            !outcome.lane2_hits.is_empty(),
-            "Lane 3 hit map must be non-empty on boot-actors"
+            !host_core0_hits.is_empty(),
+            "Lane 3 core-0 hit map must be non-empty on boot-actors"
         );
 
         let line = transcript
@@ -3653,10 +3865,10 @@ pub fn build() -> Image:
             .expect("lane2 line");
         let parsed = crate::lane3::parse_lane2_line(line).expect("parse");
         assert!(
-            outcome.lane2_hits.len() > wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS,
+            host_core0_hits.len() > wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS,
             "boot-actors must exceed the printable pair cap for this oracle to test \
              truncation at all (host pairs: {})",
-            outcome.lane2_hits.len()
+            host_core0_hits.len()
         );
         assert_eq!(
             parsed.hits.len(),
@@ -3666,8 +3878,7 @@ pub fn build() -> Image:
         assert_eq!(
             parsed.truncated,
             Some(
-                (outcome.lane2_hits.len() - wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS)
-                    as u64
+                (host_core0_hits.len() - wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS) as u64
             ),
             "`truncated=<N>` must name every dropped pair"
         );

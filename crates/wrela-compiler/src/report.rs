@@ -833,6 +833,7 @@ pub fn caller(a: u64) -> u64:
             workloads_digest: Some("wdigest".to_string()),
             workload_totals: BTreeMap::from([("flat".to_string(), 30u64)]),
             workload_coverage: BTreeMap::new(),
+            workload_validation_bounds: BTreeMap::new(),
             footprint: vec![cost::CoreBudget {
                 n: 0,
                 fetched_text_bytes: 1216,
@@ -897,6 +898,7 @@ pub fn caller(a: u64) -> u64:
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            workload_validation_bounds: BTreeMap::new(),
             footprint: Vec::new(),
         };
         let empty = PlacementTable {

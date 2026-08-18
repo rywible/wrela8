@@ -92,6 +92,14 @@ pub fn enc_ldr_x_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b11, 0b01, scaled_offset(byte_offset, 8), rn, rt)
 }
 
+pub fn enc_ldr_x_reg(rt: u8, rn: u8, rm: u8) -> u32 {
+    0xf860_6800 | (reg(rm) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
+pub fn enc_str_x_reg(rt: u8, rn: u8, rm: u8) -> u32 {
+    0xf820_6800 | (reg(rm) << 16) | (reg(rn) << 5) | reg(rt)
+}
+
 pub fn enc_str_w_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b10, 0b00, scaled_offset(byte_offset, 4), rn, rt)
 }
@@ -183,6 +191,11 @@ pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
 }
 
 pub fn access_width_bytes(word: u32) -> Option<u8> {
+    // Integer load/store pair, including offset, pre-index, and post-index.
+    // The cost metadata records the total bytes transferred by the pair.
+    if word & 0x3a00_0000 == 0x2800_0000 {
+        return Some(if word >> 30 == 0b10 { 16 } else { 8 });
+    }
     if matches!(word & 0xffc0_0000, 0x3dc0_0000 | 0x3d80_0000) {
         return Some(16);
     }
@@ -190,13 +203,18 @@ pub fn access_width_bytes(word: u32) -> Option<u8> {
         return Some(if word >> 30 == 0b10 { 4 } else { 8 });
     }
     let width = 1u8 << (word >> 30);
+    if matches!(word & 0x3fe0_0c00, 0x3860_0800 | 0x3820_0800) {
+        return Some(width);
+    }
     if word & 0x3F00_0000 == 0x3900_0000 {
         return Some(width);
     }
     const LDAR: u32 = 0x08df_fc00;
     const STLR: u32 = 0x089f_fc00;
     let fixed = word & 0x3FFF_FC00;
-    if (fixed == LDAR || fixed == STLR) && (word >> 30) >= 0b10 {
+    let ldaxr = fixed == 0x085f_fc00;
+    let stlxr = word & 0x3fe0_fc00 == 0x0800_fc00;
+    if (fixed == LDAR || fixed == STLR || ldaxr || stlxr) && (word >> 30) >= 0b10 {
         return Some(width);
     }
     None
@@ -280,6 +298,22 @@ pub fn enc_ldp_x(rt: u8, rt2: u8, rn: u8, byte_offset: i16) -> u32 {
         rn,
         rt,
     )
+}
+
+pub fn enc_stp_x_pre(rt: u8, rt2: u8, rn: u8, byte_offset: i16) -> u32 {
+    0xa980_0000
+        | (signed_scaled_offset(byte_offset, 8, 512) << 15)
+        | (reg(rt2) << 10)
+        | (reg(rn) << 5)
+        | reg(rt)
+}
+
+pub fn enc_ldp_x_post(rt: u8, rt2: u8, rn: u8, byte_offset: i16) -> u32 {
+    0xa8c0_0000
+        | (signed_scaled_offset(byte_offset, 8, 512) << 15)
+        | (reg(rt2) << 10)
+        | (reg(rn) << 5)
+        | reg(rt)
 }
 
 pub fn enc_stp_w(rt: u8, rt2: u8, rn: u8, byte_offset: i16) -> u32 {
@@ -1052,6 +1086,12 @@ mod tests {
     }
 
     #[test]
+    fn ldr_str_x_register_offset() {
+        assert_eq!(enc_ldr_x_reg(0, 17, 18), 0xf872_6a20);
+        assert_eq!(enc_str_x_reg(0, 17, 18), 0xf832_6a20);
+    }
+
+    #[test]
     fn ldr_str_w_and_byte_forms() {
         assert_eq!(enc_str_w_imm(0, 1, 0), 0xb9000020);
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
@@ -1101,6 +1141,16 @@ mod tests {
             (enc_stlr_x(0, 1), 8, "stlr x"),
             (enc_ldar_w(0, 1), 4, "ldar w"),
             (enc_stlr_w(0, 1), 4, "stlr w"),
+            (enc_ldaxr_w(0, 1), 4, "ldaxr w"),
+            (enc_stlxr_w(2, 0, 1), 4, "stlxr w"),
+            (enc_ldaxr_x(0, 1), 8, "ldaxr x"),
+            (enc_stlxr_x(2, 0, 1), 8, "stlxr x"),
+            (enc_ldp_x(0, 1, 2, 0), 16, "ldp x"),
+            (enc_stp_x(0, 1, 2, 0), 16, "stp x"),
+            (enc_ldp_w(0, 1, 2, 0), 8, "ldp w"),
+            (enc_stp_w(0, 1, 2, 0), 8, "stp w"),
+            (enc_stp_x_pre(29, 30, 31, -16), 16, "stp x pre"),
+            (enc_ldp_x_post(29, 30, 31, 16), 16, "ldp x post"),
         ];
         for &(word, want, name) in cases {
             assert_eq!(
@@ -1110,14 +1160,6 @@ mod tests {
             );
         }
         for (word, name) in [
-            (enc_ldp_x(0, 1, 2, 0), "ldp x"),
-            (enc_stp_x(0, 1, 2, 0), "stp x"),
-            (enc_ldp_w(0, 1, 2, 0), "ldp w"),
-            (enc_stp_w(0, 1, 2, 0), "stp w"),
-            (enc_ldaxr_w(0, 1), "ldaxr w"),
-            (enc_stlxr_w(2, 0, 1), "stlxr w"),
-            (enc_ldaxr_x(0, 1), "ldaxr x"),
-            (enc_stlxr_x(2, 0, 1), "stlxr x"),
             (enc_add_imm(0, 1, 8, true), "add imm"),
             (enc_movz(0, 1, 0, true), "movz"),
             (enc_dmb_ishst(), "dmb ishst"),
@@ -1167,6 +1209,8 @@ mod tests {
         assert_eq!(enc_stp_x(0, 1, 2, 0), 0xa9000440);
         assert_eq!(enc_ldp_x(0, 1, 2, 0), 0xa9400440);
         assert_eq!(enc_stp_x(0, 1, 2, -16), 0xa93f0440);
+        assert_eq!(enc_stp_x_pre(29, 30, 31, -16), 0xa9bf7bfd);
+        assert_eq!(enc_ldp_x_post(29, 30, 31, 16), 0xa8c17bfd);
     }
 
     #[test]

@@ -1,0 +1,6 @@
+module examples.err_mmio_atomic_elem
+
+
+@layout(mmio, endian=little)
+struct BadAtomicMmio:
+    @offset(0x10) status: InterruptCell[u16]

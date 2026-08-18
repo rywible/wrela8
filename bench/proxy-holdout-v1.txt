@@ -1,0 +1,5 @@
+# Frozen at V13. Model changes may not inspect measured holdout results.
+# set|class|case|workload-kind|selection-decision
+holdout|frame|boot-pixels-frame-input|real|frame-renderer-candidate-selection
+holdout|kernel|boot-pixels-numeric-holdout-v2|real|field-kernel-candidate-selection
+holdout|sequence|boot-pixels-plane-three-core|real|flagship-update-strategy-selection

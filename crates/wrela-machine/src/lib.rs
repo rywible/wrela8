@@ -1,3 +1,4 @@
+pub mod input;
 pub mod pixels;
 pub mod report;
 pub mod sha256;
@@ -8,6 +9,18 @@ pub const MACHINE_REVISION: u32 = 1;
 pub const MACHINE_REVISION_STR: &str = "wrela-machine-v1";
 
 pub const CORE_SLOTS: usize = 32;
+
+/// Host-readable diagnostic block-frequency census. It is excluded from
+/// sealed product behavior, but its fixed location is shared by the compiler,
+/// runtime, and VMM so validation snapshots never depend on host discovery.
+pub mod lane2 {
+    pub const BASE: u64 = 0x4040_0000;
+    pub const ENABLED_OFFSET: u64 = 0;
+    pub const HITS_OFFSET: u64 = 8;
+    pub const BLOCK_CAPACITY: usize = 16_384;
+    pub const CORE_CAPACITY: usize = 4;
+    pub const CORE_STRIDE: u64 = (BLOCK_CAPACITY as u64) * 8;
+}
 
 pub mod layout {
     /// The fixed guest reservation on the 1 GiB Rasputin product host.
@@ -44,12 +57,326 @@ pub mod layout {
 
     pub const RTDATA_SIZE_MAX: u64 = 256 << 10;
 
-    pub const PIXELS_DATA_BASE_MIN: u64 = RTDATA_BASE;
+    pub const STAGE1_FAULT_BASE: u64 = RTDATA_BASE + RTDATA_SIZE_MAX;
+    pub const STAGE1_FAULT_SIZE: u64 = 2 * super::stage1::COMMON_PROTECTION_GRANULE;
+    pub const STAGE1_TABLES_BASE: u64 = STAGE1_FAULT_BASE + STAGE1_FAULT_SIZE;
+    pub const STAGE1_TABLES_SIZE: u64 = 128 << 10;
+    pub const PIXELS_DATA_BASE_MIN: u64 = STAGE1_TABLES_BASE + STAGE1_TABLES_SIZE;
     pub const PIXELS_PROGRAM_BYTES_MAX: u64 = 64 << 20;
     pub const PIXELS_STATE_BYTES_MAX: u64 = 256 << 20;
     pub const PIXELS_FRAMEBUFFER_BYTES_MAX: u64 = 128 << 20;
     pub const PIXELS_REGION_ALIGNMENT: u64 = 64 << 10;
     pub const PIXELS_STATE_PAGE_ALIGNMENT: u64 = 4096;
+}
+
+/// Compiler-owned stage-1 translation contract shared unchanged by HVF and
+/// KVM. The complete table layout and boot values are emitted in the image
+/// report; host adapters only install these values.
+pub mod stage1 {
+    pub const GRANULE: u64 = 4096;
+    pub const COMMON_PROTECTION_GRANULE: u64 = 16 * 1024;
+    pub const MAIR_EL1: u64 = 0x0000_0000_0000_ff04;
+    pub const TCR_EL1: u64 = 0x0000_0002_0080_3519;
+    pub const SCTLR_EL1: u64 = 0x0000_0000_30d8_5c1f;
+    pub const WXN_BIT: u64 = 1 << 19;
+    pub const SYSTEM_INSTRUCTION_ALLOWLIST_V1: &str = "wrela-system-instructions-v1:brk-imm16,dmb-ishld,dmb-ishst,mrs-elr_el1,mrs-esr_el1,mrs-far_el1,mrs-spsr_el1";
+
+    const L2_BLOCK: u64 = 2 * 1024 * 1024;
+    const ENTRIES: usize = 512;
+
+    // The table builders map exactly one L3 page for the machine MMIO window.
+    // A device register placed at or beyond that block's end would be left
+    // unmapped, turning every legitimate access into a guest stage-1 fault
+    // discovered only at run time, on both hosts. Fail the build instead.
+    const _: () = {
+        assert!(crate::mmio::MMIO_END > crate::mmio::MMIO_BASE);
+        assert!(crate::mmio::MMIO_END <= (crate::mmio::MMIO_BASE & !(L2_BLOCK - 1)) + L2_BLOCK);
+    };
+
+    const ATTR_NORMAL: u64 = 1 << 2;
+    const AP_READ_ONLY: u64 = 1 << 7;
+    const INNER_SHAREABLE: u64 = 3 << 8;
+    const ACCESS_FLAG: u64 = 1 << 10;
+    const PXN: u64 = 1 << 53;
+    const UXN: u64 = 1 << 54;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Class {
+        Invalid,
+        Device,
+        ReadExecute,
+        ReadOnlyNx,
+        ReadWriteNx,
+    }
+
+    /// Reconstruct the one canonical table image from the authenticated
+    /// protection matrix. Hosts compare this byte-for-byte before entering a
+    /// vCPU, so a report cannot authenticate a self-consistent but different
+    /// translation graph.
+    pub fn canonical_tables(
+        protections: &[crate::report::ProtectionRange],
+    ) -> Result<(Vec<u8>, u32), String> {
+        let page_count = (crate::layout::DRAM_SIZE / GRANULE) as usize;
+        let mut classes = vec![Class::Invalid; page_count];
+        for range in protections {
+            let class = match range.class.as_str() {
+                "invalid" => Class::Invalid,
+                "normal-ro-rx" => Class::ReadExecute,
+                "normal-ro-nx" => Class::ReadOnlyNx,
+                "normal-rw-nx" => Class::ReadWriteNx,
+                other => return Err(format!("unknown stage1 protection class `{other}`")),
+            };
+            let start = range
+                .base
+                .checked_sub(crate::layout::DRAM_BASE)
+                .ok_or_else(|| "stage1 protection begins below DRAM".to_string())?;
+            if start % GRANULE != 0 || range.size == 0 || range.size % GRANULE != 0 {
+                return Err("stage1 protection matrix is not page aligned".to_string());
+            }
+            let first = usize::try_from(start / GRANULE)
+                .map_err(|_| "stage1 protection index exceeds usize".to_string())?;
+            let count = usize::try_from(range.size / GRANULE)
+                .map_err(|_| "stage1 protection length exceeds usize".to_string())?;
+            let end = first
+                .checked_add(count)
+                .filter(|end| *end <= classes.len())
+                .ok_or_else(|| "stage1 protection exceeds DRAM".to_string())?;
+            classes[first..end].fill(class);
+        }
+
+        let mut pages = vec![[0_u64; ENTRIES]; 3];
+        let root = crate::layout::STAGE1_TABLES_BASE;
+        pages[0][0] = table_descriptor(root + GRANULE);
+        pages[0][1] = table_descriptor(root + 2 * GRANULE);
+
+        let mmio_start = crate::mmio::MMIO_BASE;
+        let mmio_end = crate::mmio::MMIO_END;
+        let low_base = mmio_start & !(L2_BLOCK - 1);
+        let low_index = ((low_base >> 21) & 0x1ff) as usize;
+        let low_l3 = push_l3(&mut pages, low_base, |gpa| {
+            if (mmio_start..mmio_end).contains(&gpa) {
+                Class::Device
+            } else {
+                Class::Invalid
+            }
+        })?;
+        pages[1][low_index] = table_descriptor(low_l3);
+
+        for block in 0..(crate::layout::DRAM_SIZE / L2_BLOCK) as usize {
+            let first = block * ENTRIES;
+            let slice = &classes[first..first + ENTRIES];
+            let base = crate::layout::DRAM_BASE + block as u64 * L2_BLOCK;
+            if slice.iter().all(|class| *class == slice[0]) {
+                pages[2][block] = leaf_descriptor(base, slice[0], true);
+            } else {
+                let l3 = push_l3(&mut pages, base, |gpa| {
+                    classes[((gpa - crate::layout::DRAM_BASE) / GRANULE) as usize]
+                })?;
+                pages[2][block] = table_descriptor(l3);
+            }
+        }
+        let used_pages = u32::try_from(pages.len())
+            .map_err(|_| "stage1 table page count exceeds u32".to_string())?;
+        let reservation = usize::try_from(crate::layout::STAGE1_TABLES_SIZE)
+            .map_err(|_| "stage1 table reservation exceeds usize".to_string())?;
+        if pages.len() * GRANULE as usize > reservation {
+            return Err("stage1 tables exceed the fixed reservation".to_string());
+        }
+        let mut bytes = Vec::with_capacity(reservation);
+        for page in pages {
+            for entry in page {
+                bytes.extend_from_slice(&entry.to_le_bytes());
+            }
+        }
+        bytes.resize(reservation, 0);
+        Ok((bytes, used_pages))
+    }
+
+    fn push_l3(
+        pages: &mut Vec<[u64; ENTRIES]>,
+        base: u64,
+        class: impl Fn(u64) -> Class,
+    ) -> Result<u64, String> {
+        let address = crate::layout::STAGE1_TABLES_BASE
+            .checked_add(pages.len() as u64 * GRANULE)
+            .ok_or_else(|| "stage1 table address overflows".to_string())?;
+        let mut page = [0_u64; ENTRIES];
+        for (index, entry) in page.iter_mut().enumerate() {
+            let gpa = base + index as u64 * GRANULE;
+            *entry = leaf_descriptor(gpa, class(gpa), false);
+        }
+        pages.push(page);
+        Ok(address)
+    }
+
+    fn leaf_descriptor(gpa: u64, class: Class, block: bool) -> u64 {
+        if class == Class::Invalid {
+            return 0;
+        }
+        let address_mask = if block {
+            0x0000_ffff_ffe0_0000
+        } else {
+            0x0000_ffff_ffff_f000
+        };
+        let attrs = match class {
+            Class::Invalid => 0,
+            Class::Device => ACCESS_FLAG | PXN | UXN,
+            Class::ReadExecute => ATTR_NORMAL | INNER_SHAREABLE | ACCESS_FLAG | UXN | AP_READ_ONLY,
+            Class::ReadOnlyNx => {
+                ATTR_NORMAL | INNER_SHAREABLE | ACCESS_FLAG | PXN | UXN | AP_READ_ONLY
+            }
+            Class::ReadWriteNx => ATTR_NORMAL | INNER_SHAREABLE | ACCESS_FLAG | PXN | UXN,
+        };
+        (gpa & address_mask) | attrs | if block { 1 } else { 3 }
+    }
+
+    fn table_descriptor(address: u64) -> u64 {
+        (address & 0x0000_ffff_ffff_f000) | 3
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn entry(bytes: &[u8], page: usize, index: usize) -> u64 {
+            let offset = page * GRANULE as usize + index * size_of::<u64>();
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+        }
+
+        #[test]
+        fn canonical_table_graph_maps_the_exact_closed_mmio_span_as_device_xn() {
+            let protections = [crate::report::ProtectionRange {
+                base: crate::layout::DRAM_BASE,
+                size: crate::layout::DRAM_SIZE,
+                class: "invalid".into(),
+                owner: "test".into(),
+            }];
+            let (bytes, used) = canonical_tables(&protections).unwrap();
+            assert_eq!(used, 4);
+            assert_eq!(bytes.len(), crate::layout::STAGE1_TABLES_SIZE as usize);
+            assert_eq!(
+                entry(&bytes, 0, 0),
+                table_descriptor(crate::layout::STAGE1_TABLES_BASE + GRANULE)
+            );
+            assert_eq!(
+                entry(&bytes, 0, 1),
+                table_descriptor(crate::layout::STAGE1_TABLES_BASE + 2 * GRANULE)
+            );
+            assert_eq!(entry(&bytes, 2, 0), 0, "invalid DRAM stays unmapped");
+
+            let mmio_l3 = 3;
+            let input_index =
+                ((crate::mmio::INPUT_STATUS_MMIO_ADDR - crate::mmio::MMIO_BASE) / GRANULE) as usize;
+            for index in [0, input_index] {
+                let descriptor = entry(&bytes, mmio_l3, index);
+                assert_eq!(descriptor & 3, 3);
+                assert_ne!(descriptor & PXN, 0);
+                assert_ne!(descriptor & UXN, 0);
+                assert_eq!(descriptor & ATTR_NORMAL, 0);
+            }
+            let first_outside =
+                ((crate::mmio::MMIO_END - crate::mmio::MMIO_BASE) / GRANULE) as usize;
+            assert_eq!(entry(&bytes, mmio_l3, first_outside), 0);
+            assert!(
+                bytes[used as usize * GRANULE as usize..]
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
+        }
+    }
+}
+
+/// Semantic guest-fault classification shared by both host backends.
+///
+/// The two hosts observe the same guest exception through different paths: HVF
+/// traps `BRK` to the VMM directly, while KVM lets it reach the guest's own
+/// stage-1 vector, so it arrives as a fault-doorbell MMIO exit. Backend
+/// conformance compares an *exact semantic class*, so the class must be derived
+/// from the guest-visible `ESR_EL1` rather than from which host reported it.
+pub mod fault {
+    /// Exception classes, ESR_EL1 bits [31:26].
+    const EC_INSTRUCTION_ABORT_LOWER_EL: u64 = 0x20;
+    const EC_INSTRUCTION_ABORT_SAME_EL: u64 = 0x21;
+    const EC_PC_ALIGNMENT: u64 = 0x22;
+    const EC_DATA_ABORT_LOWER_EL: u64 = 0x24;
+    const EC_DATA_ABORT_SAME_EL: u64 = 0x25;
+    const EC_SP_ALIGNMENT: u64 = 0x26;
+    const EC_BRK: u64 = 0x3c;
+
+    pub const GUEST_BRK: &str = "guest-brk";
+    pub const STAGE1_PERMISSION_FAULT: &str = "stage1-permission-fault";
+    pub const MEMORY_ABORT: &str = "memory-abort";
+    pub const ALIGNMENT_FAULT: &str = "alignment-fault";
+    pub const SYNC_EXCEPTION: &str = "sync-exception";
+
+    /// Name the guest-visible class of a synchronous exception.
+    ///
+    /// A permission fault is the W^X protection outcome and must stay
+    /// distinguishable from an ordinary translation or access-flag abort:
+    /// reporting every abort as a permission fault would make an unmapped-page
+    /// bug look like a successfully enforced protection.
+    pub const fn class(esr: u64) -> &'static str {
+        match (esr >> 26) & 0x3f {
+            EC_BRK => GUEST_BRK,
+            EC_PC_ALIGNMENT | EC_SP_ALIGNMENT => ALIGNMENT_FAULT,
+            EC_INSTRUCTION_ABORT_LOWER_EL
+            | EC_INSTRUCTION_ABORT_SAME_EL
+            | EC_DATA_ABORT_LOWER_EL
+            | EC_DATA_ABORT_SAME_EL => {
+                // IFSC/DFSC is ISS[5:0]; `0b0011LL` is a permission fault at
+                // translation level LL.
+                if esr & 0x3c == 0x0c {
+                    STAGE1_PERMISSION_FAULT
+                } else {
+                    MEMORY_ABORT
+                }
+            }
+            _ => SYNC_EXCEPTION,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn esr(ec: u64, fsc: u64) -> u64 {
+            (ec << 26) | (1 << 25) | fsc
+        }
+
+        #[test]
+        fn a_brk_is_the_same_class_however_the_host_observed_it() {
+            // HVF traps this to the VMM; KVM delivers it to the guest vector
+            // and it returns through the fault doorbell. One class either way.
+            assert_eq!(class(esr(EC_BRK, 0)), GUEST_BRK);
+            assert_eq!(class(esr(EC_BRK, 0x42)), GUEST_BRK);
+        }
+
+        #[test]
+        fn permission_faults_stay_distinct_from_other_aborts() {
+            for ec in [
+                EC_DATA_ABORT_LOWER_EL,
+                EC_DATA_ABORT_SAME_EL,
+                EC_INSTRUCTION_ABORT_LOWER_EL,
+                EC_INSTRUCTION_ABORT_SAME_EL,
+            ] {
+                for level in 0..4 {
+                    assert_eq!(class(esr(ec, 0x0c | level)), STAGE1_PERMISSION_FAULT);
+                }
+                // Translation and access-flag faults are not protection wins.
+                for fsc in [0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x10] {
+                    assert_eq!(class(esr(ec, fsc)), MEMORY_ABORT, "ec={ec:#x} fsc={fsc:#x}");
+                }
+            }
+        }
+
+        #[test]
+        fn alignment_and_unknown_classes_are_named_not_guessed() {
+            assert_eq!(class(esr(EC_PC_ALIGNMENT, 0)), ALIGNMENT_FAULT);
+            assert_eq!(class(esr(EC_SP_ALIGNMENT, 0)), ALIGNMENT_FAULT);
+            assert_eq!(class(esr(0x00, 0)), SYNC_EXCEPTION);
+            assert_eq!(class(esr(0x18, 0)), SYNC_EXCEPTION);
+        }
+    }
 }
 
 pub mod machine_info {
@@ -165,6 +492,13 @@ pub mod mmio {
     pub const QUIESCE_MMIO_ADDR: u64 = MMIO_BASE + 0x4000;
 
     pub const ENTROPY_MMIO_ADDR: u64 = MMIO_BASE + 0x5000;
+
+    /// Fatal stage-1 permission-fault doorbell used only by the fixed vector
+    /// trampoline. It is not an application-visible device register.
+    pub const FAULT_MMIO_ADDR: u64 = MMIO_BASE + 0x1_0000;
+    pub const INPUT_STATUS_MMIO_ADDR: u64 = MMIO_BASE + 0x1_1000;
+    pub const INPUT_EVENT_MMIO_ADDR: u64 = INPUT_STATUS_MMIO_ADDR + 8;
+    pub const MMIO_END: u64 = INPUT_STATUS_MMIO_ADDR + super::stage1::GRANULE;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -286,6 +620,7 @@ mod tests {
             ("release_mmio", mmio::RELEASE_MMIO_ADDR, 8),
             ("quiesce_mmio", mmio::QUIESCE_MMIO_ADDR, 8),
             ("entropy_mmio", mmio::ENTROPY_MMIO_ADDR, 8),
+            ("input_mmio", mmio::INPUT_STATUS_MMIO_ADDR, 16),
         ]
     }
 

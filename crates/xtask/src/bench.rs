@@ -17,8 +17,9 @@ use wrela_compiler::syntax::parser::{self};
 use crate::corpus::{extract_doc_blocks, extract_example_files};
 use crate::golden::{build_and_sign_vmm, golden_case_target};
 use crate::{
-    CompileOptsGuard, GuestRecord, build_runtime_test_image, fail_closed, golden_case_dirs,
-    parse_guest_record, produce_report_and_image, root, typecheck_for_diff_eval,
+    CompileOptsGuard, GuestRecord, RuntimeTestImageDetails, build_runtime_test_image_details,
+    fail_closed, golden_case_dirs, parse_guest_record, produce_report_and_image, root,
+    typecheck_for_diff_eval,
 };
 
 pub(crate) const BENCH_GUEST_WARMUP_ITERS: usize = 2;
@@ -33,15 +34,27 @@ pub(crate) fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
 }
 
 pub(crate) fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
+    let built = golden_test_image_details(case_name)?;
+    Ok((built.image, built.report))
+}
+
+pub(crate) fn golden_test_image_details(
+    case_name: &str,
+) -> Result<RuntimeTestImageDetails, String> {
+    test_image_details_from_case_dir(&root().join("tests/golden").join(case_name))
+}
+
+pub(crate) fn test_image_details_from_case_dir(
+    case: &Path,
+) -> Result<RuntimeTestImageDetails, String> {
     let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
-    let case = root().join("tests/golden").join(case_name);
-    let target = golden_case_target(&case)?
-        .ok_or_else(|| format!("tests/golden/{case_name} has no input.wr"))?;
+    let target = golden_case_target(case)?
+        .ok_or_else(|| format!("{} has no input.wr or valid root marker", case.display()))?;
     let source =
         std::fs::read_to_string(&target).map_err(|e| format!("read {}: {e}", target.display()))?;
     let path_display = target.display().to_string();
     let checked = typecheck_for_diff_eval(&target)
-        .ok_or_else(|| format!("tests/golden/{case_name} failed to typecheck"))?;
+        .ok_or_else(|| format!("{} failed to typecheck", case.display()))?;
     let program = &checked.root_program;
     let runtime_names: Vec<String> = program
         .tests
@@ -50,11 +63,9 @@ pub(crate) fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), St
         .map(|t| t.name.clone())
         .collect();
     if runtime_names.is_empty() {
-        return Err(format!(
-            "tests/golden/{case_name} declares no @test(runtime) fns"
-        ));
+        return Err(format!("{} declares no @test(runtime) fns", case.display()));
     }
-    build_runtime_test_image(
+    build_runtime_test_image_details(
         program,
         &checked.modules,
         &checked.programs,

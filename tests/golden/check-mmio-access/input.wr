@@ -8,6 +8,7 @@ const INT_CONFIG: u32 = 2
 struct VirtioIrqMmio:
     @offset(0x060) interrupt_status: ReadOnly[u32]
     @offset(0x064) interrupt_ack: WriteOnly[u32]
+    @offset(0x068) level_status: InterruptCell[u32]
 
 @layout(mmio, endian=little)
 struct VirtioLowAckMmio:
@@ -31,6 +32,11 @@ pub struct BlkDriver:
 
     fn ack_low(read self, bits: u16):
         self.low_regs.ack_low.write(bits)
+
+    fn consume_level(mut self) -> u32:
+        before = self.irq_regs.level_status.load_acquire()
+        self.irq_regs.level_status.fetch_or_release(INT_CONFIG)
+        return self.irq_regs.level_status.swap_acquire(before)
 
     pub fn last_handled(read self) -> u32:
         return self.handled_bits

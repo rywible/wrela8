@@ -1,0 +1,49 @@
+[Unit]
+Description=Wrela appliance VMM
+After=systemd-udev-settle.service
+ConditionPathExists=/dev/kvm
+
+[Service]
+Type=exec
+User=wrela
+Group=wrela
+Environment=WRELA_HOST_PROFILE=product
+ExecStart=/usr/libexec/wrela/wrela-vmm /var/lib/wrela/image.report /var/lib/wrela/image.img --display native
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/dri/card0 rw
+DeviceAllow=/dev/dri/card1 rw
+DeviceAllow=/dev/dri/renderD128 rw
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+PrivateUsers=no
+PrivatePIDs=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=perf_event_open
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitMEMLOCK=536870912
+MemoryMax=768M
+MemorySwapMax=0
+CPUQuota=400%
+CPUAffinity=0 1 2 3
+TasksMax=16
+UMask=0077
+ReadOnlyPaths=/var/lib/wrela
+
+[Install]
+WantedBy=multi-user.target

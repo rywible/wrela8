@@ -9,7 +9,7 @@ use wrela_machine::pixels::PresentedFrame;
 use super::{BackendKind, HostPresentError, PresentationBackend};
 
 #[derive(Debug, Default)]
-pub struct HvfDisplayBackend {
+pub struct MetalDisplayBackend {
     bgra8_unorm_srgb: Vec<u8>,
     last_vsync: Option<u64>,
     #[cfg(target_os = "macos")]
@@ -18,7 +18,7 @@ pub struct HvfDisplayBackend {
     native: Option<native::CoreVideoSurface>,
 }
 
-impl HvfDisplayBackend {
+impl MetalDisplayBackend {
     pub fn surface_bytes(&self) -> &[u8] {
         &self.bgra8_unorm_srgb
     }
@@ -40,9 +40,9 @@ impl HvfDisplayBackend {
     }
 }
 
-impl PresentationBackend for HvfDisplayBackend {
+impl PresentationBackend for MetalDisplayBackend {
     fn kind(&self) -> BackendKind {
-        BackendKind::MacosHvf
+        BackendKind::Metal
     }
 
     fn present(&mut self, frame: &PresentedFrame) -> Result<(), HostPresentError> {
@@ -565,7 +565,7 @@ mod native {
 
     fn error(message: impl Into<String>) -> HostPresentError {
         HostPresentError {
-            backend: BackendKind::MacosHvf,
+            backend: BackendKind::Metal,
             message: message.into(),
             commit_may_have_happened: false,
         }
@@ -573,7 +573,7 @@ mod native {
 
     fn committed_error(message: impl Into<String>) -> HostPresentError {
         HostPresentError {
-            backend: BackendKind::MacosHvf,
+            backend: BackendKind::Metal,
             message: message.into(),
             commit_may_have_happened: true,
         }
@@ -607,7 +607,7 @@ mod tests {
             checkpoint: 9,
             bgra,
         };
-        let mut backend = HvfDisplayBackend::native();
+        let mut backend = MetalDisplayBackend::native();
         backend.present(&frame).expect("present on display link");
         assert_eq!(backend.surface_bytes(), frame.bgra);
         assert_eq!(backend.last_vsync(), Some(7));

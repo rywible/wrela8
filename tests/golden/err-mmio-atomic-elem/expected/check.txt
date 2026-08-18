@@ -1,0 +1,1 @@
+error[type]: field `BadAtomicMmio.status: InterruptCell[u16]` must be exactly `InterruptCell[u32]` or `InterruptCell[u64]` at 6:19

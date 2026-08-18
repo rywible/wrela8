@@ -15,11 +15,24 @@ ImageReport v0
   CoreStack core=0 base=0x5ff00000 size=0x100000
   Section name=entry base=0x40600000 size=80
   Section name=code base=0x40600050 size=124
-  Section name=rodata base=0x406000d0 size=26
-  Section name=abort base=0x406000ec size=120
-  Section name=checkpoint base=0x40600164 size=4
+  Section name=abort base=0x406000cc size=120
+  Section name=checkpoint base=0x40600144 size=4
+  Section name=rodata base=0x40604000 size=26
+  Section name=stage1-vector base=0x40a40000 size=16384
+  Section name=stage1-fault-record base=0x40a44000 size=16384
+  Section name=stage1-tables base=0x40a48000 size=131072
+  Stage1 tables_base=0x40a48000 tables_bytes=131072 tables_sha256=f574c99cdb33cb9c520dd3595be81072f8159812f74c8045dea18d27db75c54c used_pages=7 ttbr0_el1=0x40a48000 tcr_el1=0x200803519 mair_el1=0xff04 sctlr_el1=0x30d85c1f vbar_el1=0x40a40000 system_allowlist_sha256=f0fa2ca128949ff8f7642221e568b67bcda1bd2ceee7d319e87a5c84b7209abc
+  Protection base=0x40000000 size=6291456 class=normal-rw-nx owner=machine-shared
+  Protection base=0x40600000 size=16384 class=normal-ro-rx owner=checkpoint
+  Protection base=0x40604000 size=16384 class=normal-ro-nx owner=rodata
+  Protection base=0x40608000 size=4423680 class=invalid owner=unused
+  Protection base=0x40a40000 size=16384 class=normal-ro-rx owner=stage1-vector
+  Protection base=0x40a44000 size=16384 class=normal-rw-nx owner=stage1-fault-record
+  Protection base=0x40a48000 size=131072 class=normal-ro-nx owner=stage1-tables
+  Protection base=0x40a68000 size=524910592 class=invalid owner=unused
+  Protection base=0x5ff00000 size=1048576 class=normal-rw-nx owner=stack-core-0
   Entry base=0x40600000
-  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=46 rank_cycles=46 schedule_cycles=46 footprint_cycles=0 executable_words=82 executable_code_bytes=328 fetched_text_bytes=384 rodata_bytes=26 image_bytes=360 sync_frame_max_bytes=16 async_frame_total_bytes=0 ghz=2.4
+  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=46 rank_cycles=46 schedule_cycles=46 footprint_cycles=0 executable_words=82 executable_code_bytes=328 fetched_text_bytes=384 rodata_bytes=26 image_bytes=16410 sync_frame_max_bytes=16 async_frame_total_bytes=0 ghz=2.4
     Workload name=flat proxy_cycles=46
     Owner name=app proxy_cycles=46
     Owner name=runtime proxy_cycles=0
@@ -27,7 +40,8 @@ ImageReport v0
     Core n=0 proxy_cycles=0 max_entry_method_proxy_cycles=0
     Budget n=0 fetched_text_bytes=384 executable_code_bytes=328 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
     Shared proxy_cycles=46
-    Scope name=linked-image executable_words=82 executable_code_bytes=328 fetched_text_bytes=384 image_bytes=360 rodata_bytes=26 sync_frame_max_bytes=16 async_frame_total_bytes=0
+    Scope name=linked-image executable_words=82 executable_code_bytes=328 fetched_text_bytes=384 image_bytes=16410 rodata_bytes=26 sync_frame_max_bytes=16 async_frame_total_bytes=0
   Convention fns=2 frameless=1 tail_calls=0
     Fn key=add_one frame=0 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=23
     Fn key=compute frame=16 residents=4 regs=x0,x2-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=22
+  Image sha256=0acf7e1b9a38f414a1fdf146aa82a9d1341d5be27e17ee788c538be6997cfdb5

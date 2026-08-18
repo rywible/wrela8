@@ -619,7 +619,7 @@ mod tests {
         // a copy that was a straight run of load/store pairs is now its own
         // small block, so the production window fetches slightly more hot text
         // even though total emitted text fell by about a quarter.
-        const BEFORE_HOT_TEXT_BYTES: u64 = 2432;
+        const BEFORE_HOT_TEXT_BYTES: u64 = 5376;
 
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
@@ -820,17 +820,24 @@ mod tests {
             "the production-window hot set moved; regenerate and re-measure the sidecar"
         );
         assert_eq!(
-            budget_after, budget_before,
-            "the current production-window classification yields an identity layout"
+            (
+                budget_before[0].fetched_text_bytes,
+                budget_after[0].fetched_text_bytes,
+                budget_before[0].charge,
+                budget_after[0].charge,
+            ),
+            (5376, 5696, 0, 0),
+            "the parked planner's current measured footprint is explicit"
         );
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
             // Re-measured 2026-08-07 with `AdrAddressing` parked, and again
             // once counted-loop aggregate copies replaced the unrolled
-            // per-word pairs (1805 -> 1765 emitted words).
-            (1765, 1765, 0, 0)
+            // per-word pairs, and after stage-1/atomic checkpoint setup and
+            // modeled-term bridge rows entered the measured window.
+            (1796, 1996, 8, 2)
         );
-        assert_eq!(summary.fns_moved, 0);
+        assert_eq!(summary.fns_moved, 5);
         assert_eq!(
             partition_mismatch
                 .iter()
@@ -903,10 +910,7 @@ mod tests {
         let classes = cost::layout_classes(Some(&input), &spans).expect("classify");
         let (_relaid, _, summary) =
             cost::codegen_cost_stage_with_block_layout(&input, &classes).expect("relaid");
-        assert_eq!(
-            summary.fns_moved, 0,
-            "the production window currently plans identity"
-        );
+        assert_eq!(summary.fns_moved, 5, "the parked plan remains observable");
         assert_eq!(relayout_calls(), calls0 + 1, "the parked entry point ran");
 
         let (again, _) = cost::codegen_cost_stage_with_placement(&input).expect("cost-stage");
@@ -1048,7 +1052,7 @@ mod tests {
             // copies replaced the unrolled per-word pairs: the compositor's hot
             // text fell on both sides, so the L1I headroom the note describes
             // only grew.
-            (43_328, 23_616, 65_536),
+            (43_328, 23_744, 65_536),
             "the compositor's flat hot text, dev and release, against the L1I. Item M's \
              ~17 KB-of-headroom figure is the **dev** column; release has 37 KB of \
              headroom, so the L1I overflow term is zero on both sides and the only \

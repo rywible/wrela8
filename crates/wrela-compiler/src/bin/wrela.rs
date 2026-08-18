@@ -17,7 +17,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedExprKind, TypedProgram, TypedSt
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--image-digest-only] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--image-digest-only|--emit-image-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela test --run-image-dir <dir> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -757,6 +757,12 @@ fn build_report(
                                         None
                                     }
                                 };
+                                if let Some(bytes) = &img {
+                                    text.push_str(&format!(
+                                        "  Image sha256={}\n",
+                                        report::sha256_hex(bytes)
+                                    ));
+                                }
                                 Ok(BuildReport {
                                     devices: graph.devices.len(),
                                     drivers: graph.drivers.len(),
@@ -1868,6 +1874,269 @@ fn runtime_tests_need_image_graph(program: &TypedProgram, runtime_tests: &[Strin
     })
 }
 
+const PREPARED_TEST_FORMAT: &str = "wrela-prepared-test-v1";
+
+struct PreparedTestMetadata {
+    comptime_lines: Vec<String>,
+    comptime_passed: usize,
+    comptime_failed: usize,
+    runtime_tests: Vec<String>,
+}
+
+fn render_prepared_test_metadata(metadata: &PreparedTestMetadata) -> Result<String, String> {
+    if metadata
+        .runtime_tests
+        .iter()
+        .chain(&metadata.comptime_lines)
+        .any(|line| line.contains(['\n', '\r']))
+    {
+        return Err("prepared test metadata contains an embedded line break".into());
+    }
+    let mut text = format!(
+        "{PREPARED_TEST_FORMAT}\ncomptime-passed={}\ncomptime-failed={}\nruntime-count={}\n",
+        metadata.comptime_passed,
+        metadata.comptime_failed,
+        metadata.runtime_tests.len(),
+    );
+    for name in &metadata.runtime_tests {
+        text.push_str("runtime=");
+        text.push_str(name);
+        text.push('\n');
+    }
+    text.push_str(&format!(
+        "comptime-count={}\n",
+        metadata.comptime_lines.len()
+    ));
+    for line in &metadata.comptime_lines {
+        text.push_str("comptime=");
+        text.push_str(line);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+fn parse_prepared_test_metadata(text: &str) -> Result<PreparedTestMetadata, String> {
+    if !text.ends_with('\n') || text.contains('\r') {
+        return Err("prepared test metadata must use canonical LF-terminated lines".into());
+    }
+    let mut lines = text.lines();
+    if lines.next() != Some(PREPARED_TEST_FORMAT) {
+        return Err("prepared test metadata has the wrong format".into());
+    }
+    let number = |line: Option<&str>, prefix: &str| -> Result<usize, String> {
+        line.and_then(|line| line.strip_prefix(prefix))
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| format!("prepared test metadata lacks canonical `{prefix}`"))
+    };
+    let comptime_passed = number(lines.next(), "comptime-passed=")?;
+    let comptime_failed = number(lines.next(), "comptime-failed=")?;
+    let runtime_count = number(lines.next(), "runtime-count=")?;
+    let mut runtime_tests = Vec::with_capacity(runtime_count);
+    for _ in 0..runtime_count {
+        let name = lines
+            .next()
+            .and_then(|line| line.strip_prefix("runtime="))
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "prepared test metadata has a malformed runtime name".to_string())?;
+        runtime_tests.push(name.to_string());
+    }
+    let comptime_count = number(lines.next(), "comptime-count=")?;
+    let mut comptime_lines = Vec::with_capacity(comptime_count);
+    for _ in 0..comptime_count {
+        let line = lines
+            .next()
+            .and_then(|line| line.strip_prefix("comptime="))
+            .ok_or_else(|| "prepared test metadata has a malformed comptime line".to_string())?;
+        comptime_lines.push(line.to_string());
+    }
+    if lines.next().is_some() {
+        return Err("prepared test metadata has trailing fields".into());
+    }
+    Ok(PreparedTestMetadata {
+        comptime_lines,
+        comptime_passed,
+        comptime_failed,
+        runtime_tests,
+    })
+}
+
+fn normalize_runtime_test_transcript(
+    transcript: &str,
+    metadata: &PreparedTestMetadata,
+) -> Result<(String, bool), String> {
+    let t_lines: Vec<&str> = transcript.lines().collect();
+    let protocol_lines: Vec<&str> = t_lines
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with("p7 "))
+        .collect();
+    let observations_well_formed = t_lines.iter().all(|line| {
+        !line.starts_with("p7 ")
+            || line
+                .strip_prefix("p7 ")
+                .is_some_and(|value| value.len() == 16 && u64::from_str_radix(value, 16).is_ok())
+    });
+    let trailing_ok = |lines: &[&str]| {
+        lines.iter().all(|line| {
+            line.starts_with("lane1 ") || line.starts_with("lane2 ") || line.starts_with("display ")
+        })
+    };
+    let boot_failed = protocol_lines.len() >= 2
+        && protocol_lines[0].starts_with("FAILED ")
+        && parse_summary_line(protocol_lines[1]).is_some()
+        && trailing_ok(&protocol_lines[2..]);
+    let summary_index = if !observations_well_formed {
+        None
+    } else if boot_failed {
+        Some(1)
+    } else if protocol_lines.len() > metadata.runtime_tests.len()
+        && protocol_lines
+            .iter()
+            .zip(&metadata.runtime_tests)
+            .all(|(line, name)| line.starts_with(&format!("test {name}: ")))
+        && parse_summary_line(protocol_lines[metadata.runtime_tests.len()]).is_some()
+        && trailing_ok(&protocol_lines[metadata.runtime_tests.len() + 1..])
+    {
+        Some(metadata.runtime_tests.len())
+    } else {
+        None
+    };
+    let Some(summary_index) = summary_index else {
+        return Err(format!(
+            "the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
+            metadata.runtime_tests.len()
+        ));
+    };
+    let Some((runtime_passed, runtime_failed)) = parse_summary_line(protocol_lines[summary_index])
+    else {
+        return Err(format!(
+            "the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
+            metadata.runtime_tests.len()
+        ));
+    };
+
+    let mut normalized = String::new();
+    for line in &metadata.comptime_lines {
+        normalized.push_str(line);
+        normalized.push('\n');
+    }
+    for line in &t_lines {
+        if *line == protocol_lines[summary_index] || trailing_ok(&[*line]) {
+            continue;
+        }
+        normalized.push_str(line);
+        normalized.push('\n');
+    }
+    let passed = metadata.comptime_passed + runtime_passed;
+    let failed = metadata.comptime_failed + runtime_failed;
+    normalized.push_str(&format!("{passed} passed, {failed} failed\n"));
+    for line in &protocol_lines[summary_index + 1..] {
+        normalized.push_str(line);
+        normalized.push('\n');
+    }
+    Ok((normalized, failed == 0))
+}
+
+fn run_prepared_test_image(image_dir: &Path, explicit_vmm: Option<&str>) -> ExitCode {
+    let metadata_path = image_dir.join("test.meta.txt");
+    let metadata = match std::fs::read_to_string(&metadata_path)
+        .map_err(|error| format!("read {}: {error}", metadata_path.display()))
+        .and_then(|text| parse_prepared_test_metadata(&text))
+    {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            print_line_diagnostic(&format!(
+                "error[build]: invalid prepared test image: {error}"
+            ));
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(vmm_path) = find_vmm_binary(explicit_vmm) else {
+        print_line_diagnostic(
+            "error[unimplemented]: the runtime test tier needs the wrela VMM (macOS/HVF at M5)",
+        );
+        return ExitCode::FAILURE;
+    };
+    run_test_image(
+        &vmm_path,
+        &image_dir.join("test.report.txt"),
+        &image_dir.join("test.img"),
+        &metadata,
+    )
+}
+
+fn run_test_image(
+    vmm_path: &Path,
+    report_path: &Path,
+    img_path: &Path,
+    metadata: &PreparedTestMetadata,
+) -> ExitCode {
+    if !report_path.is_file() || !img_path.is_file() {
+        print_line_diagnostic("error[build]: prepared runtime test image is incomplete");
+        return ExitCode::FAILURE;
+    }
+    let _vmm_slot = match VmmSlot::acquire() {
+        Ok(slot) => slot,
+        Err(error) => {
+            for line in &metadata.comptime_lines {
+                println!("{line}");
+            }
+            print_line_diagnostic(&format!(
+                "error[build]: could not acquire VMM slot: {error}"
+            ));
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = match Command::new(vmm_path)
+        .arg(report_path)
+        .arg(img_path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            for line in &metadata.comptime_lines {
+                println!("{line}");
+            }
+            print_line_diagnostic(&format!(
+                "error[build]: could not run the wrela VMM ({}): {error}",
+                vmm_path.display()
+            ));
+            return ExitCode::FAILURE;
+        }
+    };
+    match out.status.code() {
+        Some(0) | Some(1) => {}
+        _ => {
+            for line in &metadata.comptime_lines {
+                println!("{line}");
+            }
+            print_line_diagnostic(&format!(
+                "error[build]: the wrela VMM did not boot the test image: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+            return ExitCode::FAILURE;
+        }
+    }
+    let transcript = String::from_utf8_lossy(&out.stdout);
+    match normalize_runtime_test_transcript(&transcript, metadata) {
+        Ok((normalized, passed)) => {
+            print!("{normalized}");
+            if passed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => {
+            for line in &metadata.comptime_lines {
+                println!("{line}");
+            }
+            print_line_diagnostic(&format!("error[build]: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn test_cmd(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     wrela_compiler::codegen::set_block_count(false);
@@ -1879,6 +2148,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut block_count = false;
     let mut pixels_telemetry = false;
     let mut image_digest_only = false;
+    let mut emit_image_dir: Option<String> = None;
+    let mut run_image_dir: Option<String> = None;
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut _ghz = wrela_compiler::cost::profile_ghz();
     let mut i = 0;
@@ -1900,6 +2171,24 @@ fn test_cmd(args: &[String]) -> ExitCode {
             pixels_telemetry = true;
         } else if args[i] == "--image-digest-only" {
             image_digest_only = true;
+        } else if args[i] == "--emit-image-dir" {
+            i += 1;
+            match args.get(i) {
+                Some(path) => emit_image_dir = Some(path.clone()),
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if args[i] == "--run-image-dir" {
+            i += 1;
+            match args.get(i) {
+                Some(path) => run_image_dir = Some(path.clone()),
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if args[i] == "--no-bounds-elide" {
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
             return ExitCode::FAILURE;
@@ -1927,6 +2216,19 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         i += 1;
+    }
+    if let Some(image_dir) = run_image_dir {
+        if path.is_some()
+            || image_digest_only
+            || emit_image_dir.is_some()
+            || omit_dmb
+            || block_count
+            || pixels_telemetry
+        {
+            eprintln!("{USAGE}");
+            return ExitCode::FAILURE;
+        }
+        return run_prepared_test_image(Path::new(&image_dir), vmm_arg.as_deref());
     }
     let Some(path) = path else {
         eprintln!("{USAGE}");
@@ -2000,9 +2302,10 @@ fn test_cmd(args: &[String]) -> ExitCode {
             )
         })
         .collect();
-    let comptime_lines: Vec<&str> = lines
+    let comptime_lines: Vec<String> = lines
         .into_iter()
         .filter(|l| !placeholder_lines.contains(*l))
+        .map(str::to_string)
         .collect();
 
     let mut layout_ctx = match layout::merge_layout_ctx(&modules) {
@@ -2148,14 +2451,23 @@ fn test_cmd(args: &[String]) -> ExitCode {
         );
     }
 
-    let Some(vmm_path) = find_vmm_binary(vmm_arg.as_deref()) else {
-        for l in &comptime_lines {
-            println!("{l}");
-        }
-        print_line_diagnostic(&format!(
-            "error[unimplemented]: the runtime test tier needs the wrela VMM (macOS/HVF at M5)"
-        ));
+    if image_digest_only && emit_image_dir.is_some() {
+        eprintln!("error: --image-digest-only and --emit-image-dir are mutually exclusive");
         return ExitCode::FAILURE;
+    }
+    let vmm_path = if emit_image_dir.is_none() {
+        let Some(path) = find_vmm_binary(vmm_arg.as_deref()) else {
+            for l in &comptime_lines {
+                println!("{l}");
+            }
+            print_line_diagnostic(&format!(
+                "error[unimplemented]: the runtime test tier needs the wrela VMM (macOS/HVF at M5)"
+            ));
+            return ExitCode::FAILURE;
+        };
+        Some(path)
+    } else {
+        None
     };
 
     let tmp_dir = std::env::temp_dir().join(format!(
@@ -2211,132 +2523,42 @@ fn test_cmd(args: &[String]) -> ExitCode {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;
     }
-    let _vmm_slot = match VmmSlot::acquire() {
-        Ok(slot) => slot,
-        Err(error) => {
+    let metadata = PreparedTestMetadata {
+        comptime_lines,
+        comptime_passed,
+        comptime_failed,
+        runtime_tests,
+    };
+    if let Some(output) = emit_image_dir {
+        let output = PathBuf::from(output);
+        let metadata_text = match render_prepared_test_metadata(&metadata) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("error: cannot encode prepared runtime test metadata: {error}");
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = std::fs::create_dir_all(&output)
+            .and_then(|()| std::fs::copy(&img_path, output.join("test.img")).map(|_| ()))
+            .and_then(|()| std::fs::copy(&report_path, output.join("test.report.txt")).map(|_| ()))
+            .and_then(|()| std::fs::write(output.join("test.meta.txt"), metadata_text))
+        {
+            eprintln!(
+                "error: emit runtime test image to {}: {error}",
+                output.display()
+            );
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            for line in &comptime_lines {
-                println!("{line}");
-            }
-            print_line_diagnostic(&format!(
-                "error[build]: could not acquire VMM slot: {error}"
-            ));
             return ExitCode::FAILURE;
         }
-    };
-    let out = Command::new(&vmm_path)
-        .arg(&report_path)
-        .arg(&img_path)
-        .output();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        println!("emitted runtime test image to {}", output.display());
+        return ExitCode::SUCCESS;
+    }
+    let vmm_path = vmm_path.expect("validated unless emit-only");
+    let result = run_test_image(&vmm_path, &report_path, &img_path, &metadata);
     let _ = std::fs::remove_dir_all(&tmp_dir);
-
-    let out = match out {
-        Ok(o) => o,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!(
-                "error[build]: could not run the wrela VMM ({}): {e}",
-                vmm_path.display()
-            ));
-            return ExitCode::FAILURE;
-        }
-    };
-    match out.status.code() {
-        Some(0) | Some(1) => {}
-        _ => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!(
-                "error[build]: the wrela VMM did not boot the test image: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-            return ExitCode::FAILURE;
-        }
-    }
-
-    let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
-    let t_lines: Vec<&str> = transcript.lines().collect();
-    let protocol_lines: Vec<&str> = t_lines
-        .iter()
-        .copied()
-        .filter(|line| !line.starts_with("p7 "))
-        .collect();
-    let observations_well_formed = t_lines.iter().all(|line| {
-        !line.starts_with("p7 ")
-            || line
-                .strip_prefix("p7 ")
-                .is_some_and(|value| value.len() == 16 && u64::from_str_radix(value, 16).is_ok())
-    });
-    let trailing_ok = |lines: &[&str]| {
-        lines.iter().all(|l| {
-            l.starts_with("lane1 ") || l.starts_with("lane2 ") || l.starts_with("display ")
-        })
-    };
-    let boot_failed = protocol_lines.len() >= 2
-        && protocol_lines[0].starts_with("FAILED ")
-        && parse_summary_line(protocol_lines[1]).is_some()
-        && trailing_ok(&protocol_lines[2..]);
-    let summary_idx = if !observations_well_formed {
-        None
-    } else if boot_failed {
-        Some(1usize)
-    } else if protocol_lines.len() >= runtime_tests.len() + 1
-        && protocol_lines
-            .iter()
-            .zip(runtime_tests.iter())
-            .all(|(line, name)| line.starts_with(&format!("test {name}: ")))
-        && parse_summary_line(protocol_lines[runtime_tests.len()]).is_some()
-        && trailing_ok(&protocol_lines[runtime_tests.len() + 1..])
-    {
-        Some(runtime_tests.len())
-    } else {
-        None
-    };
-    let Some(summary_i) = summary_idx else {
-        for l in &comptime_lines {
-            println!("{l}");
-        }
-        print_line_diagnostic(&format!(
-            "error[build]: the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
-            runtime_tests.len()
-        ));
-        return ExitCode::FAILURE;
-    };
-    let Some((runtime_passed, runtime_failed)) = parse_summary_line(protocol_lines[summary_i])
-    else {
-        for l in &comptime_lines {
-            println!("{l}");
-        }
-        print_line_diagnostic(&format!(
-            "error[build]: the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
-            runtime_tests.len()
-        ));
-        return ExitCode::FAILURE;
-    };
-
-    for l in &comptime_lines {
-        println!("{l}");
-    }
-    for line in &t_lines {
-        if *line == protocol_lines[summary_i] || trailing_ok(&[*line]) {
-            continue;
-        }
-        println!("{line}");
-    }
-    let passed = comptime_passed + runtime_passed;
-    let failed = comptime_failed + runtime_failed;
-    println!("{passed} passed, {failed} failed");
-    for l in &protocol_lines[summary_i + 1..] {
-        println!("{l}");
-    }
-    if failed > 0 {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
+    result
 }
 
 fn build_cmd(args: &[String]) -> ExitCode {
@@ -2521,6 +2743,42 @@ mod tests {
             &active,
             &["missing".to_string()]
         ));
+    }
+
+    #[test]
+    fn prepared_test_metadata_roundtrips_and_fails_closed() {
+        let metadata = PreparedTestMetadata {
+            comptime_lines: vec!["test compile: ok".to_string()],
+            comptime_passed: 1,
+            comptime_failed: 0,
+            runtime_tests: vec!["test.runtime".to_string()],
+        };
+        let text = render_prepared_test_metadata(&metadata).unwrap();
+        let parsed = parse_prepared_test_metadata(&text).unwrap();
+        assert_eq!(parsed.comptime_lines, metadata.comptime_lines);
+        assert_eq!(parsed.comptime_passed, 1);
+        assert_eq!(parsed.comptime_failed, 0);
+        assert_eq!(parsed.runtime_tests, metadata.runtime_tests);
+        assert!(parse_prepared_test_metadata(text.trim_end()).is_err());
+        assert!(parse_prepared_test_metadata(&(text + "extra=value\n")).is_err());
+    }
+
+    #[test]
+    fn prepared_and_direct_boots_share_exact_transcript_normalization() {
+        let metadata = PreparedTestMetadata {
+            comptime_lines: vec!["test compile: ok".to_string()],
+            comptime_passed: 1,
+            comptime_failed: 0,
+            runtime_tests: vec!["test.runtime".to_string()],
+        };
+        let transcript = "test test.runtime: ok\n1 passed, 0 failed\np7 0123456789abcdef\nlane1 sched=ok\ndisplay v1 visible=abc\n";
+        let (actual, passed) = normalize_runtime_test_transcript(transcript, &metadata).unwrap();
+        assert!(passed);
+        assert_eq!(
+            actual,
+            "test compile: ok\ntest test.runtime: ok\np7 0123456789abcdef\n2 passed, 0 failed\nlane1 sched=ok\ndisplay v1 visible=abc\n"
+        );
+        assert!(normalize_runtime_test_transcript("garbage\n", &metadata).is_err());
     }
 
     #[test]

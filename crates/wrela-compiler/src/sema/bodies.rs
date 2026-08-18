@@ -6607,6 +6607,77 @@ fn check_mmio_access(
             fspan,
         ));
     };
+    if reg.atomic {
+        if !matches!(op, "load_acquire" | "swap_acquire" | "fetch_or_release") {
+            return Err(type_error(
+                format!(
+                    "atomic status register `{}.{register}` has no operation `{op}`; use \
+                     `load_acquire()`, `swap_acquire(v)`, or `fetch_or_release(v)`",
+                    layout.name
+                ),
+                call_span,
+            ));
+        }
+        if layout.endian != types::LayoutEndian::Little {
+            return Err(unimplemented_at(
+                "an atomic MMIO status word with non-native endianness is",
+                call_span,
+            ));
+        }
+        let scalar = scalar_type_by_name(&reg.scalar).ok_or_else(|| {
+            type_error(
+                "atomic MMIO status word has no scalar type".to_string(),
+                fspan,
+            )
+        })?;
+        let mut intrinsic_args = vec![(
+            "register".to_string(),
+            TypedExpr {
+                span: call_span,
+                ty: Type::Static(Box::new(Type::Str)),
+                kind: TypedExprKind::Str(register.to_string()),
+            },
+        )];
+        let ty = if op == "load_acquire" {
+            if !args.is_empty() {
+                return Err(type_error(
+                    format!("`{}.{register}.{op}()` takes no arguments", layout.name),
+                    call_span,
+                ));
+            }
+            scalar.clone()
+        } else {
+            let [arg] = args else {
+                return Err(type_error(
+                    format!(
+                        "`{}.{register}.{op}(v)` takes exactly one argument",
+                        layout.name
+                    ),
+                    call_span,
+                ));
+            };
+            if arg.label.is_some() {
+                return Err(type_error(
+                    format!("`{}.{register}.{op}(v)`'s value is positional", layout.name),
+                    arg.span,
+                ));
+            }
+            let value = check_expr(&arg.value, Some(&scalar), fctx, mctx)?;
+            intrinsic_args.push(("value".to_string(), value));
+            scalar.clone()
+        };
+        return Ok(TypedExpr {
+            span: call_span,
+            ty,
+            kind: TypedExprKind::Intrinsic {
+                key: format!("MmioAtomic.{op}"),
+                receiver: Some(Box::new(mmio)),
+                type_arg: Some(scalar),
+                const_arg: None,
+                args: intrinsic_args,
+            },
+        });
+    }
     if !matches!(op, "read" | "write") {
         return Err(type_error(
             format!(
@@ -6732,6 +6803,9 @@ fn check_mmio_access(
 }
 
 fn register_type_text(reg: &types::MmioRegister) -> String {
+    if reg.atomic {
+        return format!("InterruptCell[{}]", reg.scalar);
+    }
     match reg.direction {
         Some(d) => format!("{}[{}]", d.wrapper(), reg.scalar),
         None => reg.scalar.clone(),
@@ -6740,6 +6814,13 @@ fn register_type_text(reg: &types::MmioRegister) -> String {
 
 pub fn is_mmio_access_intrinsic(key: &str) -> bool {
     matches!(key, "Mmio.read" | "Mmio.write")
+}
+
+pub fn is_mmio_atomic_intrinsic(key: &str) -> bool {
+    matches!(
+        key,
+        "MmioAtomic.load_acquire" | "MmioAtomic.swap_acquire" | "MmioAtomic.fetch_or_release"
+    )
 }
 
 pub(crate) fn is_untrusted_type(ty: &Type) -> bool {
@@ -6860,8 +6941,9 @@ fn check_untrusted_narrowing(
 
 use super::transport::*;
 pub use super::transport::{
-    is_device_transport_intrinsic, is_interrupt_cell_intrinsic, is_interrupt_cell_type,
-    is_irq_cap_intrinsic, is_queue_op_deferred, is_queue_op_intrinsic, is_wake_intrinsic,
+    interrupt_cell_element_type, is_device_transport_intrinsic, is_interrupt_cell_intrinsic,
+    is_interrupt_cell_type, is_irq_cap_intrinsic, is_queue_op_deferred, is_queue_op_intrinsic,
+    is_wake_intrinsic,
 };
 
 fn check_irq_cap_call(
@@ -7112,13 +7194,13 @@ fn interrupt_cell_elem_ty(cell_ty: &Type, span: Span) -> Result<&Type, SemaError
 }
 
 fn require_interrupt_cell_u32(elem: &Type, span: Span) -> Result<(), SemaError> {
-    if matches!(elem, Type::U32) {
+    if matches!(elem, Type::U32 | Type::U64) {
         return Ok(());
     }
     Err(type_error(
         format!(
-            "`InterruptCell[{}]` is not supported yet — revision 0.1 admits only \
-             `InterruptCell[u32]` (03-hardware.md §6's worked example; plans/M7.md item G)",
+            "`InterruptCell[{}]` is not supported — the machine admits only \
+             `InterruptCell[u32]` and `InterruptCell[u64]`",
             types::render_type(elem)
         ),
         span,

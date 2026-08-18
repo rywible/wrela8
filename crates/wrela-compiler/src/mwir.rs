@@ -470,6 +470,44 @@ pub enum Inst {
         width: u8,
         value: Temp,
     },
+    PlacedInterruptCellLoadAcquire {
+        dst: Temp,
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        width: u8,
+    },
+    PlacedInterruptCellStoreRelease {
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        width: u8,
+        value: Temp,
+    },
+    PlacedInterruptCellSwapAcquire {
+        dst: Temp,
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        width: u8,
+        value: Temp,
+    },
+    PlacedInterruptCellFetchOrRelease {
+        dst: Temp,
+        base: Temp,
+        field_offset: u64,
+        index: Temp,
+        len: usize,
+        elem_stride: u64,
+        width: u8,
+        value: Temp,
+    },
     Dmb {
         option: String,
     },
@@ -1428,6 +1466,52 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             value,
         } => format!(
             "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
+        ),
+        Inst::PlacedInterruptCellLoadAcquire {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+        } => format!(
+            "PlacedInterruptCellLoadAcquire dst={dst} base={base} field_offset={field_offset:#x} index={index} len={len} elem_stride={elem_stride} width={width}"
+        ),
+        Inst::PlacedInterruptCellStoreRelease {
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        } => format!(
+            "PlacedInterruptCellStoreRelease base={base} field_offset={field_offset:#x} index={index} len={len} elem_stride={elem_stride} width={width} value={value}"
+        ),
+        Inst::PlacedInterruptCellSwapAcquire {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        } => format!(
+            "PlacedInterruptCellSwapAcquire dst={dst} base={base} field_offset={field_offset:#x} index={index} len={len} elem_stride={elem_stride} width={width} value={value}"
+        ),
+        Inst::PlacedInterruptCellFetchOrRelease {
+            dst,
+            base,
+            field_offset,
+            index,
+            len,
+            elem_stride,
+            width,
+            value,
+        } => format!(
+            "PlacedInterruptCellFetchOrRelease dst={dst} base={base} field_offset={field_offset:#x} index={index} len={len} elem_stride={elem_stride} width={width} value={value}"
         ),
         Inst::Dmb { option } => format!("Dmb option={option}"),
         Inst::Wake { driver } => format!("Wake driver={driver}"),

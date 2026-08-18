@@ -18,4 +18,4 @@ test plane_renders_from_scratch: ok
 3 passed, 0 failed
 lane1 turns=5 run_one=16 messages=5
 lane1 hits=0:2,1:1,2:1,3:1,4:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6148b70b282b413da9ff888bf92cb2ae67eead5e1e78492fe07318e70e17271e visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=0 checkpoint=0
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=99ce423c1f6a9b6a67172cbef90ad9b888862491c0e39e6d82c15585b10f87c0 visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=0 checkpoint=0

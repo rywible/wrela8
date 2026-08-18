@@ -6,11 +6,11 @@ case = check-pixels-normal-moments
 source = tests/golden/check-pixels-normal-moments/src/examples/check_pixels_normal_moments.wr
 phase = P8R.7-final
 phase_backend = direct-fp
-source_tree_sha256 = 004aece58b21c7fb92c73cdf5809ce18c39a2d411c317aee326dbad6e02c2970
-kernel_words_sha256 = e2f90e45cd9bd7d08a8dc36e8d2c5fbbd910c447fd93924ae5a1bd7921fee9af
-codegen_dump_sha256 = 624fe4d85479020f5bfcecf0e64fa9c1404e98e399248f805d41e555053d3273
+source_tree_sha256 = 2d91e6b3af91ee9a489c9ef8dec89945dd28504678e5da0b56cade634ec8bd4d
+kernel_words_sha256 = 9c9641e4b85f55b1b2a4605ac859a0f52b9d25320df1b1c512ae02a68e004df2
+codegen_dump_sha256 = 73195852890d0b365e829573ad5a8d954e2aedb3265730856471cb4170ad3403
 cost_provenance = 96e1aad226833198
-image_sha256 = 2b8d225ebe935d5545979a2e323cf4aaf1d977839a214f33892ba3acdd8a0d6b
+image_sha256 = 802cf19cc22800710a756b08b5fc18aea32e1c56ebaa287692717df30d92a1af
 family.p8_write present=["__wrela_pixels_p8_write", "__wrela_pixels_p8_write4"] absent=[]
 family.sealed_numeric present=["sqrt_scalar", "rsqrt_scalar", "raster_rsqrt"] absent=[]
 
@@ -109,16 +109,16 @@ region.unmarked.class.store = 71
 
 [fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack]
 frame_size = 57744
-word_sha256 = 3462daa23ec170b0f0f34d87ef10939c4f392a9c878fa3ed24af33a5ea12f557
+word_sha256 = 06e56cb37d047d8cc0989471fe831c8596e632587be9f22a530b586cbb9a7f7c
 region.unmarked words=919 calls=0 indirect_calls=0 frame_loads=0 frame_stores=438
 region.unmarked.class.alu = 45
 region.unmarked.class.load = 434
 region.unmarked.class.store = 440
-region.coverage.entry words=13246 calls=18 indirect_calls=0 frame_loads=1682 frame_stores=1936
+region.coverage.entry words=13277 calls=18 indirect_calls=0 frame_loads=1682 frame_stores=1936
 region.coverage.entry.class.abort = 17
 region.coverage.entry.class.abort_val = 4
 region.coverage.entry.class.adrp = 25
-region.coverage.entry.class.alu = 7450
+region.coverage.entry.class.alu = 7481
 region.coverage.entry.class.branch = 130
 region.coverage.entry.class.call = 18
 region.coverage.entry.class.fp_add_sub = 15
@@ -156,11 +156,11 @@ region.coverage.cell_walk.class.udiv = 5
 
 [fn.__wrela_pixels_p7_isolate_smooth_object]
 frame_size = 10160
-word_sha256 = 7b3bad8987048788e91dd53f1051d6521c73580e5e8b5ec30b9ae3d90352fcef
-region.unmarked words=3133 calls=19 indirect_calls=0 frame_loads=615 frame_stores=999
+word_sha256 = fea90de8ef5c5b5e0f5660b8c04e050ed34cf1d5d02c6481e370e1b999ed8616
+region.unmarked words=3141 calls=19 indirect_calls=0 frame_loads=615 frame_stores=999
 region.unmarked.class.abort = 23
 region.unmarked.class.adrp = 23
-region.unmarked.class.alu = 438
+region.unmarked.class.alu = 446
 region.unmarked.class.branch = 176
 region.unmarked.class.call = 19
 region.unmarked.class.fp_add_sub = 2
@@ -176,12 +176,12 @@ region.unmarked.class.store = 1093
 
 [fn.__wrela_pixels_p7_collect_roots_box]
 frame_size = 29568
-word_sha256 = 62c22c34c6f5fe31cb6cefea8adeccb69a551787a8d7015c995c841a604ca5e1
-region.unmarked words=6793 calls=55 indirect_calls=0 frame_loads=1407 frame_stores=1789
+word_sha256 = 8b34a11f2fab6e1ea7fb49ce405e58fecef4bc7f4177acb08a0a711139dd9335
+region.unmarked words=6810 calls=55 indirect_calls=0 frame_loads=1407 frame_stores=1789
 region.unmarked.class.abort = 66
 region.unmarked.class.abort_val = 10
 region.unmarked.class.adrp = 86
-region.unmarked.class.alu = 1565
+region.unmarked.class.alu = 1582
 region.unmarked.class.branch = 352
 region.unmarked.class.call = 55
 region.unmarked.class.fp_add_sub = 4
@@ -276,14 +276,14 @@ fn.__wrela_pixels_p8_geometry_lane_valid.proxy_cycles = 438
 fn.__wrela_pixels_p8_geometry_lane_valid.region.unmarked.latency_weighted_cycles = 1048
 fn.__wrela_pixels_p8_geometry_packet_valid.proxy_cycles = 138
 fn.__wrela_pixels_p8_geometry_packet_valid.region.unmarked.latency_weighted_cycles = 395
-fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.proxy_cycles = 23260
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.proxy_cycles = 23270
 fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.unmarked.latency_weighted_cycles = 2221
-fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.entry.latency_weighted_cycles = 18854
+fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.entry.latency_weighted_cycles = 18885
 fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.cell_walk.latency_weighted_cycles = 43645
-fn.__wrela_pixels_p7_isolate_smooth_object.proxy_cycles = 2400
-fn.__wrela_pixels_p7_isolate_smooth_object.region.unmarked.latency_weighted_cycles = 6562
-fn.__wrela_pixels_p7_collect_roots_box.proxy_cycles = 5447
-fn.__wrela_pixels_p7_collect_roots_box.region.unmarked.latency_weighted_cycles = 13065
+fn.__wrela_pixels_p7_isolate_smooth_object.proxy_cycles = 2407
+fn.__wrela_pixels_p7_isolate_smooth_object.region.unmarked.latency_weighted_cycles = 6570
+fn.__wrela_pixels_p7_collect_roots_box.proxy_cycles = 5461
+fn.__wrela_pixels_p7_collect_roots_box.region.unmarked.latency_weighted_cycles = 13082
 fn.__wrela_pixels_p8_write.proxy_cycles = 2
 fn.__wrela_pixels_p8_write.region.unmarked.latency_weighted_cycles = 3
 fn.__wrela_pixels_p8_write4.proxy_cycles = 2

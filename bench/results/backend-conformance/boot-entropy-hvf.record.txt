@@ -1,0 +1,6 @@
+ChoiceLog v1
+choice_count=1
+choice[0]=EntropyRead len=8 hex=480803e2c4cb21a6
+transcript_digest=13c7f29b2bb55db4cdabd5bb4f704287e0c4a53175c2a25f12bd229dc8afcce9
+exit_code=0
+exits=2

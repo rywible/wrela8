@@ -13,4 +13,4 @@ test material_edge_uses_event_coverage: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=c99370631416dda685fc4cb3f94a242ec0b11a4d6c96c80da884506e0b809b87 visible=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 raw=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 vsync=9 checkpoint=9
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 raw=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 vsync=9 checkpoint=9

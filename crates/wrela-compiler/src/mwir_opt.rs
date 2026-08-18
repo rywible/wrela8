@@ -298,6 +298,9 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         }
         | Inst::PlacedIndexGetProven {
             dst, base, index, ..
+        }
+        | Inst::PlacedInterruptCellLoadAcquire {
+            dst, base, index, ..
         } => {
             f(dst);
             f(base);
@@ -314,6 +317,9 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         }
         | Inst::PlacedIndexSetProven {
             base, index, value, ..
+        }
+        | Inst::PlacedInterruptCellStoreRelease {
+            base, index, value, ..
         } => {
             f(base);
             f(index);
@@ -323,6 +329,25 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
         Inst::InterruptCellSwapAcquire { dst, value, .. }
         | Inst::InterruptCellFetchOrRelease { dst, value, .. } => {
             f(dst);
+            f(value);
+        }
+        Inst::PlacedInterruptCellSwapAcquire {
+            dst,
+            base,
+            index,
+            value,
+            ..
+        }
+        | Inst::PlacedInterruptCellFetchOrRelease {
+            dst,
+            base,
+            index,
+            value,
+            ..
+        } => {
+            f(dst);
+            f(base);
+            f(index);
             f(value);
         }
         Inst::SlotMapMint { map } => f(map),

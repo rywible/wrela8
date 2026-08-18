@@ -1,0 +1,6 @@
+ChoiceLog v1
+choice_count=1
+choice[0]=FrameOutputV1 renderer=0 sequence=0 generation=0 released=none width=64 height=32 refresh=60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=0 checkpoint=0
+transcript_digest=c31f7680d20bc37d6b341ed548065217d3af2fb234fd718cda83c5889e1cb6ac
+exit_code=0
+exits=2

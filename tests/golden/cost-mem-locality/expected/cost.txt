@@ -3,7 +3,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
   Rank rank_cycles=60 schedule_cycles=60 footprint_cycles=0 total_proxy_cycles=60
-  Scope scope=closure executable_words=94 executable_code_bytes=376 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=80 async_frame_total_bytes=0
+  Scope scope=closure executable_words=102 executable_code_bytes=408 fetched_text_bytes=0 rodata_bytes=0 image_bytes=n/a sync_frame_max_bytes=80 async_frame_total_bytes=0
   Workload name=flat proxy_cycles=60
   Owner name=app proxy_cycles=60
   Owner name=runtime proxy_cycles=0
@@ -15,7 +15,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=Mem level=buffered count=9
     Term rule=Mem level=forwarded count=1
     Term rule=Mem level=unresolved count=16
-    Term rule=alu count=25
+    Term rule=alu count=33
     Term rule=branch count=1
     Term rule=load count=17
     Term rule=mov_wide count=16

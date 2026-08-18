@@ -25,14 +25,38 @@ pub const MAX_DISK_BYTES: u64 = 64 << 20;
 pub const MAX_BLK_QUEUE_SIZE: u16 = 1024;
 
 pub struct GuestMem {
-    base: *mut u8,
+    memory: crate::guest_memory::GuestMemoryHandle,
     windows: Vec<PoolWindow>,
     device: u64,
+    publication_active: bool,
 }
 
 impl GuestMem {
+    pub(crate) fn from_memory(
+        memory: crate::guest_memory::GuestMemoryHandle,
+        windows: Vec<PoolWindow>,
+        device: u64,
+    ) -> Result<GuestMem, String> {
+        Self::validated(memory, windows, device)
+    }
+
+    #[cfg(test)]
     pub unsafe fn new(
         base: *mut u8,
+        windows: Vec<PoolWindow>,
+        device: u64,
+    ) -> Result<GuestMem, String> {
+        let memory = unsafe {
+            crate::guest_memory::GuestMemoryHandle::from_raw(
+                base,
+                machine_layout::DRAM_SIZE as usize,
+            )
+        };
+        Self::validated(memory, windows, device)
+    }
+
+    fn validated(
+        memory: crate::guest_memory::GuestMemoryHandle,
         windows: Vec<PoolWindow>,
         device: u64,
     ) -> Result<GuestMem, String> {
@@ -66,9 +90,10 @@ impl GuestMem {
             }
         }
         Ok(GuestMem {
-            base,
+            memory,
             windows,
             device,
+            publication_active: false,
         })
     }
 
@@ -100,18 +125,76 @@ impl GuestMem {
     }
 
     fn read(&self, addr: u64, buf: &mut [u8]) -> Result<(), BlkFault> {
-        let off = self.window_offset(addr, buf.len() as u64)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.base.add(off), buf.as_mut_ptr(), buf.len());
+        if !self.publication_active {
+            return Err(BlkFault::UnpublishedRead {
+                addr,
+                len: buf.len() as u64,
+            });
         }
+        let off = self.window_offset(addr, buf.len() as u64)?;
+        // SAFETY: reads occur only while servicing a validated avail-ring
+        // publication; the chain remains device-owned until used completion.
+        let region = unsafe {
+            self.memory
+                .claim_published(addr, buf.len(), "virtio-blk published range")
+        }
+        .map_err(|_| BlkFault::OutsidePool {
+            addr,
+            len: buf.len() as u64,
+            why: "guest-memory bounds rejected the declared pool range",
+        })?;
+        let bytes = self
+            .memory
+            .copy_published(region)
+            .map_err(|_| BlkFault::OutsidePool {
+                addr,
+                len: buf.len() as u64,
+                why: "guest-memory bounds rejected the declared pool range",
+            })?;
+        debug_assert_eq!(off, (addr - machine_layout::DRAM_BASE) as usize);
+        buf.copy_from_slice(&bytes);
         Ok(())
+    }
+
+    fn take_doorbell_acquire(&self, addr: u64) -> Result<u64, BlkFault> {
+        self.window_offset(addr, 8)?;
+        self.memory
+            .swap_u64(
+                addr,
+                0,
+                std::sync::atomic::Ordering::Acquire,
+                "virtio-blk doorbell",
+            )
+            .map_err(|_| BlkFault::OutsidePool {
+                addr,
+                len: 8,
+                why: "guest-memory bounds or alignment rejected the doorbell",
+            })
+    }
+
+    fn with_publication<T>(
+        &mut self,
+        consume: impl FnOnce(&mut Self) -> Result<T, BlkFault>,
+    ) -> Result<T, BlkFault> {
+        if self.publication_active {
+            return Err(BlkFault::NestedPublication);
+        }
+        self.publication_active = true;
+        let result = consume(self);
+        self.publication_active = false;
+        result
     }
 
     fn write(&mut self, addr: u64, bytes: &[u8]) -> Result<(), BlkFault> {
         let off = self.window_offset(addr, bytes.len() as u64)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.add(off), bytes.len());
-        }
+        self.memory
+            .copy_into_owned(addr, bytes, "virtio-blk owned range")
+            .map_err(|_| BlkFault::OutsidePool {
+                addr,
+                len: bytes.len() as u64,
+                why: "guest-memory bounds rejected the declared pool range",
+            })?;
+        debug_assert_eq!(off, (addr - machine_layout::DRAM_BASE) as usize);
         Ok(())
     }
 
@@ -157,6 +240,11 @@ fn window_contains(windows: &[PoolWindow], device: u64, addr: u64, len: u64) -> 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlkFault {
+    UnpublishedRead {
+        addr: u64,
+        len: u64,
+    },
+    NestedPublication,
     OutsidePool {
         addr: u64,
         len: u64,
@@ -221,6 +309,16 @@ pub enum BlkFault {
 impl std::fmt::Display for BlkFault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            BlkFault::UnpublishedRead { addr, len } => write!(
+                f,
+                "host bulk read [{addr:#x}, +{len}) was attempted without a consumed publication"
+            ),
+            BlkFault::NestedPublication => {
+                write!(
+                    f,
+                    "a second blk publication began before the first was released"
+                )
+            }
             BlkFault::OutsidePool { addr, len, why } => write!(
                 f,
                 "guest range [{addr:#x}, +{len}) is not device-reachable: {why} \
@@ -427,11 +525,10 @@ impl BlkDevice {
 
     pub fn service(&mut self, mem: &mut GuestMem) -> Result<Vec<Completion>, BlkFault> {
         let q = self.config.queue.clone();
-        if mem.read_u64(q.doorbell)? == 0 {
+        if mem.take_doorbell_acquire(q.doorbell)? == 0 {
             return Ok(Vec::new());
         }
-        mem.write_u64(q.doorbell, 0)?;
-        self.execute_available(mem)
+        mem.with_publication(|mem| self.execute_available(mem))
     }
 
     fn execute_available(&mut self, mem: &mut GuestMem) -> Result<Vec<Completion>, BlkFault> {
@@ -472,11 +569,13 @@ impl BlkDevice {
                 device: self.config.device,
             });
         }
-        let completions = self.execute_available(mem)?;
-        mem.write_u64(self.config.queue.doorbell, 0)?;
-        let count = mem.read_u64(expected)?.wrapping_add(1);
-        mem.write_u64(expected, count)?;
-        Ok(completions)
+        let _ = mem.take_doorbell_acquire(self.config.queue.doorbell)?;
+        mem.with_publication(|mem| {
+            let completions = self.execute_available(mem)?;
+            let count = mem.read_u64(expected)?.wrapping_add(1);
+            mem.write_u64(expected, count)?;
+            Ok(completions)
+        })
     }
 
     pub fn quiesce_count_addr(&self) -> u64 {
@@ -829,6 +928,28 @@ mod tests {
         assert!(err.contains("does not offer"), "{err}");
         let err = negotiate(F_BLK_FLUSH).expect_err("VERSION_1 is mandatory");
         assert!(err.contains("VIRTIO_F_VERSION_1"), "{err}");
+    }
+
+    #[test]
+    fn guest_bulk_reads_require_a_consumed_doorbell_publication() {
+        let mut harness = Harness::new();
+        harness.put(AVAIL_ADDR + 2, &1_u16.to_le_bytes());
+        let memory = harness.mem();
+        assert!(matches!(
+            memory.read_u16(AVAIL_ADDR + 2),
+            Err(BlkFault::UnpublishedRead { .. })
+        ));
+        harness.put(DOORBELL_ADDR, &1_u64.to_le_bytes());
+        let mut memory = harness.mem();
+        assert_eq!(memory.take_doorbell_acquire(DOORBELL_ADDR).unwrap(), 1);
+        let observed = memory
+            .with_publication(|memory| memory.read_u16(AVAIL_ADDR + 2))
+            .unwrap();
+        assert_eq!(observed, 1);
+        assert!(matches!(
+            memory.read_u16(AVAIL_ADDR + 2),
+            Err(BlkFault::UnpublishedRead { .. })
+        ));
     }
 
     #[test]
@@ -1557,6 +1678,8 @@ mod tests {
     #[test]
     fn every_fault_renders_a_distinct_diagnostic() {
         let faults = vec![
+            BlkFault::UnpublishedRead { addr: 1, len: 2 },
+            BlkFault::NestedPublication,
             BlkFault::OutsidePool {
                 addr: 1,
                 len: 2,

@@ -423,13 +423,13 @@ mod tests {
     fn derives_the_committed_boot_actors_vector() {
         let t = derive(&committed()).expect("derive");
         assert_eq!(t.workload, "boot-actors");
-        assert_eq!(t.total_hits, 1512);
+        assert_eq!(t.total_hits, 18278);
         assert_eq!(
             t.artifact_hits, 0,
             "bounded production windows exclude probes"
         );
-        assert_eq!(t.measured_fns, 39);
-        assert_eq!(t.measured_keys, 216);
+        assert_eq!(t.measured_fns, 45);
+        assert_eq!(t.measured_keys, 271);
         assert!(!t.loops.is_empty());
         assert!(
             !t.calls.iter().any(|c| c.fn_key == COUNTER_CLEARING_KEY),
@@ -613,7 +613,7 @@ mod tests {
             panic!("boot-actors has a committed sidecar; this must be Measured");
         };
         assert!(lc.is_measured());
-        assert_eq!(t.sidecar_digest, 0xf780_4652_c18f_bc25);
+        assert_eq!(t.sidecar_digest, 0x8707_8b28_2511_9b19);
 
         assert!(check.matched_fns > 0);
         assert_eq!(check.matched_fns + check.unmatched_fns, t.measured_fns);

@@ -25,21 +25,25 @@ fn ra(word: u32) -> u8 {
 
 fn is_load_store(word: u32) -> bool {
     crate::encode::access_width_bytes(word).is_some()
-        && (word & 0x3f00_0000 == 0x3900_0000
+        && (word & 0x3a00_0000 == 0x2800_0000
+            || word & 0x3f00_0000 == 0x3900_0000
             || word & 0x3f00_0000 == 0x3d00_0000
+            || matches!(word & 0x3fe0_0c00, 0x3860_0800 | 0x3820_0800)
             || matches!(word & 0xffc0_0000, 0x3dc0_0000 | 0x3d80_0000)
             || (word & 0x3fff_fc00 == 0x08df_fc00)
-            || (word & 0x3fff_fc00 == 0x089f_fc00))
+            || (word & 0x3fff_fc00 == 0x089f_fc00)
+            || (word & 0x3fff_fc00 == 0x085f_fc00)
+            || (word & 0x3fe0_fc00 == 0x0800_fc00))
 }
 
 fn is_ldar(word: u32) -> bool {
     let fixed = word & 0x3fff_fc00;
-    fixed == 0x08df_fc00 || fixed == 0xc8df_fc00
+    fixed == 0x08df_fc00 || fixed == 0xc8df_fc00 || fixed == 0x085f_fc00
 }
 
 fn is_stlr(word: u32) -> bool {
     let fixed = word & 0x3fff_fc00;
-    fixed == 0x089f_fc00 || fixed == 0xc89f_fc00
+    fixed == 0x089f_fc00 || fixed == 0xc89f_fc00 || word & 0x3fe0_fc00 == 0x0800_fc00
 }
 
 fn is_mov_wide(word: u32) -> bool {
@@ -282,8 +286,15 @@ pub fn audit_word(fn_key: &str, index: usize, ew: &EmittedWord) -> Result<(), St
                     ));
                 }
             } else {
-                if ew.dst.is_some() {
-                    return Err(format!("{fn_key}[{index}] store has a destination"));
+                let store_exclusive = ew.word & 0x3fe0_fc00 == 0x0800_fc00;
+                let expected_dst =
+                    store_exclusive.then(|| Reg::gpr(((ew.word >> 16) & 0x1f) as u8));
+                if ew.dst != expected_dst {
+                    return Err(format!(
+                        "{fn_key}[{index}] store destination {:?} does not match the encoded \
+                         exclusive-status destination {expected_dst:?}",
+                        ew.dst
+                    ));
                 }
                 if !contains(srcs, Reg::gpr(rn(ew.word))) || !contains(srcs, Reg::gpr(rd(ew.word)))
                 {

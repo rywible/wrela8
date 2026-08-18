@@ -203,6 +203,18 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "03 §6: acquire-ordered swap, same reasoning.",
     ),
     (
+        "MmioAtomic.load_acquire",
+        "06 §8.3: acquire observation of the host-injected atomic device-status word.",
+    ),
+    (
+        "MmioAtomic.swap_acquire",
+        "06 §8.3: acquire claim-and-clear of the host-injected atomic device-status word.",
+    ),
+    (
+        "MmioAtomic.fetch_or_release",
+        "06 §8.3: release raise on an explicitly atomic MMIO status word.",
+    ),
+    (
         "wake",
         "03 §6: a statically bound bottom-half wake. Its argument is a *method reference* \
          resolved at build time, and the language has no value form for one (03 §6, and \
@@ -229,6 +241,15 @@ pub const FORMAT_KEY_SITES: &[(&str, &[&str], &str)] = &[
         "Mmio.{op}",
         &["Mmio.read", "Mmio.write"],
         r#"if !matches!(op, "read" | "write") {"#,
+    ),
+    (
+        "MmioAtomic.{op}",
+        &[
+            "MmioAtomic.load_acquire",
+            "MmioAtomic.swap_acquire",
+            "MmioAtomic.fetch_or_release",
+        ],
+        r#"if !matches!(op, "load_acquire" | "swap_acquire" | "fetch_or_release") {"#,
     ),
     (
         "InterruptCell.{method}",

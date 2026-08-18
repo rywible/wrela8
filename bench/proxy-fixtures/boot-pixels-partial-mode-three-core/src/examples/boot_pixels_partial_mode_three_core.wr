@@ -1,0 +1,170 @@
+module examples.boot_pixels_partial_mode_three_core
+
+# Physical proxy fixture: the 3,072-frame loop intentionally stays out of the
+# ordinary boot-golden corpus.
+# @wrela-compiler-internal: this fixture traces its negotiated Pixels result.
+from core.runtime import __wrela_trace_p7_u64
+from core.field import Field, Rgb, Vec3, mark, plane
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+pub struct SceneParams:
+    @range(min=-1.0, max=1.0)
+    pub phase: f32
+
+pub enum MaterialId:
+    Ground
+
+enum ObjectId:
+    Ground
+
+const WIDTH: u32 = 65
+const HEIGHT: u32 = 33
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    return mark(
+        plane(p, Vec3(x=0.0, y=0.0, z=1.0), offset=params.phase),
+        object=ObjectId.Ground,
+        material=MaterialId.Ground,
+    )
+
+@material
+fn shade(
+    surface: SurfaceContext[MaterialId],
+    read params: SceneParams,
+) -> MaterialSample:
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+    )
+
+@actor
+struct PartialModeProbe:
+    renderer: Actor[Renderer[SceneParams]]
+
+    init(mut self, renderer: Actor[Renderer[SceneParams]]):
+        self.renderer = renderer
+
+    pub async fn render(mut self, index: u64) -> u64:
+        frame = RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=index,
+        )
+        result = await self.renderer.render(frame=take frame)
+        @discard(reason="a rejected partial-mode render returns the sentinel")
+        match result:
+            case .Err(.Op(failure)):
+                match failure.error:
+                    case .ParameterOutOfRange(_):
+                        return 2
+                    case .NonFiniteInput(_):
+                        return 3
+                    case .FrameContractMismatch(_):
+                        return 4
+                    case .RootIsolationExhausted(_):
+                        return 5
+                    case .EventIsolationExhausted(_):
+                        return 6
+                    case .CertificateExhausted(_):
+                        return 7
+                    case .CapacityExceeded(_):
+                        return 8
+                    case .FixedPointRangeExceeded(_):
+                        return 9
+                    case .Display(_):
+                        return 10
+                    case .InternalInvariant(invariant):
+                        __wrela_trace_p7_u64(invariant.kind.to[u64]())
+                        return 11
+            case .Err(_):
+                return 1
+            case .Ok(rendered):
+                assert rendered.frame_index == index, "negotiated frame preserves sequence"
+                assert rendered.certificate_runs > 0, "partial-mode frame has certified runs"
+                return rendered.certificate_runs
+
+@test(runtime)
+async fn partial_multitile_mode_presents_through_guest_vmm(
+    probe: Actor[PartialModeProbe],
+):
+    index: u64 = 0
+    @budget(bound=3072)
+    while index < 3072:
+        result = await probe.render(index=index)
+        @discard(reason="the probe validates the returned frame")
+        match result:
+            case .Ok(runs):
+                if index == 0:
+                    __wrela_trace_p7_u64(runs)
+                assert runs != 18446744073709551615, "65x33 frame presents"
+                assert runs > 11, "65x33 render returned no error class"
+            case .Err(_):
+                assert false, "partial-mode render call is admitted"
+        index = index + 1
+    assert index == 3072, "sequence presents 3072 frames in one guest boot"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-partial-mode-three-core", target=Target.wrela_machine_v1, cores=3)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(
+        Display,
+        device=display_device,
+        width=WIDTH,
+        height=HEIGHT,
+        refresh_hz=75,
+        core=0,
+    )
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=WIDTH,
+        height=HEIGHT,
+        refresh_hz=75,
+        shade_hz=75,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    probe = img.actor(
+        PartialModeProbe,
+        mailbox=1,
+        core=0,
+        renderer=renderer,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

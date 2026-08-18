@@ -2,15 +2,16 @@
 
 use std::collections::BTreeMap;
 
+pub mod drm;
 pub mod headless;
-pub mod hvf;
-pub mod kvm;
+pub mod metal;
 
 use wrela_machine::pixels::{
     CONTROL_BYTES, DISPLAY_TILE_DESC_BYTES_V1, DisplayError, DisplayQueue, DisplayTileDescV1,
     PresentControl, PresentedFrame, TILE_ALLOCATION_BYTES,
 };
 
+use crate::guest_memory::GuestMemoryHandle;
 use crate::{VmmError, guest_dram_offset};
 
 pub use headless::{HeadlessBackend, HeadlessDisplay};
@@ -18,8 +19,8 @@ pub use headless::{HeadlessBackend, HeadlessDisplay};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     Headless,
-    MacosHvf,
-    LinuxKvm,
+    Metal,
+    Drm,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,11 +74,11 @@ fn runtime_backend(
         DisplayBackendSelection::Native => {
             #[cfg(target_os = "macos")]
             {
-                Box::new(hvf::HvfDisplayBackend::native())
+                Box::new(metal::MetalDisplayBackend::native())
             }
             #[cfg(target_os = "linux")]
             {
-                Box::new(kvm::KvmDisplayBackend::native())
+                Box::new(drm::DrmDisplayBackend::native())
             }
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
@@ -139,6 +140,7 @@ impl RuntimeDisplay {
     /// # Safety
     ///
     /// `host_ram` must point to `dram_len` mapped bytes for this call.
+    #[cfg(test)]
     pub unsafe fn consume_volatile_from(
         &mut self,
         doorbell_addr: u64,
@@ -171,6 +173,45 @@ impl RuntimeDisplay {
         let result = unsafe {
             device.consume_volatile_from(doorbell_addr, host_ram, dram_len, control_addr)
         };
+        self.last_completion_status = device.last_completion_status();
+        self.frames
+            .extend_from_slice(&device.frames()[frame_count..]);
+        self.events
+            .extend_from_slice(&device.events()[event_count..]);
+        self.backend_digests
+            .extend_from_slice(&device.backend_digests()[digest_count..]);
+        result
+    }
+
+    pub(crate) fn consume_published_from(
+        &mut self,
+        doorbell_addr: u64,
+        memory: GuestMemoryHandle,
+        control_addr: u64,
+    ) -> Result<PresentedFrame, VmmError> {
+        if !wrela_machine::pixels::is_display_doorbell_addr(doorbell_addr) {
+            return Err(VmmError::GuestFault(format!(
+                "display submission used unsupported doorbell {doorbell_addr:#x}"
+            )));
+        }
+        if !self.devices.contains_key(&doorbell_addr) {
+            let backend = match self.spare_backend.take() {
+                Some(backend) => backend,
+                None => runtime_backend(self.selection)?,
+            };
+            self.devices.insert(
+                doorbell_addr,
+                DisplayDevice::new(DisplayQueue::negotiate_first_mode(), backend),
+            );
+        }
+        let device = self
+            .devices
+            .get_mut(&doorbell_addr)
+            .expect("display inserted");
+        let frame_count = device.frames().len();
+        let event_count = device.events().len();
+        let digest_count = device.backend_digests().len();
+        let result = device.consume_published_from(doorbell_addr, memory, control_addr);
         self.last_completion_status = device.last_completion_status();
         self.frames
             .extend_from_slice(&device.frames()[frame_count..]);
@@ -275,6 +316,7 @@ impl<B: PresentationBackend> DisplayDevice<B> {
     /// this call.  The guest release-publishes the complete chain before the
     /// synchronous doorbell.  Volatile byte reads avoid a Rust shared slice
     /// over RAM another guest vCPU could otherwise mutate.
+    #[cfg(test)]
     pub unsafe fn consume_volatile(
         &mut self,
         host_ram: *const u8,
@@ -296,6 +338,7 @@ impl<B: PresentationBackend> DisplayDevice<B> {
     /// # Safety
     ///
     /// The safety contract is identical to [`Self::consume_volatile`].
+    #[cfg(test)]
     pub unsafe fn consume_volatile_from(
         &mut self,
         doorbell_addr: u64,
@@ -335,6 +378,24 @@ impl<B: PresentationBackend> DisplayDevice<B> {
                 bytes.push(unsafe { std::ptr::read_volatile(host_ram.add(tail)) });
             }
             Ok(bytes)
+        })
+    }
+
+    pub(crate) fn consume_published_from(
+        &mut self,
+        doorbell_addr: u64,
+        memory: GuestMemoryHandle,
+        control_addr: u64,
+    ) -> Result<PresentedFrame, VmmError> {
+        self.consume_with(doorbell_addr, control_addr, |addr, len, what| {
+            // SAFETY: `consume_with` validates the doorbell/control sequence
+            // that release-published these bytes before invoking this reader.
+            let region = unsafe { memory.claim_published(addr, len, what) }.map_err(|error| {
+                VmmError::GuestFault(format!("display claim rejected: {error}"))
+            })?;
+            memory
+                .copy_published(region)
+                .map_err(|error| VmmError::GuestFault(format!("display present rejected: {error}")))
         })
     }
 
@@ -487,11 +548,10 @@ pub(crate) unsafe fn publish_completion_status(
             VmmError::GuestFault("display completion status address overflow".to_string())
         })?;
     let offset = guest_dram_offset(status_addr, 4, "display completion status")?;
-    for (index, byte) in status.to_le_bytes().into_iter().enumerate() {
-        // SAFETY: the checked offset names four mapped guest bytes, and the
-        // device publishes exactly one terminal status per doorbell.
-        unsafe { std::ptr::write_volatile(dram.add(offset + index), byte) };
-    }
+    unsafe {
+        std::sync::atomic::AtomicU32::from_ptr(dram.add(offset).cast())
+            .store(status, std::sync::atomic::Ordering::Release)
+    };
     Ok(())
 }
 
@@ -968,7 +1028,7 @@ mod tests {
 
     impl PresentationBackend for CommitBecameUnknown {
         fn kind(&self) -> BackendKind {
-            BackendKind::LinuxKvm
+            BackendKind::Drm
         }
 
         fn present(&mut self, _frame: &PresentedFrame) -> Result<(), HostPresentError> {

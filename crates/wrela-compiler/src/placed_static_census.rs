@@ -232,11 +232,12 @@ mod tests {
     #[test]
     fn fixed_set_len_matches_core_plus_mb_pool() {
         // The console ring is three placed statics since its 2026-08-07
-        // enlargement split desc/avail/doorbell pages (decisions 890-893
-        // pool discipline unchanged).
-        assert_eq!(fixed_core_names().len(), 21);
+        // enlargement split desc/avail/doorbell pages, and the input FIFO
+        // adds one fixed MMIO page. The Lane 2 snapshot adds one fixed
+        // diagnostic region without changing the INIT_SPAN pool discipline.
+        assert_eq!(fixed_core_names().len(), 23);
         assert_eq!(MB_POOL_COUNT, 32);
-        assert_eq!(fixed_set_len(), 85);
+        assert_eq!(fixed_set_len(), 87);
         for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
         }

@@ -15,6 +15,7 @@ use wrela_machine::layout as machine_layout;
 mod harness;
 mod place;
 mod report_lines;
+mod stage1;
 
 mod boot_init;
 mod rtdata;
@@ -42,6 +43,7 @@ pub use report_lines::{
     append_blk_vmm_lines, append_ring_vmm_lines, append_vmm_runtime_lines, attach_blk_report,
     parsed_runtime_tail, render_layout_section,
 };
+pub use stage1::{PermissionClass, ProtectionRange, Stage1Layout};
 
 pub use harness::{
     DEADLOCK_MSG, EXIT_CODE_ABORT_FIXED, EXIT_CODE_ABORT_VAL, EXIT_CODE_NO_RUNTIME,
@@ -96,6 +98,7 @@ pub struct ImageLayout {
     pub cores: usize,
     pub placed_statics: Vec<PlacedStatic>,
     pub renderers: Vec<RendererPlacement>,
+    pub stage1: Option<Stage1Layout>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1315,7 +1318,18 @@ fn verify_section_sizes(
         let steered_rtdata = b.name == "rtdata"
             && b.base == machine_layout::RTDATA_BASE
             && a_end <= machine_layout::RTDATA_BASE;
-        if gap >= 8 && !steered_rtdata {
+        let protection_padding = gap > 0
+            && b.base % wrela_machine::stage1::COMMON_PROTECTION_GRANULE == 0
+            && matches!(
+                b.name,
+                "rodata"
+                    | "stage1-vector"
+                    | "stage1-fault-record"
+                    | "stage1-tables"
+                    | "frameprog"
+                    | "pixelsdata"
+            );
+        if gap >= 8 && !steered_rtdata && !protection_padding {
             return Err(LayoutError::new(format!(
                 "internal error: a {gap}-byte gap between section `{}` and `{}` exceeds every                  alignment this module ever rounds to",
                 a.name, b.name
@@ -1837,6 +1851,68 @@ pub fn layout_program(
     layout_program_inner(program, boot)
 }
 
+/// Seal a hand-assembled instruction sequence into a complete machine-v1
+/// image: the fixed stage-1 regions, the fault trampoline, canonical page
+/// tables, and the full protection matrix.
+///
+/// Diagnostic fixtures that hand-assemble a few words still execute the same
+/// sealed machine as compiler output. Writing their reports by hand instead
+/// produces images the VMM must refuse, which silently turns the fixture into
+/// a test of the refusal rather than of the behaviour it names.
+pub fn layout_raw_image(
+    blob: &[u8],
+    sections: &[Section],
+    entry: u64,
+    cores: usize,
+) -> Result<ImageLayout, LayoutError> {
+    if sections.is_empty() {
+        return Err(LayoutError::new("a raw image declares no section"));
+    }
+    let mut cursor = machine_layout::IMAGE_BASE;
+    for section in sections {
+        if section.base < cursor {
+            return Err(LayoutError::new(format!(
+                "raw-image section `{}` at {:#x} overlaps or precedes the previous section",
+                section.name, section.base
+            )));
+        }
+        let end = section
+            .base
+            .checked_add(section.size)
+            .ok_or_else(|| LayoutError::new("raw-image section end overflows"))?;
+        if end - machine_layout::IMAGE_BASE > blob.len() as u64 {
+            return Err(LayoutError::new(format!(
+                "raw-image section `{}` runs past the supplied blob",
+                section.name
+            )));
+        }
+        cursor = end;
+    }
+    if entry % 4 != 0 || entry < sections[0].base || entry >= sections[0].base + sections[0].size {
+        return Err(LayoutError::new(
+            "the raw-image entry is not a 4-byte address inside the first section",
+        ));
+    }
+    let mut image = ImageLayout {
+        blob: blob.to_vec(),
+        linked: None,
+        entry,
+        sections: sections.to_vec(),
+        runtime: None,
+        pools: Vec::new(),
+        device_regs: Vec::new(),
+        blk: None,
+        irq_host_injects: Vec::new(),
+        core_entries: Vec::new(),
+        cores: cores.max(1),
+        placed_statics: Vec::new(),
+        renderers: Vec::new(),
+        stage1: None,
+    };
+    stage1::seal(&mut image)?;
+    Ok(image)
+}
+
 fn layout_program_inner(
     program: &CodegenProgram,
     boot: Option<BootCtx>,
@@ -1941,15 +2017,6 @@ fn layout_program_inner(
     let code_size = (code_words.len() * 4) as u64;
     cursor += code_size;
 
-    let rodata_base = if rodata_bytes.is_empty() {
-        None
-    } else {
-        cursor = round_up(cursor, 8);
-        let base = cursor;
-        cursor += rodata_bytes.len() as u64;
-        Some(base)
-    };
-
     cursor = round_up(cursor, 4);
     let abort_fixed_base = cursor;
     cursor += (abort_fixed_words.len() * 4) as u64;
@@ -1970,6 +2037,19 @@ fn layout_program_inner(
         None
     };
 
+    // Every executable byte occupies a complete common host-protection page.
+    // Immutable non-code begins on the next page so neither stage 1 nor a
+    // 16-KiB HVF stage-2 mapping has to choose between write and execute for
+    // one shared page.
+    let rodata_base = if rodata_bytes.is_empty() {
+        None
+    } else {
+        cursor = round_up(cursor, wrela_machine::stage1::COMMON_PROTECTION_GRANULE);
+        let base = cursor;
+        cursor += rodata_bytes.len() as u64;
+        Some(base)
+    };
+
     let mut sections = vec![
         Section {
             name: "entry",
@@ -1982,13 +2062,6 @@ fn layout_program_inner(
             size: code_size,
         },
     ];
-    if let Some(rb) = rodata_base {
-        sections.push(Section {
-            name: "rodata",
-            base: rb,
-            size: rodata_bytes.len() as u64,
-        });
-    }
     sections.push(Section {
         name: "abort",
         base: abort_fixed_base,
@@ -2004,6 +2077,13 @@ fn layout_program_inner(
             name: "rtcode",
             base,
             size: (rtcode_words_len * 4) as u64,
+        });
+    }
+    if let Some(rb) = rodata_base {
+        sections.push(Section {
+            name: "rodata",
+            base: rb,
+            size: rodata_bytes.len() as u64,
         });
     }
 
@@ -2424,10 +2504,6 @@ fn layout_program_inner(
     for w in &all_code_words {
         blob.extend_from_slice(&w.to_le_bytes());
     }
-    if let Some(rb) = rodata_base {
-        pad_to(&mut blob, image_base, rb);
-        blob.extend_from_slice(&rodata_bytes);
-    }
     pad_to(&mut blob, image_base, abort_fixed_base);
     for w in &abort_fixed_words {
         blob.extend_from_slice(&w.to_le_bytes());
@@ -2444,6 +2520,10 @@ fn layout_program_inner(
         for w in &rtcode_words {
             blob.extend_from_slice(&w.to_le_bytes());
         }
+    }
+    if let Some(rb) = rodata_base {
+        pad_to(&mut blob, image_base, rb);
+        blob.extend_from_slice(&rodata_bytes);
     }
     if let (Some(rb), Some(tables)) = (rtdata_base, runtime.filter(|t| t.total_bytes > 0)) {
         pad_to(&mut blob, image_base, rb);
@@ -2706,7 +2786,7 @@ fn layout_program_inner(
     }
     verify_section_sizes(&sections, image_base, linked_blob.len() as u64)?;
 
-    Ok(ImageLayout {
+    let mut image = ImageLayout {
         blob: linked_blob,
         linked: Some(linked),
         entry: entry_base,
@@ -2720,7 +2800,10 @@ fn layout_program_inner(
         cores,
         placed_statics: Vec::new(),
         renderers: Vec::new(),
-    })
+        stage1: None,
+    };
+    stage1::seal(&mut image)?;
+    Ok(image)
 }
 
 fn align_up_checked(value: u64, alignment: u64, what: &str) -> Result<u64, LayoutError> {
@@ -2817,14 +2900,12 @@ pub fn plan_pixels_placements(
     cores: usize,
     rtdata_end: u64,
 ) -> Result<PixelsPlacementPlan, LayoutError> {
-    if rtdata_end < machine_layout::PIXELS_DATA_BASE_MIN {
-        return Err(LayoutError::new(format!(
-            "P025: rtdata end {rtdata_end:#x} is below PIXELS_DATA_BASE_MIN {:#x}",
-            machine_layout::PIXELS_DATA_BASE_MIN
-        )));
-    }
     let alignment = machine_layout::PIXELS_REGION_ALIGNMENT;
-    let frameprog_base = align_up_checked(rtdata_end, alignment, "frameprog")?;
+    let frameprog_base = align_up_checked(
+        rtdata_end.max(machine_layout::PIXELS_DATA_BASE_MIN),
+        alignment,
+        "frameprog",
+    )?;
     if renderers.is_empty() {
         return Ok(PixelsPlacementPlan {
             frameprog_base,
@@ -2991,6 +3072,7 @@ pub fn attach_pixels(
     renderers: &[crate::pixels::CompiledRenderer],
     instrumented: bool,
 ) -> Result<(), LayoutError> {
+    stage1::seal(layout)?;
     if renderers.is_empty() {
         return Ok(());
     }
@@ -3089,6 +3171,7 @@ pub fn attach_pixels(
         size: plan.pixelsdata_end - plan.pixelsdata_base,
     });
     layout.renderers = plan.renderers;
+    stage1::seal(layout)?;
     Ok(())
 }
 
@@ -4519,7 +4602,7 @@ mod tests {
         assert_eq!(
             empty.frameprog_base,
             align_up_checked(
-                exact_rtdata_end,
+                exact_rtdata_end.max(machine_layout::PIXELS_DATA_BASE_MIN),
                 machine_layout::PIXELS_REGION_ALIGNMENT,
                 "test"
             )
@@ -5896,7 +5979,18 @@ fn two():
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
-        assert_eq!(names, ["entry", "code", "abort", "checkpoint"]);
+        assert_eq!(
+            names,
+            [
+                "entry",
+                "code",
+                "abort",
+                "checkpoint",
+                "stage1-vector",
+                "stage1-fault-record",
+                "stage1-tables",
+            ]
+        );
         assert_eq!(out.entry, machine_layout::IMAGE_BASE);
         let last = out.sections.last().unwrap();
         assert_eq!(
@@ -5916,7 +6010,19 @@ fn two():
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
-        assert_eq!(names, ["entry", "code", "rodata", "abort", "checkpoint"]);
+        assert_eq!(
+            names,
+            [
+                "entry",
+                "code",
+                "abort",
+                "checkpoint",
+                "rodata",
+                "stage1-vector",
+                "stage1-fault-record",
+                "stage1-tables",
+            ]
+        );
         let rodata = out.sections.iter().find(|s| s.name == "rodata").unwrap();
         assert_eq!(rodata.base % 8, 0);
         assert_eq!(rodata.size, 5);
@@ -6201,10 +6307,11 @@ fn two():
     #[test]
     fn device_window_accepts_the_live_lane_pages() {
         assert_eq!(LANE1_ROW, 1048);
-        assert_eq!(LANE2_BYTES, 24584);
+        assert_eq!(LANE2_BYTES, 131080);
+        assert!(wrela_machine::lane2::BASE + LANE2_BYTES < machine_layout::IMAGE_BASE);
         for cores in [1u64, 2, 3, 5] {
             let placed = vec![
-                window_static("LANE2", 0x4000_8800, LANE2_BYTES),
+                window_static("LANE2", wrela_machine::lane2::BASE, LANE2_BYTES),
                 window_static("LANE1", 0x4000_e900, cores * LANE1_ROW),
                 window_static("RT", wrela_machine::layout::RTDATA_BASE, 3072),
             ];
@@ -6217,11 +6324,11 @@ fn two():
     fn device_window_refuses_a_stripe_that_reaches_the_next_page() {
         let placed = vec![
             window_static("LANE1", 0x4000_8000, 2 * LANE1_ROW),
-            window_static("LANE2", 0x4000_8800, LANE2_BYTES),
+            window_static("NEXT", 0x4000_8800, 8),
         ];
         let err = verify_device_window_statics(&placed).expect_err("LANE1 reaches LANE2");
         assert!(
-            err.message.contains("overlap") && err.message.contains("LANE2"),
+            err.message.contains("overlap") && err.message.contains("NEXT"),
             "{}",
             err.message
         );
@@ -6229,10 +6336,7 @@ fn two():
 
     #[test]
     fn device_window_refuses_a_stripe_past_the_end_of_the_window() {
-        let placed = vec![
-            window_static("LANE2", 0x4000_8800, LANE2_BYTES),
-            window_static("LANE1", 0x4000_e900, 6 * LANE1_ROW),
-        ];
+        let placed = vec![window_static("LANE1", 0x4000_e900, 6 * LANE1_ROW)];
         let err = verify_device_window_statics(&placed).expect_err("6 rows leave the window");
         assert!(
             err.message
@@ -6286,6 +6390,7 @@ fn two():
             ],
             blk: None,
             renderers: Vec::new(),
+            stage1: None,
         };
         let mut out = String::new();
         render_layout_section(&mut out, &layout);
@@ -6541,7 +6646,8 @@ fn two():
         );
 
         let pairs = crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64;
-        let lane2_widest = pairs * (4 + 1 + COUNT_DIGITS) + (pairs - 1);
+        let block_id_digits = (crate::rtconfig::BLOCK_POOL_COUNT - 1).to_string().len() as u64;
+        let lane2_widest = pairs * (block_id_digits + 1 + COUNT_DIGITS) + (pairs - 1);
         assert!(
             lane2_pair_bytes() >= lane2_widest,
             "lane 2 reservation {} must cover the widest printable pair list {lane2_widest}",
@@ -6558,7 +6664,7 @@ fn two():
         let lane1_line = 11 + lane1_pair_bytes() + 1;
         let lane2_line = 11 + lane2_pair_bytes() + lane2_marker_bytes() + 1;
         assert_eq!(lane1_line, 3212, "lane 1 hits line reservation");
-        assert_eq!(lane2_line, 3355, "lane 2 hits line reservation");
+        assert_eq!(lane2_line, 3484, "lane 2 hits line reservation");
         assert!(
             lane1_line + lane2_line < console::DATA_SIZE,
             "both hit lines together must leave room for the test/summary lines"
@@ -6568,7 +6674,12 @@ fn two():
     #[test]
     fn lane2_reservation_is_bounded_by_the_print_pair_cap() {
         let per_pair = lane2_pair_bytes() / (crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64);
-        assert_eq!(per_pair, 4 + 1 + 20 + 1, "id digits from BLOCK_POOL_COUNT");
+        let block_id_digits = (crate::rtconfig::BLOCK_POOL_COUNT - 1).to_string().len() as u64;
+        assert_eq!(
+            per_pair,
+            block_id_digits + 1 + 20 + 1,
+            "id digits from BLOCK_POOL_COUNT"
+        );
         assert!(
             lane2_pair_bytes() < (crate::rtconfig::BLOCK_POOL_COUNT as u64) * per_pair,
             "the reservation must be the *printable* cap, not the whole pool"

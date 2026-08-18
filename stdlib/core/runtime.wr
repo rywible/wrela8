@@ -461,8 +461,24 @@ static EXIT: ParkMmio
 static RELEASE: ParkMmio
 
 @layout(runtime, endian=little)
+struct InputMmio:
+    status: u64
+    event: u64
+
+@placed(0x08011000)
+static INPUT: InputMmio
+
+pub fn input_pending() -> bool:
+    return INPUT.status != 0
+
+# Packed v1 event: value:u16, control:u8, player:u8, sequence:u32.
+# Calling this while `input_pending()` is false is a fail-closed guest fault.
+pub fn input_next_packed() -> u64:
+    return INPUT.event
+
+@layout(runtime, endian=little)
 struct PendingPage:
-    @offset(0x0) words: [u64; CORE_SLOTS]
+    @offset(0x0) words: [InterruptCell[u64]; CORE_SLOTS]
     @offset(0x800) idle: [u64; CORE_SLOTS]
 
 @placed(0x4003c000)
@@ -696,10 +712,24 @@ struct Lane2Counters:
     enabled: u64
     hits: [u64; BLOCK_POOL_COUNT]
 
-@placed(0x40008800)
+@placed(0x40400000)
 static LANE2: Lane2Counters
 
+@layout(runtime, endian=little)
+struct Lane2Snapshot:
+    hits: [u64; BLOCK_POOL_COUNT]
+
+# The four per-core live banks occupy [0x40400000, 0x40480000). The primary
+# snapshots its bank here so console formatting cannot move the Lane 2 side of
+# the Lane 2 / Lane 3 oracle while it is being printed.
+@placed(0x40480000)
+static LANE2_SNAPSHOT: Lane2Snapshot
+
 pub fn __wrela_block_hit(id: usize):
+    # An instrumented image begins its whole-run census at the first emitted
+    # block. Uninstrumented images never call this helper and remain silent.
+    if LANE2.enabled == 0:
+        LANE2.enabled = 1
     if LANE2.enabled != 1:
         return
     if id >= BLOCK_POOL_COUNT:
@@ -708,9 +738,15 @@ pub fn __wrela_block_hit(id: usize):
     return
 
 pub fn __wrela_lane2_begin():
+    # Source markers annotate the workload of interest. Physical-validation
+    # sidecars are entry-to-exit, so startup hits already observed by block
+    # instrumentation are retained.
+    if LANE2.enabled == 1:
+        return
     LANE2.enabled = 2
     i: usize = 0
-    @budget(bound=4096)
+    # The runtime loop guard counts the terminating condition check too.
+    @budget(bound=16385)
     while i < BLOCK_POOL_COUNT:
         LANE2.hits[i] = 0
         i = i +% 1
@@ -718,13 +754,22 @@ pub fn __wrela_lane2_begin():
     return
 
 pub fn __wrela_lane2_end():
-    LANE2.enabled = 2
+    # Like begin, this is an annotation in whole-run validation images. The
+    # snapshot routine closes the census immediately before reading it.
+    if LANE2.enabled == 0:
+        return
+    LANE2.enabled = 1
     return
 
 pub fn __wrela_lane2_dump():
     if LANE2.enabled == 0:
         return
     LANE2.enabled = 2
+    snapshot_i: usize = 0
+    @budget(bound=16385)
+    while snapshot_i < BLOCK_POOL_COUNT:
+        LANE2_SNAPSHOT.hits[snapshot_i] = LANE2.hits[snapshot_i]
+        snapshot_i = snapshot_i +% 1
     __wrela_line_begin()
     TEST_LINE_BUF.bytes[0] = 108
     TEST_LINE_BUF.bytes[1] = 97
@@ -742,9 +787,10 @@ pub fn __wrela_lane2_dump():
     i: usize = 0
     printed: usize = 0
     dropped: u64 = 0
-    @budget(bound=4096)
+    # The runtime loop guard counts the terminating condition check too.
+    @budget(bound=16385)
     while i < BLOCK_POOL_COUNT:
-        c = LANE2.hits[i]
+        c = LANE2_SNAPSHOT.hits[i]
         if c != 0:
             if printed < BLOCK_BOUND_PRINT_PAIRS:
                 if first == 0:
@@ -775,6 +821,20 @@ pub fn __wrela_lane2_dump():
     TEST_LINE_BUF.bytes[0] = 10
     _ = __wrela_console_append_line_buf(1)
     _ = __wrela_line_commit()
+    return
+
+pub fn __wrela_lane2_exit(code: u64):
+    # This tail is excluded from block instrumentation. Restore the primary's
+    # live bank to the exact snapshot printed above, then publish exit. The
+    # exit MMIO write stops the vCPU before this function can return.
+    if LANE2.enabled != 0:
+        restore_i: usize = 0
+        @budget(bound=16385)
+        while restore_i < BLOCK_POOL_COUNT:
+            LANE2.hits[restore_i] = LANE2_SNAPSHOT.hits[restore_i]
+            restore_i = restore_i +% 1
+    MACHINE_INFO.exit_code = code
+    EXIT.word = code
     return
 
 fn ascii_digit(d: u64) -> u8:
@@ -1054,7 +1114,11 @@ pub fn __wrela_deadline_poll():
             c: usize = 0
             @budget(bound=64)
             while c < N_CORES:
-                PENDING.words[c] = 1
+                # A release *store* would overwrite any vector a device or
+                # another core OR'd into this word concurrently, losing that
+                # wake entirely (06-machine.md: raises are release fetch-OR,
+                # ordinary stores to a pending word are invalid).
+                PENDING.words[c].fetch_or_release(1)
                 c = c +% 1
     return
 
@@ -1195,7 +1259,7 @@ pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_tu
     RINGS_CTL.edges[edge].count = count +% 1
     @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
-    PENDING.words[dst] = PENDING.words[dst] | 1
+    PENDING.words[dst].fetch_or_release(1)
     return 0
 
 pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
@@ -1220,13 +1284,13 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     RINGS_CTL.edges[edge].count = count +% 1
     @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
-    PENDING.words[dst] = PENDING.words[dst] | 1
+    PENDING.words[dst].fetch_or_release(1)
     return
 
 pub fn __wrela_rt_drain(core: usize) -> u64:
     moved: u64 = 0
     if core != 0:
-        PENDING.words[core] = 0
+        ignored_pending = PENDING.words[core].swap_acquire(0)
     n_rep = __wrela_drain_reply_count(core)
     ri: usize = 0
     @budget(bound=RING_POOL_COUNT)
@@ -1640,25 +1704,26 @@ pub fn __wrela_rt_checkpoint(core: usize):
     if core != 0:
         @budget(bound=64)
         while true:
-            p = PENDING.words[core]
+            p = PENDING.words[core].load_acquire()
             if p == 0:
                 return
-            PENDING.words[core] = 0
+            PENDING.words[core].swap_acquire(0)
         return
     if CHECKPOINT_SIMPLE:
         @budget(bound=64)
         while true:
-            p = PENDING.words[0]
+            p = PENDING.words[0].load_acquire()
             if p == 0:
                 return
+            p = PENDING.words[0].swap_acquire(0)
             __wrela_vector0()
-            PENDING.words[0] = 0
         return
     @budget(bound=64)
     while true:
         did: u64 = 0
-        p = PENDING.words[0]
+        p = PENDING.words[0].load_acquire()
         if p != 0:
+            p = PENDING.words[0].swap_acquire(0)
             serviced: u64 = 0
             if (p & 1) != 0:
                 __wrela_vector0()
@@ -1671,7 +1736,9 @@ pub fn __wrela_rt_checkpoint(core: usize):
                     __wrela_irq_invoke(i)
                     serviced = serviced | bit
                 i = i +% 1
-            PENDING.words[0] = PENDING.words[0] & ~serviced
+            unserviced = p & ~serviced
+            if unserviced != 0:
+                PENDING.words[0].fetch_or_release(unserviced)
             did = 1
         @budget(bound=64)
         while true:
@@ -1818,7 +1885,7 @@ pub fn __wrela_secondaries_idle() -> u64:
     while c < N_CORES:
         if PENDING.idle[c] == 0:
             return 0
-        if PENDING.words[c] != 0:
+        if PENDING.words[c].load_acquire() != 0:
             return 0
         c = c +% 1
     return 1
@@ -1879,12 +1946,11 @@ pub fn __wrela_rt_summary_and_halt():
     if quiesced == 0:
         __wrela_lane1_quiesce_timeout_line()
     __wrela_lane1_dump()
-    __wrela_lane2_dump()
     code: u64 = 0
     if MACHINE_INFO.test_failed != 0:
         code = 1
-    MACHINE_INFO.exit_code = code
-    EXIT.word = code
+    __wrela_lane2_dump()
+    __wrela_lane2_exit(code)
     return
 
 pub fn __wrela_rt_primary_boot():
@@ -1909,7 +1975,8 @@ pub fn __wrela_rt_primary_boot():
         zi = zi +% 1
     LANE2.enabled = 0
     zj: usize = 0
-    @budget(bound=4096)
+    # The runtime loop guard counts the terminating condition check too.
+    @budget(bound=16385)
     while zj < BLOCK_POOL_COUNT:
         LANE2.hits[zj] = 0
         zj = zj +% 1

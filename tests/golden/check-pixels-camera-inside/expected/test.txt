@@ -13,4 +13,4 @@ test reports_selected_curved_feature_normal: ok
 2 passed, 0 failed
 lane1 turns=3 run_one=6 messages=3
 lane1 hits=0:2,1:2,2:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=c99370631416dda685fc4cb3f94a242ec0b11a4d6c96c80da884506e0b809b87 visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=13 checkpoint=13
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d raw=eef19ce6c9fe92ca05efcc1b71bb2e3a3f149b3e3095cbbcfc94e6a5f3a0fc8d vsync=13 checkpoint=13

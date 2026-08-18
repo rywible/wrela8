@@ -1,0 +1,13 @@
+format=wrela-host-profile-v1
+acceptance_verdict=conforming
+cpu_isolation=isolcpus%3Ddomain,managed_irq,1-3
+frequency_policy=2400000,2400000,2400000,2400000
+governor=performance,performance,performance,performance
+hardening_config_sha256=3101d22ad9a80843c867bd5332fffbb8ca79e457b082de19f83b427a7797943d
+hardening_mode=product
+host_affinity=0
+host_protection_profile=product
+memory_reservation=prefault-mlock-ordinary-pages
+name=rasputin-product-v1
+provenance=docs/designs/rasputin-target-profile.md
+vcpu_affinity=1,2,3

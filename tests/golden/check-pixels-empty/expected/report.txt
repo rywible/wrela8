@@ -17,6 +17,18 @@ ImageReport v0
   Section name=code base=0x40600050 size=0
   Section name=abort base=0x40600050 size=120
   Section name=checkpoint base=0x406000c8 size=4
+  Section name=stage1-vector base=0x40a40000 size=16384
+  Section name=stage1-fault-record base=0x40a44000 size=16384
+  Section name=stage1-tables base=0x40a48000 size=131072
+  Stage1 tables_base=0x40a48000 tables_bytes=131072 tables_sha256=86eeea0e990698dcb09e3d76089240a40c8c4e94d0286e2bb2037d7254ec41a4 used_pages=7 ttbr0_el1=0x40a48000 tcr_el1=0x200803519 mair_el1=0xff04 sctlr_el1=0x30d85c1f vbar_el1=0x40a40000 system_allowlist_sha256=f0fa2ca128949ff8f7642221e568b67bcda1bd2ceee7d319e87a5c84b7209abc
+  Protection base=0x40000000 size=6291456 class=normal-rw-nx owner=machine-shared
+  Protection base=0x40600000 size=16384 class=normal-ro-rx owner=checkpoint
+  Protection base=0x40604000 size=4440064 class=invalid owner=unused
+  Protection base=0x40a40000 size=16384 class=normal-ro-rx owner=stage1-vector
+  Protection base=0x40a44000 size=16384 class=normal-rw-nx owner=stage1-fault-record
+  Protection base=0x40a48000 size=131072 class=normal-ro-nx owner=stage1-tables
+  Protection base=0x40a68000 size=524910592 class=invalid owner=unused
+  Protection base=0x5ff00000 size=1048576 class=normal-rw-nx owner=stack-core-0
   Entry base=0x40600000
   Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=27 rank_cycles=27 schedule_cycles=27 footprint_cycles=0 executable_words=51 executable_code_bytes=204 fetched_text_bytes=256 rodata_bytes=0 image_bytes=204 sync_frame_max_bytes=0 async_frame_total_bytes=0 ghz=2.4
     Workload name=flat proxy_cycles=27

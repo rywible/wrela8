@@ -1,0 +1,217 @@
+module examples.boot_pixels_plane_three_core
+
+# Physical proxy fixture: the 3,072-frame loop intentionally stays out of the
+# ordinary boot-golden corpus.
+# @wrela-compiler-internal: this fixture names the compiler-reserved Pixels
+# surface in order to pin its contract; see sema::check_reserved_source_names.
+from core.runtime import __wrela_trace_p7_u64
+from core.__image_pixels import __wrela_pixels_p8r_packet_selftest
+
+from core.field import (
+    Field,
+    Rgb,
+    Vec3,
+    mark,
+    plane,
+)
+from core.render import (
+    AoConfig,
+    Camera,
+    CameraBounds,
+    LightConfig,
+    LightFrame,
+    MaterialSample,
+    ProbeConfig,
+    RenderFrame,
+    Renderer,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+    __wrela_pixels_p7_debug_alpha_samples,
+    __wrela_pixels_p7_debug_certified_run_word,
+    __wrela_pixels_p7_debug_frame_digest,
+)
+from drivers.display import Display, DisplayDevice
+
+const FIXTURE_ID: u32 = 34
+
+fn fixture_id() -> u32:
+    return FIXTURE_ID
+
+const WIDTH: u32 = 64
+const HEIGHT: u32 = 32
+
+pub struct SceneParams:
+    @range(min=-2.0, max=2.0)
+    @rate(max_delta=0.25, max_second_delta=0.0625)
+    pub phase: f32
+    @range(min=-8.0, max=8.0)
+    pub unused_control: f32
+
+pub enum MaterialId:
+    Ground
+
+enum ObjectId:
+    Ground
+
+@field
+pub fn world(p: Vec3, read params: SceneParams) -> Field:
+    base = plane(p, Vec3(x=0.0, y=0.0, z=1.0), offset=params.phase)
+    return mark(base, object=ObjectId.Ground, material=MaterialId.Ground)
+
+@material
+pub fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
+    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+
+@test(runtime)
+fn pinned_scene_contract():
+    assert FIXTURE_ID == 34, "fixture id must remain pinned"
+    assert WIDTH == 64, "adversarial scene value must remain pinned"
+
+@test(runtime)
+fn packet_substrate_executes_in_the_guest():
+    assert __wrela_pixels_p8r_packet_selftest(), "all P8R packet lanes and special values"
+
+@test(runtime)
+async fn plane_renders_from_scratch(renderer: Actor[Renderer[SceneParams]]):
+    frame = RenderFrame[SceneParams](
+        params=SceneParams(phase=0.0, unused_control=7.0),
+        camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+        lights=LightFrame.empty(),
+        exposure=0.0,
+        environment=Rgb(r=0.0, g=0.0, b=0.0),
+        frame_index=0,
+    )
+    result = await renderer.render(frame=take frame)
+    @discard(reason="the exact result assertion converts every render failure into test failure")
+    match result:
+        case .Ok(rendered):
+            __wrela_trace_p7_u64(rendered.certificate_runs)
+            __wrela_trace_p7_u64(rendered.event_corridors)
+            __wrela_trace_p7_u64(rendered.revalidated_proposals)
+            __wrela_trace_p7_u64(5780180186688408645)
+            __wrela_trace_p7_u64(__wrela_pixels_p7_debug_alpha_samples(0))
+            __wrela_trace_p7_u64(4922225244575680596)
+            exact_digest = __wrela_pixels_p7_debug_frame_digest(0)
+            assert exact_digest[0] == 1, "four-core exact frame is complete"
+            digest_word: usize = 0
+            @budget(bound=4)
+            while digest_word < 4:
+                __wrela_trace_p7_u64(exact_digest[digest_word + 1])
+                digest_word = digest_word + 1
+            # The single 64x32 scanout tile is wholly owned by worker 0 in
+            # both layouts. Read the same spatial run so raw evidence equality
+            # tests proof determinism rather than worker partition order.
+            evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
+            if evidence[0] == 1:
+                __wrela_trace_p7_u64(4847371096046259761)
+                evidence_word: usize = 0
+                @budget(bound=16)
+                while evidence_word < 16:
+                    evidence = __wrela_pixels_p7_debug_certified_run_word(
+                        0,
+                        0,
+                        0,
+                        evidence_word,
+                    )
+                    assert evidence[0] == 1, "instrumented run evidence is complete"
+                    __wrela_trace_p7_u64(evidence[1])
+                    evidence_word = evidence_word + 1
+            telemetry_word: usize = 0
+            @budget(bound=4)
+            while telemetry_word < 4:
+                __wrela_trace_p7_u64(
+                    rendered.certificate_telemetry_digest[telemetry_word],
+                )
+                telemetry_word = telemetry_word + 1
+            dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+            if dump_header[0] == 1:
+                __wrela_trace_p7_u64(7599824371187933777)
+                dump_index: u64 = 1
+                @budget(bound=65551)
+                while dump_index <= dump_header[1]:
+                    dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                    assert dump_value[0] == 1, "instrumented frame dump is complete"
+                    __wrela_trace_p7_u64(dump_value[1])
+                    dump_index = dump_index + 1
+        case .Err(call_error):
+            match call_error:
+                case .Op(failure):
+                    match failure.error:
+                        case .RootIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(4294967296 + tile.value.to[u64]())
+                        case .EventIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(8589934592 + tile.value.to[u64]())
+                        case .CertificateExhausted(tile):
+                            __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+                        case .CapacityExceeded(capacity):
+                            __wrela_trace_p7_u64(17179869184 + capacity.kind.to[u64]())
+                        case .FixedPointRangeExceeded(tile):
+                            __wrela_trace_p7_u64(21474836480 + tile.value.to[u64]())
+                        case .InternalInvariant(invariant):
+                            __wrela_trace_p7_u64(invariant.kind.to[u64]())
+                        case _:
+                            pass
+                case _:
+                    pass
+            assert false, "valid plane frame renders"
+
+@test(runtime)
+async fn sustained_sequence_presents_in_one_guest_boot(
+    renderer: Actor[Renderer[SceneParams]],
+):
+    index: u64 = 1
+    @budget(bound=3071)
+    while index < 3072:
+        frame = RenderFrame[SceneParams](
+            params=SceneParams(phase=0.0, unused_control=7.0),
+            camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+            lights=LightFrame.empty(),
+            exposure=0.0,
+            environment=Rgb(r=0.0, g=0.0, b=0.0),
+            frame_index=index,
+        )
+        result = await renderer.render(frame=take frame)
+        @discard(reason="every sequence frame is asserted below")
+        match result:
+            case .Ok(rendered):
+                assert rendered.frame_index == index, "sequence index is preserved"
+            case .Err(_):
+                assert false, "sustained plane frame renders"
+        index = index + 1
+    assert index == 3072, "sequence presents 3072 frames in one guest boot"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-pixels-plane-three-core", target=Target.wrela_machine_v1, cores=3)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60, core=0)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=128.0,
+        world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
+        world_max=Vec3(x=4.0, y=4.0, z=4.0),
+        camera_bounds=CameraBounds.bounded(max_motion=0.25),
+        light_config=LightConfig.fixed(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig.fixed(enabled=false),
+        probes=ProbeConfig.fixed(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

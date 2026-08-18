@@ -4,12 +4,10 @@ use std::time::Instant;
 use wrela_machine::report::RequestRing;
 
 use crate::VmmError;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::devices;
 #[cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))]
 use crate::guest_dram_offset;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-use crate::hv;
+use crate::guest_memory::GuestMemoryHandle;
 use crate::record;
 
 pub(crate) fn host_entropy(buf: &mut [u8]) -> Result<(), VmmError> {
@@ -130,7 +128,6 @@ pub(crate) fn check_core_marks(host_ram: *const u8, cores: usize) -> Result<(), 
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) struct BlkState {
     pub(crate) device: devices::BlkDevice,
     pub(crate) mem: devices::GuestMem,
@@ -146,24 +143,21 @@ pub(crate) fn check_vector_in_range(vector: u64) -> Result<(), VmmError> {
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn raise_vector(host_ram: *mut u8, vector: u64) -> Result<(), VmmError> {
+pub(crate) fn raise_vector(memory: GuestMemoryHandle, vector: u64) -> Result<(), VmmError> {
     check_vector_in_range(vector)?;
-    let off = guest_dram_offset(wrela_machine::pending::core_word_addr(0), 8, "pending word")?;
-    unsafe {
-        let mut b = [0u8; 8];
-        std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8);
-        let raised = u64::from_le_bytes(b) | (1u64 << vector);
-        std::ptr::copy_nonoverlapping(raised.to_le_bytes().as_ptr(), host_ram.add(off), 8);
-    }
+    memory.fetch_or_u64(
+        wrela_machine::pending::core_word_addr(0),
+        1u64 << vector,
+        std::sync::atomic::Ordering::Release,
+        "pending word",
+    )?;
     Ok(())
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn service_blk(
     blk: &mut Option<BlkState>,
     chooser: &mut record::Chooser,
-    host_ram: *mut u8,
+    memory: GuestMemoryHandle,
 ) -> Result<bool, VmmError> {
     let Some(state) = blk.as_mut() else {
         return Ok(false);
@@ -172,15 +166,14 @@ pub(crate) fn service_blk(
         .device
         .service(&mut state.mem)
         .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
-    commit_completions(state, chooser, &completions, host_ram)
+    commit_completions(state, chooser, &completions, memory)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn commit_completions(
     state: &mut BlkState,
     chooser: &mut record::Chooser,
     completions: &[devices::Completion],
-    host_ram: *mut u8,
+    memory: GuestMemoryHandle,
 ) -> Result<bool, VmmError> {
     if completions.is_empty() {
         return Ok(false);
@@ -218,18 +211,17 @@ pub(crate) fn commit_completions(
     }
     if let Some(vector) = state.device.config.vector {
         if let Some(gpa) = state.irq_status_gpa {
-            let off = guest_dram_offset(gpa, 4, "interrupt_status")?;
-            unsafe {
-                let mut b = [0u8; 4];
-                std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4);
-                let status = u32::from_le_bytes(b) | 1;
-                std::ptr::copy_nonoverlapping(status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
-            }
+            memory.fetch_or_u32(
+                gpa,
+                1,
+                std::sync::atomic::Ordering::Release,
+                "interrupt_status",
+            )?;
         }
         chooser.choose_checked(record::ChoiceRequest::VectorRaise { vector }, || {
             record::ChoiceEntry::VectorRaise { vector }
         })?;
-        raise_vector(host_ram, vector)?;
+        raise_vector(memory, vector)?;
     }
     Ok(true)
 }
@@ -353,75 +345,6 @@ pub(crate) fn commit_admissions(
                 actual: observed.to_text_fields(),
             })?;
         }
-    }
-    Ok(())
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn read_pc(vcpu: u64) -> Option<u64> {
-    use hv::{HV_REG_PC, HV_SUCCESS, hv_vcpu_get_reg};
-    let mut pc = 0u64;
-    let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
-    if r == HV_SUCCESS { Some(pc) } else { None }
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn el1_exception_note(vcpu: u64, pc: u64) -> String {
-    use hv::*;
-    let sys = |reg: u16| -> Option<u64> {
-        let mut v = 0u64;
-        let r = unsafe { hv_vcpu_get_sys_reg(vcpu, reg, &mut v) };
-        if r == HV_SUCCESS { Some(v) } else { None }
-    };
-    let Some(vbar) = sys(HV_SYS_REG_VBAR_EL1) else {
-        return String::new();
-    };
-    if pc < vbar || pc >= vbar + 0x800 || (pc - vbar) % 0x80 != 0 {
-        return String::new();
-    }
-    let slot = pc - vbar;
-    let (esr1, elr1, far1) = (
-        sys(HV_SYS_REG_ESR_EL1),
-        sys(HV_SYS_REG_ELR_EL1),
-        sys(HV_SYS_REG_FAR_EL1),
-    );
-    let mut note = format!(
-        "; pc is VBAR_EL1({vbar:#x}) + {slot:#x} — the guest took an EL1 exception into a \
-         vector table this machine never installs (06-machine.md §4), so the fault above is \
-         only the resulting instruction abort. The original fault:"
-    );
-    match esr1 {
-        Some(e) => {
-            note.push_str(&format!(" ESR_EL1={e:#x} (EC={:#x})", (e >> 26) & 0x3F));
-        }
-        None => note.push_str(" ESR_EL1=<unreadable>"),
-    }
-    if let Some(v) = elr1 {
-        note.push_str(&format!(" ELR_EL1={v:#x}"));
-    }
-    if let Some(v) = far1 {
-        note.push_str(&format!(" FAR_EL1={v:#x}"));
-    }
-    note
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn advance_pc(vcpu: u64) -> Result<(), VmmError> {
-    use hv::*;
-    let mut pc = 0u64;
-    let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_get_reg(PC)",
-            code: r,
-        });
-    }
-    let r = unsafe { hv_vcpu_set_reg(vcpu, HV_REG_PC, pc + 4) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_set_reg(PC)",
-            code: r,
-        });
     }
     Ok(())
 }

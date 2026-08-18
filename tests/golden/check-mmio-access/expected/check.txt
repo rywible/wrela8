@@ -4,6 +4,7 @@ Module path=examples.check_mmio_access
   Struct VirtioIrqMmio data
     field interrupt_status: ReadOnly[u32]
     field interrupt_ack: WriteOnly[u32]
+    field level_status: InterruptCell[u32]
   Struct VirtioLowAckMmio data
     field ack_low: WriteOnly[u16]
   Struct VirtioBlock data
@@ -14,4 +15,5 @@ Module path=examples.check_mmio_access
     field handled_bits: u32
     fn on_queue_irq(mut self) -> unit
     fn ack_low(read self, bits: read u16) -> unit
+    fn consume_level(mut self) -> u32
     fn last_handled(read self) -> u32

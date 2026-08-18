@@ -1,0 +1,7 @@
+ChoiceLog v1
+choice_count=2
+choice[0]=ClockRead value=895167
+choice[1]=ClockRead value=909458
+transcript_digest=464ecbcaeb44bd075f2c664e7342f35baf05c459688615acbdbd331f9b4b1565
+exit_code=0
+exits=3

@@ -765,6 +765,12 @@ pub fn layout_test_image(
     let code_base = cursor;
     let code_size = (code_words.len() * 4) as u64;
     cursor += code_size;
+    // Retain the exact test-image function universe and its source-order
+    // origin partitions for offline Lane 2 attribution. The harness applies
+    // its image-specific relocations below, but those patches do not change
+    // instruction cost classes or block boundaries.
+    let linked = crate::linked::link_wide(program, code_base)
+        .map_err(|error| LayoutError::new(format!("link runtime-test cost view: {error}")))?;
 
     let primary_entry_word = *fn_word_base
         .get("__wrela_rt_primary_entry")
@@ -787,7 +793,7 @@ pub fn layout_test_image(
     let rodata_base = if rodata_bytes.is_empty() {
         None
     } else {
-        cursor = round_up(cursor, 8);
+        cursor = round_up(cursor, wrela_machine::stage1::COMMON_PROTECTION_GRANULE);
         Some(cursor)
     };
     if rodata_base.is_some() {
@@ -1328,9 +1334,9 @@ pub fn layout_test_image(
     };
     let _ = core_entry_starts;
     let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
-    Ok(ImageLayout {
+    let mut image = ImageLayout {
         blob,
-        linked: None,
+        linked: Some(linked),
         entry: harness_base + (entry_start as u64) * 4,
         sections,
         runtime: runtime_tables,
@@ -1342,7 +1348,10 @@ pub fn layout_test_image(
         cores,
         placed_statics: Vec::new(),
         renderers: Vec::new(),
-    })
+        stage1: None,
+    };
+    super::stage1::seal(&mut image)?;
+    Ok(image)
 }
 
 #[cfg(test)]

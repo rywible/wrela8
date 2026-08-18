@@ -4,13 +4,13 @@
 roadmap. Its presence in the P8R integration tree is not implementation of a
 P8R task and must not be cited as P8R acceptance evidence.
 
-**Status:** APPROVED DESIGN — normative machine amendments pending. This
-document defines the host-backend boundary, the Linux/KVM dependency
-exception, the Raspberry Pi development and measurement lane, and the
-presentation boundary. It does not change `wrela-machine-v1` by prose alone.
-Tasks V0, V4a, and V5 own the normative machine amendments required for
-stage-1 translation and protection; implementation may not precede those
-amendments.
+**Status:** IMPLEMENTED — Tasks V0–V15 are represented in the compiler,
+machine contract, portable VMM, HVF/KVM adapters, Forge and Rasputin tooling,
+packaging checks, deterministic corpora, and the standing physical-evidence
+drift lock. This document records the host-backend boundary, the audited
+Linux/KVM dependency exception, the Raspberry Pi development and measurement
+lane, and the presentation boundary; chapter 06 remains the normative
+guest-visible contract.
 
 **Repository basis:** the P8R milestone close on branch `P8.5-impl`. The
 working tree at the basis contains the P8-era Linux/KVM and DRM prototype
@@ -438,6 +438,11 @@ writable ID-register masking follows the kernel's documented ordering before
 any other vCPU register access. On HVF, the required minimum macOS version
 and any configurable IPA/granule APIs are recorded as host capabilities.
 
+The published table and executable-section certificate are
+[vmm-host-boot-visibility-v1](vmm-host-boot-visibility-v1.md). That document is
+normative for the internal host boundary; the machine chapter remains
+authoritative for guest-visible semantics.
+
 ### 6.2 Exit normalization
 
 HVF and KVM report MMIO differently:
@@ -772,6 +777,12 @@ They are translated into the one Wrela input queue before entering the
 portable device model. Host key codes, event timestamps, controller IDs, and
 repeat behavior do not enter the guest ABI directly.
 
+The implemented file transport opens its source once, retains that descriptor,
+and rejects path replacement. Each poll consumes only the file extent captured
+at the start of that poll, so a concurrent append is deferred intact to the
+next poll; shutdown rejects a trailing unterminated event rather than silently
+dropping it.
+
 ## 10. Dependency policy
 
 ### 10.1 Approved exception
@@ -860,6 +871,9 @@ objects into a running guest. Fast compiler and cold-boot performance make a
 clean restart preferable to a second mutable runtime contract.
 
 ### 11.2 Forge boundary
+
+The implemented v1 process contract is recorded in
+[`forge-process-contract.md`](../forge-process-contract.md).
 
 Forge orchestrates the real compiler and VMM. The initial integration may
 launch `wrela-vmm` as a child window/process. A later embedded UI may add a
@@ -1261,6 +1275,20 @@ decisions must survive real programs. Envelopes are sealed from repeated
 conforming-run noise measurements, not chosen aspirationally, and every
 report carries the full provenance of §12.5.
 
+Proxy revision `a76-pi5-v1` sealed the frame, kernel, and sequence
+overprediction envelopes at 3058, 2779, and 3110 milli-units respectively.
+The release-atomic pending-vector correction changed executable placement
+without changing the frame fixture's retired instruction count; repeated
+conforming calibration runs therefore retired the current image below the V1
+frame envelope. Proxy revision `a76-pi5-v2` retains the already-frozen corpus
+and the kernel and sequence limits, and seals the fresh frame envelope at 3090
+milli-units before opening that corpus's holdout. The revision is evidence of
+the compiler lifecycle change, not permission to mutate a V1 limit in place.
+A lifecycle rerun derives a fresh per-class measurement-error term from its
+raw calibration samples but must not recompute, tighten, or widen these sealed
+limits. Changing a limit requires a new proxy revision and a new frozen
+holdout, never evidence from the current revision's holdout.
+
 Measurement mechanics are part of the evidence, not an implementation
 detail. Guest-cycle comparisons count guest execution only, using the arm64
 perf `exclude_host`/`exclude_guest` attributes; every report records raw
@@ -1299,6 +1327,21 @@ provenance, and digest binding of the checked-in validation report against
 the active proxy revision. Without that offline check the drift lock is
 policy rather than enforcement.
 
+**Operator rerun policy.** Delete the checked envelope and report before
+collecting a replacement; the runner then exposes only calibration cases.
+Review and check in the derived envelope before unsealing the frozen holdout.
+Run all three holdout classes, copy the canonical identity, profile, final
+run-environment, envelope, and validation records from the runner's candidate
+directory, and run `cargo xtask verify`. Never splice cases from different VMM
+binaries, identities, or profiles. Rerun the entire calibration/holdout
+lifecycle after any change to the proxy or cost rules, VMM source or build
+toolchain, calibration/holdout manifests, kernel, EEPROM/boot configuration,
+loaded KVM/DRM module identity, hardening profile, CPU topology/isolation, PMU
+configuration, or display-presentation configuration. Temperature and
+frequency observations remain per-run records; throttling invalidates the run.
+If a rerun fails, retain its raw artifacts for diagnosis but leave the active
+revision unsealed—do not widen an envelope in the correcting change.
+
 ## 14. Verification and conformance
 
 ### 14.1 Required repository gate
@@ -1313,7 +1356,20 @@ measurement.
 After Task V4, that local gate also performs a full pinned
 `aarch64-unknown-linux-musl` build of `wrela-vmm`. This does not execute KVM or
 replace Rasputin evidence, but it must compile and link every Linux/aarch64
-backend path and its locked dependency closure.
+backend path, its Linux-gated test modules, and its locked dependency closure.
+
+The operator check for those Linux-only tests runs on a conforming Rasputin
+checkout at the exact commit under review, as the unprivileged lab user with
+`/dev/kvm` access:
+
+```text
+cargo test --release -p wrela-vmm --lib --features native-presentation -- --test-threads=1
+```
+
+Retain the command output with the commit, kernel identity, and host-profile
+evidence. This is the execution lane for Linux ABI assertions and the spinning
+KVM-guest watchdog regression; a successful Mac cross-build is not a substitute.
+It remains an explicit physical-target check, not a second repository gate.
 
 Portable engine logic, exit-normalization state machines, guest-memory bounds,
 stable result parsers, and synthetic KVM exit fixtures run in the ordinary Mac
@@ -1350,6 +1406,18 @@ clock, entropy, or other recorded choices. For nondeterministic inputs, record
 once and replay on both hosts before comparing transcript or device bytes. A
 recording made on either backend must be parseable on the other because records
 describe Wrela choices, not HVF or KVM exits.
+
+The standing offline corpus checks entropy, monotonic time, and a real Pixels
+frame case. It retains both canonical choice logs and the shared transcript,
+retains all four backend/record cross-replay outputs, requires every replay to
+reproduce the shared transcript exactly, and compares choice counts and frame
+digest sequences while allowing live nondeterministic choice values and
+backend-private raw exit counts to differ. Every record is bound to the KVM
+identity, accepted product profile, host-binary digest, replay-matrix digest,
+and a source contract covering the VMM, evidence grammar, conformance runner,
+compiler proxy rules, and the exact fixture inputs. `cargo xtask verify`
+rejects stale, missing, extra, or misbound checked evidence without contacting
+Rasputin.
 
 ### 14.3 Test progression
 

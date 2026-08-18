@@ -3,8 +3,18 @@ name = "wrela-vmm"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# The product/validation artifact enables direct DRM/KMS presentation. The
+# feature remains explicit so headless-only development builds do not compile
+# Linux presenter code; both variants remain fully static and dependency-free.
+native-presentation = []
+
 [dependencies]
 wrela-machine = { path = "../wrela-machine" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+kvm-bindings = { version = "=0.14.1", default-features = false, features = ["fam-wrappers"] }
+kvm-ioctls = { version = "=0.25.0", default-features = false }
 
 [dev-dependencies]
 # plans/M5.md item F: the clock-reading test image (record.rs's own unit

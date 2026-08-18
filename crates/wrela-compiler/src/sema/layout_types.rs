@@ -341,6 +341,38 @@ fn layout_field_bytes(
             span,
         ));
     }
+    if n.name == "InterruptCell" {
+        if !matches!(kind, LayoutKind::Mmio | LayoutKind::Runtime) {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` is an atomic cell; only an \
+                     `@layout(mmio)` status word or `@layout(runtime)` shared word may contain one"
+                ),
+                span,
+            ));
+        }
+        let [GenericArg::Type(ast::Type::Named(inner))] = n.args.as_slice() else {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` must be exactly \
+                     `InterruptCell[u32]` or `InterruptCell[u64]`"
+                ),
+                span,
+            ));
+        };
+        if !inner.args.is_empty() || !matches!(inner.name.as_str(), "u32" | "u64") {
+            return Err(layout_error(
+                format!(
+                    "field `{struct_name}.{field_name}: {rendered}` must be exactly \
+                     `InterruptCell[u32]` or `InterruptCell[u64]`"
+                ),
+                span,
+            ));
+        }
+        return Ok(Some(FieldBytes::scalar(
+            scalar_field_size(&inner.name).expect("u32/u64"),
+        )));
+    }
     if crate::sema::classes::name_holds_authority(&n.name) {
         let kind_text = crate::eval::image_checks::sealed_authority_kind(&n.name);
         return Err(match kind {
@@ -444,6 +476,22 @@ fn array_field_bytes(
         ast::Type::Named(n) if n.args.is_empty() && scalar_field_size(&n.name).is_some() => Some(
             FieldBytes::scalar(scalar_field_size(&n.name).expect("just matched")),
         ),
+        ast::Type::Named(n)
+            if n.name == "InterruptCell"
+                && n.args.len() == 1
+                && matches!(
+                    &n.args[0],
+                    ast::GenericArg::Type(ast::Type::Named(inner))
+                        if inner.args.is_empty() && matches!(inner.name.as_str(), "u32" | "u64")
+                ) =>
+        {
+            let ast::GenericArg::Type(ast::Type::Named(inner)) = &n.args[0] else {
+                unreachable!("guard establishes InterruptCell scalar type")
+            };
+            Some(FieldBytes::scalar(
+                scalar_field_size(&inner.name).expect("u32/u64"),
+            ))
+        }
         ast::Type::Named(n) if n.args.is_empty() && decls.contains_key(&n.name) => {
             let nested = decls[&n.name];
             nested_field_bytes(
@@ -1320,32 +1368,40 @@ pub struct MmioRegister {
     pub scalar: String,
     pub offset: u64,
     pub size: u64,
+    pub atomic: bool,
 }
 
-fn split_register_type(rendered: &str) -> (Option<MmioDirection>, &str) {
+fn split_register_type(rendered: &str) -> (Option<MmioDirection>, &str, bool) {
     for (prefix, dir) in [
         ("ReadOnly[", MmioDirection::ReadOnly),
         ("WriteOnly[", MmioDirection::WriteOnly),
     ] {
         if let Some(rest) = rendered.strip_prefix(prefix) {
             if let Some(inner) = rest.strip_suffix(']') {
-                return (Some(dir), inner);
+                return (Some(dir), inner, false);
             }
         }
     }
-    (None, rendered)
+    if let Some(inner) = rendered
+        .strip_prefix("InterruptCell[")
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return (None, inner, true);
+    }
+    (None, rendered, false)
 }
 
 pub fn mmio_register(layout: &LayoutType, name: &str) -> Option<MmioRegister> {
     layout.entries.iter().find_map(|e| match e {
         LayoutEntry::Field(f) if f.name == name => {
-            let (direction, scalar) = split_register_type(&f.ty);
+            let (direction, scalar, atomic) = split_register_type(&f.ty);
             Some(MmioRegister {
                 name: f.name.clone(),
                 direction,
                 scalar: scalar.to_string(),
                 offset: f.offset,
                 size: f.size,
+                atomic,
             })
         }
         _ => None,

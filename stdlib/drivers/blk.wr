@@ -2,8 +2,7 @@ module blk
 
 @layout(mmio, endian=little)
 pub struct VirtioIrqMmio:
-    @offset(0x060) interrupt_status: ReadOnly[u32]
-    @offset(0x064) interrupt_ack: WriteOnly[u32]
+    @offset(0x060) interrupt_status: InterruptCell[u32]
 
 @layout(dma, endian=little)
 pub struct BlkReqHeader:
@@ -95,11 +94,13 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn on_queue_irq(self):
-        status = self.irq_regs.interrupt_status.read()
+        observed = self.irq_regs.interrupt_status.load_acquire()
+        if observed == 0:
+            return unit
+        status = self.irq_regs.interrupt_status.swap_acquire(0)
         handled = status & 1
         if handled != 0:
             self.pending.fetch_or_release(handled)
-            self.irq_regs.interrupt_ack.write(handled)
             wake(BlkDriver.drain)
 
     @task

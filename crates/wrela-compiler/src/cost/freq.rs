@@ -163,10 +163,10 @@ Worker.report=2
         assert_eq!(f.workload, "boot-actors");
         assert_eq!(
             f.counts.len(),
-            216,
+            271,
             "the committed vector is the bounded production-window non-zero set"
         );
-        assert_eq!(f.counts.values().sum::<u64>(), 1512);
+        assert_eq!(f.counts.values().sum::<u64>(), 18278);
         assert_eq!(f.counts.get("Ledger.mark#0"), Some(&3));
         assert!(f.counts.keys().all(|k| k.contains('#')));
     }

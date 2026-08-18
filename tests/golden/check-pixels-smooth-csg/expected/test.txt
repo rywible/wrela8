@@ -13,4 +13,4 @@ test smooth_object_sweeps_all_roots: ok
 2 passed, 0 failed
 lane1 turns=3 run_one=6 messages=3
 lane1 hits=0:2,1:2,2:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=053ca5641610039d2ab4082332ce4b74bfe6d9d95d29dba3677677e43270928f visible=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 raw=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 vsync=3 checkpoint=3
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=4e0b94759f90fef796c39112abd9d151b55dc43bc40b81315556a450e9d832ba visible=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 raw=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 vsync=3 checkpoint=3

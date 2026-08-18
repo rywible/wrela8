@@ -12,9 +12,9 @@ cannot perturb them.
 
 | function | P8 frame | P8 words | P8 calls | P8 word SHA-256 | P8R frame | P8R words | P8R calls | P8R word SHA-256 |
 |---|---:|---:|---:|---|---:|---:|---:|---|
-| `__wrela_pixels_p7_collect_roots_box` | 29472 | 7239 | 131 | `018d73af051e0efaf5422926a7ad7f32d5bfe4eac49d27612e648cd4c814f4b8` | 29568 | 6793 | 55 | `62c22c34c6f5fe31cb6cefea8adeccb69a551787a8d7015c995c841a604ca5e1` |
-| `__wrela_pixels_p7_isolate_smooth_object` | 10160 | 3649 | 42 | `e082f5cc79c3bb2c83544a1b1257c526163a2580799cb8182087af7ddb037a74` | 10160 | 3133 | 19 | `7b3bad8987048788e91dd53f1051d6521c73580e5e8b5ec30b9ae3d90352fcef` |
-| `__wrela_pixels_p7_union_silhouette_coverage_at_slack` | 46272 | 47041 | 170 | `d0de7745adff797b13254382e11a4c49eac4c5f8b21ac6dde18fd29c0f60b369` | 57744 | 51868 | 62 | `3462daa23ec170b0f0f34d87ef10939c4f392a9c878fa3ed24af33a5ea12f557` |
+| `__wrela_pixels_p7_collect_roots_box` | 29472 | 7239 | 131 | `018d73af051e0efaf5422926a7ad7f32d5bfe4eac49d27612e648cd4c814f4b8` | 29568 | 6810 | 55 | `8b34a11f2fab6e1ea7fb49ce405e58fecef4bc7f4177acb08a0a711139dd9335` |
+| `__wrela_pixels_p7_isolate_smooth_object` | 10160 | 3649 | 42 | `e082f5cc79c3bb2c83544a1b1257c526163a2580799cb8182087af7ddb037a74` | 10160 | 3141 | 19 | `fea90de8ef5c5b5e0f5660b8c04e050ed34cf1d5d02c6481e370e1b999ed8616` |
+| `__wrela_pixels_p7_union_silhouette_coverage_at_slack` | 46272 | 47041 | 170 | `d0de7745adff797b13254382e11a4c49eac4c5f8b21ac6dde18fd29c0f60b369` | 57744 | 51899 | 62 | `06e56cb37d047d8cc0989471fe831c8596e632587be9f22a530b586cbb9a7f7c` |
 | `__wrela_pixels_p8_raster_regular` | 1584 | 1049 | 35 | `ea3980b121ded09713263d9dec39419967585ce26f26b75dad37eec585fb275e` | 1584 | 1049 | 10 | `7f2e0f5f96d2133743ae6be5e6970eb97061106a399228363491a7d90bd4f5d8` |
 
 Every before and after row contains zero `blr` or register-target `br`
@@ -57,7 +57,7 @@ directories.
   The final integration closes that owned follow-up: each zero-extending
   S-form producer is stored once through its D alias (32,760-byte reach), and
   direct-FP frames cluster floating slots before large aggregates. The final
-  union drops to 51,868 words and 23,260 proxy cycles; the exact transfer count
+  union drops to 51,899 words and 23,270 proxy cycles; the exact transfer count
   and historical threshold decision remain recorded in `p8r4-direct-fp.md`.
 - P8R.5 adds a closed packet operation substrate. The P8 renderer consumes
   only its pre-existing integer packet recurrence, so the new operation set is
@@ -75,7 +75,7 @@ remains the authority for truth, displayed-frame digests, and telemetry.
 ```text
 commit_2_threshold_functions = __wrela_pixels_p7_union_silhouette_coverage_at_slack,__wrela_pixels_p7_isolate_smooth_object,__wrela_pixels_p7_collect_roots_box,sqrt_scalar,rsqrt_scalar,raster_rsqrt
 commit_2_proxy_cycle_denominator = 34504
-final_recensus_proxy_cycle_denominator = 31386
+final_recensus_proxy_cycle_denominator = 31417
 ```
 
 The modelled totals are not hardware timing. The schema-4 final census derives
@@ -85,10 +85,10 @@ latency-weighted totals. The machine-checked six-function commit-2 denominator
 is 34,504 proxy cycles: union 26,345, isolate 2,402, roots 5,469, sealed
 `sqrt_scalar` 176, sealed `rsqrt_scalar` 44, and sealed `raster_rsqrt` 68.
 The immutable P8R.4 artifact is the threshold authority. The independently
-regenerated final artifact totals 31,386 cycles: union 23,260, isolate 2,400,
-roots 5,447, sealed `sqrt_scalar` 175, sealed `rsqrt_scalar` 44, and sealed
-`raster_rsqrt` 60. This is 3,118 cycles (9.0%) below the commit-2 checkpoint
-and 1,940 cycles (5.8%) below the P8R.3 six-function total. Keeping both
+regenerated final artifact totals 31,417 cycles: union 23,270, isolate 2,407,
+roots 5,461, sealed `sqrt_scalar` 175, sealed `rsqrt_scalar` 44, and sealed
+`raster_rsqrt` 60. This is 3,087 cycles (8.9%) below the commit-2 checkpoint
+and 1,909 cycles (5.7%) below the P8R.3 six-function total. Keeping both
 structured values above makes a later final-tree change visible without
 rewriting or obscuring the commit-2 decision basis.
 
@@ -105,9 +105,10 @@ authority for the final integration history.
 That working tree also contained two explicitly adjacent initiatives. Runtime
 `Layout` rows were added to `ImageReport` and the static report expectations
 were mechanically regenerated; those rows describe the linked runtime layout
-and do not change truth or displayed image bytes. The VMM host-backend design
-program and its P9.1/P13 seam amendments are a separate future roadmap, not
-P8R acceptance evidence. The accelerated build profiles, embedded golden
+and do not change truth or displayed image bytes. The separately implemented
+VMM host-backend design program includes compiler-owned stage-1 setup; its
+additional fail-closed address checks explain the final-tree ALU and digest
+delta above, but are not P8R acceptance evidence. The accelerated build profiles, embedded golden
 compiler, isolated-worker arena reuse, and content-addressed development
 caches are development-loop infrastructure; they change neither guest code
 semantics nor the required `cargo xtask verify` gate.

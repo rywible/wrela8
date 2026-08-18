@@ -2304,8 +2304,14 @@ mod tests {
             assert!(gate.wins(), "{opt:?} must pass its applicable gate");
             assert!(gate.flat_corpus.non_regressing(), "{opt:?}");
             assert!(gate.overall.wins(), "{opt:?}");
-            assert_eq!(gate.overall.baseline_coverage["boot-actors"], (1512, 1512));
-            assert_eq!(gate.overall.candidate_coverage["boot-actors"], (1512, 1512));
+            assert_eq!(
+                gate.overall.baseline_coverage["boot-actors"],
+                (18278, 18278)
+            );
+            assert_eq!(
+                gate.overall.candidate_coverage["boot-actors"],
+                (18278, 18278)
+            );
         }
         let mut with_sroa = RELEASE_OPTS.to_vec();
         with_sroa.push(OptId::Sroa);
@@ -3778,6 +3784,7 @@ mod tests {
                 workloads_digest: None,
                 workload_totals: BTreeMap::new(),
                 workload_coverage: BTreeMap::new(),
+                workload_validation_bounds: BTreeMap::new(),
                 footprint: Vec::new(),
             };
             attach_workloads(

@@ -257,11 +257,15 @@ pub(crate) fn default_jobs() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-// Image compilation uses the ordinary worker count. Only the VMM subprocess is
-// throttled: four concurrent HVF guests intermittently starve multicore
-// quiescence long enough to produce a false `quiesce=timeout` transcript.
+// Image compilation uses the ordinary worker count. Multicore and general VMM
+// subprocesses stay at two: four concurrent HVF guests intermittently starve
+// multicore quiescence long enough to produce a false `quiesce=timeout`
+// transcript. The report-proven single-core certified Pixels sweeps use four;
+// they cannot exercise that multicore failure mode and otherwise dominate the
+// cold gate while leaving most host cores idle.
 pub(crate) const DEFAULT_BOOT_JOBS: usize = 2;
-pub(crate) const VMM_HVF_TESTS: usize = 25;
+const CERTIFIED_PIXELS_BOOT_JOBS: usize = 4;
+pub(crate) const VMM_HVF_TESTS: usize = 26;
 
 // Renderer-bearing pixels work (in-process bundle compiles, isolated child
 // processes, renderer dump subprocesses, and pixels guest-boot compiles)
@@ -291,6 +295,63 @@ pub(crate) fn heavy_pixels_jobs() -> usize {
 struct HeavyGate {
     permits: std::sync::Mutex<usize>,
     available: std::sync::Condvar,
+}
+
+struct FairVmmGate {
+    state: std::sync::Mutex<FairVmmState>,
+    available: std::sync::Condvar,
+}
+
+struct FairVmmState {
+    permits: usize,
+    next_ticket: u64,
+    queue: std::collections::VecDeque<u64>,
+}
+
+struct FairVmmPermit<'a>(&'a FairVmmGate);
+
+impl FairVmmGate {
+    fn new(permits: usize) -> Self {
+        Self {
+            state: std::sync::Mutex::new(FairVmmState {
+                permits: permits.max(1),
+                next_ticket: 0,
+                queue: std::collections::VecDeque::new(),
+            }),
+            available: std::sync::Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> FairVmmPermit<'_> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
+        state.queue.push_back(ticket);
+        loop {
+            if state.permits > 0 && state.queue.front() == Some(&ticket) {
+                state.queue.pop_front();
+                state.permits -= 1;
+                self.available.notify_all();
+                return FairVmmPermit(self);
+            }
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+    }
+}
+
+impl Drop for FairVmmPermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.permits += 1;
+        self.0.available.notify_all();
+    }
 }
 
 struct HeavyPermit<'a>(&'a HeavyGate);
@@ -345,6 +406,32 @@ fn scheduling_sensitive_boot_case(case: &Path) -> bool {
     case.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with("boot-cross-core-"))
+}
+
+fn boot_case_priority(case: &Path) -> u8 {
+    let name = case
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if name.starts_with("check-pixels-") {
+        0
+    } else if name.starts_with("boot-pixels-") {
+        1
+    } else {
+        2
+    }
+}
+
+fn single_core_certified_pixels_sweep(case: &Path) -> bool {
+    let name = case
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !name.starts_with("check-pixels-") {
+        return false;
+    }
+    std::fs::read_to_string(case.join("expected/report.txt"))
+        .is_ok_and(|report| report.lines().any(|line| line == "  Cores count=1"))
 }
 
 impl Default for GoldenOpts {
@@ -456,6 +543,54 @@ fn production_stdlib_digest(stdlib: &Path) -> Result<String, String> {
     ]))
 }
 
+fn compiler_producer_digest() -> Result<String, String> {
+    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    DIGEST
+        .get_or_init(|| {
+            let root = root();
+            let rustc = Command::new("rustc")
+                .arg("--version")
+                .arg("--verbose")
+                .output()
+                .map_err(|error| format!("golden: run rustc --version --verbose: {error}"))?;
+            if !rustc.status.success() {
+                return Err(format!(
+                    "golden: rustc --version --verbose failed: {}",
+                    String::from_utf8_lossy(&rustc.stderr)
+                ));
+            }
+            Ok(key_of(&[
+                ("contract", "golden-compiler-producer-v1".to_string()),
+                (
+                    "compiler-source",
+                    tree_digest(&root.join("crates/wrela-compiler/src"), &["rs"])?,
+                ),
+                (
+                    "machine-source",
+                    tree_digest(&root.join("crates/wrela-machine/src"), &["rs"])?,
+                ),
+                ("workspace-manifest", file_digest(&root.join("Cargo.toml"))),
+                ("cargo-lock", file_digest(&root.join("Cargo.lock"))),
+                (
+                    "cargo-config",
+                    file_digest(&root.join(".cargo/config.toml")),
+                ),
+                (
+                    "compiler-manifest",
+                    file_digest(&root.join("crates/wrela-compiler/Cargo.toml")),
+                ),
+                (
+                    "machine-manifest",
+                    file_digest(&root.join("crates/wrela-machine/Cargo.toml")),
+                ),
+                ("rustc", wrela_compiler::report::sha256_hex(&rustc.stdout)),
+                ("host-os", std::env::consts::OS.to_string()),
+                ("host-arch", std::env::consts::ARCH.to_string()),
+            ]))
+        })
+        .clone()
+}
+
 struct GoldenBootKeyContext {
     stdlib_source: String,
     bench_source: String,
@@ -465,12 +600,12 @@ struct GoldenBootKeyContext {
 }
 
 impl GoldenBootKeyContext {
-    fn new(wrela: &Path, vmm: &Path) -> Result<Self, String> {
+    fn new(vmm: &Path) -> Result<Self, String> {
         Ok(Self {
             stdlib_source: production_stdlib_digest(&root().join("stdlib"))?,
             bench_source: tree_digest(&root().join("bench"), &["toml"])?,
             census: file_digest(&root().join("tests/census.toml")),
-            compiler: file_digest(wrela),
+            compiler: compiler_producer_digest()?,
             vmm: file_digest(vmm),
         })
     }
@@ -481,31 +616,39 @@ struct GoldenStageKeyContext {
     bench_source: String,
     census: String,
     compiler: String,
-    tool: String,
+    ordinary_tool: String,
+    bundle_tool: String,
 }
 
 impl GoldenStageKeyContext {
-    fn new(wrela: &Path) -> Result<Self, String> {
+    fn new() -> Result<Self, String> {
         // Keep the source-level producer boundary explicit. `main.rs` owns
         // bundle production, `golden.rs` owns stage selection and invocation,
         // and `pixels_cache.rs` owns artifact interpretation. Ordinary dump
         // text is covered by the separately fingerprinted compiler binary.
-        let tool = golden_tool_digest_from_parts(
+        let golden = file_digest(&root().join("crates/xtask/src/golden.rs"));
+        let ordinary_tool = golden_runner_digest(&golden);
+        let bundle_tool = golden_bundle_digest_from_parts(
             &file_digest(&root().join("crates/xtask/src/main.rs")),
-            &file_digest(&root().join("crates/xtask/src/golden.rs")),
+            &golden,
             &file_digest(&root().join("crates/xtask/src/pixels_cache.rs")),
         );
         Ok(Self {
             stdlib_source: production_stdlib_digest(&root().join("stdlib"))?,
             bench_source: tree_digest(&root().join("bench"), &["toml"])?,
             census: file_digest(&root().join("tests/census.toml")),
-            compiler: file_digest(wrela),
-            tool,
+            compiler: compiler_producer_digest()?,
+            ordinary_tool,
+            bundle_tool,
         })
     }
 }
 
-fn golden_tool_digest_from_parts(main: &str, golden: &str, cache: &str) -> String {
+fn golden_runner_digest(golden: &str) -> String {
+    key_of(&[("golden", golden.to_string())])
+}
+
+fn golden_bundle_digest_from_parts(main: &str, golden: &str, cache: &str) -> String {
     key_of(&[
         ("main", main.to_string()),
         ("golden", golden.to_string()),
@@ -570,7 +713,7 @@ fn golden_stage_key_from_digests(
     tool: &str,
 ) -> String {
     key_of(&[
-        ("contract", "golden-stage-v2".to_string()),
+        ("contract", "golden-stage-v3".to_string()),
         ("case", case_name.to_string()),
         ("target", target.to_string()),
         ("stage", stage.to_string()),
@@ -598,7 +741,7 @@ fn golden_image_digest_key_from_digests(
     compiler: &str,
 ) -> String {
     key_of(&[
-        ("contract", "golden-image-digest-v1".to_string()),
+        ("contract", "golden-image-digest-v2".to_string()),
         ("case", case_name.to_string()),
         ("target", target.to_string()),
         ("stage", stage.to_string()),
@@ -615,10 +758,69 @@ fn golden_image_digest_key_from_digests(
 struct GoldenSourceDigests {
     case: String,
     target: String,
+    closure: Option<String>,
+}
+
+fn golden_source_closure_digest(input: &Path) -> Option<String> {
+    let loaded = wrela_compiler::loader::load_closure(input).ok()?;
+    let mut files = loaded
+        .modules
+        .values()
+        .map(|module| module.file.clone())
+        .filter(|file| file.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    let mut identity = String::new();
+    for file in files {
+        let bytes = std::fs::read(&file).ok()?;
+        identity.push_str(&format!(
+            "{} {}\n",
+            file.strip_prefix(root()).unwrap_or(&file).display(),
+            wrela_compiler::report::sha256_hex(&bytes)
+        ));
+    }
+    Some(wrela_compiler::report::sha256_hex(identity.as_bytes()))
+}
+
+fn cached_golden_source_closure_digest(
+    input: &Path,
+    case_digest: &str,
+    target_digest: &str,
+    stdlib_digest: &str,
+    compiler_digest: &str,
+) -> Option<String> {
+    let target = input
+        .strip_prefix(root())
+        .unwrap_or(input)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let key = key_of(&[
+        ("contract", "golden-source-closure-v1".to_string()),
+        ("target", target),
+        ("case-source", case_digest.to_string()),
+        ("target-source", target_digest.to_string()),
+        ("stdlib-source", stdlib_digest.to_string()),
+        ("compiler", compiler_digest.to_string()),
+    ]);
+    let cache = Cache::golden_closure();
+    if let Some(digest) = cache.get(&key)
+        && is_sha256_hex(digest.trim())
+    {
+        return Some(digest.trim().to_string());
+    }
+    let digest = golden_source_closure_digest(input)?;
+    cache.put(&key, &digest);
+    Some(digest)
 }
 
 impl GoldenSourceDigests {
-    fn new(case: &Path, input: &Path) -> Result<Self, String> {
+    fn new(
+        case: &Path,
+        input: &Path,
+        stdlib_digest: &str,
+        compiler_digest: &str,
+    ) -> Result<Self, String> {
         let target_scope = if input.is_dir() {
             input
         } else {
@@ -630,9 +832,17 @@ impl GoldenSourceDigests {
         } else {
             golden_input_tree_digest(target_scope)?
         };
+        let closure = cached_golden_source_closure_digest(
+            input,
+            &case_digest,
+            &target_digest,
+            stdlib_digest,
+            compiler_digest,
+        );
         Ok(Self {
             case: case_digest,
             target: target_digest,
+            closure,
         })
     }
 }
@@ -654,6 +864,11 @@ fn golden_stage_cache_key(
         .unwrap_or(input)
         .to_string_lossy()
         .replace('\\', "/");
+    let tool = if stage_uses_bundle_tool(case, stage) {
+        &context.bundle_tool
+    } else {
+        &context.ordinary_tool
+    };
     Ok(golden_stage_key_from_digests(
         case_name,
         &target,
@@ -661,11 +876,11 @@ fn golden_stage_cache_key(
         &renderer.map_or_else(|| "default".to_string(), |value| value.to_string()),
         &sources.case,
         &sources.target,
-        &context.stdlib_source,
+        sources.closure.as_deref().unwrap_or(&context.stdlib_source),
         &context.bench_source,
         &context.census,
         &context.compiler,
-        &context.tool,
+        tool,
     ))
 }
 
@@ -674,6 +889,10 @@ fn bundle_cache_stage(stage: &str) -> bool {
         stage,
         "check" | "typed" | "report" | "image" | "field-graph" | "frame-program" | "render-layout"
     )
+}
+
+fn stage_uses_bundle_tool(case: &Path, stage: &str) -> bool {
+    accepted_pixels_case(case) && bundle_cache_stage(stage)
 }
 
 /// Stages implemented by `wrela dump` have no filesystem side effects and
@@ -725,6 +944,63 @@ fn golden_boot_cache_key(
 
 struct GoldenImageDigestLookup {
     digest: Option<String>,
+    prepared: Option<PreparedBoot>,
+}
+
+struct PreparedBoot {
+    dir: PathBuf,
+}
+
+impl Drop for PreparedBoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn prepare_golden_boot(
+    case: &Path,
+    input: &Path,
+    stage: &str,
+    pixels_telemetry: bool,
+    wrela: &Path,
+) -> Result<Option<(String, PreparedBoot)>, String> {
+    let case_name = case
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("bad golden case path: {}", case.display()))?;
+    let prepared_dir = root()
+        .join("target/golden-boot-prepared")
+        .join(format!("{case_name}-{stage}-{}", std::process::id()));
+    if prepared_dir.exists() {
+        std::fs::remove_dir_all(&prepared_dir).map_err(|error| {
+            format!(
+                "{case_name} [{stage}]: remove stale prepared image {}: {error}",
+                prepared_dir.display()
+            )
+        })?;
+    }
+    let mut command = wrela_command(wrela);
+    command
+        .current_dir(root())
+        .arg("test")
+        .arg(input)
+        .arg("--emit-image-dir")
+        .arg(&prepared_dir);
+    if stage == "test-omit-dmb" {
+        command.arg("--omit-dmb");
+    }
+    if pixels_telemetry {
+        command.arg("--pixels-telemetry");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("{case_name} [{stage}]: prepare boot image: {error}"))?;
+    if !output.status.success() || !prepared_dir.join("test.img").is_file() {
+        let _ = std::fs::remove_dir_all(&prepared_dir);
+        return Ok(None);
+    }
+    let digest = file_digest(&prepared_dir.join("test.img"));
+    Ok(Some((digest, PreparedBoot { dir: prepared_dir })))
 }
 
 fn golden_boot_image_digest_lookup(
@@ -733,7 +1009,7 @@ fn golden_boot_image_digest_lookup(
     stage: &str,
     pixels_telemetry: bool,
     wrela: &Path,
-    vmm: &Path,
+    sources: &GoldenSourceDigests,
     context: &GoldenBootKeyContext,
 ) -> Result<GoldenImageDigestLookup, String> {
     let case_name = case
@@ -745,53 +1021,31 @@ fn golden_boot_image_digest_lookup(
         .unwrap_or(input)
         .to_string_lossy()
         .replace('\\', "/");
-    let target_scope = if input.is_dir() {
-        input
-    } else {
-        input.parent().unwrap_or(input)
-    };
     let digest_key = golden_image_digest_key_from_digests(
         case_name,
         &target,
         stage,
         pixels_telemetry,
-        &tree_digest(case, &["wr"])?,
-        &tree_digest(target_scope, &["wr"])?,
-        &context.stdlib_source,
+        &sources.case,
+        &sources.target,
+        sources.closure.as_deref().unwrap_or(&context.stdlib_source),
         &context.bench_source,
         &context.census,
         &context.compiler,
     );
     let compile_cache = Cache::compile_closure();
     let cached = compile_cache.get(&digest_key);
+    let mut prepared = None;
     let digest = if let Some(digest) = cached
         && is_sha256_hex(digest.trim())
     {
         Some(digest.trim().to_string())
     } else {
-        let mut command = wrela_command(wrela);
-        command
-            .current_dir(root())
-            .arg("test")
-            .arg(input)
-            .arg("--image-digest-only")
-            .arg("--vmm")
-            .arg(vmm);
-        if stage == "test-omit-dmb" {
-            command.arg("--omit-dmb");
-        }
-        if pixels_telemetry {
-            command.arg("--pixels-telemetry");
-        }
-        let output = command
-            .output()
-            .map_err(|error| format!("{case_name} [{stage}]: derive image digest: {error}"))?;
-        if !output.status.success() {
-            None
-        } else if let Some(digest) =
-            parse_golden_image_digest(&String::from_utf8_lossy(&output.stdout))
+        if let Some((digest, boot)) =
+            prepare_golden_boot(case, input, stage, pixels_telemetry, wrela)?
         {
             compile_cache.put(&digest_key, &digest);
+            prepared = Some(boot);
             Some(digest)
         } else {
             // A comptime-only test has no runnable image. It remains cheap and
@@ -799,9 +1053,10 @@ fn golden_boot_image_digest_lookup(
             None
         }
     };
-    Ok(GoldenImageDigestLookup { digest })
+    Ok(GoldenImageDigestLookup { digest, prepared })
 }
 
+#[cfg(test)]
 fn parse_golden_image_digest(stdout: &str) -> Option<String> {
     stdout
         .lines()
@@ -871,7 +1126,8 @@ fn accepted_pixels_bundle_cache_complete(
     let mut expected_files = read_dir_paths(&case.join("expected"))?;
     expected_files.sort();
     let cache = Cache::golden_stage();
-    let sources = GoldenSourceDigests::new(case, &input)?;
+    let sources =
+        GoldenSourceDigests::new(case, &input, &context.stdlib_source, &context.compiler)?;
     let mut found = 0usize;
     for exp in expected_files {
         let stage = exp
@@ -945,6 +1201,7 @@ fn run_case(
     wrela: &Path,
     vmm: Option<&Path>,
     vmm_slots: Option<&Path>,
+    vmm_gate: Option<&FairVmmGate>,
     update: bool,
     boot: BootSel,
     pixels_telemetry: bool,
@@ -982,7 +1239,12 @@ fn run_case(
             .unwrap_or("case")
             .to_string();
         let accepted_pixels = accepted_pixels_case(case);
-        let source_digests = GoldenSourceDigests::new(case, &input)?;
+        let source_digests = GoldenSourceDigests::new(
+            case,
+            &input,
+            &stage_key_context.stdlib_source,
+            &stage_key_context.compiler,
+        )?;
         let bundle_needed =
             accepted_pixels && expected_files_need_pixels_bundle(&expected_files, boot);
         let (observe_check, observe_typed) = requested_bundle_observations(&expected_files, boot);
@@ -1167,31 +1429,33 @@ fn run_case(
             let boot_cache_eligible = golden_boot_cache_eligible(&stage);
             let boot_cache = Cache::golden_boot();
             let mut boot_cache_key = None;
+            let mut prepared_boot = None;
+            let mut expected_boot_image_digest = None;
             let mut cached_actual = ordinary_cached_actual;
             let mut boot_cache_hit = false;
             if boot_cache_eligible {
                 let context = boot_key_context.ok_or_else(|| {
                     format!("{} [{stage}]: boot cache context missing", case.display())
                 })?;
-                let lookup = golden_boot_image_digest_lookup(
+                let GoldenImageDigestLookup { digest, prepared } = golden_boot_image_digest_lookup(
                     case,
                     &input,
                     &stage,
                     pixels_telemetry,
                     wrela,
-                    vmm.ok_or_else(|| {
-                        format!("{} [{stage}]: boot cache VMM missing", case.display())
-                    })?,
+                    &source_digests,
                     context,
                 )?;
-                if let Some(image_digest) = &lookup.digest {
+                prepared_boot = prepared;
+                if let Some(image_digest) = digest {
                     let key = golden_boot_image_key(
                         &case_name,
                         &stage,
                         pixels_telemetry,
-                        image_digest,
+                        &image_digest,
                         &context.vmm,
                     );
+                    expected_boot_image_digest = Some(image_digest);
                     let valid = |actual: &String| {
                         pixels_test_report_green(actual)
                             && !actual.lines().any(|line| line.contains(": FAILED"))
@@ -1209,6 +1473,20 @@ fn run_case(
                     boot_cache_key = Some(key);
                 }
             }
+            if cached_actual.is_none()
+                && prepared_boot.is_none()
+                && let Some(expected_digest) = &expected_boot_image_digest
+                && let Some((actual_digest, boot)) =
+                    prepare_golden_boot(case, &input, &stage, pixels_telemetry, wrela)?
+            {
+                if &actual_digest != expected_digest {
+                    return Err(format!(
+                        "{} [{stage}]: cached image digest changed from {expected_digest} to {actual_digest}",
+                        case.display()
+                    ));
+                }
+                prepared_boot = Some(boot);
+            }
             let _heavy = if cached_actual.is_none() && heavy_pixels_stage(&case_name, command_stage)
             {
                 Some(heavy_gate().acquire())
@@ -1225,16 +1503,28 @@ fn run_case(
                     )
                 })?;
                 let mut cmd = wrela_command(wrela);
-                cmd.current_dir(root()).arg("test").arg(rel_input);
-                if let Some(slots) = vmm_slots {
+                cmd.current_dir(root()).arg("test");
+                if prepared_boot.is_none()
+                    && let Some(slots) = vmm_slots
+                {
                     cmd.env("WRELA_VMM_SLOT_DIR", slots);
                 }
-                if stage == "test-omit-dmb" {
-                    cmd.arg("--omit-dmb");
+                if let Some(prepared) = &prepared_boot {
+                    cmd.arg("--run-image-dir").arg(&prepared.dir);
+                } else {
+                    cmd.arg(rel_input);
+                    if stage == "test-omit-dmb" {
+                        cmd.arg("--omit-dmb");
+                    }
+                    if pixels_telemetry {
+                        cmd.arg("--pixels-telemetry");
+                    }
                 }
-                if pixels_telemetry {
-                    cmd.arg("--pixels-telemetry");
-                }
+                let _vmm_permit = if prepared_boot.is_some() {
+                    vmm_gate.map(FairVmmGate::acquire)
+                } else {
+                    None
+                };
                 cmd.arg("--vmm")
                     .arg(&vmm)
                     .output()
@@ -1449,6 +1739,7 @@ fn run_cases_parallel(
     wrela: &Path,
     vmm: Option<&Path>,
     vmm_slots: Option<&Path>,
+    vmm_gate: Option<&FairVmmGate>,
     update: bool,
     boot: BootSel,
     jobs: usize,
@@ -1480,6 +1771,7 @@ fn run_cases_parallel(
                         wrela,
                         vmm,
                         vmm_slots,
+                        vmm_gate,
                         update,
                         boot,
                         pixels_telemetry,
@@ -1638,7 +1930,7 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
     // CLI compatibility; there is simply no separate binary to preflight.
     let wrela = std::env::current_exe()
         .map_err(|error| format!("golden: locate current task-runner executable: {error}"))?;
-    let stage_key_context = GoldenStageKeyContext::new(&wrela)?;
+    let stage_key_context = GoldenStageKeyContext::new()?;
     let golden_dir = root().join("tests/golden");
 
     let mut dump_cases = Vec::new();
@@ -1711,6 +2003,21 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
             true
         }
     });
+    let mut certified_pixels_sweeps = Vec::new();
+    boot_cases.retain(|case| {
+        if single_core_certified_pixels_sweep(case) {
+            certified_pixels_sweeps.push(case.clone());
+            false
+        } else {
+            true
+        }
+    });
+    // Longest-processing-time order prevents a minutes-long certified Pixels
+    // sweep from sitting behind hundreds of subsecond boots and becoming the
+    // serial tail. The fair VMM gate below preserves this order after each
+    // image has compiled, while the wide worker pool still prepares images in
+    // parallel.
+    boot_cases.sort_by_key(|case| boot_case_priority(case));
 
     // Fresh renderer bundles are faster in short-lived children: each large
     // compiler arena returns to the OS immediately, cutting allocator and VM
@@ -1742,16 +2049,19 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         Vec::new()
     };
 
-    let vmm = if boot_cases.is_empty() && scheduling_sensitive_boot_cases.is_empty() {
+    let vmm = if boot_cases.is_empty()
+        && certified_pixels_sweeps.is_empty()
+        && scheduling_sensitive_boot_cases.is_empty()
+    {
         None
     } else {
         Some(build_and_sign_vmm()?)
     };
-    let boot_key_context = vmm
-        .as_deref()
-        .map(|vmm| GoldenBootKeyContext::new(&wrela, vmm))
-        .transpose()?;
-    let vmm_slot_dir = if boot_cases.is_empty() && scheduling_sensitive_boot_cases.is_empty() {
+    let boot_key_context = vmm.as_deref().map(GoldenBootKeyContext::new).transpose()?;
+    let vmm_slot_dir = if boot_cases.is_empty()
+        && certified_pixels_sweeps.is_empty()
+        && scheduling_sensitive_boot_cases.is_empty()
+    {
         None
     } else {
         let dir = root().join(format!("target/golden-vmm-slots-{}", std::process::id()));
@@ -1767,6 +2077,10 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         }
         Some(dir)
     };
+    let certified_pixels_vmm_gate =
+        (!certified_pixels_sweeps.is_empty()).then(|| FairVmmGate::new(CERTIFIED_PIXELS_BOOT_JOBS));
+    let vmm_gate = (!boot_cases.is_empty() || !scheduling_sensitive_boot_cases.is_empty())
+        .then(|| FairVmmGate::new(opts.boot_jobs));
     // Isolated pixels children and the ordinary dump pool share the heavy
     // gate, so running them concurrently cannot exceed the memory envelope.
     let (isolated_result, dump_result) = std::thread::scope(|scope| {
@@ -1775,6 +2089,7 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
             &dump_cases,
             &wrela,
             vmm.as_deref(),
+            None,
             None,
             opts.update,
             opts.boot,
@@ -1790,11 +2105,12 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
     });
     let isolated_expectations = isolated_result?;
     let (n1, mut failures) = dump_result?;
-    let (n2, boot_failures) = run_cases_parallel(
-        &boot_cases,
+    let (n2, certified_pixels_failures) = run_cases_parallel(
+        &certified_pixels_sweeps,
         &wrela,
         vmm.as_deref(),
         vmm_slot_dir.as_deref(),
+        certified_pixels_vmm_gate.as_ref(),
         opts.update,
         opts.boot,
         opts.jobs,
@@ -1802,11 +2118,25 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         boot_key_context.as_ref(),
         &stage_key_context,
     )?;
-    let (n3, scheduling_sensitive_failures) = run_cases_parallel(
+    let (n3, boot_failures) = run_cases_parallel(
+        &boot_cases,
+        &wrela,
+        vmm.as_deref(),
+        vmm_slot_dir.as_deref(),
+        vmm_gate.as_ref(),
+        opts.update,
+        opts.boot,
+        opts.jobs,
+        opts.pixels_telemetry,
+        boot_key_context.as_ref(),
+        &stage_key_context,
+    )?;
+    let (n4, scheduling_sensitive_failures) = run_cases_parallel(
         &scheduling_sensitive_boot_cases,
         &wrela,
         vmm.as_deref(),
         vmm_slot_dir.as_deref(),
+        vmm_gate.as_ref(),
         opts.update,
         opts.boot,
         1,
@@ -1818,9 +2148,10 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         std::fs::remove_dir_all(dir)
             .map_err(|error| format!("remove {}: {error}", dir.display()))?;
     }
+    failures.extend(certified_pixels_failures);
     failures.extend(boot_failures);
     failures.extend(scheduling_sensitive_failures);
-    let cases = isolated_expectations + n1 + n2 + n3;
+    let cases = isolated_expectations + n1 + n2 + n3 + n4;
 
     if !failures.is_empty() {
         for f in &failures {
@@ -1938,6 +2269,26 @@ mod tests {
     }
 
     #[test]
+    fn source_closure_digest_ignores_unimported_wrela_modules() {
+        let dir =
+            std::env::temp_dir().join(format!("wrela-golden-closure-{:016x}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let root_source = dir.join("main.wr");
+        let helper = dir.join("helper.wr");
+        let unrelated = dir.join("unrelated.wr");
+        std::fs::write(&root_source, "module main\nfrom helper import value\n").unwrap();
+        std::fs::write(&helper, "module helper\npub const value: u64 = 1\n").unwrap();
+        std::fs::write(&unrelated, "module unrelated\npub const value: u64 = 1\n").unwrap();
+        let first = golden_source_closure_digest(&root_source).unwrap();
+        std::fs::write(&unrelated, "module unrelated\npub const value: u64 = 2\n").unwrap();
+        assert_eq!(first, golden_source_closure_digest(&root_source).unwrap());
+        std::fs::write(&helper, "module helper\npub const value: u64 = 2\n").unwrap();
+        assert_ne!(first, golden_source_closure_digest(&root_source).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn uncached_static_renderer_bundles_release_their_process_arenas() {
         let static_run = GoldenOpts {
             boot: BootSel::None,
@@ -1976,6 +2327,55 @@ mod tests {
         assert!(stage_selected("test-omit-dmb", BootSel::Only));
         assert!(stage_selected("asm", BootSel::All));
         assert!(stage_selected("test", BootSel::All));
+    }
+
+    #[test]
+    fn certified_pixels_sweeps_are_scheduled_before_short_boots() {
+        assert!(
+            boot_case_priority(Path::new("check-pixels-hard-csg"))
+                < boot_case_priority(Path::new("boot-pixels-plane"))
+        );
+        assert!(
+            boot_case_priority(Path::new("boot-pixels-plane"))
+                < boot_case_priority(Path::new("boot-actor-smoke"))
+        );
+        let cases = root().join("tests/golden");
+        assert!(single_core_certified_pixels_sweep(
+            &cases.join("check-pixels-hard-csg")
+        ));
+        assert!(!single_core_certified_pixels_sweep(
+            &cases.join("check-pixels-visibility-probe")
+        ));
+        assert!(!single_core_certified_pixels_sweep(
+            &cases.join("boot-pixels-plane-one-core")
+        ));
+    }
+
+    #[test]
+    fn vmm_gate_serves_waiters_in_arrival_order() {
+        let gate = FairVmmGate::new(1);
+        let held = gate.acquire();
+        let order = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                let _permit = gate.acquire();
+                order.lock().unwrap().push(1);
+            });
+            while gate.state.lock().unwrap().queue.len() < 1 {
+                std::thread::yield_now();
+            }
+            let second = scope.spawn(|| {
+                let _permit = gate.acquire();
+                order.lock().unwrap().push(2);
+            });
+            while gate.state.lock().unwrap().queue.len() < 2 {
+                std::thread::yield_now();
+            }
+            drop(held);
+            first.join().unwrap();
+            second.join().unwrap();
+        });
+        assert_eq!(*order.lock().unwrap(), [1, 2]);
     }
 
     #[test]
@@ -2116,20 +2516,39 @@ mod tests {
     }
 
     #[test]
-    fn stage_producer_fingerprint_covers_every_source_owner() {
-        let baseline = golden_tool_digest_from_parts("main", "golden", "cache");
+    fn stage_producer_fingerprints_cover_only_their_source_owners() {
+        let ordinary = golden_runner_digest("golden");
+        assert_ne!(ordinary, golden_runner_digest("changed"));
+
+        let baseline = golden_bundle_digest_from_parts("main", "golden", "cache");
         assert_ne!(
             baseline,
-            golden_tool_digest_from_parts("changed", "golden", "cache")
+            golden_bundle_digest_from_parts("changed", "golden", "cache")
         );
         assert_ne!(
             baseline,
-            golden_tool_digest_from_parts("main", "changed", "cache")
+            golden_bundle_digest_from_parts("main", "changed", "cache")
         );
         assert_ne!(
             baseline,
-            golden_tool_digest_from_parts("main", "golden", "changed")
+            golden_bundle_digest_from_parts("main", "golden", "changed")
         );
+    }
+
+    #[test]
+    fn ordinary_stages_do_not_inherit_pixels_bundle_identity() {
+        assert!(stage_uses_bundle_tool(
+            Path::new("tests/golden/check-pixels-plane"),
+            "report"
+        ));
+        assert!(!stage_uses_bundle_tool(
+            Path::new("tests/golden/check-basic"),
+            "report"
+        ));
+        assert!(!stage_uses_bundle_tool(
+            Path::new("tests/golden/check-pixels-plane"),
+            "test"
+        ));
     }
 
     #[test]

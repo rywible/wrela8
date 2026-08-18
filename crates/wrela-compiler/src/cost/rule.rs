@@ -643,19 +643,11 @@ mod tests {
             ("enc_msub", &[CostRule::Mul, CostRule::Mul]),
             (
                 "enc_stlr_w",
-                &[
-                    CostRule::StoreRelease,
-                    CostRule::StoreRelease,
-                    CostRule::StoreRelease,
-                ],
+                &[CostRule::StoreRelease, CostRule::StoreRelease],
             ),
             (
                 "enc_stlr_x",
-                &[
-                    CostRule::StoreRelease,
-                    CostRule::StoreRelease,
-                    CostRule::StoreRelease,
-                ],
+                &[CostRule::StoreRelease, CostRule::StoreRelease],
             ),
             (
                 "enc_ldar_w",
@@ -663,8 +655,16 @@ mod tests {
             ),
             (
                 "enc_ldar_x",
-                &[CostRule::LoadAcquire, CostRule::LoadAcquire],
+                &[
+                    CostRule::LoadAcquire,
+                    CostRule::LoadAcquire,
+                    CostRule::LoadAcquire,
+                ],
             ),
+            ("enc_ldaxr_w", &[CostRule::LoadAcquire]),
+            ("enc_ldaxr_x", &[CostRule::LoadAcquire]),
+            ("enc_stlxr_w", &[CostRule::StoreRelease]),
+            ("enc_stlxr_x", &[CostRule::StoreRelease]),
             ("enc_dmb_ishst", &[CostRule::Barrier]),
             ("enc_dmb_ishld", &[CostRule::Barrier]),
             ("enc_brk", &[CostRule::System]),

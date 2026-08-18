@@ -13,4 +13,4 @@ test thin_feature_is_not_sample_culled: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=f863d44bf2ef440a91090e0f9c90f70e0289a14b5fbc8776e06d3054754de838 visible=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 raw=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 vsync=7 checkpoint=7
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=4bd3b326f6a3100576affb425026854c63eaf686cd29715f1af13d8b5e3b9507 visible=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 raw=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 vsync=7 checkpoint=7

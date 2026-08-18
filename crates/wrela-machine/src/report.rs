@@ -61,6 +61,7 @@ pub struct ParsedReport {
     pub entry: u64,
     pub image_sha256: String,
     pub input_digests: Vec<(String, String)>,
+    pub sections: Vec<ReportSection>,
     pub exec_sections: Vec<ReportSection>,
     pub frameprog_sections: Vec<ReportSection>,
     pub renderer_placements: Vec<ReportRendererPlacement>,
@@ -70,6 +71,30 @@ pub struct ParsedReport {
     pub cores: usize,
     pub core_stacks: Vec<CoreStack>,
     pub request_rings: Vec<RequestRing>,
+    pub stage1: Option<Stage1Report>,
+    pub protections: Vec<ProtectionRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage1Report {
+    pub tables_base: u64,
+    pub tables_size: u64,
+    pub tables_sha256: String,
+    pub used_pages: u32,
+    pub ttbr0_el1: u64,
+    pub tcr_el1: u64,
+    pub mair_el1: u64,
+    pub sctlr_el1: u64,
+    pub vbar_el1: u64,
+    pub system_allowlist_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtectionRange {
+    pub base: u64,
+    pub size: u64,
+    pub class: String,
+    pub owner: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +247,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     let mut core_stacks: Vec<CoreStack> = Vec::new();
     let mut request_rings: Vec<RequestRing> = Vec::new();
     let mut sections: Vec<ReportSection> = Vec::new();
+    let mut stage1: Option<Stage1Report> = None;
+    let mut protections: Vec<ProtectionRange> = Vec::new();
     let mut renderer_placements: Vec<ReportRendererPlacement> = Vec::new();
     let mut ring_ranges: Vec<RingRange> = Vec::new();
     let mut placements: Vec<ReportPlacement> = Vec::new();
@@ -648,6 +675,87 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 base: report_u64("BlkPool", &fields, "base")?,
                 size: report_u64("BlkPool", &fields, "size")?,
             });
+        } else if let Some(rest) = line.strip_prefix("Stage1 ") {
+            if stage1.is_some() {
+                return Err("`Stage1` line is repeated".to_string());
+            }
+            let fields = parse_report_fields(
+                "Stage1",
+                rest,
+                &[
+                    "tables_base",
+                    "tables_bytes",
+                    "tables_sha256",
+                    "used_pages",
+                    "ttbr0_el1",
+                    "tcr_el1",
+                    "mair_el1",
+                    "sctlr_el1",
+                    "vbar_el1",
+                    "system_allowlist_sha256",
+                ],
+            )?;
+            let digest = |key: &str| -> Result<String, String> {
+                let value = fields
+                    .get(key)
+                    .ok_or_else(|| format!("`Stage1` is missing required field `{key}`"))?;
+                if value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                {
+                    return Err(format!(
+                        "`Stage1` field `{key}` is not a lowercase SHA-256 digest"
+                    ));
+                }
+                Ok((*value).to_string())
+            };
+            let used_pages = report_u64("Stage1", &fields, "used_pages")?;
+            stage1 = Some(Stage1Report {
+                tables_base: report_u64("Stage1", &fields, "tables_base")?,
+                tables_size: report_u64("Stage1", &fields, "tables_bytes")?,
+                tables_sha256: digest("tables_sha256")?,
+                used_pages: u32::try_from(used_pages)
+                    .map_err(|_| "`Stage1 used_pages` exceeds u32".to_string())?,
+                ttbr0_el1: report_u64("Stage1", &fields, "ttbr0_el1")?,
+                tcr_el1: report_u64("Stage1", &fields, "tcr_el1")?,
+                mair_el1: report_u64("Stage1", &fields, "mair_el1")?,
+                sctlr_el1: report_u64("Stage1", &fields, "sctlr_el1")?,
+                vbar_el1: report_u64("Stage1", &fields, "vbar_el1")?,
+                system_allowlist_sha256: digest("system_allowlist_sha256")?,
+            });
+        } else if let Some(rest) = line.strip_prefix("Protection ") {
+            let fields =
+                parse_report_fields("Protection", rest, &["base", "size", "class", "owner"])?;
+            let class = fields
+                .get("class")
+                .ok_or_else(|| "`Protection` is missing required field `class`".to_string())?
+                .to_string();
+            if !matches!(
+                class.as_str(),
+                "invalid" | "device-rw-nx" | "normal-ro-rx" | "normal-ro-nx" | "normal-rw-nx"
+            ) {
+                return Err(format!(
+                    "`Protection class={class}` is not a sealed permission class"
+                ));
+            }
+            let owner = fields
+                .get("owner")
+                .ok_or_else(|| "`Protection` is missing required field `owner`".to_string())?
+                .to_string();
+            if owner.is_empty()
+                || !owner
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err(format!("`Protection owner={owner}` is not canonical"));
+            }
+            protections.push(ProtectionRange {
+                base: report_u64("Protection", &fields, "base")?,
+                size: report_u64("Protection", &fields, "size")?,
+                class,
+                owner,
+            });
         } else if let Some(rest) = line.strip_prefix("IrqHostInject ") {
             let fields = parse_report_fields(
                 "IrqHostInject",
@@ -677,6 +785,7 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     if sections.is_empty() {
         return Err("no `Section name=` line".to_string());
     }
+    validate_stage1_contract(stage1.as_ref(), &protections)?;
     let entry = entry.ok_or_else(|| "no `Entry base=0x...` line".to_string())?;
     let exec_sections: Vec<ReportSection> = sections
         .iter()
@@ -789,6 +898,7 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         entry,
         image_sha256,
         input_digests,
+        sections,
         exec_sections,
         frameprog_sections,
         renderer_placements,
@@ -798,7 +908,90 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         cores,
         core_stacks,
         request_rings,
+        stage1,
+        protections,
     })
+}
+
+fn validate_stage1_contract(
+    stage1: Option<&Stage1Report>,
+    protections: &[ProtectionRange],
+) -> Result<(), String> {
+    let Some(stage1) = stage1 else {
+        if !protections.is_empty() {
+            return Err("`Protection` rows require one `Stage1` line".to_string());
+        }
+        return Ok(());
+    };
+    let expected_allowlist =
+        crate::sha256::sha256_hex(crate::stage1::SYSTEM_INSTRUCTION_ALLOWLIST_V1.as_bytes());
+    for (name, got, expected) in [
+        (
+            "tables_base",
+            stage1.tables_base,
+            crate::layout::STAGE1_TABLES_BASE,
+        ),
+        (
+            "tables_bytes",
+            stage1.tables_size,
+            crate::layout::STAGE1_TABLES_SIZE,
+        ),
+        (
+            "ttbr0_el1",
+            stage1.ttbr0_el1,
+            crate::layout::STAGE1_TABLES_BASE,
+        ),
+        ("tcr_el1", stage1.tcr_el1, crate::stage1::TCR_EL1),
+        ("mair_el1", stage1.mair_el1, crate::stage1::MAIR_EL1),
+        ("sctlr_el1", stage1.sctlr_el1, crate::stage1::SCTLR_EL1),
+        (
+            "vbar_el1",
+            stage1.vbar_el1,
+            crate::layout::STAGE1_FAULT_BASE,
+        ),
+    ] {
+        if got != expected {
+            return Err(format!(
+                "`Stage1 {name}={got:#x}` does not match the machine value {expected:#x}"
+            ));
+        }
+    }
+    if stage1.sctlr_el1 & crate::stage1::WXN_BIT == 0 {
+        return Err("`Stage1 sctlr_el1` does not enable WXN".to_string());
+    }
+    if stage1.used_pages < 4
+        || u64::from(stage1.used_pages) * crate::stage1::GRANULE > stage1.tables_size
+    {
+        return Err(format!(
+            "`Stage1 used_pages={}` is outside the fixed table reservation",
+            stage1.used_pages
+        ));
+    }
+    if stage1.system_allowlist_sha256 != expected_allowlist {
+        return Err("`Stage1 system_allowlist_sha256` does not name the machine allowlist".into());
+    }
+    if protections.is_empty() {
+        return Err("`Stage1` requires the complete `Protection` matrix".to_string());
+    }
+    let mut cursor = crate::layout::DRAM_BASE;
+    for range in protections {
+        if range.size == 0 || range.base != cursor || range.size % crate::stage1::GRANULE != 0 {
+            return Err(format!(
+                "`Protection owner={}` does not continue the canonical page-aligned matrix at {cursor:#x}",
+                range.owner
+            ));
+        }
+        cursor = cursor
+            .checked_add(range.size)
+            .ok_or_else(|| "`Protection` matrix end overflows".to_string())?;
+    }
+    if cursor != crate::layout::dram_end() {
+        return Err(format!(
+            "`Protection` matrix ends at {cursor:#x}, expected DRAM end {:#x}",
+            crate::layout::dram_end()
+        ));
+    }
+    Ok(())
 }
 
 fn apply_uniform_ring_layout(
@@ -1413,13 +1606,41 @@ pub fn render(parsed: &ParsedReport) -> String {
     }
     out.push_str(&line_image_sha256(&parsed.image_sha256));
     out.push('\n');
-    for s in &parsed.exec_sections {
+    let sections = if parsed.sections.is_empty() {
+        parsed
+            .exec_sections
+            .iter()
+            .chain(&parsed.frameprog_sections)
+            .collect::<Vec<_>>()
+    } else {
+        parsed.sections.iter().collect::<Vec<_>>()
+    };
+    for s in sections {
         out.push_str(&line_section(&s.name, s.base, s.size));
         out.push('\n');
     }
-    for s in &parsed.frameprog_sections {
-        out.push_str(&line_section(&s.name, s.base, s.size));
-        out.push('\n');
+    if let Some(stage1) = &parsed.stage1 {
+        let _ = writeln!(
+            out,
+            "Stage1 tables_base={:#x} tables_bytes={} tables_sha256={} used_pages={} ttbr0_el1={:#x} tcr_el1={:#x} mair_el1={:#x} sctlr_el1={:#x} vbar_el1={:#x} system_allowlist_sha256={}",
+            stage1.tables_base,
+            stage1.tables_size,
+            stage1.tables_sha256,
+            stage1.used_pages,
+            stage1.ttbr0_el1,
+            stage1.tcr_el1,
+            stage1.mair_el1,
+            stage1.sctlr_el1,
+            stage1.vbar_el1,
+            stage1.system_allowlist_sha256,
+        );
+        for protection in &parsed.protections {
+            let _ = writeln!(
+                out,
+                "Protection base={:#x} size={} class={} owner={}",
+                protection.base, protection.size, protection.class, protection.owner
+            );
+        }
     }
     for placement in &parsed.renderer_placements {
         let _ = writeln!(

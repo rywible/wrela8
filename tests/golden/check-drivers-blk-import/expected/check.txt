@@ -2,8 +2,7 @@ Module path=app.main
   Fn sample() -> Feature
 Module path=blk
   Struct VirtioIrqMmio data
-    field interrupt_status: ReadOnly[u32]
-    field interrupt_ack: WriteOnly[u32]
+    field interrupt_status: InterruptCell[u32]
   Struct BlkReqHeader data
     field kind: u32
     field reserved: u32

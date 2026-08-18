@@ -64,8 +64,11 @@ machine only needs to be what the stdlib drivers speak.
 > fixtures and are not deprecated by this decision. Gap ownership: VMM
 > VMM thread pinning is P13 roadmap work; reconciling the generated worker
 > count to the profile is the named follow-up **F-P8R-01** (owner: the P9
-> renderer-generation task that next regenerates worker placement), recorded
-> in the P8R tightening plan.
+> V13–V15 implementation now pins vCPU threads to physical cores 1–3 in the
+> Rasputin product profile and refuses a topology that cannot provide them.
+> Four-worker fixtures remain portable functional fixtures; reconciling
+> generated product worker count remains **F-P8R-01**, owned by the P9
+> renderer-generation task recorded in the P8R tightening plan.
 
 > **D-P8R-04** (sealed 2026-08-15) — No implicit FMA contraction, ever. The
 > compiler never fuses a multiply and an add that source or lowering wrote
@@ -145,8 +148,10 @@ The machine has **no emulated GIC**. Interrupt hardware exists to preempt
 CPUs that might be anywhere; wrela code is only ever *somewhere* — at a
 compiler-emitted checkpoint or parked. So:
 
-- each virtual vector is a word in a per-core shared-memory page; the VMM
-  raises a vector by a store-release plus a wake of the target vCPU
+- each virtual vector is a bit in an aligned atomic per-core shared-memory
+  word; the VMM raises a vector with `fetch_or(Release)` plus a wake of the
+  target vCPU, and the guest observes with an acquire load followed by
+  `swap(0, Acquire)` to claim all bits without losing a concurrent raise
   (KVM: kick/`sev`; macOS: vCPU exit-resume);
 - the guest observes vectors **only at checkpoints and parks**, via the
   same mask–arm–recheck protocol `InterruptCell` already specifies — a
@@ -160,6 +165,13 @@ macOS), the worst of ARM virtualization is deleted, and **injection points
 are deterministic by construction** — record/replay logs which checkpoint,
 not which instruction. Latency is bounded by the checkpoint bounds the
 compiler already proves for every loop ([04 §1](04-compiler.md)).
+
+An `IrqHostInject` status word is the same level-triggered atomic protocol,
+not a separate acknowledge register. The VMM publishes status bits with
+`fetch_or(Release)`. Guest ISR code may inspect with `load(Acquire)` and must
+claim with `swap(0, Acquire)`; ordinary loads/stores to that word are invalid.
+If a host raise races the swap, the bit is either returned by that swap or
+remains set for the next checkpoint—never silently cleared.
 
 ## 5. Doorbells and exits
 
@@ -205,13 +217,13 @@ themselves written and checked.
 | `clock` | trapping monotonic MMIO (not virtio) | `now()` / `core.time` |
 | `console` | fixed console-ring + VMM drain (**not** virtio-console) | runtime / optional `core` helpers |
 | `entropy` | recorded entropy source (**not** virtio-rng) | `entropy[N]()` |
+| `input` | trapping normalized event FIFO (**not** host key codes) | `input_pending()` / `input_next_packed()` |
 
 #### Queue device contracts (`@driver` in `stdlib/drivers/`)
 
 | Device | Contract | Guest surface |
 |---|---|---|
 | `blk` | **virtio-blk**, split ring, `Flush`, per-queue reset | `drivers.blk` |
-| `input` | pixels rung (queue/`@driver` when scheduled) | `drivers.*` |
 | `display` | See §7 — framebuffer push, not a GPU; pixels rung | `drivers.*` |
 
 ### Future revisions
@@ -241,8 +253,9 @@ pixels out:
   ownership transfer, never shared mutation, and the VMM does the gather;
 - the device delivers a vsync event on the frame vector; the flagship mode
   is 1080p60 (4K is a stretch profile, not the baseline);
-- host backends: DRM dumb buffers / Mesa-V3D present on the Pi host, a
-  Metal layer on macOS.
+- host presenters: KMS dumb-buffer scanout on the Pi host and a Metal layer
+  on macOS. Presentation is downstream of the portable validated-frame
+  boundary and neither presenter renders or modifies a guest pixel.
 
 Because every pixel is CPU-computed and every flush is a recorded output,
 **replay reproduces exactly what the user saw**, and the conformance suite can
@@ -292,11 +305,30 @@ successful submission. Mode negotiation, sequence, and front-generation
 ownership are independent per binding, so interleaved displays cannot consume
 one another's state.
 
+### 7.1 Normalized input FIFO
+
+The input device occupies `0x08011000..0x08011fff`, immediately after the
+display-doorbell range. A 64-bit read at `0x08011000` returns zero when the
+FIFO is empty and one when an event is available. A 64-bit read at
+`0x08011008` removes exactly one event and fails closed if the FIFO is empty.
+The returned little-endian word packs `value:i16` in bits 0–15, the closed
+control code in bits 16–23 (`up`, `down`, `left`, `right`, `primary`,
+`secondary`, `start` map to 0–6), player 0–3 in bits 24–31, and the contiguous
+event sequence in bits 32–63. Sequence overflow is a machine fault.
+
+Host adapters normalize macOS virtual-key and Linux evdev codes before this
+boundary. Host timestamps, controller identifiers, key-repeat policy, and
+unknown controls do not enter device state. The queue holds at most 256
+events and refuses overflow rather than dropping or reordering input. Record
+mode appends each consumed normalized event to `ChoiceLog v1`; replay accepts
+only its contiguous recorded input sequence and suppresses all live events.
+
 ## 8. Record/replay boundary
 
 The VMM is the recorder. It logs: every device completion and DMA-written
 byte range, every vector raise with its consuming checkpoint, every clock
-and entropy read, per-mailbox cross-core admission order (the machine's
+and entropy read, every consumed normalized input event, per-mailbox
+cross-core admission order (the machine's
 only scheduling nondeterminism), and digests of every output (block writes,
 packets, frames, audio periods). Replay feeds the log from virtual device
 models, suppresses real outputs, and diagnoses any divergence. This
@@ -327,9 +359,11 @@ frame and digest class.
   the self-contained-toolchain rule) and is jailed Firecracker-style on
   Linux, sandboxed on macOS.
 - Trusted computing base, in full: the wrela compiler and generated code,
-  the VMM and its device models, and the host kernel (Linux or XNU). The
-  first two are in-house and codesigned; there is no third-party firmware,
-  bootloader, GPU driver, or blob anywhere in the boot-to-pixel path.
+  the VMM and its device models, the host kernel (Linux or XNU), and on the
+  appliance the Raspberry Pi EEPROM second-stage bootloader. Product images
+  pin its version and configuration digest in the host-identity record and
+  refuse an unaccepted value. KMS dumb-buffer scanout keeps Mesa/V3D and a GPU
+  firmware blob outside the presentation TCB.
 
 ## 10. Conformance
 

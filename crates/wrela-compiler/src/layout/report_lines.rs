@@ -101,6 +101,7 @@ mod tests {
                 probe_base: 0,
                 probe_bytes: 0,
             }],
+            stage1: None,
         };
         let mut report = String::new();
         append_vmm_runtime_lines(&mut report, &layout);
@@ -169,6 +170,15 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
         entry: 0,
         image_sha256: String::new(),
         input_digests: Vec::new(),
+        sections: layout
+            .sections
+            .iter()
+            .map(|section| wrela_machine::report::ReportSection {
+                name: section.name.to_string(),
+                base: section.base,
+                size: section.size,
+            })
+            .collect(),
         exec_sections: Vec::new(),
         frameprog_sections: layout
             .sections
@@ -197,6 +207,39 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
         cores,
         core_stacks,
         request_rings: Vec::new(),
+        stage1: layout
+            .stage1
+            .as_ref()
+            .map(|stage1| wrela_machine::report::Stage1Report {
+                tables_base: stage1.table_base,
+                tables_size: stage1.table_size,
+                tables_sha256: stage1.table_sha256.clone(),
+                used_pages: stage1.used_pages,
+                ttbr0_el1: stage1.ttbr0_el1,
+                tcr_el1: stage1.tcr_el1,
+                mair_el1: stage1.mair_el1,
+                sctlr_el1: stage1.sctlr_el1,
+                vbar_el1: stage1.vbar_el1,
+                system_allowlist_sha256: wrela_machine::sha256::sha256_hex(
+                    wrela_machine::stage1::SYSTEM_INSTRUCTION_ALLOWLIST_V1.as_bytes(),
+                ),
+            }),
+        protections: layout
+            .stage1
+            .as_ref()
+            .map(|stage1| {
+                stage1
+                    .permissions
+                    .iter()
+                    .map(|range| wrela_machine::report::ProtectionRange {
+                        base: range.base,
+                        size: range.size,
+                        class: range.class.name().to_string(),
+                        owner: range.owner.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -349,6 +392,42 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
             1,
             &format!("Section name={} base={:#x} size={}", s.name, s.base, s.size),
         );
+    }
+    if let Some(stage1) = &layout.stage1 {
+        push_line(
+            out,
+            1,
+            &format!(
+                "Stage1 tables_base={:#x} tables_bytes={} tables_sha256={} used_pages={} \
+                 ttbr0_el1={:#x} tcr_el1={:#x} mair_el1={:#x} sctlr_el1={:#x} \
+                 vbar_el1={:#x} system_allowlist_sha256={}",
+                stage1.table_base,
+                stage1.table_size,
+                stage1.table_sha256,
+                stage1.used_pages,
+                stage1.ttbr0_el1,
+                stage1.tcr_el1,
+                stage1.mair_el1,
+                stage1.sctlr_el1,
+                stage1.vbar_el1,
+                wrela_machine::sha256::sha256_hex(
+                    wrela_machine::stage1::SYSTEM_INSTRUCTION_ALLOWLIST_V1.as_bytes()
+                ),
+            ),
+        );
+        for protection in &stage1.permissions {
+            push_line(
+                out,
+                1,
+                &format!(
+                    "Protection base={:#x} size={} class={} owner={}",
+                    protection.base,
+                    protection.size,
+                    protection.class.name(),
+                    protection.owner
+                ),
+            );
+        }
     }
     for renderer in &layout.renderers {
         push_line(

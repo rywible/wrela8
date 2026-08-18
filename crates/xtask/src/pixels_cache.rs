@@ -119,6 +119,18 @@ impl Cache {
         )
     }
 
+    /// Parsed Wrela import-closure identities. This keeps closure-granular
+    /// golden keys cheap on repeated runs without broadening the result key:
+    /// a stdlib/compiler change invalidates discovery, then unaffected output
+    /// stages can still reuse their narrower closure identity.
+    pub(crate) fn golden_closure() -> Cache {
+        Self::named(
+            "golden-closure",
+            "WRELA_P8_GOLDEN_CLOSURE_CACHE",
+            "p8-golden-closure-cache",
+        )
+    }
+
     /// Deterministic hot-path census reports. A miss still performs both
     /// required builds; only their byte-identical result may be published.
     pub(crate) fn census() -> Cache {
@@ -142,6 +154,7 @@ impl Cache {
             Cache::boot(),
             Cache::golden_boot(),
             Cache::golden_stage(),
+            Cache::golden_closure(),
             Cache::census(),
         ]
     }
@@ -886,6 +899,7 @@ mod tests {
                 "census",
                 "compile-closure",
                 "golden-boot",
+                "golden-closure",
                 "golden-stage",
                 "score",
             ]
@@ -893,7 +907,7 @@ mod tests {
         let mut dirs: Vec<PathBuf> = Cache::all().iter().map(|cache| cache.dir.clone()).collect();
         dirs.sort();
         dirs.dedup();
-        assert_eq!(dirs.len(), 6, "each cache owns a distinct directory");
+        assert_eq!(dirs.len(), 7, "each cache owns a distinct directory");
         assert!(
             dirs.iter()
                 .all(|dir| dir.starts_with(root().join(".wrela-cache")))

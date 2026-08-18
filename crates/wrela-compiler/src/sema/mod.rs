@@ -1237,10 +1237,14 @@ fn is_compiler_internal_fixture_path(source_path: &Path) -> bool {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     marked
         && source_path.canonicalize().is_ok_and(|source| {
-            ["../../tests/golden", "../../stdlib/tests"]
-                .into_iter()
-                .filter_map(|relative| manifest.join(relative).canonicalize().ok())
-                .any(|root| source.starts_with(root))
+            [
+                "../../tests/golden",
+                "../../stdlib/tests",
+                "../../bench/proxy-fixtures",
+            ]
+            .into_iter()
+            .filter_map(|relative| manifest.join(relative).canonicalize().ok())
+            .any(|root| source.starts_with(root))
         })
 }
 
@@ -1277,8 +1281,9 @@ fn check_reserved_source_names(
     // trust would prevent fixtures from exercising the fence itself. Both
     // halves are required — a marker outside this repository grants nothing,
     // so a user package cannot opt itself in. The only trusted roots are the
-    // golden corpus and stdlib's own contract-test corpus; shipped core and
-    // driver modules are handled separately above.
+    // golden corpus, stdlib's own contract-test corpus, and the physical
+    // proxy corpus; shipped core and driver modules are handled separately
+    // above.
     // Match the directive as a comment line, not as a loose substring: prose
     // that merely mentions the marker (a fixture explaining why it does *not*
     // opt in, say) must not thereby opt itself in.
@@ -2308,6 +2313,15 @@ mod tests {
             assert_eq!(error.category, "name");
             assert!(error.message.contains("compiler-reserved namespace"));
         }
+    }
+
+    #[test]
+    fn marked_physical_proxy_fixture_can_use_internal_trace_hook() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../bench/proxy-fixtures/boot-pixels-partial-mode-three-core/src/examples/boot_pixels_partial_mode_three_core.wr",
+        );
+        assert!(fixture.is_file());
+        assert!(is_compiler_internal_fixture_path(&fixture));
     }
 
     #[test]

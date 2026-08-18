@@ -1,0 +1,4 @@
+# set|class|case|workload-kind|selection-decision
+calibration|frame|boot-pixels-plane-one-core|real|frame-renderer-candidate-selection
+calibration|kernel|boot-pixels-numeric-holdout|real|field-kernel-candidate-selection
+calibration|sequence|boot-pixels-partial-mode-three-core|real|flagship-update-strategy-selection

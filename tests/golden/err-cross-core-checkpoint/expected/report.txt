@@ -60,14 +60,19 @@ ImageReport v0
     Field name=words type=[u64; 1] offset=0x0 size=8
   Layout name=InitSpan7Words kind=runtime endian=little size=8 padding=0
     Field name=words type=[u64; 1] offset=0x0 size=8
+  Layout name=InputMmio kind=runtime endian=little size=16 padding=0
+    Field name=status type=u64 offset=0x0 size=8
+    Field name=event type=u64 offset=0x8 size=8
   Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
     Field name=turns type=[u64; N_CORES] offset=0x0 size=8
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=131080 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=131072
+  Layout name=Lane2Snapshot kind=runtime endian=little size=131072 padding=0
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x0 size=131072
   Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
     Padding offset=0x0 size=40
     Field name=next_deadline type=u64 offset=0x28 size=8
@@ -154,7 +159,7 @@ ImageReport v0
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
   Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
-    Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+    Field name=words type=[InterruptCell[u64]; CORE_SLOTS] offset=0x0 size=256
     Padding offset=0x100 size=1792
     Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
   Layout name=RingCtl kind=runtime endian=little size=24 padding=0

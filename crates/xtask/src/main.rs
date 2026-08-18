@@ -32,9 +32,12 @@ mod bench;
 mod corpus;
 mod dev;
 mod diff_blk;
+mod evidence;
+mod forge;
 mod fuzz;
 mod golden;
 mod lane2_freq;
+mod pi;
 mod pixels_cache;
 mod pixels_census;
 mod pixels_conformance;
@@ -42,6 +45,7 @@ mod pixels_formal;
 mod pixels_plan_lint;
 mod pixels_repro;
 mod pixels_vectors;
+mod proxy_validation;
 mod stdlib_test;
 
 use agnostic_sweep::*;
@@ -98,7 +102,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nPixels commands:\n  cargo xtask pixels-census [--update]\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]\n  cargo xtask pixels-conformance [--update] [--assume-guest-fixtures-verified] [--deep-worker-variants] [--clear-caches] [--case <name>]\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>|--case <exact>...] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N] [--isolate-pixels-bundles] [--assume-built] [--clear-boot-cache]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask pixels-cache-parity --full [--update]\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask dev\n\nForge loop:\n  cargo xtask forge run <source> [--display headless|native]\n  cargo xtask forge restart\n\nPixels commands:\n  cargo xtask pixels-census [--update]\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal|pixels-vectors [--update]|pixels-repro [--smoke]\n  cargo xtask pixels-conformance [--update] [--assume-guest-fixtures-verified] [--deep-worker-variants] [--clear-caches] [--case <name>]\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>|--case <exact>...] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N] [--isolate-pixels-bundles] [--assume-built] [--clear-boot-cache]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report|pixels> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask pixels-cache-parity --full [--update]\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -227,6 +231,8 @@ fn main() -> ExitCode {
         Some("profile") => no_args("profile", &args).and_then(|()| profile()),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
+        Some("pi") => pi::pi(&args[1..]),
+        Some("forge") => forge::forge(&args[1..]),
         Some(other) => Err(format!("unknown xtask command `{other}`\n\n{USAGE}")),
         None => Err(USAGE.to_string()),
     };
@@ -508,6 +514,88 @@ mod golden_cli_tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn verify_only_throttles_running_vms_not_boot_compilation() {
+        let (boot, static_goldens) = verify_golden_opts();
+        let host_jobs = golden::default_jobs();
+        assert_eq!(boot.jobs, host_jobs);
+        assert_eq!(boot.boot_jobs, golden::DEFAULT_BOOT_JOBS);
+        assert_eq!(static_goldens.jobs, host_jobs);
+        assert_eq!(static_goldens.boot_jobs, golden::DEFAULT_BOOT_JOBS);
+        assert!(boot.boot == BootSel::Only);
+        assert!(static_goldens.boot == BootSel::None);
+    }
+
+    #[test]
+    fn product_package_policy_has_negative_regressions() {
+        let service =
+            std::fs::read_to_string(root().join("packaging/linux/wrela-vmm.service")).unwrap();
+        let entitlements =
+            std::fs::read_to_string(root().join("packaging/macos/product-entitlements.plist"))
+                .unwrap();
+        validate_product_package_text(&service, &entitlements).unwrap();
+        assert!(
+            validate_product_package_text(
+                &service.replace("DevicePolicy=closed", "DevicePolicy=auto"),
+                &entitlements,
+            )
+            .is_err()
+        );
+        for required in [
+            "SystemCallFilter=@system-service\n",
+            "MemoryMax=768M\n",
+            "MemorySwapMax=0\n",
+            "LimitMEMLOCK=536870912\n",
+            "TasksMax=16\n",
+        ] {
+            assert!(
+                validate_product_package_text(&service.replace(required, ""), &entitlements)
+                    .is_err(),
+                "removing {required:?} must fail"
+            );
+        }
+        assert!(
+            validate_product_package_text(
+                &service,
+                &entitlements.replace(
+                    "com.apple.security.files.user-selected.read-only",
+                    "com.apple.security.files.user-selected.read-write",
+                ),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_product_package_text(
+                &service,
+                &entitlements.replace(
+                    "</dict>",
+                    "\t<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>\n\t<true/>\n</dict>",
+                ),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_product_package_text(
+                &service,
+                &entitlements.replace(
+                    "<key>com.apple.security.network.client</key>\n\t<false/>",
+                    "<key>com.apple.security.network.client</key>\n\t<true/>",
+                ),
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "focused package acceptance; cargo xtask verify runs the same check"]
+    fn signed_product_executes_inside_app_sandbox() {
+        verify_signed_macos_product_binary(
+            &root().join("packaging/macos/product-entitlements.plist"),
+        )
+        .unwrap();
+    }
 }
 
 fn cost_inventory() -> Result<(), String> {
@@ -590,15 +678,11 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
             .count())
     }
 
-    // P8 adds portable display/frame-output record-replay tests. The
-    // signed HVF-only lane remains unchanged and separately pinned below.
-    //
-    // Re-locked at P8R.0 from 141 to the 143 the crate actually lists: the P8
-    // close moved this constant to 141 while landing two further portable
-    // display tests, so the census tripped on every run. The HVF census is
-    // unchanged. P8R.4 adds one portable architectural FP/SIMD system-register
-    // encoding pin, bringing the portable lane to 144.
-    const ALL: usize = 144;
+    // P8 and V0-V12 add portable display, host-boundary, guest-memory, PMU,
+    // hardening, presenter, and normalized-input regressions. The selected-host
+    // BRK fixture adds one signed HVF case and runs as a Linux KVM test on
+    // Rasputin; both censuses are pinned deliberately here.
+    const ALL: usize = 164;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",
@@ -622,19 +706,312 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
     )
 }
 
-fn check_wrela_vmm_linux() -> Result<(), String> {
+fn build_wrela_vmm_linux() -> Result<(), String> {
+    // `--tests` builds the Linux-gated `#[cfg(test)]` modules alongside the
+    // deployed binaries. Those modules are invisible to the macOS unit lane,
+    // so without this they rot silently — and the kernel-ABI facts they pin
+    // (perf_event_attr size, KVM_REG_ARM_CORE offsets) are `const` assertions
+    // that only a Linux/aarch64 compile can evaluate. It does not disturb the
+    // deployed artifact: same profile, same features, same `--bins` output.
     run(
         Command::new("cargo").args([
-            "check",
+            "build",
+            "--release",
             "-p",
             "wrela-vmm",
             "--target",
-            "aarch64-unknown-linux-gnu",
-            "--all-targets",
+            "aarch64-unknown-linux-musl",
+            "--bins",
+            "--tests",
+            "--features",
+            "native-presentation",
             "--quiet",
         ]),
-        "Linux/aarch64 wrela-vmm compile check",
+        "Linux/aarch64-musl wrela-vmm full build",
     )
+}
+
+fn verify_product_packages() -> Result<(), String> {
+    let service_path = root().join("packaging/linux/wrela-vmm.service");
+    let service = std::fs::read_to_string(&service_path)
+        .map_err(|error| format!("read {}: {error}", service_path.display()))?;
+    let entitlements_path = root().join("packaging/macos/product-entitlements.plist");
+    let entitlements = std::fs::read_to_string(&entitlements_path)
+        .map_err(|error| format!("read {}: {error}", entitlements_path.display()))?;
+    validate_product_package_text(&service, &entitlements)?;
+    verify_signed_macos_product_binary(&entitlements_path)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_signed_macos_product_binary(entitlements: &Path) -> Result<(), String> {
+    run(
+        Command::new("cargo").args(["build", "-p", "wrela-vmm", "--bin", "wrela-vmm", "--quiet"]),
+        "build macOS product package acceptance binary",
+    )?;
+    let source = root().join("target/debug/wrela-vmm");
+    let directory = root().join("target/product-package-check");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let app = directory.join(format!("WrelaVmm-{}.app", std::process::id()));
+    let contents = app.join("Contents");
+    let macos = contents.join("MacOS");
+    let resources = contents.join("Resources");
+    std::fs::create_dir_all(&macos)
+        .and_then(|()| std::fs::create_dir_all(&resources))
+        .map_err(|error| format!("create {}: {error}", app.display()))?;
+    let product = macos.join("wrela-vmm");
+    std::fs::copy(&source, &product)
+        .map_err(|error| format!("copy {}: {error}", product.display()))?;
+    std::fs::write(
+        contents.join("Info.plist"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>CFBundleExecutable</key><string>wrela-vmm</string>\n\
+         <key>CFBundleIdentifier</key><string>org.wrela.vmm</string>\n\
+         <key>CFBundlePackageType</key><string>APPL</string>\n\
+         </dict></plist>\n",
+    )
+    .map_err(|error| format!("write product Info.plist: {error}"))?;
+    let smoke = bench::golden_test_image_details("boot-actors")?;
+    let smoke_image = resources.join("boot-actors.img");
+    let smoke_report = resources.join("boot-actors.report.txt");
+    let smoke_source = resources.join("boot-actors.wr");
+    std::fs::copy(
+        root().join("tests/golden/boot-actors/input.wr"),
+        &smoke_source,
+    )
+    .map_err(|error| format!("copy sandboxed product smoke source: {error}"))?;
+    let smoke_report_text = smoke
+        .report
+        .lines()
+        .map(|line| {
+            if let Some((_, digest)) = line
+                .strip_prefix("Input path=")
+                .and_then(|rest| rest.split_once(" sha256="))
+            {
+                format!("Input path={} sha256={digest}", smoke_source.display())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(&smoke_image, smoke.image)
+        .and_then(|()| std::fs::write(&smoke_report, smoke_report_text))
+        .map_err(|error| format!("write sandboxed product smoke image: {error}"))?;
+    run(
+        Command::new("codesign")
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "org.wrela.vmm",
+                "--entitlements",
+            ])
+            .arg(entitlements)
+            .arg(&app),
+        "sign macOS product package acceptance binary",
+    )?;
+    run(
+        Command::new("codesign")
+            .args(["--verify", "--strict", "--verbose=2"])
+            .arg(&app),
+        "verify macOS product package signature",
+    )?;
+    let disclosed = Command::new("codesign")
+        .args(["-d", "--entitlements", ":-"])
+        .arg(&app)
+        .output()
+        .map_err(|error| format!("read product signature entitlements: {error}"))?;
+    if !disclosed.status.success() {
+        return Err(format!(
+            "read product signature entitlements failed: {}",
+            String::from_utf8_lossy(&disclosed.stderr)
+        ));
+    }
+    let mut disclosed_text = disclosed.stdout;
+    disclosed_text.extend_from_slice(&disclosed.stderr);
+    let disclosed_text = String::from_utf8_lossy(&disclosed_text);
+    let source_entitlements = std::fs::read_to_string(entitlements)
+        .map_err(|error| format!("read product entitlements for comparison: {error}"))?;
+    if parse_boolean_entitlements(&disclosed_text)?
+        != parse_boolean_entitlements(&source_entitlements)?
+    {
+        return Err("signed product binary does not carry the exact product entitlements".into());
+    }
+    let accepted = Command::new(&product)
+        .arg("--validate-product-host")
+        .env("WRELA_HOST_PROFILE", "product")
+        .output()
+        .map_err(|error| format!("run sandboxed product self-check: {error}"))?;
+    if !accepted.status.success() {
+        return Err(format!(
+            "sandboxed product self-check failed: {}",
+            String::from_utf8_lossy(&accepted.stderr)
+        ));
+    }
+    let booted = Command::new(&product)
+        .arg(&smoke_report)
+        .arg(&smoke_image)
+        .args(["--display", "headless"])
+        .env("WRELA_HOST_PROFILE", "product")
+        .output()
+        .map_err(|error| format!("run sandboxed product boot: {error}"))?;
+    if !booted.status.success() {
+        return Err(format!(
+            "sandboxed product representative boot failed: {}",
+            String::from_utf8_lossy(&booted.stderr)
+        ));
+    }
+    let diagnostic = directory.join(format!("wrela-vmm-diagnostic-{}", std::process::id()));
+    std::fs::copy(&source, &diagnostic)
+        .map_err(|error| format!("copy {}: {error}", diagnostic.display()))?;
+    run(
+        Command::new("codesign")
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "org.wrela.diagnostic",
+                "--entitlements",
+            ])
+            .arg(root().join("crates/wrela-vmm/entitlements.plist"))
+            .arg(&diagnostic),
+        "sign diagnostic package-refusal binary",
+    )?;
+    let refused = Command::new(&diagnostic)
+        .arg("--validate-product-host")
+        .env("WRELA_HOST_PROFILE", "product")
+        // Prove that spoofing the old environment-only signal cannot pass.
+        .env("APP_SANDBOX_CONTAINER_ID", "spoofed")
+        .output()
+        .map_err(|error| format!("run diagnostic package-refusal binary: {error}"))?;
+    if refused.status.success() {
+        return Err("wrongly entitled macOS binary passed product package acceptance".into());
+    }
+    let wrong_sandboxed = Command::new("/usr/bin/sandbox-exec")
+        .args([
+            "-p",
+            "(version 1)(deny default)(allow process*)(allow sysctl-read)(allow file-read*)(deny network*)(deny file-write*)",
+        ])
+        .arg(&diagnostic)
+        .arg("--validate-product-host")
+        .env("WRELA_HOST_PROFILE", "product")
+        .env("APP_SANDBOX_CONTAINER_ID", "package-acceptance")
+        .output()
+        .map_err(|error| format!("run macOS kernel-sandbox acceptance: {error}"))?;
+    if wrong_sandboxed.status.success() {
+        return Err("wrongly entitled binary passed inside an equivalent kernel sandbox".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn verify_signed_macos_product_binary(_entitlements: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+fn validate_product_package_text(service: &str, entitlements: &str) -> Result<(), String> {
+    for required in [
+        "User=wrela",
+        "Group=wrela",
+        "NoNewPrivileges=yes",
+        "ProtectSystem=strict",
+        "ProtectHome=yes",
+        "ProtectKernelTunables=yes",
+        "ProtectKernelModules=yes",
+        "ProtectControlGroups=yes",
+        "ProtectClock=yes",
+        "PrivateNetwork=yes",
+        "PrivatePIDs=yes",
+        "RestrictNamespaces=yes",
+        "PrivateUsers=no",
+        "RestrictSUIDSGID=yes",
+        "RestrictRealtime=yes",
+        "LockPersonality=yes",
+        "RestrictAddressFamilies=AF_UNIX",
+        "SystemCallArchitectures=native",
+        "SystemCallFilter=@system-service",
+        "SystemCallFilter=perf_event_open",
+        "SystemCallErrorNumber=EPERM",
+        "CapabilityBoundingSet=",
+        "AmbientCapabilities=",
+        "DevicePolicy=closed",
+        "DeviceAllow=/dev/kvm rw",
+        "DeviceAllow=/dev/dri/card0 rw",
+        "DeviceAllow=/dev/dri/card1 rw",
+        "DeviceAllow=/dev/dri/renderD128 rw",
+        "MemorySwapMax=0",
+        "MemoryMax=768M",
+        "LimitMEMLOCK=536870912",
+        "CPUAffinity=0 1 2 3",
+        "CPUQuota=400%",
+        "TasksMax=16",
+        "UMask=0077",
+        "ReadOnlyPaths=/var/lib/wrela",
+    ] {
+        if !service.lines().any(|line| line == required) {
+            return Err(format!(
+                "Linux product package lacks exact `{required}` enforcement"
+            ));
+        }
+    }
+    for forbidden in ["PrivateDevices=yes"] {
+        if service.lines().any(|line| line == forbidden) {
+            return Err(format!(
+                "Linux product package contains incompatible `{forbidden}`"
+            ));
+        }
+    }
+    if parse_boolean_entitlements(entitlements)?
+        != BTreeMap::from([
+            ("com.apple.security.app-sandbox".to_string(), true),
+            (
+                "com.apple.security.files.user-selected.read-only".to_string(),
+                true,
+            ),
+            ("com.apple.security.hypervisor".to_string(), true),
+            ("com.apple.security.network.client".to_string(), false),
+            ("com.apple.security.network.server".to_string(), false),
+        ])
+    {
+        return Err("macOS product entitlement dictionary is not the exact sealed set".into());
+    }
+    Ok(())
+}
+
+fn parse_boolean_entitlements(text: &str) -> Result<BTreeMap<String, bool>, String> {
+    let mut remaining = text;
+    let mut out = BTreeMap::new();
+    while let Some(start) = remaining.find("<key>") {
+        remaining = &remaining[start + "<key>".len()..];
+        let end = remaining
+            .find("</key>")
+            .ok_or("macOS entitlement key is unterminated")?;
+        let key = &remaining[..end];
+        remaining = remaining[end + "</key>".len()..].trim_start();
+        let value = if let Some(rest) = remaining.strip_prefix("<true/>") {
+            remaining = rest;
+            true
+        } else if let Some(rest) = remaining.strip_prefix("<false/>") {
+            remaining = rest;
+            false
+        } else {
+            return Err(format!("macOS entitlement `{key}` is not Boolean"));
+        };
+        if out.insert(key.to_string(), value).is_some() {
+            return Err(format!("macOS entitlement `{key}` is repeated"));
+        }
+    }
+    if out.is_empty() {
+        return Err("macOS entitlement dictionary is empty".into());
+    }
+    Ok(out)
 }
 
 fn unit_lane() -> Result<(), String> {
@@ -754,9 +1131,27 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
-        "Linux VMM compile",
-        "cargo check -p wrela-vmm --target aarch64-unknown-linux-gnu --all-targets",
-        check_wrela_vmm_linux,
+        "product package policy",
+        "offline Linux/macOS package policy check",
+        verify_product_packages,
+    )?;
+    verify_stage(
+        LANE,
+        "Linux VMM full build",
+        "cargo build --release -p wrela-vmm --target aarch64-unknown-linux-musl --bins --tests --features native-presentation",
+        build_wrela_vmm_linux,
+    )?;
+    verify_stage(
+        LANE,
+        "proxy validation drift lock",
+        "offline wrela-proxy-validation-v1 binding check",
+        proxy_validation::verify_drift_lock,
+    )?;
+    verify_stage(
+        LANE,
+        "backend conformance drift lock",
+        "offline wrela-backend-conformance-v1 binding check",
+        pi::verify_backend_conformance,
     )?;
     verify_stage(
         LANE,
@@ -794,21 +1189,14 @@ fn verify_goldens_parallel() -> Result<(), String> {
     // golden::HEAVY_PIXELS_JOBS permits. Keep static bundles in-process so
     // their immutable compiler data and parsed toolchain modules are shared;
     // the full uncached corpus peaks below 4.5 GiB on the 16 GiB baseline.
-    let boot_jobs = golden::DEFAULT_BOOT_JOBS;
-    let static_jobs = golden::default_jobs();
+    let (boot_opts, static_opts) = verify_golden_opts();
     let (boot, static_goldens) = std::thread::scope(|scope| {
         let boot = scope.spawn(|| {
             verify_stage(
                 "verify",
                 "boot goldens",
                 "cargo xtask golden --only-boot",
-                || {
-                    golden(&GoldenOpts {
-                        boot: BootSel::Only,
-                        jobs: boot_jobs,
-                        ..GoldenOpts::default()
-                    })
-                },
+                || golden(&boot_opts),
             )
         });
         let static_goldens = scope.spawn(|| {
@@ -816,13 +1204,7 @@ fn verify_goldens_parallel() -> Result<(), String> {
                 "verify",
                 "static goldens",
                 "cargo xtask golden --no-boot",
-                || {
-                    golden(&GoldenOpts {
-                        boot: BootSel::None,
-                        jobs: static_jobs,
-                        ..GoldenOpts::default()
-                    })
-                },
+                || golden(&static_opts),
             )
         });
         (
@@ -847,6 +1229,23 @@ fn verify_goldens_parallel() -> Result<(), String> {
     } else {
         Err(failures.join("\n\n"))
     }
+}
+
+fn verify_golden_opts() -> (GoldenOpts, GoldenOpts) {
+    let jobs = golden::default_jobs();
+    (
+        GoldenOpts {
+            boot: BootSel::Only,
+            jobs,
+            boot_jobs: golden::DEFAULT_BOOT_JOBS,
+            ..GoldenOpts::default()
+        },
+        GoldenOpts {
+            boot: BootSel::None,
+            jobs,
+            ..GoldenOpts::default()
+        },
+    )
 }
 
 fn verify_deep() -> Result<(), String> {
@@ -2824,6 +3223,26 @@ pub(crate) fn build_runtime_test_image(
     path: &str,
     test_names: &[String],
 ) -> Result<(Vec<u8>, String), String> {
+    let built =
+        build_runtime_test_image_details(program, modules, programs, source, path, test_names)?;
+    Ok((built.image, built.report))
+}
+
+pub(crate) struct RuntimeTestImageDetails {
+    pub(crate) image: Vec<u8>,
+    pub(crate) report: String,
+    pub(crate) linked: wrela_compiler::linked::LinkedProgram,
+    pub(crate) placement: wrela_compiler::placement::PlacementTable,
+}
+
+pub(crate) fn build_runtime_test_image_details(
+    program: &sema::typed::TypedProgram,
+    modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, sema::typed::TypedProgram>,
+    source: &str,
+    path: &str,
+    test_names: &[String],
+) -> Result<RuntimeTestImageDetails, String> {
     let mut layout_ctx = layout::merge_layout_ctx(modules).map_err(|e| e.message)?;
     layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
     let graph = match &program.image_fn {
@@ -2873,6 +3292,12 @@ pub(crate) fn build_runtime_test_image(
         &async_tests,
         true,
     )?;
+    let placement = wrela_compiler::placement::place(
+        &compiled.graph,
+        &compiled.modules,
+        &compiled.layout_ctx,
+        compiled.graph.cores,
+    )?;
     let test_args = layout::resolve_runtime_test_args(program, test_names, &compiled.graph)?;
     let boot = layout::BootCtx {
         graph: &compiled.graph,
@@ -2898,19 +3323,25 @@ pub(crate) fn build_runtime_test_image(
     }
     let source_digest = report::sha256_hex(source.as_bytes());
     let image_digest = report::sha256_hex(&image_layout.blob);
-    let mut report_text = format!(
-        "Machine revision={}\nInput path={path} sha256={source_digest}\nImage sha256={image_digest}\n",
-        wrela_machine::MACHINE_REVISION_STR
-    );
-    for s in &image_layout.sections {
-        report_text.push_str(&format!(
-            "Section name={} base={:#x} size={}\n",
-            s.name, s.base, s.size
-        ));
-    }
-    report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
-    layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
-    Ok((image_layout.blob, report_text))
+    let mut parsed = layout::parsed_runtime_tail(&image_layout);
+    parsed.entry = image_layout.entry;
+    parsed.image_sha256 = image_digest;
+    parsed.input_digests = vec![(path.to_string(), source_digest)];
+    let report_text = wrela_machine::report::render(&parsed);
+    // The runtime-test builder is also used by Lane 2 and signed HVF lanes;
+    // it must not silently fall behind the product report contract.
+    wrela_machine::report::parse_report(&report_text)
+        .map_err(|error| format!("runtime-test report failed self-parse: {error}"))?;
+    let linked = image_layout
+        .linked
+        .clone()
+        .ok_or_else(|| "runtime-test image has no linked executable stream".to_string())?;
+    Ok(RuntimeTestImageDetails {
+        image: image_layout.blob,
+        report: report_text,
+        linked,
+        placement,
+    })
 }
 
 struct VmmBoot {
@@ -3492,6 +3923,7 @@ fn diff_block_count() -> Result<(), String> {
         let out = Command::new(exe)
             .arg(DIFF_BLOCK_COUNT_TEST)
             .arg("--exact")
+            .arg("--ignored")
             .arg("--test-threads=1")
             .arg("--nocapture")
             .output()
