@@ -9629,6 +9629,57 @@ Milestone result: debug identity color is replaced by deterministic physically b
 
 Sequencing (decided 2026-08-15): Task P9.1 does not begin until the P8R tightening milestone and the complete VMM host-backend program ([vmm-host-backends.md](vmm-host-backends.md) Tasks V0–V15) have closed. P9 therefore starts with stage-1 translation active, the accepted product host configuration, and a hardware-validated cycle proxy; its optimization and budget decisions consume that validated model.
 
+### VMM closeout facts carried by P9–P13
+
+The completed VMM program fixes the following inputs for every remaining
+Pixels task. Later tasks consume these facts; they do not reopen them:
+
+- The product topology is three guest vCPUs pinned to physical cores 1–3 and
+  one host/housekeeping core 0. Renderer equivalence and partition tests are
+  therefore one-core/three-core comparisons, never one-core/four-core.
+- Ordinary sealed images boot with the compiler-owned stage-1 tables active:
+  text is RX, writable renderer state and framebuffers are NX, MMIO is Device
+  memory, and `SCTLR_EL1.WXN` is set. Pixels may not introduce a diagnostic
+  MMU-off path, executable mutable data, JIT code, or a host-specific mapping.
+- The portable display device validates ownership, sequence, descriptors,
+  padding, alpha, visible/raw/descriptor digests, and the complete immutable
+  `Bgra8Srgb` frame before any presenter sees it. Headless, Metal, and DRM are
+  downstream sinks. The canonical frame digest is presenter-independent; a
+  presenter failure is a host error and cannot become a renderer fallback or
+  a successful partial presentation.
+- Display submission completion and vblank completion are distinct evidence.
+  DRM completion means that the page flip was queued and acknowledged; wall
+  cadence, presenter/device service, and guest PMU cycles remain separate
+  streams. No Pixels cost or admission task may fit one stream from another.
+- The product memory contract is one prefaulted, locked, ordinary-page 512 MiB
+  guest reservation. Renderer layout accounting includes its stage-1 table
+  reservation and may not assume huge pages, overcommit, or a larger Pi.
+- The VMM watchdog can cancel a vCPU already executing guest code. Pixels
+  physical runs use the applied Pixels wall cap (currently 1,800 seconds), and
+  a timeout must retain `transcript_so_far`; a lab-agent service kill is not a
+  valid renderer diagnostic.
+
+The checked Rasputin evidence is a baseline, not a 1080p60 result. Proxy
+revision `a76-pi5-v2` passes the kernel, frame, and sequence calibration and
+frozen-holdout corpus with observed predicted/measured ratios from 2.733 to
+3.061. The board stayed at 2.4 GHz, approximately 45–49 °C before/after, with
+no throttle flag. The active-DRM P8 sequences are nevertheless only 64×32 and
+65×33 plane fixtures: 3,072 frames took 205.318 s and 214.782 s respectively
+(about 15.0 and 14.3 frames/s), while the one-core from-scratch 64×32 plane
+had a median 249,839,853 guest cycles (about 104.1 ms at 2.4 GHz). Those runs
+validate the VMM, measurement separation, sustained presentation, and current
+proxy conservatism; they do not establish renderer throughput, useful
+three-core scaling, or target-resolution scanout. The captured DRM environment
+also did not advertise 1920×1080, so it is not 1080p presenter evidence.
+
+Consequently P9–P11 preserve per-core/tile telemetry and make no 1080p60
+claim. P12 must distinguish fixed coordinator cost, per-tile/pixel cost,
+worker imbalance, guest display-submission cost, and host presenter cost.
+P13 alone may close the flagship claim, using a new proxy lifecycle plus the
+locked acceptance scenes. Any physical 1080p presenter claim additionally
+requires a conforming run environment that advertises the exact 1920×1080@60
+mode; that evidence remains accountability evidence, never compiler input.
+
 ## Task P9.1 — fix the working color and filmic-output contract
 
 **Requires:** the preceding milestone close gate; Task P8R.7 (the P8R
@@ -10510,7 +10561,7 @@ Do not use a single perceptual aggregate to hide visibility/shadow errors.
 - No visibility/identity/shadow classification failures.
 - High-frequency detail does not alternate unpredictably under subpixel motion.
 - Re-running identical sequence produces byte-identical frames.
-- Single/four-core outputs identical.
+- Single/three-core outputs identical.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -10881,7 +10932,7 @@ Initialization is finite and bounded by compiled capacities. It may span multipl
 **Tests:**
 
 - First GI frame is independent of uninitialized memory/previous runs.
-- Single/four-core probe coefficients and frame bytes identical.
+- Single/three-core probe coefficients and frame bytes identical.
 - All probe writes owned/disjoint.
 - Initialization interruption cannot mark partial state valid.
 - Zero-level/no-GI config skips initialization exactly.
@@ -11116,7 +11167,7 @@ Compare exact normative host model, intervals, and final bytes. Physical/path-tr
 - Tail early-out exact final bytes.
 - Probe invalidation/remap exact.
 - Repeated identical runs deterministic.
-- Single/four-core outputs identical.
+- Single/three-core outputs identical.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -11193,7 +11244,12 @@ Use the repository’s sealed SHA-256 implementation over canonical packed bytes
 
 Do not include unused source struct bytes or uninitialized padding.
 
-Static reuse is allowed only when `all` equals previous successfully presented frame’s digest. Reuse submits/presents the existing front generation according to display semantics or returns success without rewriting it if machine contract permits repeated scanout.
+Static reuse is allowed only when `all` equals the previous successfully
+presented frame's digest. Advancing the presented-frame sequence still crosses
+the ordinary display submission/completion boundary; the renderer may not
+report the prior front generation as newly presented without a submission. A
+zero-write repeat is permitted only when a guest-owned back generation already
+has the same visible/raw/descriptor digests and can be legally republished.
 
 **Tests:**
 
@@ -11924,7 +11980,7 @@ Sequences:
 - transparent order swap;
 - probe invalidation/clipmap shift.
 
-For each compare enabled/disabled, one/four core, record/replay, and expected final digests.
+For each compare enabled/disabled, one/three core, record/replay, and expected final digests.
 
 **Tests:**
 
@@ -12105,7 +12161,10 @@ crates/wrela-compiler/src/lower.rs
 crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/encode.rs
 crates/wrela-machine/src/lib.rs
+crates/wrela-machine/src/report.rs
+crates/wrela-vmm/src/host/mod.rs
 crates/wrela-vmm/src/host/hvf.rs
+crates/wrela-vmm/src/host/kvm.rs
 crates/wrela-vmm/src/lib.rs
 stdlib/core/simd.wr # new at P-1 basis
 docs/language/05-library.md
@@ -12162,7 +12221,10 @@ counterpart to reuse.
 - Generated code uses NEON instructions, no scalar fallback loop.
 - Intrinsic/cost/emitted instruction censuses updated and exact.
 - `SDOT`/`UDOT` emitted-word tests prove the positive patterns and near-match tests prove they are not selected when signedness, accumulation width, overflow, or source order disagrees.
-- VMM/machine feature validation requires the same `FEAT_DotProd` baseline named by the language chapter.
+- The image certificate and common machine contract require the same
+  `FEAT_DotProd` baseline named by the language chapter; both HVF and KVM
+  validate it through `host/mod.rs`. No HVF/KVM register or capability type
+  enters `wrela-machine`, the image report, or Pixels code.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -12356,6 +12418,14 @@ Add/split cost dimensions needed by actual emitted instructions:
 - cache-line/framebuffer write traffic;
 - display descriptor/doorbell.
 
+Keep guest work and host presentation mechanically separate. The renderer
+model charges emitted guest framebuffer writes, barriers, descriptor work,
+doorbells, and versioned guest-visible machine transitions. It does not turn
+measured DRM copy/page-flip/vblank time, Metal display-link time, or whole-run
+wall cadence into an A76 instruction row. Presenter/device service remains a
+separate Rasputin evidence stream and is reported beside, not inside, guest
+proxy cycles.
+
 Source provisional weights from the existing A76/SOG inventory discipline. Where the current proxy lacks an exact renderer-relevant rule, add an explicit conservative range dimension and list the missing abstract-machine fact for P13.2; never defer closure to a hardware counter and never choose the optimistic endpoint for admission.
 
 Split the generic `CostRule::Neon` catch-all until every renderer-emitted instruction family has a specific proxy row and port/resource identity. Update the dense row inventory and rule census. Every emitted renderer word must map to exactly the intended dimension set.
@@ -12441,7 +12511,9 @@ Attach counts to exact generated function keys/loops. Do not multiply unrelated 
 
 - Workload report traces every count to frame-program table/capacity.
 - Full sweep includes no kinetic discount.
-- Single/four-core partition sums and max-core values exact.
+- Single/three-core partition sums and max-core values exact, using the sealed
+  product placement on guest cores 0–2 rather than a hypothetical fourth
+  worker.
 - Generated hot function missing workload is build error.
 - Report separates initialization, successful full sweep, kinetic valid, and failure/rebuild upper bounds.
 - Every telemetry bin maps to a charged function/path or an explicitly
@@ -12486,9 +12558,15 @@ For `RenderProfile.AaaByteExact`:
 
 - compute per-core conservative proxy cycles for successful full-sweep frame at declared mode/refresh;
 - include scheduler/orchestration/display submission and memory traffic;
-- compare against frame-period budget at configured/pinned flagship clock using conservative cost endpoint and existing core load/placement;
-- reserve explicit headroom factor in `bench/thresholds.toml`; set v1 admission to at most 80% of modeled per-core frame budget, leaving 20% for model error/interrupt/display variance;
-- check the sealed guest layout, including image/runtime/framebuffer/probe state and explicit stack/failure reserve, fits the machine-v1 512 MiB guest reservation;
+- compare against the sealed 2.4 GHz flagship clock and existing three-vCPU
+  load/placement. At 60 Hz the raw budget is exactly 40,000,000 cycles per
+  core;
+- reserve the explicit headroom factor in `bench/thresholds.toml`; v1
+  admission is at most 32,000,000 proxy cycles per core (80% of the raw
+  budget), leaving 20% for model error, interrupts, and display variance;
+- check that the sealed guest layout, including image/runtime/framebuffer/probe
+  state, compiler-owned stage-1 table reservation, and explicit stack/failure
+  reserve, fits the one machine-v1 512 MiB committed guest reservation;
 - check first-frame initialization against separate renderer initialization deadline (default 2 seconds, source-configurable only downward in flagship profile);
 - include the all-invalid dynamic-probe workload (`probe_count × 32` complete secondary rays plus accumulation) in initialization and frame admission; reject or require static/disabled probes when it cannot fit;
 - refuse image with a detailed cost why-chain if any fails.
@@ -12605,7 +12683,7 @@ Run complete permanent corpus under:
 - SIMD packet build;
 - kinetic disabled/enabled;
 - dev/release;
-- one/four core;
+- one/three core;
 - record/replay.
 
 Compare final bytes/error outcomes. Append report sections:
@@ -12647,6 +12725,10 @@ CertificateTelemetry
   distribution may never relax a failing exact per-frame workload/cycle
   admission result.
 - All permanent reports pinned.
+- Representative sealed renderer images also pass the standing HVF/KVM
+  backend-conformance lane with exact frame-digest sequences and semantic
+  guest-fault classes. Backend-private exit counts, error codes, and wall time
+  are reported but never compared as renderer semantics.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -12798,7 +12880,34 @@ If the existing proxy cannot represent a renderer interaction precisely, extend 
 
 If an exact transition constant or state rule cannot be justified from the repository’s allowed published-record provenance, stop profile activation at this task. Do not infer it from a physical run and do not choose a convenient point from a range.
 
-Hardware validation is a falsifier, not a source. After extension and before sealing, rerun the [vmm-host-backends.md](vmm-host-backends.md) §13.4 validation lane against this proxy revision on the flagship host. A conservatism violation, overprediction-envelope breach, or rank-fidelity failure is a proxy-model defect and is closed by a published-record fact or a state/transition-model extension — never by fitting the observed number or widening an envelope in the same change.
+Hardware validation is a falsifier, not a source. `a76-pi5-v2` is evidence for
+the P8-era rules only: changing renderer-reachable proxy rules, compiler/VMM
+source, build provenance, corpus manifests, or the product host identity
+requires a new proxy revision and invalidates reuse of that report. After the
+P13 extension and before sealing, rerun the complete
+[vmm-host-backends.md](vmm-host-backends.md) §13.4 lifecycle on Rasputin:
+
+1. define the new calibration and frozen-holdout manifests, including real
+   P13 renderer frames and a minutes-long three-vCPU sequence;
+2. collect calibration, correct only from published-record facts or a richer
+   state model, and review/check in the new envelope;
+3. open the holdout only after the envelope is sealed, then collect every
+   holdout class and the provenance-complete report;
+4. run the offline binding check against the exact proxy, source, VMM binary,
+   image/report, stage-1 tables, host identity/profile, PMU configuration, and
+   presentation configuration digests.
+
+The existing 2.733–3.061 observed ratios are comparison evidence, not P13
+transition constants or permission to divide the admission result by three.
+A conservatism violation, overprediction-envelope breach, or rank-fidelity
+failure is a proxy-model defect and is closed by a published-record fact or a
+state/transition-model extension — never by fitting the observed number or
+widening an envelope in the same change. Frame/kernel PMU collection remains
+headless where appropriate; sequence validation uses active DRM and records
+guest cycles, presenter/vblank service, wall cadence, temperature, and
+throttle state as separate fields. A target-resolution presenter claim uses a
+run environment advertising 1920×1080@60. Long Pixels runs use the applied
+1,800-second VMM cap and retain timeout transcripts.
 
 Add:
 
@@ -12818,6 +12927,18 @@ It emits per-frame/per-core exact totals, critical dependency/resource path, mem
 - No code path reads host CPU identity, performance counters, temperature, frequency, or wall time.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+On the conforming physical target, run each class through the two-phase
+operator workflow after the new manifests are frozen:
+
+```text
+cargo xtask pi validate-proxy rasputin --class kernel
+cargo xtask pi validate-proxy rasputin --class frame
+cargo xtask pi validate-proxy rasputin --class sequence
+```
+
+These commands produce the checked accountability evidence; they do not enter
+the repository or release verdict.
 
 **Repository gate:**
 
@@ -12927,7 +13048,8 @@ scene melee:          3,600 frame inputs
 
 Each script forces valid camera/animation changes every frame and includes cuts/whip segments that require full sweep. For every frame and core:
 
-- `proxy_cycles <= 80%` of the cycle budget derived from the sealed target clock and 60 Hz frame period;
+- `proxy_cycles <= 32,000,000` on every guest core: 80% of the exact
+  40,000,000-cycle budget from 2.4 GHz / 60 Hz;
 - zero `RenderError`;
 - exact expected frame and rolling image digest;
 - exact proxy trace digest;
@@ -12942,6 +13064,8 @@ Do not average frames, use p95, or subtract “idle” work. One over-budget fra
 - The lock records the maximum frame/core total and its full critical-path/transition breakdown.
 - Compiler admission reproduces the xtask total and passes without unlock.
 - Re-running on another host produces identical totals and trace digests.
+- The report names the three-core maximum and shows that no aggregate/sum can
+  hide an overloaded worker.
 
 **Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
 
@@ -13338,7 +13462,7 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `check-pixels-torus-roots` | quartic multiple roots | P4 | all positive roots isolated/ordered |
 | `check-pixels-tangent` | root without sign change | P6 | tangent isolated or explicit corridor, never miss |
 | `check-pixels-simultaneous-event` | nongeneric event safety | P11 | surgery refused; local/full rebuild exact |
-| `check-pixels-tile-boundary` | half-open ownership | P8 | no gap/double write; identical one/four core |
+| `check-pixels-tile-boundary` | half-open ownership | P8 | no gap/double write; identical one/three core |
 | `check-pixels-fixed-q-range` | integer error/overflow | P6 | reset/split or explicit failure; packet=scalar |
 | `check-pixels-texture-seam` | UV wrap/filter event | P9 | bounded filtered output; stable seam ownership |
 | `check-pixels-normal-moments` | subpixel specular stability | P9 | interval contains dense integration; stable sequence |
@@ -13357,7 +13481,7 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `err-pixels-reserved-name` | compiler-reserved surface fence | P7 | `name`, at the referencing token, for a user module spelling a generated intrinsic |
 | `boot-pixels-numeric` | Lean/Rust/Wrela scalar correspondence | P6 | exact vector digest |
 | `boot-pixels-plane` | full guest/VMM path | P8 | exact visible/raw tile/frame/replay digests |
-| `boot-pixels-plane-one-core` | single-worker execution twin | P7 | exact debug frame digest and certificate telemetry equal the four-worker build |
+| `boot-pixels-plane-one-core` | single-worker execution twin | P7 | exact debug frame digest and certificate telemetry equal the three-worker build |
 | `boot-pixels-program-view` | checked sealed-table access | P7 | every out-of-range table/record/operand index fails closed |
 | `boot-pixels-frame-input` | frame validation and snapshot determinism | P7 | exact validation errors and byte-identical digests across identical frames |
 | `boot-pixels-quality` | complete AAA stack | P9 | selected frame and rolling sequence digests |
@@ -13505,9 +13629,24 @@ stdlib/data/pixels/*
 ```text
 crates/wrela-machine/src/pixels.rs
 crates/wrela-machine/src/lib.rs
+crates/wrela-machine/src/report.rs
+crates/wrela-vmm/src/engine.rs
+crates/wrela-vmm/src/guest_memory.rs
+crates/wrela-vmm/src/host/mod.rs
+crates/wrela-vmm/src/host/hvf.rs
+crates/wrela-vmm/src/host/kvm.rs
 crates/wrela-vmm/src/display/*
 crates/wrela-vmm/src/replay.rs
+crates/xtask/src/evidence.rs
+crates/xtask/src/pi.rs
+crates/xtask/src/proxy_validation.rs
 ```
+
+Pixels owns no hypervisor API. `wrela-machine` owns the guest-visible display,
+stage-1 report, and ISA facts; the VMM engine owns validation, ownership, and
+presentation; `host/hvf.rs` and `host/kvm.rs` remain leaf adapters behind
+`host/mod.rs`; xtask owns physical collection and offline binding. No KVM/HVF
+type, presenter handle, PMU fd, or host page-size fact crosses those seams.
 
 ### 12.4 Formal
 
@@ -13780,7 +13919,13 @@ The implementation agent must not:
 27. update a golden or cycle-proxy lock automatically;
 28. combine tasks across stable dump boundaries;
 29. delete unfavorable historical evidence;
-30. present a partial back buffer.
+30. present a partial back buffer;
+31. expose an HVF/KVM type, presenter handle, PMU surface, or host page-size
+    assumption through Pixels, `wrela-machine`, a stable image/report format,
+    or the guest ABI;
+32. fold DRM/Metal copy, page-flip, vblank, SSH, process-launch, or whole-run
+    wall time into guest A76 proxy cycles, or use guest PMU cycles as a claim
+    about presenter cadence.
 
 ---
 
