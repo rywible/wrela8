@@ -1,13 +1,13 @@
 RenderLayout v1
   Renderer index=1
-    FrameProgram base=0x40a76840 size=26832
-    State base=0x40ab0000 size=164402
+    FrameProgram base=0x40a83f80 size=32432
+    State base=0x40ac0000 size=164402
     Coordinator core=0 actor=__wrela_renderer_1_coordinator
-    Worker index=0 core=0 actor=__wrela_renderer_1_worker_0 tiles=[0,1) workspace_base=0x40ad0660 workspace_bytes=5952
-    Worker index=1 core=1 actor=__wrela_renderer_1_worker_1 tiles=[1,1) workspace_base=0x40ad1da0 workspace_bytes=5952
-    Buffer front=0x40ad4000 back=0x40ad6000 bytes_each=8192
-    Probe base=0x40ad8000 bytes=0
-    Telemetry offset=164408 production_bytes=0 instrumented_bytes=51552
+    Worker index=0 core=0 actor=__wrela_renderer_1_worker_0 tiles=[0,1) workspace_base=0x40ae0660 workspace_bytes=5952
+    Worker index=1 core=1 actor=__wrela_renderer_1_worker_1 tiles=[1,1) workspace_base=0x40ae1da0 workspace_bytes=5952
+    Buffer front=0x40ae4000 back=0x40ae6000 bytes_each=8192
+    Probe base=0x40ae8000 bytes=0
+    Telemetry offset=164408 production_bytes=0 instrumented_bytes=51744
     Scanout format=Bgra8Srgb tile=64x32 stride=256 allocation=8192 descriptor_bytes=24 generations=2 clear=boot-only
     Replay revision=display-v1 digests=[tile-descriptor,visible,raw-tile] vsync_checkpoint=true
     Failure presentation=retain-front contract=explicit-certified-or-display-error execution=certified-from-scratch

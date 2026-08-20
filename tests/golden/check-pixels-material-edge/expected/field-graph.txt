@@ -4,7 +4,7 @@ Renderers count=1
     Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
       World min=[-4,-4,-3.9000000953674316] max=[4,4,4]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
-      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=10
     Param id=p0 path=SceneParams.phase indexes=[0] component=scalar ty=f32 range=[-2,2]
       Rate max_delta=0.25 max_second_delta=0.0625
     Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
@@ -16,52 +16,56 @@ Renderers count=1
     Scalar id=s6 dependency=coordinate kind=Add a=s5 b=s0
     Scalar id=s7 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
     Scalar id=s8 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
-    Scalar id=s9 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
-    Scalar id=s10 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
-    Scalar id=s11 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
-    Scalar id=s12 dependency=surface kind=SurfacePosition component=0
-    Scalar id=s13 dependency=surface kind=SurfacePosition component=1
-    Scalar id=s14 dependency=surface kind=Add a=s12 b=s13
-    Scalar id=s15 dependency=parameter kind=Param param=p0
-    Scalar id=s16 dependency=constant kind=ConstF32 value=0.0859375 bits=0x3db00000
-    Scalar id=s17 dependency=parameter kind=Add a=s15 b=s16
-    Scalar id=s18 dependency=parameter+surface kind=Compare op=Ge a=s14 b=s17
+    Scalar id=s9 dependency=constant kind=ConstF32 value=0.03125 bits=0x3d000000
+    Scalar id=s10 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s11 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s12 dependency=constant kind=ConstF32 value=0.0625 bits=0x3d800000
+    Scalar id=s13 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Scalar id=s14 dependency=surface kind=SurfacePosition component=0
+    Scalar id=s15 dependency=surface kind=SurfacePosition component=1
+    Scalar id=s16 dependency=surface kind=Add a=s14 b=s15
+    Scalar id=s17 dependency=parameter kind=Param param=p0
+    Scalar id=s18 dependency=constant kind=ConstF32 value=0.0859375 bits=0x3db00000
+    Scalar id=s19 dependency=parameter kind=Add a=s17 b=s18
+    Scalar id=s20 dependency=parameter+surface kind=Compare op=Ge a=s16 b=s19
     Field id=f0 scalar=s6 kind=Plane normal=[s0,s0,s1] offset=s0
     Field id=f1 scalar=s6 kind=Mark child=f0 object=examples.check_pixels_material_edge::MaterialId::Ground material=examples.check_pixels_material_edge::MaterialId::Ground
-    Material id=m0 kind=Sample base_color=[s1,s7,s8] opacity=s1 emissive=[s0,s0,s0] roughness=s7 metallic=s0 specular=s9 ior=s10 normal=geometric pattern=none
-    Material id=m1 kind=Sample base_color=[s8,s7,s9] opacity=s1 emissive=[s0,s0,s0] roughness=s11 metallic=s0 specular=s9 ior=s10 normal=geometric pattern=none
+    Material id=m0 kind=Sample base_color=[s1,s7,s8] opacity=s1 emissive=[s1,s8,s9] roughness=s7 metallic=s0 specular=s10 ior=s11 normal=geometric pattern=none
+    Material id=m1 kind=Sample base_color=[s8,s7,s10] opacity=s1 emissive=[s12,s8,s10] roughness=s13 metallic=s0 specular=s10 ior=s11 normal=geometric pattern=none
     Material id=m2 kind=IdentityTable enum=examples.check_pixels_material_edge::MaterialId cases=[Accent=m0,Ground=m1]
-    Material id=m3 kind=MaterialSelect predicate=s18 a=m0 b=m2
+    Material id=m3 kind=MaterialSelect predicate=s20 a=m0 b=m2
     Identity kind=material enum=examples.check_pixels_material_edge::MaterialId variant=Ground
     Identity kind=object enum=examples.check_pixels_material_edge::MaterialId variant=Ground
-    DischargedObligation kind=material-event predicate=s18
-    Origin kind=scalar id=s0 primary=examples.check_pixels_material_edge:56:33@bytes=1263..1266 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:56:22@bytes=1252..1253,examples.check_pixels_material_edge:56:40@bytes=1270..1273,examples.check_pixels_material_edge:56:60@bytes=1290..1293,examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:71:45@bytes=2062..2063]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_material_edge:56:47@bytes=1277..1280 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:56:22@bytes=1252..1253,examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:71:45@bytes=2062..2063,examples.check_pixels_material_edge:71:58@bytes=2075..2078]
+    DischargedObligation kind=material-event predicate=s20
+    Origin kind=scalar id=s0 primary=examples.check_pixels_material_edge:56:33@bytes=1263..1266 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:56:22@bytes=1252..1253,examples.check_pixels_material_edge:56:40@bytes=1270..1273,examples.check_pixels_material_edge:56:60@bytes=1290..1293,examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:75:45@bytes=2133..2134]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_material_edge:56:47@bytes=1277..1280 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:56:22@bytes=1252..1253,examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:75:45@bytes=2133..2134,examples.check_pixels_material_edge:76:29@bytes=2163..2166,examples.check_pixels_material_edge:78:32@bytes=2249..2252]
     Origin kind=scalar id=s2 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
     Origin kind=scalar id=s3 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
     Origin kind=scalar id=s4 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
     Origin kind=scalar id=s5 primary=examples.check_pixels_material_edge:56:22@bytes=1252..1253 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=scalar id=s6 primary=examples.check_pixels_material_edge:56:22@bytes=1252..1253 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s7 primary=examples.check_pixels_material_edge:66:59@bytes=1907..1911 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:71:45@bytes=2062..2063,examples.check_pixels_material_edge:71:65@bytes=2082..2086,examples.check_pixels_material_edge:71:91@bytes=2108..2112]
-    Origin kind=scalar id=s8 primary=examples.check_pixels_material_edge:66:50@bytes=1898..1903 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:71:45@bytes=2062..2063,examples.check_pixels_material_edge:71:73@bytes=2090..2095]
-    Origin kind=scalar id=s9 primary=examples.check_pixels_material_edge:66:67@bytes=1915..1918 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:71:45@bytes=2062..2063]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_material_edge:66:37@bytes=1885..1886 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:71:45@bytes=2062..2063]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_material_edge:66:83@bytes=1931..1935 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:66:37@bytes=1885..1886]
-    Origin kind=scalar id=s12 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
-    Origin kind=scalar id=s13 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
-    Origin kind=scalar id=s14 primary=examples.check_pixels_material_edge:64:27@bytes=1751..1752 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s15 primary=examples.check_pixels_material_edge:64:64@bytes=1788..1789 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s16 primary=examples.check_pixels_material_edge:41:35@bytes=937..946 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_material_edge:67:30@bytes=1916..1920 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:76:36@bytes=2170..2174,examples.check_pixels_material_edge:77:27@bytes=2212..2216]
+    Origin kind=scalar id=s8 primary=examples.check_pixels_material_edge:67:21@bytes=1907..1912 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:69:34@bytes=1987..1992,examples.check_pixels_material_edge:76:44@bytes=2178..2183,examples.check_pixels_material_edge:78:39@bytes=2256..2261]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_material_edge:78:48@bytes=2265..2272 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_material_edge:67:38@bytes=1924..1927 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:66:37@bytes=1885..1886,examples.check_pixels_material_edge:69:43@bytes=1996..1999,examples.check_pixels_material_edge:75:45@bytes=2133..2134]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_material_edge:66:37@bytes=1885..1886 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0] merged=[examples.check_pixels_material_edge:75:45@bytes=2133..2134]
+    Origin kind=scalar id=s12 primary=examples.check_pixels_material_edge:69:24@bytes=1977..1983 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_material_edge:68:19@bytes=1948..1952 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s15 primary=examples.check_pixels_material_edge:0:0@bytes=0..0
+    Origin kind=scalar id=s16 primary=examples.check_pixels_material_edge:64:27@bytes=1751..1752 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=scalar id=s17 primary=examples.check_pixels_material_edge:64:64@bytes=1788..1789 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=scalar id=s18 primary=examples.check_pixels_material_edge:64:48@bytes=1772..1774 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s18 primary=examples.check_pixels_material_edge:41:35@bytes=937..946 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.check_pixels_material_edge:64:64@bytes=1788..1789 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=scalar id=s20 primary=examples.check_pixels_material_edge:64:48@bytes=1772..1774 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=field id=f0 primary=examples.check_pixels_material_edge:56:22@bytes=1252..1253 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=field id=f1 primary=examples.check_pixels_material_edge:56:16@bytes=1246..1247 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_material_edge:71:45@bytes=2062..2063 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_material_edge:75:45@bytes=2133..2134 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=material id=m1 primary=examples.check_pixels_material_edge:66:37@bytes=1885..1886 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
-    Origin kind=material id=m2 primary=examples.check_pixels_material_edge:67:5@bytes=1941..1946 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
+    Origin kind=material id=m2 primary=examples.check_pixels_material_edge:71:5@bytes=2012..2017 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Origin kind=material id=m3 primary=examples.check_pixels_material_edge:64:5@bytes=1729..1731 expansion=[examples.check_pixels_material_edge:0:0@bytes=0..0]
     Roots field=f1 material=m3
-    SymbolicQuota steps=69/1000000 nodes=31/250000 unrolled_statements=0/250000 aggregate_elements=15/250000 call_depth=1/128
+    SymbolicQuota steps=85/1000000 nodes=31/250000 unrolled_statements=0/250000 aggregate_elements=27/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.check_pixels_material_edge::world material_key=examples.check_pixels_material_edge::shade
     ParameterLayout slots=1 packed_bytes=4 dependency_schema=27cc8be3923be0e14d023593232f89eba034e8597777f072a612ca37f8817255
       FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -3.9000000953674316, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
@@ -88,18 +92,20 @@ Renderers count=1
     ScalarProof id=s6 value=[-3.9000000953674316,4] value_rule=add-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
     ScalarProof id=s7 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s8 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s9 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s10 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s11 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s12 value=[-4,4] value_rule=surface-position world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
-    ScalarProof id=s13 value=[-4,4] value_rule=surface-position world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
-    ScalarProof id=s14 value=[-8,8] value_rule=add-f32 world_derivative=[1,1,0] gradient_norm=2 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
-    ScalarProof id=s15 value=[-2,2] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
+    ScalarProof id=s9 value=[0.03125,0.03125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s10 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s11 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s12 value=[0.0625,0.0625] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s13 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s14 value=[-4,4] value_rule=surface-position world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
+    ScalarProof id=s15 value=[-4,4] value_rule=surface-position world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
+    ScalarProof id=s16 value=[-8,8] value_rule=add-f32 world_derivative=[1,1,0] gradient_norm=2 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s17 value=[-2,2] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
       ParameterDerivative param=p0 upper=1
-    ScalarProof id=s16 value=[0.0859375,0.0859375] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s17 value=[-1.9140625,2.0859375] value_rule=add-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s18 value=[0.0859375,0.0859375] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s19 value=[-1.9140625,2.0859375] value_rule=add-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
       ParameterDerivative param=p0 upper=1
-    ScalarProof id=s18 value=[0,1] value_rule=compare world_derivative=[1,1,0] gradient_norm=2 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
+    ScalarProof id=s20 value=[0,1] value_rule=compare world_derivative=[1,1,0] gradient_norm=2 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
       ParameterDerivative param=p0 upper=1
     WorldBound field=f0 bounds=[-4,-4,-3.9000000953674316]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
     WorldBound field=f1 bounds=[-4,-4,-3.9000000953674316]-[4,4,4] rule=identity-mark contributors=[f0] pruned=none
@@ -110,14 +116,14 @@ Renderers count=1
     Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
       Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-4,-4,-3.9000000953674316]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    MaterialEvent predicate=s18 kind=ScalarThreshold crossings=3 owners=[o0] features=[g0] source=examples.check_pixels_material_edge:64:48
-    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=19 derivative_slots=19 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=4 event_subdivisions=4 event_records=16 tile_row_runs=17 csg_events=1 transparent_layers=1 rebuild_queue=17 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=512 run_bytes=2176 corridor_bytes=1088 fixed_q_bytes=272 shading_bytes=1088 transparency_bytes=544 per_worker_scratch_bytes=5840 all_worker_scratch_bytes=5840 telemetry_production_bytes=0 telemetry_instrumented_bytes=50352 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=156210 instrumented_state_bytes=206568
+    MaterialEvent predicate=s20 kind=ScalarThreshold crossings=3 owners=[o0] features=[g0] source=examples.check_pixels_material_edge:64:48
+    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=21 derivative_slots=21 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=4 event_subdivisions=4 event_records=16 tile_row_runs=17 csg_events=1 transparent_layers=1 rebuild_queue=17 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=512 run_bytes=2176 corridor_bytes=1088 fixed_q_bytes=272 shading_bytes=1088 transparency_bytes=544 per_worker_scratch_bytes=5840 all_worker_scratch_bytes=5840 telemetry_production_bytes=0 telemetry_instrumented_bytes=50448 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=156210 instrumented_state_bytes=206664
       CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
       CapacityDerivation field=max_run_records_per_tile_row value=17 why=[4 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 3 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
       CapacityDerivation field=renderer_state_bytes value=156210 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=131072; scratch=5840 (5840 * 1 workers); output=16384; probes=0; page_alignment_padding=712; kinetic=128; tile_descriptors=368; tile_ownership=2; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=206568 why=[production=156210; telemetry=50352]
-    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=156210 instrumented_state_bytes=206568 dependency_schema=27cc8be3923be0e14d023593232f89eba034e8597777f072a612ca37f8817255
+      CapacityDerivation field=instrumented_renderer_state_bytes value=206664 why=[production=156210; telemetry=50448]
+    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=156210 instrumented_state_bytes=206664 dependency_schema=27cc8be3923be0e14d023593232f89eba034e8597777f072a612ca37f8817255
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=scalar:s0
@@ -228,7 +234,7 @@ Renderers count=1
     Event id=e0 kind=near-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
     Event id=e1 kind=far-clip participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
     Event id=e2 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
-    Event id=e3 kind=material-boundary participants=[feature:g0,material-event:0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=3 subdivision=2 representation=material-difference:left=s14:right=s17:compare=ge:derivatives=sources=[s14,s17]:first=[1,1,0]:second=0:third=0:params=[p0:1]:frame_delta=0.25:frame_second=0.0625:order=2:world_delta=13.798913055266551:remainder=0 sides=negative=material-right:zero=material-left:positive=material-left
+    Event id=e3 kind=material-boundary participants=[feature:g0,material-event:0] pixels=[0,64]x[0,32] tiles=[0,4]x[0,2] params=[p0] roots=3 subdivision=2 representation=material-difference:left=s16:right=s19:compare=ge:derivatives=sources=[s16,s19]:first=[1,1,0]:second=0:third=0:params=[p0:1]:frame_delta=0.25:frame_second=0.0625:order=2:world_delta=13.798913055266551:remainder=0 sides=negative=material-right:zero=material-left:positive=material-left
     CompetitionSummary considered=0 emitted=0 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=1 suppressed_material_only=1
     ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
     ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
@@ -286,7 +292,7 @@ Renderers count=1
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
     DirectIndexes feature_derivatives=[d0] material_programs=[0:m3] bytes=520
-    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=6 root_stack_nodes=4 event_stack_nodes=12 runs_per_row=16 corridors_per_row=16 max_index_slice=4 polynomial_programs=8 rational_programs=1 polynomial_terms_per_program=4 coefficient_nodes=70 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=4376 refined_all_worker_scratch_bytes=4376 final_per_worker_scratch_bytes=6280 final_all_worker_scratch_bytes=6280 final_state_bytes=156210 final_instrumented_state_bytes=206568
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=6 root_stack_nodes=4 event_stack_nodes=12 runs_per_row=16 corridors_per_row=16 max_index_slice=4 polynomial_programs=8 rational_programs=1 polynomial_terms_per_program=4 coefficient_nodes=70 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=4376 refined_all_worker_scratch_bytes=4376 final_per_worker_scratch_bytes=6280 final_all_worker_scratch_bytes=6280 final_state_bytes=156210 final_instrumented_state_bytes=206664
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
       ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=156210 why=[P4-refined six-class scratch=4376 per worker; retained fixed-q/shading/transparency scratch=1904 per worker; workers=1]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=1 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]

@@ -213,4 +213,20 @@ theorem bernstein_identically_zero_is_degenerate
     ∑ index, weight index * coefficient index = 0 := by
   simp [allZero]
 
+def admissibleSecondaryRoot
+    (originFeature feature : Nat) (corridor tHi : ℝ) : Prop :=
+  feature ≠ originFeature ∨ corridor < tHi
+
+theorem exact_feature_exclusion_preserves_other_features
+    (originFeature feature : Nat) (corridor tHi : ℝ)
+    (different : feature ≠ originFeature) :
+    admissibleSecondaryRoot originFeature feature corridor tHi := by
+  exact Or.inl different
+
+theorem origin_root_beyond_corridor_is_preserved
+    (originFeature : Nat) (corridor tHi : ℝ)
+    (beyond : corridor < tHi) :
+    admissibleSecondaryRoot originFeature originFeature corridor tHi := by
+  exact Or.inr beyond
+
 end Pixels

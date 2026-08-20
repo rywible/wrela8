@@ -278,7 +278,7 @@ mod tests {
         }
         assert_eq!(
             wrela_machine::sha256::sha256_hex(&first),
-            "d82e72d2f67908813d7d52fa1baadadeff66f116b98ef6e0974727af5a003acf"
+            "0211bbf0b14a6b786a348d503ee6ca014d0823f72eaabd0d314aca24a1605ec3"
         );
     }
 
@@ -287,8 +287,6 @@ mod tests {
         let bytes = encode(&crate::pixels::program::minimal_verified_frame_program()).unwrap();
         let tables = binary_verify::verify_envelope(&bytes).unwrap();
         for kind in [
-            FrameProgramTableKindV1::Texture,
-            FrameProgramTableKindV1::ShadingSummary,
             FrameProgramTableKindV1::Transparency,
             FrameProgramTableKindV1::Probe,
             FrameProgramTableKindV1::Kinetic,

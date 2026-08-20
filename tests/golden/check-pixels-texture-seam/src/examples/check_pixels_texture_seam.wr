@@ -19,6 +19,7 @@ from core.render import (
     SurfaceContext,
     TextureFilter,
     ToneCurve,
+    UvSource,
 )
 from drivers.display import Display, DisplayDevice
 
@@ -53,7 +54,8 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
         texture_id=19,
         width=2,
         height=2,
-        filter=TextureFilter.Bilinear,
+        filter=TextureFilter.Anisotropic4,
+        uv_source=UvSource.Sphere,
     )
 
 @test(runtime)

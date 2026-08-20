@@ -63,12 +63,20 @@ fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> Mater
     # true high-contrast diagonal half-plane case for the host interval oracle.
     if surface.position.x + surface.position.y >= params.phase + EDGE_DIAGONAL_OFFSET:
         material = MaterialId.Accent
-    sample = MaterialSample.standard(color=Rgb(r=0.125, g=0.25, b=0.5), roughness=0.75)
+    sample = MaterialSample.standard(
+        color=Rgb(r=0.125, g=0.25, b=0.5),
+        roughness=0.75,
+        emissive=Rgb(r=0.0625, g=0.125, b=0.5),
+    )
     match material:
         case .Ground:
             pass
         case .Accent:
-            sample = MaterialSample.standard(color=Rgb(r=1.0, g=0.25, b=0.125), roughness=0.25)
+            sample = MaterialSample.standard(
+                color=Rgb(r=1.0, g=0.25, b=0.125),
+                roughness=0.25,
+                emissive=Rgb(r=1.0, g=0.125, b=0.03125),
+            )
     return sample
 
 @test(runtime)

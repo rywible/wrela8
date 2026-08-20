@@ -1,7 +1,36 @@
 //! Tile coverage validation, deterministic debug output, and worker collection.
 
+use super::interval::F64Interval;
 use super::sweep::{CertifiedRun, IdentitySetId, SweepError};
 use super::telemetry::CertificateTelemetry;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct FinalPixel {
+    pub b: u8,
+    pub g: u8,
+    pub r: u8,
+    pub a: u8,
+}
+
+pub fn final_pixel_from_interval(
+    hdr: [F64Interval; 3],
+    filmic: bool,
+) -> Result<Option<FinalPixel>, super::iv32::NumericError> {
+    let mut rgb = [0_u8; 3];
+    for channel in 0..3 {
+        let Some(code) = super::display::encoded_singleton(hdr[channel], filmic)? else {
+            return Ok(None);
+        };
+        rgb[channel] = code;
+    }
+    Ok(Some(FinalPixel {
+        b: rgb[2],
+        g: rgb[1],
+        r: rgb[0],
+        a: 255,
+    }))
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoverageRecord {
@@ -378,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn one_and_four_worker_partitions_have_identical_frame_digest() {
+    fn one_and_three_worker_partitions_have_identical_frame_digest() {
         let source = [
             CompletedTile {
                 tile_id: 0,
@@ -399,40 +428,35 @@ mod tests {
         ];
         let mut one_telemetry = CertificateTelemetry::default();
         one_telemetry.regular_pixels = 4;
-        let mut four_telemetry = [CertificateTelemetry::default(); 4];
-        for local in &mut four_telemetry {
-            local.regular_pixels = 1;
-        }
+        let mut three_telemetry = [CertificateTelemetry::default(); 3];
+        three_telemetry[0].regular_pixels = 2;
+        three_telemetry[1].regular_pixels = 1;
+        three_telemetry[2].regular_pixels = 1;
         let one = [WorkerCompletion {
             worker_index: 0,
             tiles: &source,
             error: None,
             telemetry: &one_telemetry,
         }];
-        let four = [
+        let worker_zero_tiles = [source[0], source[3]];
+        let three = [
             WorkerCompletion {
-                worker_index: 3,
-                tiles: &source[3..4],
+                worker_index: 2,
+                tiles: &source[2..3],
                 error: None,
-                telemetry: &four_telemetry[3],
+                telemetry: &three_telemetry[2],
             },
             WorkerCompletion {
                 worker_index: 1,
                 tiles: &source[1..2],
                 error: None,
-                telemetry: &four_telemetry[1],
+                telemetry: &three_telemetry[1],
             },
             WorkerCompletion {
                 worker_index: 0,
-                tiles: &source[0..1],
+                tiles: &worker_zero_tiles,
                 error: None,
-                telemetry: &four_telemetry[0],
-            },
-            WorkerCompletion {
-                worker_index: 2,
-                tiles: &source[2..3],
-                error: None,
-                telemetry: &four_telemetry[2],
+                telemetry: &three_telemetry[0],
             },
         ];
         let collect = |completions: &[WorkerCompletion<'_>]| {
@@ -444,7 +468,7 @@ mod tests {
                     .unwrap();
             (debug_frame_digest(&tiles[..count]), merged)
         };
-        assert_eq!(collect(&one), collect(&four));
+        assert_eq!(collect(&one), collect(&three));
     }
 
     #[test]

@@ -902,11 +902,53 @@ fn verify_material_events(
         let MaterialKind::Sample(sample) = &node.kind else {
             continue;
         };
+        let require_range = |label: &str,
+                             scalar: super::ids::ScalarId,
+                             minimum: f64,
+                             maximum: f64|
+         -> Result<(), String> {
+            let range = program.values.get(scalar)?;
+            if range.lo < minimum || range.hi > maximum {
+                return Err(format!(
+                    "P007: range for material {material} {label} is not representable by MaterialSample.standard: [{}, {}] is outside [{minimum}, {maximum}]",
+                    range.lo, range.hi
+                ));
+            }
+            Ok(())
+        };
+        for (channel, scalar) in sample.base_color.into_iter().enumerate() {
+            require_range(&format!("base_color[{channel}]"), scalar, 0.0, 1.0)?;
+        }
+        require_range("metallic", sample.metallic, 0.0, 1.0)?;
+        require_range("roughness", sample.roughness, 0.02, 1.0)?;
+        require_range("specular", sample.specular_level, 0.0, 1.0)?;
+        require_range("opacity", sample.opacity, 0.0, 1.0)?;
+        for (channel, scalar) in sample.emissive.into_iter().enumerate() {
+            require_range(&format!("emissive[{channel}]"), scalar, 0.0, 65_504.0)?;
+        }
         if let Some(texture) = &sample.pattern {
-            let exact = super::material_graph::compiler_texture(texture.stable_id, texture.filter)?;
+            let exact = super::material_graph::compiler_texture(
+                texture.stable_id,
+                texture.filter,
+                texture.uv_source,
+            )?;
             if *texture != exact {
                 return Err(format!(
                     "pixels::verify: material {material} texture descriptor differs from compiler-owned asset `{}`",
+                    texture.asset
+                ));
+            }
+        }
+        if let super::material_graph::NormalModel::TextureSlope { texture } = &sample.normal {
+            let exact = super::material_graph::compiler_texture(
+                texture.stable_id,
+                texture.filter,
+                texture.uv_source,
+            )?;
+            let asset = super::texture::compiler_asset(texture.stable_id)?;
+            if *texture != exact || asset.format != super::texture::TextureFormat::Rg8Snorm {
+                return Err(format!(
+                    "pixels::verify: material {material} normal texture descriptor differs from a compiler-owned Rg8Snorm asset `{}`",
                     texture.asset
                 ));
             }
@@ -3864,12 +3906,15 @@ mod tests {
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),
+            light_ranges: super::super::config::default_light_ranges(),
             exposure: ScalarRangeConfig { min: 0.0, max: 0.0 },
             environment: RgbRangeConfig {
                 min: [0.0; 3],
                 max: [0.0; 3],
             },
             ao_enabled: false,
+            ao_radius: 1.0,
+            ao_strength: 1.0,
             probes_enabled: false,
             probe_initialization_worst_case_ms: 0,
             initialization_deadline_ms: 1,

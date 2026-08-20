@@ -14,17 +14,19 @@ from core.render import (
     CameraBounds,
     LightConfig,
     MaterialSample,
+    NormalDetail,
     ProbeConfig,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
+    TextureFilter,
     ToneCurve,
+    UvSource,
 )
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 20
-# production Pixels stage is not implemented; implemented in task P9.5
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -49,7 +51,21 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+        metallic=0.125,
+        specular=0.75,
+        emissive=Rgb(r=0.0, g=0.0, b=0.0),
+        opacity=1.0,
+        normal_detail=NormalDetail.TextureSlopeUv(
+            texture_id=21,
+            width=2,
+            height=2,
+            filter=TextureFilter.Anisotropic4,
+            uv_source=UvSource.RoundBoxFeature,
+        ),
+    )
 
 @test(runtime)
 fn pinned_scene_contract():

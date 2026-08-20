@@ -4,7 +4,7 @@ Renderers count=1
     Config display=driver#0 mode=128x31@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
       World min=[-4,-4,-4] max=[4,4,4]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
-      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=10
     Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
     Scalar id=s1 dependency=constant kind=ConstF32 value=3 bits=0x40400000
     Scalar id=s2 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
@@ -34,35 +34,35 @@ Renderers count=1
     Material id=m0 kind=Sample base_color=[s21,s2,s22] opacity=s3 emissive=[s0,s0,s0] roughness=s2 metallic=s0 specular=s2 ior=s23 normal=geometric pattern=none
     Identity kind=material enum=examples.check_pixels_tile_boundary::MaterialId variant=Ground
     Identity kind=object enum=examples.check_pixels_tile_boundary::MaterialId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:56:35@bytes=1234..1235]
-    Origin kind=scalar id=s1 primary=examples.check_pixels_tile_boundary:51:26@bytes=1002..1005 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s2 primary=examples.check_pixels_tile_boundary:51:33@bytes=1009..1012 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:56:35@bytes=1234..1235,examples.check_pixels_tile_boundary:56:56@bytes=1255..1258,examples.check_pixels_tile_boundary:56:80@bytes=1279..1282]
-    Origin kind=scalar id=s3 primary=examples.check_pixels_tile_boundary:51:40@bytes=1016..1019 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:51:15@bytes=991..992,examples.check_pixels_tile_boundary:56:35@bytes=1234..1235]
+    Origin kind=scalar id=s0 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:59:35@bytes=1316..1317]
+    Origin kind=scalar id=s1 primary=examples.check_pixels_tile_boundary:54:26@bytes=1084..1087 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s2 primary=examples.check_pixels_tile_boundary:54:33@bytes=1091..1094 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:59:35@bytes=1316..1317,examples.check_pixels_tile_boundary:59:56@bytes=1337..1340,examples.check_pixels_tile_boundary:59:80@bytes=1361..1364]
+    Origin kind=scalar id=s3 primary=examples.check_pixels_tile_boundary:54:40@bytes=1098..1101 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:54:15@bytes=1073..1074,examples.check_pixels_tile_boundary:59:35@bytes=1316..1317]
     Origin kind=scalar id=s4 primary=examples.check_pixels_tile_boundary:0:0@bytes=0..0
-    Origin kind=scalar id=s5 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s6 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s7 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s5 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
     Origin kind=scalar id=s8 primary=examples.check_pixels_tile_boundary:0:0@bytes=0..0
-    Origin kind=scalar id=s9 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s10 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s11 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s9 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
     Origin kind=scalar id=s12 primary=examples.check_pixels_tile_boundary:0:0@bytes=0..0
-    Origin kind=scalar id=s13 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s14 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s15 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s16 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s17 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s18 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s19 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s20 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=scalar id=s21 primary=examples.check_pixels_tile_boundary:56:48@bytes=1247..1251 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:56:35@bytes=1234..1235]
-    Origin kind=scalar id=s22 primary=examples.check_pixels_tile_boundary:56:63@bytes=1262..1266 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0] merged=[examples.check_pixels_tile_boundary:56:35@bytes=1234..1235]
-    Origin kind=scalar id=s23 primary=examples.check_pixels_tile_boundary:56:35@bytes=1234..1235 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.check_pixels_tile_boundary:51:15@bytes=991..992 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.check_pixels_tile_boundary:52:16@bytes=1037..1038 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.check_pixels_tile_boundary:56:35@bytes=1234..1235 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s16 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s17 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s18 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s20 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s21 primary=examples.check_pixels_tile_boundary:59:48@bytes=1329..1333 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s22 primary=examples.check_pixels_tile_boundary:59:63@bytes=1344..1348 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=scalar id=s23 primary=examples.check_pixels_tile_boundary:59:35@bytes=1316..1317 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.check_pixels_tile_boundary:54:15@bytes=1073..1074 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.check_pixels_tile_boundary:55:16@bytes=1119..1120 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.check_pixels_tile_boundary:59:35@bytes=1316..1317 expansion=[examples.check_pixels_tile_boundary:0:0@bytes=0..0]
     Roots field=f1 material=m0
-    SymbolicQuota steps=19/1000000 nodes=35/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
+    SymbolicQuota steps=19/1000000 nodes=33/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.check_pixels_tile_boundary::world material_key=examples.check_pixels_tile_boundary::shade
     ParameterLayout slots=0 packed_bytes=0 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
       FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:128x31:display0 phase=60:60
@@ -117,13 +117,13 @@ Renderers count=1
     Feature id=g3 template=3 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-3.000061035156251,-0.5000610351562502,-1.0000610351562504]-[3.000061035156251,0.5000610351562502,1.0000610351562504] support=0 validity=[[BoxFace { axis: 1, sign: 1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(3)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
     Feature id=g4 template=4 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-3.000061035156251,-0.5000610351562502,-1.0000610351562504]-[3.000061035156251,0.5000610351562502,1.0000610351562504] support=0 validity=[[BoxFace { axis: 2, sign: -1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(3)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
     Feature id=g5 template=5 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-3.000061035156251,-0.5000610351562502,-1.0000610351562504]-[3.000061035156251,0.5000610351562502,1.0000610351562504] support=0 validity=[[BoxFace { axis: 2, sign: 1, center: [ScalarId(0), ScalarId(0), ScalarId(0)], half: [ScalarId(1), ScalarId(2), ScalarId(3)] }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    Capacities workers=1 objects=1 feature_templates=6 feature_slots=6 repeated_instances=0 scalar_slots=24 derivative_slots=24 parameter_slots=0 csg_stack=1 projected_row=6 projected_tile=6 row_start_roots=6 active_sheets=6 event_generators=30 event_subdivisions=4 event_records=120 tile_row_runs=121 csg_events=6 transparent_layers=1 rebuild_queue=121 candidate_bytes=384 root_bytes=192 sheet_bytes=384 event_bytes=3840 run_bytes=15488 corridor_bytes=7744 fixed_q_bytes=1936 shading_bytes=7744 transparency_bytes=3872 per_worker_scratch_bytes=41584 all_worker_scratch_bytes=41584 telemetry_production_bytes=0 telemetry_instrumented_bytes=96432 output_tile_bytes=16384 output_double_buffer_bytes=32768 probe_bytes=0 kinetic_bytes=768 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=253952 tile_descriptor_bytes=416 tile_ownership_bytes=4 failure_record_bytes=64 production_state_bytes=333028 instrumented_state_bytes=429464
+    Capacities workers=1 objects=1 feature_templates=6 feature_slots=6 repeated_instances=0 scalar_slots=24 derivative_slots=24 parameter_slots=0 csg_stack=1 projected_row=6 projected_tile=6 row_start_roots=6 active_sheets=6 event_generators=30 event_subdivisions=4 event_records=120 tile_row_runs=121 csg_events=6 transparent_layers=1 rebuild_queue=121 candidate_bytes=384 root_bytes=192 sheet_bytes=384 event_bytes=3840 run_bytes=15488 corridor_bytes=7744 fixed_q_bytes=1936 shading_bytes=7744 transparency_bytes=3872 per_worker_scratch_bytes=41584 all_worker_scratch_bytes=41584 telemetry_production_bytes=0 telemetry_instrumented_bytes=96528 output_tile_bytes=16384 output_double_buffer_bytes=32768 probe_bytes=0 kinetic_bytes=768 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=253952 tile_descriptor_bytes=416 tile_ownership_bytes=4 failure_record_bytes=64 production_state_bytes=333028 instrumented_state_bytes=429560
       CapacityDerivation field=feature_count value=6 why=[1 maximal smooth objects; 6 immutable fused primitive feature templates; 6 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=6 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
       CapacityDerivation field=max_run_records_per_tile_row value=121 why=[30 generators; 6 primitive equation generators; 24 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
       CapacityDerivation field=renderer_state_bytes value=333028 why=[header=256; coefficient_snapshots=0; frame_snapshots=1376; frame_complexes=253952; scratch=41584 (41584 * 1 workers); output=32768; probes=0; page_alignment_padding=1840; kinetic=768; tile_descriptors=416; tile_ownership=4; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=429464 why=[production=333028; telemetry=96432]
-    StructuralReport coefficient_bytes=0 objects=1 features=6 production_state_bytes=333028 instrumented_state_bytes=429464 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+      CapacityDerivation field=instrumented_renderer_state_bytes value=429560 why=[production=333028; telemetry=96528]
+    StructuralReport coefficient_bytes=0 objects=1 features=6 production_state_bytes=333028 instrumented_state_bytes=429560 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
     ProjectiveContract width=128 height=31 aspect=4.129032258064516 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=const:-1
@@ -852,7 +852,7 @@ Renderers count=1
       Cell id=15 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=6
     DirectIndexes feature_derivatives=[d0,d1,d2,d3,d4,d5] material_programs=[0:m0] bytes=5692
-    ProjectiveCapacities candidate_features_per_tile=6 row_start_roots=6 active_sheets_per_row=6 event_generators=57 competition_pairs_per_tile=15 row_event_intervals=57 root_stack_nodes=24 event_stack_nodes=4 runs_per_row=58 corridors_per_row=57 max_index_slice=57 polynomial_programs=73 rational_programs=6 polynomial_terms_per_program=4 coefficient_nodes=185 derivative_bundles=6 derivative_clusters=1 index_bytes=5692 refined_per_worker_scratch_bytes=18616 refined_all_worker_scratch_bytes=18616 final_per_worker_scratch_bytes=32168 final_all_worker_scratch_bytes=32168 final_state_bytes=324836 final_instrumented_state_bytes=421272
+    ProjectiveCapacities candidate_features_per_tile=6 row_start_roots=6 active_sheets_per_row=6 event_generators=57 competition_pairs_per_tile=15 row_event_intervals=57 root_stack_nodes=24 event_stack_nodes=4 runs_per_row=58 corridors_per_row=57 max_index_slice=57 polynomial_programs=73 rational_programs=6 polynomial_terms_per_program=4 coefficient_nodes=185 derivative_bundles=6 derivative_clusters=1 index_bytes=5692 refined_per_worker_scratch_bytes=18616 refined_all_worker_scratch_bytes=18616 final_per_worker_scratch_bytes=32168 final_all_worker_scratch_bytes=32168 final_state_bytes=324836 final_instrumented_state_bytes=421368
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=6 why=[exact endpoint/cell sweep gives row overlap 6 within P3 ceiling 6 and tile overlap 6 within P3 ceiling 6]
       ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=324836 why=[P4-refined six-class scratch=18616 per worker; retained fixed-q/shading/transparency scratch=13552 per worker; workers=1]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=6 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]

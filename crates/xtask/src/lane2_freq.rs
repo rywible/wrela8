@@ -317,6 +317,127 @@ pub(crate) fn validation_prediction(case: &str) -> Result<ValidationPrediction, 
     })
 }
 
+struct PartitionMeasurement {
+    cores: usize,
+    ids_assigned: u32,
+    transcript: String,
+    counts: BTreeMap<String, u64>,
+    core_counts: Vec<BTreeMap<String, u64>>,
+}
+
+fn measure_frequency_partition(
+    case: &str,
+    case_dir: &Path,
+    functions: &BTreeSet<String>,
+    partition: usize,
+    vmm: &Path,
+) -> Result<PartitionMeasurement, String> {
+    wrela_compiler::codegen::set_block_filter(Some(functions.clone()));
+    wrela_compiler::codegen::set_block_count(true);
+    wrela_compiler::codegen::set_block_bridge(true);
+    let built = test_image_details_from_case_dir(case_dir);
+    let spans = wrela_compiler::codegen::block_spans();
+    let ids_assigned = wrela_compiler::codegen::block_ids_assigned();
+    wrela_compiler::codegen::set_block_count(false);
+    wrela_compiler::codegen::set_block_bridge(false);
+    wrela_compiler::codegen::set_block_filter(None);
+    let built = built?;
+    let cores = built.placement.cores;
+
+    let mut key_of = BTreeMap::new();
+    for span in &spans {
+        let key = wrela_compiler::cost::make_key(&span.fn_key, span.block_index);
+        if let Some(previous) = key_of.insert(span.id, key.clone()) {
+            return Err(format!(
+                "gen-lane2-freq: partition {partition} id {} maps to both `{previous}` and \
+                 `{key}` — the assignment map is not injective (fail closed)",
+                span.id
+            ));
+        }
+    }
+    if key_of.len() != ids_assigned as usize {
+        return Err(format!(
+            "gen-lane2-freq: partition {partition} recorded {} span(s) but assigned \
+             {ids_assigned} id(s) — the bridge did not observe every Lane 2 block (fail closed)",
+            key_of.len()
+        ));
+    }
+
+    let (_, image_path, report_path, _) = stage_repro_dir(
+        &format!("target/gen-lane2-freq-{case}-part-{partition}"),
+        &built.image,
+        &built.report,
+    )?;
+    let dump_path = image_path.with_file_name("lane2-snapshot.txt");
+    let output = std::process::Command::new(vmm)
+        .arg(&report_path)
+        .arg(&image_path)
+        .arg("--dump-lane2")
+        .arg(&dump_path)
+        .output()
+        .map_err(|error| format!("gen-lane2-freq: run partition {partition}: {error}"))?;
+    let transcript = String::from_utf8_lossy(&output.stdout).into_owned();
+    let code = output.status.code().unwrap_or(-1);
+    if code != 0 {
+        return Err(format!(
+            "gen-lane2-freq: `{case}` partition {partition} did not boot cleanly (exit {code}); \
+             a sidecar generated from a failed boot would be a fiction.\nstdout:\n{transcript}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let snapshot = std::fs::read_to_string(&dump_path)
+        .map_err(|error| format!("gen-lane2-freq: read {}: {error}", dump_path.display()))?;
+    let hits = parse_lane3_dump(&snapshot)?;
+    let per_core_hits = parse_lane3_core_dumps(&snapshot, cores)?;
+
+    let mut counts = BTreeMap::new();
+    for (id, count) in hits {
+        let key = key_of.get(&id).ok_or_else(|| {
+            format!(
+                "gen-lane2-freq: partition {partition} Lane 2 id {id} has no exact block key \
+                 among {ids_assigned} assigned id(s)"
+            )
+        })?;
+        if counts.insert(key.clone(), count).is_some() {
+            return Err(format!("gen-lane2-freq: duplicate key `{key}`"));
+        }
+    }
+    if counts.is_empty() {
+        return Err(format!(
+            "gen-lane2-freq: partition {partition} reached no measured shipped-image blocks"
+        ));
+    }
+    let mut core_counts = vec![BTreeMap::new(); cores];
+    for (core, hits) in per_core_hits.into_iter().enumerate() {
+        for (id, count) in hits {
+            let key = key_of.get(&id).ok_or_else(|| {
+                format!(
+                    "gen-lane2-freq: partition {partition} core {core} id {id} has no exact block key"
+                )
+            })?;
+            if core_counts[core].insert(key.clone(), count).is_some() {
+                return Err(format!(
+                    "gen-lane2-freq: duplicate partition {partition} core {core} key `{key}`"
+                ));
+            }
+        }
+    }
+    Ok(PartitionMeasurement {
+        cores,
+        ids_assigned,
+        transcript,
+        counts,
+        core_counts,
+    })
+}
+
+fn workload_transcript(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.starts_with("lane2 "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
     let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
@@ -339,105 +460,58 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         .cloned()
         .collect();
 
-    wrela_compiler::codegen::set_block_filter(Some(production.clone()));
-    wrela_compiler::codegen::set_block_count(true);
-    wrela_compiler::codegen::set_block_bridge(true);
-    let built = test_image_details_from_case_dir(&case_dir);
-    let spans = wrela_compiler::codegen::block_spans();
-    let ids_assigned = wrela_compiler::codegen::block_ids_assigned();
-    wrela_compiler::codegen::set_block_count(false);
-    wrela_compiler::codegen::set_block_bridge(false);
-    wrela_compiler::codegen::set_block_filter(None);
-    let built = built?;
-    let cores = built.placement.cores;
-
-    let mut key_of: BTreeMap<u32, String> = BTreeMap::new();
-    for s in &spans {
-        let key = wrela_compiler::cost::make_key(&s.fn_key, s.block_index);
-        if let Some(prev) = key_of.insert(s.id, key.clone()) {
+    let vmm = build_and_sign_vmm()?;
+    // Keep instrumentation itself inside the shipped image's branch-region
+    // contract.  Three partitions leave enough headroom for the flagship
+    // Pixels runtime while still measuring every linked production function
+    // in a small, fixed number of deterministic boots.
+    let mut partitions = [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()];
+    for (index, function) in production.iter().enumerate() {
+        partitions[index % partitions.len()].insert(function.clone());
+    }
+    if partitions.iter().any(BTreeSet::is_empty) {
+        return Err("gen-lane2-freq: shipped function universe is too small to partition".into());
+    }
+    let mut measurements = Vec::new();
+    for (partition, functions) in partitions.iter().enumerate() {
+        measurements.push(measure_frequency_partition(
+            case, &case_dir, functions, partition, &vmm,
+        )?);
+    }
+    let cores = measurements[0].cores;
+    let transcript = &measurements[0].transcript;
+    let behavior = workload_transcript(transcript);
+    let mut counts = BTreeMap::new();
+    let mut core_counts = vec![BTreeMap::new(); cores];
+    let mut ids_assigned = 0_u32;
+    for (partition, measurement) in measurements.iter().enumerate() {
+        if measurement.cores != cores || workload_transcript(&measurement.transcript) != behavior {
             return Err(format!(
-                "gen-lane2-freq: id {} maps to both `{prev}` and `{key}` — the assignment map \
-                 is not injective (fail closed)",
-                s.id
+                "gen-lane2-freq: partition {partition} changed workload behavior or core count"
             ));
         }
-    }
-    if key_of.len() != ids_assigned as usize {
-        return Err(format!(
-            "gen-lane2-freq: {} span(s) recorded but {ids_assigned} id(s) assigned — the bridge \
-             did not observe every Lane 2 block (fail closed)",
-            key_of.len()
-        ));
-    }
-
-    let vmm = build_and_sign_vmm()?;
-    let (_, img_path, report_path, _) = stage_repro_dir(
-        &format!("target/gen-lane2-freq-{case}"),
-        &built.image,
-        &built.report,
-    )?;
-    let dump_path = img_path.with_file_name("lane2-snapshot.txt");
-    let out = std::process::Command::new(&vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--dump-lane2")
-        .arg(&dump_path)
-        .output()
-        .map_err(|e| format!("gen-lane2-freq: run wrela-vmm: {e}"))?;
-    let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
-    let code = out.status.code().unwrap_or(-1);
-    if code != 0 {
-        return Err(format!(
-            "gen-lane2-freq: `{case}` did not boot cleanly (exit {code}); a sidecar generated \
-             from a failed boot would be a fiction.\nstdout:\n{transcript}\nstderr:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    let snapshot_text = std::fs::read_to_string(&dump_path)
-        .map_err(|e| format!("gen-lane2-freq: read {}: {e}", dump_path.display()))?;
-    let hits = parse_lane3_dump(&snapshot_text)?;
-    let per_core_hits = parse_lane3_core_dumps(&snapshot_text, cores)?;
-
-    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-    for (id, n) in &hits {
-        let key = key_of.get(id).ok_or_else(|| {
-            format!(
-                "gen-lane2-freq: Lane 2 id {id} has no block key in the test-image assignment \
-                 map ({ids_assigned} id(s) assigned) — never attribute by nearest offset \
-                 (decision 1608)"
-            )
-        })?;
-        let (fn_key, _) = wrela_compiler::cost::split_key(key)?;
-        if !production.contains(fn_key) {
-            continue;
-        }
-        if counts.insert(key.clone(), *n).is_some() {
-            return Err(format!("gen-lane2-freq: duplicate key `{key}`"));
-        }
-    }
-    if counts.is_empty() {
-        return Err(
-            "gen-lane2-freq: the measured window reached no shipped-image blocks".to_string(),
-        );
-    }
-    let mut core_counts = vec![BTreeMap::new(); cores];
-    for (core, hits) in per_core_hits.iter().enumerate() {
-        for (id, count) in hits {
-            let key = key_of.get(id).ok_or_else(|| {
-                format!("gen-lane2-freq: per-core Lane 2 id {id} has no exact block key")
-            })?;
-            let (fn_key, _) = wrela_compiler::cost::split_key(key)?;
-            if production.contains(fn_key)
-                && core_counts[core].insert(key.clone(), *count).is_some()
-            {
-                return Err(format!("gen-lane2-freq: duplicate core {core} key `{key}`"));
+        ids_assigned = ids_assigned
+            .checked_add(measurement.ids_assigned)
+            .ok_or("gen-lane2-freq: partition id-count sum overflow")?;
+        for (key, count) in &measurement.counts {
+            if counts.insert(key.clone(), *count).is_some() {
+                return Err(format!(
+                    "gen-lane2-freq: key `{key}` appeared in two partitions"
+                ));
             }
         }
-        if core_counts[core].is_empty() {
-            return Err(format!(
-                "gen-lane2-freq: core {core} reached no shipped-image blocks"
-            ));
+        for (core, row) in measurement.core_counts.iter().enumerate() {
+            for (key, count) in row {
+                if core_counts[core].insert(key.clone(), *count).is_some() {
+                    return Err(format!(
+                        "gen-lane2-freq: core {core} key `{key}` appeared in two partitions"
+                    ));
+                }
+            }
         }
+    }
+    if counts.is_empty() || core_counts.iter().any(BTreeMap::is_empty) {
+        return Err("gen-lane2-freq: partitioned measurement is empty".into());
     }
     for (key, aggregate) in &counts {
         let sum = core_counts
@@ -489,7 +563,7 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
     for (key, n) in &counts {
         text.push_str(&format!("{key}={n}\n"));
     }
-    let out_path = root().join(format!("tests/golden/{case}/lane2-freq.txt"));
+    let (out_path, core_path) = frequency_sidecar_paths(&case_dir);
     std::fs::write(&out_path, &text)
         .map_err(|e| format!("gen-lane2-freq: write {}: {e}", out_path.display()))?;
     if cores > 1 {
@@ -501,7 +575,6 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
                 core_text.push_str(&format!("core.{core}.{key}={count}\n"));
             }
         }
-        let core_path = case_dir.join("lane2-core-freq.txt");
         std::fs::write(&core_path, core_text)
             .map_err(|error| format!("gen-lane2-freq: write {}: {error}", core_path.display()))?;
     }
@@ -513,6 +586,13 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         ids_assigned
     );
     Ok(())
+}
+
+fn frequency_sidecar_paths(case_dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    (
+        case_dir.join("lane2-freq.txt"),
+        case_dir.join("lane2-core-freq.txt"),
+    )
 }
 
 #[cfg(test)]
@@ -530,6 +610,25 @@ mod tests {
         "boot-pixels-frame-input",
         "boot-pixels-plane-three-core",
     ];
+
+    #[test]
+    fn generated_frequency_pair_stays_in_the_resolved_fixture_directory() {
+        let fixture = Path::new("bench/proxy-fixtures/example");
+        let (aggregate, per_core) = frequency_sidecar_paths(fixture);
+        assert_eq!(aggregate, fixture.join("lane2-freq.txt"));
+        assert_eq!(per_core, fixture.join("lane2-core-freq.txt"));
+    }
+
+    #[test]
+    fn partition_comparison_ignores_only_lane2_diagnostics() {
+        let first = "test: ok\nlane2 hits=1:2 truncated=0\nlane2 core=0 hits=1:2\n";
+        let second = "test: ok\nlane2 hits=9:4 truncated=0\nlane2 core=0 hits=9:4\n";
+        assert_eq!(workload_transcript(first), workload_transcript(second));
+        assert_ne!(
+            workload_transcript("test: ok\n"),
+            workload_transcript("test: changed\n")
+        );
+    }
 
     #[test]
     fn checked_in_frequency_vectors_are_closed_inputs() {

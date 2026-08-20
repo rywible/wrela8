@@ -1,0 +1,10 @@
+PixelsGuestQuality version=1 frames=8 topology=one-three repeat=identical framebuffer=bound properties=diagonal-pan,glossy-sphere,slope-recede,rectangle-penumbra,thin-blade,material-edge,ao-contact,filmic-shoulder status=pass
+frame=0 digest=a7378d7454d1825d5366712e18674e495a68906c1284598912c85d6a07fa89a7 repeat=identical one_three=identical status=pass
+frame=1 digest=c24fcbf998fce1d6ee5a2d0faf502911c937ecd56f25b63fc6844024f2b5a2f5 repeat=identical one_three=identical status=pass
+frame=2 digest=3c9a7926acdf6cd922bb2c221f79a5e6e39650204814b6f49cceca27223b1f73 repeat=identical one_three=identical status=pass
+frame=3 digest=8162a75c59e8f7a7090fcc4f23a2cf81da54d8e50f2651e3ad16467163f894ed repeat=identical one_three=identical status=pass
+frame=4 digest=d47146e8b78897754c3ff03c8d8e5fa1ebaf127d98d46036485f51bf71b64026 repeat=identical one_three=identical status=pass
+frame=5 digest=4af0f8b481b79e411493284c841caf25758302f64295c11416b9c0903e629e5f repeat=identical one_three=identical status=pass
+frame=6 digest=97e193174d2bcdc5afbe3639bf16626b987c2a2605fb5b06bf3976e00a3d4696 repeat=identical one_three=identical status=pass
+frame=7 digest=512db642c2a895dc1557656ddd924d6dfe71c7c8e8ee619cfa17f1078c14f764 repeat=identical one_three=identical status=pass
+summary regular_pixels=467 event_pixels=45 packet_groups=0 scalar_pixels=467 raster_validation_failures=0 constant_runs=0 affine_runs=0 quadratic_runs=0 rank_runs=0,0,0,0 exact_pixels=467 refinement_steps=801 area_cells=693424 area_exhaustions=0 unresolved=0 byte_certificate_failures=0 stochastic=none status=pass

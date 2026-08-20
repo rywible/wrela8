@@ -99,6 +99,36 @@ pub struct RgbRangeConfig {
     pub max: [f32; 3],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightRangeConfig {
+    pub position_min: Vec3Config,
+    pub position_max: Vec3Config,
+    pub axis_component_max: f32,
+    pub radiance_max: [f32; 3],
+    pub max_delta: f32,
+}
+
+pub fn default_light_ranges() -> Vec<LightRangeConfig> {
+    vec![
+        LightRangeConfig {
+            position_min: Vec3Config {
+                x: -65504.0,
+                y: -65504.0,
+                z: -65504.0,
+            },
+            position_max: Vec3Config {
+                x: 65504.0,
+                y: 65504.0,
+                z: 65504.0,
+            },
+            axis_component_max: 65504.0,
+            radiance_max: [65504.0; 3],
+            max_delta: 65504.0,
+        };
+        8
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RendererConfig {
     pub declaration_index: usize,
@@ -130,9 +160,12 @@ pub struct RendererConfig {
     pub camera_pose: Option<[f32; 12]>,
     pub light_capacity: u32,
     pub light_kinds: Vec<String>,
+    pub light_ranges: Vec<LightRangeConfig>,
     pub exposure: ScalarRangeConfig,
     pub environment: RgbRangeConfig,
     pub ao_enabled: bool,
+    pub ao_radius: f32,
+    pub ao_strength: f32,
     pub probes_enabled: bool,
     pub probe_initialization_worst_case_ms: u32,
     pub initialization_deadline_ms: u32,
@@ -533,11 +566,13 @@ fn one_f32_struct(renderer: &RendererDecl, label: &str, ty: &str) -> ConfigResul
     f32_value(&fields[0], label).map_err(|error| error.at(span))
 }
 
-fn light_config(renderer: &RendererDecl) -> ConfigResult<(u32, Vec<String>)> {
+fn light_config(
+    renderer: &RendererDecl,
+) -> ConfigResult<(u32, Vec<String>, Vec<LightRangeConfig>)> {
     const LIGHT_CAPACITY: usize = 8;
 
     let span = arg(renderer, "light_config")?.span;
-    let fields = structure(renderer, "light_config", "LightConfig", 2)?;
+    let fields = structure(renderer, "light_config", "LightConfig", 3)?;
     let value = crate::eval::value::as_i128(&fields[0]).ok_or_else(|| {
         coded(
             "P007",
@@ -612,20 +647,109 @@ fn light_config(renderer: &RendererDecl) -> ConfigResult<(u32, Vec<String>)> {
                 })
         })
         .collect::<ConfigResult<Vec<_>>>()?;
-    Ok((capacity, kinds))
+    let Value::Array(ranges) = &fields[2] else {
+        return Err(coded(
+            "P007",
+            "renderer bound `light_config` must contain a fixed light-range array",
+        )
+        .at(span));
+    };
+    if ranges.len() != LIGHT_CAPACITY {
+        return Err(coded(
+            "P007",
+            "renderer bound `light_config` light-range array must contain exactly eight entries",
+        )
+        .at(span));
+    }
+    let parse_vec3 = |value: &Value, slot: usize, field: &str| -> ConfigResult<Vec3Config> {
+        let Value::Struct(components) = value else {
+            return Err(coded(
+                "P007",
+                format!("renderer light range slot {slot} `{field}` must be `Vec3`"),
+            )
+            .at(span));
+        };
+        if components.len() != 3 {
+            return Err(coded(
+                "P007",
+                format!("renderer light range slot {slot} `{field}` is malformed"),
+            )
+            .at(span));
+        }
+        Ok(Vec3Config {
+            x: f32_value(&components[0], "light_config").map_err(|error| error.at(span))?,
+            y: f32_value(&components[1], "light_config").map_err(|error| error.at(span))?,
+            z: f32_value(&components[2], "light_config").map_err(|error| error.at(span))?,
+        })
+    };
+    let mut decoded_ranges = Vec::with_capacity(LIGHT_CAPACITY);
+    for (slot, value) in ranges.iter().enumerate() {
+        let Value::Struct(range_fields) = value else {
+            return Err(coded(
+                "P007",
+                format!("renderer light range slot {slot} must be `LightRange`"),
+            )
+            .at(span));
+        };
+        if range_fields.len() != 5 {
+            return Err(coded(
+                "P007",
+                format!("renderer light range slot {slot} has the wrong field count"),
+            )
+            .at(span));
+        }
+        let position_min = parse_vec3(&range_fields[0], slot, "position_min")?;
+        let position_max = parse_vec3(&range_fields[1], slot, "position_max")?;
+        let axis_component_max =
+            f32_value(&range_fields[2], "light_config").map_err(|error| error.at(span))?;
+        let radiance_max = rgb(&range_fields[3], "light_config", span)?;
+        let max_delta =
+            f32_value(&range_fields[4], "light_config").map_err(|error| error.at(span))?;
+        if position_min.x > position_max.x
+            || position_min.y > position_max.y
+            || position_min.z > position_max.z
+            || axis_component_max <= 0.0
+            || radiance_max.into_iter().any(|component| component < 0.0)
+            || max_delta < 0.0
+        {
+            return Err(coded(
+                "P007",
+                format!("renderer light range slot {slot} is not finite and ordered"),
+            )
+            .at(span));
+        }
+        decoded_ranges.push(LightRangeConfig {
+            position_min,
+            position_max,
+            axis_component_max,
+            radiance_max,
+            max_delta,
+        });
+    }
+    Ok((capacity, kinds, decoded_ranges))
 }
 
-fn one_bool_struct(renderer: &RendererDecl, label: &str, ty: &str) -> ConfigResult<bool> {
-    let span = arg(renderer, label)?.span;
-    let fields = structure(renderer, label, ty, 1)?;
-    match fields[0] {
-        Value::Bool(value) => Ok(value),
-        _ => Err(coded(
+fn ao_config(renderer: &RendererDecl) -> ConfigResult<(bool, f32, f32)> {
+    let span = arg(renderer, "ao")?.span;
+    let fields = structure(renderer, "ao", "AoConfig", 3)?;
+    let enabled = match fields[0] {
+        Value::Bool(value) => value,
+        _ => {
+            return Err(
+                coded("P007", "renderer bound `ao` enabled value must be boolean").at(span),
+            );
+        }
+    };
+    let radius = f32_value(&fields[1], "ao.radius").map_err(|error| error.at(span))?;
+    let strength = f32_value(&fields[2], "ao.strength").map_err(|error| error.at(span))?;
+    if radius <= 0.0 || !(0.0..=1.0).contains(&strength) {
+        return Err(coded(
             "P007",
-            format!("renderer bound `{label}` `{ty}` value must be boolean"),
+            "renderer bound `ao` requires radius > 0 and strength in [0,1]",
         )
-        .at(span)),
+        .at(span));
     }
+    Ok((enabled, radius, strength))
 }
 
 fn probe_config(renderer: &RendererDecl) -> ConfigResult<(bool, u32)> {
@@ -1188,8 +1312,12 @@ fn validate_renderers_inner(
             .at(display_argument.span));
         }
         let profile = enum_variant(renderer, "profile", "RenderProfile", &["AaaByteExact"])?;
-        let tone_curve =
-            enum_variant(renderer, "tone_curve", "ToneCurve", &["Linear", "FilmicV1"])?;
+        let tone_curve = enum_variant(
+            renderer,
+            "tone_curve",
+            "ToneCurve",
+            &["Linear", "FilmicV1", "__wrela_NonMonotoneFixture"],
+        )?;
         let near = float(renderer, "near")?;
         let far = float(renderer, "far")?;
         if near <= 0.0 || near >= far {
@@ -1219,10 +1347,10 @@ fn validate_renderers_inner(
             )
             .at(arg(renderer, "camera_bounds")?.span));
         }
-        let (light_capacity, light_kinds) = light_config(renderer)?;
+        let (light_capacity, light_kinds, light_ranges) = light_config(renderer)?;
         let exposure = scalar_range(renderer, "exposure_range")?;
         let environment = rgb_range(renderer, "environment_range")?;
-        let ao_enabled = one_bool_struct(renderer, "ao", "AoConfig")?;
+        let (ao_enabled, ao_radius, ao_strength) = ao_config(renderer)?;
         let (probes_enabled, probe_initialization_worst_case_ms) = probe_config(renderer)?;
         let initialization_deadline_ms = integer(renderer, "initialization_deadline_ms")?;
         if initialization_deadline_ms == 0 {
@@ -1274,9 +1402,12 @@ fn validate_renderers_inner(
             camera_pose: camera_pose(renderer)?,
             light_capacity,
             light_kinds,
+            light_ranges,
             exposure,
             environment,
             ao_enabled,
+            ao_radius,
+            ao_strength,
             probes_enabled,
             probe_initialization_worst_case_ms,
             initialization_deadline_ms,
@@ -1593,20 +1724,33 @@ mod tests {
             Value::Enum(0, vec![]),
             Value::Enum(0, vec![]),
         ]);
+        let vec3 = |value: f32| Value::Struct(vec![Value::F32(value); 3]);
+        let range = Value::Struct(vec![
+            vec3(-4.0),
+            vec3(4.0),
+            Value::F32(2.0),
+            Value::Struct(vec![Value::F32(8.0); 3]),
+            Value::F32(0.25),
+        ]);
+        let ranges = Value::Array(vec![range; 8]);
         let renderer = renderer_arg(
             "light_config",
             Type::Named("LightConfig".to_string(), vec![]),
-            Value::Struct(vec![Value::U32(2), kinds.clone()]),
+            Value::Struct(vec![Value::U32(2), kinds.clone(), ranges.clone()]),
         );
+        let decoded = light_config(&renderer).unwrap();
+        assert_eq!(decoded.0, 2);
         assert_eq!(
-            light_config(&renderer).unwrap(),
-            (2, vec!["Rectangle".to_string(), "Point".to_string()])
+            decoded.1,
+            vec!["Rectangle".to_string(), "Point".to_string()]
         );
+        assert_eq!(decoded.2.len(), 8);
+        assert_eq!(decoded.2[0].max_delta, 0.25);
 
         let oversized = renderer_arg(
             "light_config",
             Type::Named("LightConfig".to_string(), vec![]),
-            Value::Struct(vec![Value::U32(9), kinds]),
+            Value::Struct(vec![Value::U32(9), kinds, ranges]),
         );
         let error = light_config(&oversized).unwrap_err();
         assert_eq!(error.code, "P015");

@@ -3,4 +3,4 @@ test partial_multitile_mode_presents_through_guest_vmm: ok
 1 passed, 0 failed
 lane1 turns=6 run_one=18 messages=6
 lane1 hits=0:2,1:2,2:1,3:1,4:1,5:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=65x33@75 format=1 descriptor=202425372970fae68b5cf19c0fbb4d2695beb10419fed419c37cd4464eeff93f visible=94b40e29f29c3a6508172364120ff9095838e1c077f5c7c7483bd6cd422f9783 raw=96e0c838704d91e3ea87caa082ab7e9d64645b94c09514a7b9379062f732ae46 vsync=0 checkpoint=0
+display v1 renderer=0 frame=0 generation=0 released=none mode=65x33@75 format=1 descriptor=6d0432985338846be3f52b5794df5c7b395f9916e73a84e6b72a5ef81e601f71 visible=2b8d0d479a8bca8de42de1e7a8b9616a6453fef5292a38fd2d9eaf2b7962b527 raw=5ff78971912065cfe0693fd6dd7793fc439f37693e7041db69c9d1066f425251 vsync=0 checkpoint=0

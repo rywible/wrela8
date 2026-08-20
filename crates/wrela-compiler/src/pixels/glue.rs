@@ -2,12 +2,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static DEBUG_VISIBILITY: AtomicBool = AtomicBool::new(false);
+
+/// Select the compiler-internal P8 visibility framebuffer for conformance.
+/// Telemetry storage is independent: instrumented final-output tests must be
+/// able to observe the same P9 bytes as production.
+pub fn set_debug_visibility(enabled: bool) {
+    DEBUG_VISIBILITY.store(enabled, Ordering::Relaxed);
+}
 
 use super::config::RendererConfig;
 use super::program::VerifiedFrameProgram;
 use super::projection_bounds::{TILE_HEIGHT_V1, TILE_WIDTH_V1};
 
-pub(crate) const RENDERER_FRAME_BOUNDS_WORDS: usize = 41;
+pub(crate) const RENDERER_FRAME_BOUNDS_WORDS: usize = 47;
 pub(crate) const RENDERER_PLACEMENT_WORDS: usize = 3 + super::config::P7_MAX_RENDER_WORKERS;
 // Keep chunks below the ordinary runtime-layout ceiling and aligned to every
 // P7 record stride (24, 32, and 64 bytes), so a sealed record never straddles
@@ -544,6 +554,8 @@ pub struct GeneratedRenderer {
     pub environment_min: [f32; 3],
     pub environment_max: [f32; 3],
     pub camera_bounds: [[f32; 2]; 12],
+    pub world_min: [f32; 3],
+    pub world_max: [f32; 3],
     pub light_capacity: usize,
     pub light_kinds: [usize; 8],
     pub rooted_functions: Vec<String>,
@@ -714,6 +726,125 @@ fn scalar_slot(id: super::ids::ScalarId) -> String {
     format!("__p7_scalar_{}", id.index())
 }
 
+fn transform_scalar_ids(
+    transform: &super::graph::TransformProgram,
+    scalars: &mut Vec<super::ids::ScalarId>,
+) {
+    use super::graph::TransformProgram;
+    match transform {
+        TransformProgram::Translate { by } => scalars.extend(by),
+        TransformProgram::Rotate {
+            row_x,
+            row_y,
+            row_z,
+        } => {
+            scalars.extend(row_x);
+            scalars.extend(row_y);
+            scalars.extend(row_z);
+        }
+        TransformProgram::Rigid {
+            translation,
+            row_x,
+            row_y,
+            row_z,
+        } => {
+            scalars.extend(translation);
+            scalars.extend(row_x);
+            scalars.extend(row_y);
+            scalars.extend(row_z);
+        }
+        TransformProgram::UniformScale { .. } => {}
+        TransformProgram::SourceRigidSequence { steps, .. }
+        | TransformProgram::RigidSequence { steps, .. } => {
+            for step in steps {
+                transform_scalar_ids(step, scalars);
+            }
+        }
+    }
+}
+
+fn write_p9_local_transform(
+    output: &mut String,
+    transform: &super::graph::TransformProgram,
+    temporary: &mut u32,
+) -> Result<(), String> {
+    use super::graph::TransformProgram;
+    match transform {
+        TransformProgram::Translate { by } => {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                writeln!(
+                    output,
+                    "        local_p_{name} = local_p_{name} - {}",
+                    scalar_slot(by[axis]),
+                )
+                .expect("String writes cannot fail");
+            }
+        }
+        TransformProgram::Rotate {
+            row_x,
+            row_y,
+            row_z,
+        } => {
+            let rows = [row_x, row_y, row_z];
+            let id = *temporary;
+            *temporary = temporary
+                .checked_add(1)
+                .ok_or_else(|| "pixels::glue: local-frame temporary overflow".to_string())?;
+            for vector in ["p", "n", "dx", "dy"] {
+                for name in ["x", "y", "z"] {
+                    writeln!(
+                        output,
+                        "        uv_{id}_{vector}_{name} = local_{vector}_{name}"
+                    )
+                    .expect("String writes cannot fail");
+                }
+            }
+            for (row, destination) in rows.into_iter().zip(["x", "y", "z"]) {
+                for vector in ["p", "n", "dx", "dy"] {
+                    writeln!(
+                        output,
+                        "        local_{vector}_{destination} = {} * uv_{id}_{vector}_x + {} * uv_{id}_{vector}_y + {} * uv_{id}_{vector}_z",
+                        scalar_slot(row[0]),
+                        scalar_slot(row[1]),
+                        scalar_slot(row[2]),
+                    )
+                    .expect("String writes cannot fail");
+                }
+            }
+        }
+        TransformProgram::Rigid {
+            translation,
+            row_x,
+            row_y,
+            row_z,
+        } => {
+            write_p9_local_transform(
+                output,
+                &TransformProgram::Translate { by: *translation },
+                temporary,
+            )?;
+            write_p9_local_transform(
+                output,
+                &TransformProgram::Rotate {
+                    row_x: *row_x,
+                    row_y: *row_y,
+                    row_z: *row_z,
+                },
+                temporary,
+            )?;
+        }
+        // UniformScale changes the field value, not its coordinates.
+        TransformProgram::UniformScale { .. } => {}
+        TransformProgram::SourceRigidSequence { steps, .. }
+        | TransformProgram::RigidSequence { steps, .. } => {
+            for step in steps {
+                write_p9_local_transform(output, step, temporary)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn scalar_dependency_closure(
     renderer: &super::CompiledRenderer,
     mut stack: Vec<super::ids::ScalarId>,
@@ -872,6 +1003,7 @@ fn write_scalar_evaluator(
     renderer: &super::CompiledRenderer,
     required: &BTreeSet<usize>,
     with_coordinates: bool,
+    with_surface_normal: bool,
 ) -> Result<(), String> {
     use super::scalar::ScalarOp;
     for (id, node) in renderer.symbolic.scalar.iter() {
@@ -1093,6 +1225,15 @@ fn write_scalar_evaluator(
             ScalarOp::SurfacePosition(2) if with_coordinates => {
                 writeln!(output, "    {destination} = p_z")
             }
+            ScalarOp::SurfaceNormal(0) if with_surface_normal => {
+                writeln!(output, "    {destination} = n_x")
+            }
+            ScalarOp::SurfaceNormal(1) if with_surface_normal => {
+                writeln!(output, "    {destination} = n_y")
+            }
+            ScalarOp::SurfaceNormal(2) if with_surface_normal => {
+                writeln!(output, "    {destination} = n_z")
+            }
             ScalarOp::CoordX
             | ScalarOp::CoordY
             | ScalarOp::CoordZ
@@ -1103,6 +1244,488 @@ fn write_scalar_evaluator(
         }
         .map_err(|_| "pixels::glue: P7 scalar source formatting failed".to_string())?;
     }
+    Ok(())
+}
+
+fn write_p9_material_return(
+    output: &mut String,
+    renderer: &super::CompiledRenderer,
+    material: super::ids::MaterialId,
+    identity: &super::graph::CanonicalIdentity,
+    indent: &str,
+) -> Result<(), String> {
+    use super::material_graph::MaterialKind;
+    let node = renderer.symbolic.materials.get(material)?;
+    match &node.kind {
+        MaterialKind::Sample(sample) => {
+            let scalar = |id| scalar_slot(id);
+            let texture = sample
+                .pattern
+                .as_ref()
+                .map_or(-1.0_f32, |asset| asset.stable_id as f32);
+            let (normal, slope_x, slope_y, normal_texture, normal_filter, normal_uv) =
+                match &sample.normal {
+                    super::material_graph::NormalModel::Geometric => (
+                        0.0_f32,
+                        "0.0".to_string(),
+                        "0.0".to_string(),
+                        -1.0_f32,
+                        -1.0_f32,
+                        8.0_f32,
+                    ),
+                    super::material_graph::NormalModel::AnalyticSlope { x, y } => {
+                        (1.0_f32, scalar(*x), scalar(*y), -1.0_f32, -1.0_f32, 8.0_f32)
+                    }
+                    super::material_graph::NormalModel::TextureSlope { texture } => {
+                        let filter = match texture.filter {
+                            super::material_graph::TextureFilterV1::Nearest => 0.0,
+                            super::material_graph::TextureFilterV1::Bilinear => 1.0,
+                            super::material_graph::TextureFilterV1::Trilinear => 2.0,
+                            super::material_graph::TextureFilterV1::Anisotropic4 => 3.0,
+                        };
+                        (
+                            2.0_f32,
+                            "0.0".to_string(),
+                            "0.0".to_string(),
+                            texture.stable_id as f32,
+                            filter,
+                            texture.uv_source.tag() as f32,
+                        )
+                    }
+                };
+            let pattern_filter =
+                sample
+                    .pattern
+                    .as_ref()
+                    .map_or(-1.0_f32, |asset| match asset.filter {
+                        super::material_graph::TextureFilterV1::Nearest => 0.0,
+                        super::material_graph::TextureFilterV1::Bilinear => 1.0,
+                        super::material_graph::TextureFilterV1::Trilinear => 2.0,
+                        super::material_graph::TextureFilterV1::Anisotropic4 => 3.0,
+                    });
+            writeln!(
+                output,
+                "{indent}return [1.0, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]",
+                scalar(sample.base_color[0]),
+                scalar(sample.base_color[1]),
+                scalar(sample.base_color[2]),
+                scalar(sample.metallic),
+                scalar(sample.roughness),
+                scalar(sample.specular_level),
+                scalar(sample.emissive[0]),
+                scalar(sample.emissive[1]),
+                scalar(sample.emissive[2]),
+                scalar(sample.opacity),
+                wrela_f32_literal(texture)?,
+                wrela_f32_literal(normal)?,
+                scalar(sample.ior),
+                slope_x,
+                slope_y,
+                wrela_f32_literal(normal_texture)?,
+                wrela_f32_literal(pattern_filter)?,
+                wrela_f32_literal(sample.pattern.as_ref().map_or(8.0, |asset| asset.uv_source.tag() as f32))?,
+                wrela_f32_literal(normal_filter)?,
+                wrela_f32_literal(normal_uv)?,
+            )
+            .map_err(|_| "pixels::glue: P9 material return formatting failed".to_string())?;
+        }
+        MaterialKind::Select { predicate, a, b } => {
+            writeln!(output, "{indent}if {} != 0.0:", scalar_slot(*predicate))
+                .map_err(|_| "pixels::glue: P9 material select formatting failed".to_string())?;
+            write_p9_material_return(output, renderer, *a, identity, &format!("{indent}    "))?;
+            write_p9_material_return(output, renderer, *b, identity, indent)?;
+        }
+        MaterialKind::IdentityTable { enum_key, cases } => {
+            let selected = cases
+                .iter()
+                .find(|(candidate, _)| candidate == identity)
+                .ok_or_else(|| {
+                    format!(
+                        "P024: material identity table `{enum_key}` has no case for {}::{}",
+                        identity.enum_key, identity.variant,
+                    )
+                })?;
+            write_p9_material_return(output, renderer, selected.1, identity, indent)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_p9_material_evaluator(
+    output: &mut String,
+    compiled: &[super::CompiledRenderer],
+) -> Result<(), String> {
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        use super::material_graph::MaterialKind;
+        let mut roots = Vec::new();
+        for (_, node) in renderer.symbolic.materials.iter() {
+            if let MaterialKind::Sample(sample) = &node.kind {
+                roots.extend(sample.base_color);
+                roots.extend(sample.emissive);
+                roots.extend([
+                    sample.opacity,
+                    sample.roughness,
+                    sample.metallic,
+                    sample.specular_level,
+                    sample.ior,
+                ]);
+                if let super::material_graph::NormalModel::AnalyticSlope { x, y } = sample.normal {
+                    roots.extend([x, y]);
+                }
+            } else if let MaterialKind::Select { predicate, .. } = node.kind {
+                roots.push(predicate);
+            }
+        }
+        let required = scalar_dependency_closure(renderer, roots)?;
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p9_material_r{renderer_index}(identity: u32, read surface: [f32; 6], read params: [f32; 16], read camera: [f32; 12]) -> [f32; 21]:\n    u = surface[0]\n    v = surface[1]\n    q = surface[2]\n    n_x = surface[3]\n    n_y = surface[4]\n    n_z = surface[5]\n    if not q > 0.0:\n        return [0.0; 21]\n    p_x = camera[0] + (camera[3] + u * camera[6] + v * camera[9]) / q\n    p_y = camera[1] + (camera[4] + u * camera[7] + v * camera[10]) / q\n    p_z = camera[2] + (camera[5] + u * camera[8] + v * camera[11]) / q"
+        )
+        .map_err(|_| "pixels::glue: P9 material function formatting failed".to_string())?;
+        for scalar in &required {
+            writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
+                .expect("String writes cannot fail");
+        }
+        write_scalar_evaluator(output, renderer, &required, true, true)?;
+        for identity_set in &renderer.structural.program().objects.identities {
+            let Some(first) = identity_set.pairs.first() else {
+                return Err("P024: empty material identity set".to_string());
+            };
+            if identity_set
+                .pairs
+                .iter()
+                .any(|pair| pair.material != first.material)
+            {
+                // A regular run may not guess one member of an unresolved
+                // material identity set. Event coverage supplies side runs.
+                continue;
+            }
+            writeln!(output, "    if identity == {}:", identity_set.id)
+                .expect("String writes cannot fail");
+            write_p9_material_return(
+                output,
+                renderer,
+                renderer.symbolic.material_root,
+                &first.material,
+                "        ",
+            )?;
+        }
+        output.push_str("    return [0.0; 21]\n");
+    }
+    output.push_str("\npub fn __wrela_pixels_p9_material(renderer: usize, identity: u32, read surface: [f32; 6], read params: [f32; 16], read camera: [f32; 12]) -> [f32; 21]:\n");
+    for renderer_index in 0..compiled.len() {
+        writeln!(output, "    if renderer == {renderer_index}:\n        return __wrela_pixels_p9_material_r{renderer_index}(identity, surface, params, camera)")
+            .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0.0; 21]\n");
+
+    // AO evaluates the active semantic field at each normal-distance tap. A
+    // secondary segment answers visibility, not distance, and cannot stand in
+    // for this program (a nearby parallel surface need not intersect the
+    // normal segment). The returned interval includes a deterministic f32
+    // evaluation allowance and is consumed with reversed AO endpoints.
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        let root = renderer
+            .symbolic
+            .fields
+            .get(renderer.symbolic.field_root)?
+            .scalar_value;
+        let required = scalar_dependency_closure(renderer, vec![root])?;
+        // Bound the complete generated f32 dependency program, not merely the
+        // final distance magnitude. Cancellation can make a small result from
+        // large intermediates, so a result-relative allowance is unsound.
+        // Each generated scalar instruction contributes a conservative 16-ulp
+        // allowance at its compiler-proved magnitude; summing in f64 and then
+        // rounding the final constant upward gives the guest one fixed,
+        // auditable absolute error premise.
+        let mut distance_error_f64 = 0.0_f64;
+        for scalar in &required {
+            let scalar = super::ids::ScalarId(u32::try_from(*scalar).map_err(|_| {
+                "pixels::glue: P9 scene-distance scalar index exceeds u32".to_string()
+            })?);
+            let range = renderer.structural.program().values.get(scalar)?;
+            let magnitude = range.lo.abs().max(range.hi.abs());
+            if !magnitude.is_finite() {
+                return Err(
+                    "pixels::glue: non-finite P9 scene-distance dependency range".to_string(),
+                );
+            }
+            distance_error_f64 += magnitude * f64::from(f32::EPSILON) * 16.0;
+        }
+        if !distance_error_f64.is_finite() || distance_error_f64 > f64::from(f32::MAX) {
+            return Err("pixels::glue: P9 scene-distance error bound overflow".to_string());
+        }
+        let mut distance_error = distance_error_f64 as f32;
+        if f64::from(distance_error) < distance_error_f64 {
+            distance_error = f32::from_bits(distance_error.to_bits() + 1);
+        }
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p9_scene_distance_r{renderer_index}(read point: [f32; 3], read params: [f32; 16]) -> [f32; 4]:\n    p_x = point[0]\n    p_y = point[1]\n    p_z = point[2]\n    u: f32 = 0.0\n    v: f32 = 0.0\n    q: f32 = 1.0\n    n_x: f32 = 0.0\n    n_y: f32 = 0.0\n    n_z: f32 = 1.0\n    camera: [f32; 12] = [0.0; 12]"
+        )
+        .map_err(|_| "pixels::glue: P9 scene-distance formatting failed".to_string())?;
+        for scalar in &required {
+            writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
+                .expect("String writes cannot fail");
+        }
+        write_scalar_evaluator(output, renderer, &required, true, false)?;
+        writeln!(
+            output,
+            "    distance = {}\n    if distance != distance or distance > 3.4028234663852886e38 or distance < -3.4028234663852886e38:\n        return [0.0; 4]\n    error: f32 = {}\n    return [1.0, distance - error, distance + error, distance]",
+            scalar_slot(root),
+            wrela_f32_literal(distance_error)?,
+        )
+        .map_err(|_| "pixels::glue: P9 scene-distance return formatting failed".to_string())?;
+    }
+    output.push_str("\npub fn __wrela_pixels_p9_scene_distance(renderer: usize, read point: [f32; 3], read params: [f32; 16]) -> [f32; 4]:\n");
+    for renderer_index in 0..compiled.len() {
+        writeln!(output, "    if renderer == {renderer_index}:\n        return __wrela_pixels_p9_scene_distance_r{renderer_index}(point, params)")
+            .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0.0; 4]\n");
+    output.push_str(
+        "\npub fn __wrela_pixels_p9_material_inputs(renderer: usize, identity: u32) -> [u64; 2]:\n",
+    );
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        let summaries = renderer
+            .program
+            .program()
+            .tables
+            .iter()
+            .find(|table| {
+                table.kind == wrela_machine::pixels::FrameProgramTableKindV1::ShadingSummary
+            })
+            .ok_or_else(|| "pixels::glue: missing P9 shading-summary table".to_string())?;
+        let mut inputs_by_identity = std::collections::BTreeMap::<u64, u64>::new();
+        for record in summaries.records.iter().filter(|record| record.tag == 1) {
+            if record.operands.len() < 3 {
+                return Err(format!(
+                    "pixels::glue: P9 material summary {} has fewer than three operands",
+                    record.stable_id
+                ));
+            }
+            *inputs_by_identity.entry(record.operands[0]).or_default() |= record.operands[2];
+        }
+        for (identity, inputs) in inputs_by_identity {
+            writeln!(
+                output,
+                "    if renderer == {renderer_index} and identity == {identity}:\n        return [1, {inputs}]"
+            )
+            .expect("String writes cannot fail");
+        }
+    }
+    output.push_str("    return [0, 0]\n");
+    output.push_str(
+        "\npub fn __wrela_pixels_p9_light_range(renderer: usize, slot: usize) -> [f32; 12]:\n",
+    );
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        for (slot, range) in renderer.config.light_ranges.iter().enumerate() {
+            writeln!(
+                output,
+                "    if renderer == {renderer_index} and slot == {slot}:\n        return [1.0, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]",
+                wrela_f32_literal(range.position_min.x)?,
+                wrela_f32_literal(range.position_min.y)?,
+                wrela_f32_literal(range.position_min.z)?,
+                wrela_f32_literal(range.position_max.x)?,
+                wrela_f32_literal(range.position_max.y)?,
+                wrela_f32_literal(range.position_max.z)?,
+                wrela_f32_literal(range.axis_component_max)?,
+                wrela_f32_literal(range.radiance_max[0])?,
+                wrela_f32_literal(range.radiance_max[1])?,
+                wrela_f32_literal(range.radiance_max[2])?,
+                wrela_f32_literal(range.max_delta)?,
+            )
+            .expect("String writes cannot fail");
+        }
+    }
+    output.push_str("    return [0.0; 12]\n");
+    output.push_str("\npub fn __wrela_pixels_p9_ao_config(renderer: usize) -> [f32; 3]:\n");
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        writeln!(
+            output,
+            "    if renderer == {renderer_index}:\n        return [{}, {}, {}]",
+            if renderer.config.ao_enabled {
+                "1.0"
+            } else {
+                "0.0"
+            },
+            wrela_f32_literal(renderer.config.ao_radius)?,
+            wrela_f32_literal(renderer.config.ao_strength)?,
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0.0; 3]\n");
+    Ok(())
+}
+
+fn write_p9_transfer_tables(
+    output: &mut String,
+    compiled: &[super::CompiledRenderer],
+) -> Result<(), String> {
+    if compiled.is_empty() {
+        output.push_str(
+            "\npub fn __wrela_pixels_p9_round_ratio(numerator: u64, denominator: u64) -> u64:\n\
+             \x20   if denominator == 0:\n\
+             \x20       return 0\n\
+             \x20   quotient = numerator / denominator\n\
+             \x20   remainder = numerator % denominator\n\
+             \x20   twice = remainder * 2\n\
+             \x20   if twice > denominator or (twice == denominator and quotient % 2 == 1):\n\
+             \x20       return quotient + 1\n\
+             \x20   return quotient\n\
+             \n\
+             pub fn __wrela_pixels_p9_table_value(index: u64, filmic: bool) -> [u64; 2]:\n\
+             \x20   return [0, 0]\n\
+             \n\
+             pub fn __wrela_pixels_p9_lut_interpolate(coordinate: u64, fraction_bits: u32, filmic: bool) -> [u64; 2]:\n\
+             \x20   return [0, 0]\n\
+             \n\
+             pub fn __wrela_pixels_p9_filmic_tone(value: f32) -> [u64; 2]:\n\
+             \x20   return [0, 0]\n\
+             \n\
+             pub fn __wrela_pixels_p9_encode_common(value: f32, filmic: bool) -> [u64; 2]:\n\
+             \x20   return [0, 0]\n\
+             \n\
+             pub fn __wrela_pixels_p9_encode(renderer: usize, value: f32) -> [u64; 2]:\n\
+             \x20   return [0, 0]\n",
+        );
+        return Ok(());
+    }
+    let shared = compiled
+        .first()
+        .ok_or_else(|| "pixels::glue: P9 transfer tables require a renderer".to_string())?
+        .program
+        .program()
+        .tables
+        .iter()
+        .find(|table| table.kind == wrela_machine::pixels::FrameProgramTableKindV1::ShadingSummary)
+        .ok_or_else(|| "pixels::glue: missing P9 shading-summary table".to_string())?;
+    let record_id = |tag| {
+        shared
+            .records
+            .iter()
+            .find(|record| record.tag == tag)
+            .map(|record| record.stable_id)
+            .ok_or_else(|| format!("pixels::glue: missing P9 transfer-table tag {tag}"))
+    };
+    let filmic_record = record_id(4)?;
+    let srgb_record = record_id(5)?;
+    writeln!(
+        output,
+        "\nconst __WRELA_PIXELS_P9_FILMIC_RECORD: u32 = {filmic_record}\nconst __WRELA_PIXELS_P9_SRGB_RECORD: u32 = {srgb_record}"
+    )
+    .expect("String writes cannot fail");
+    output.push_str(
+        "\npub fn __wrela_pixels_p9_round_ratio(numerator: u64, denominator: u64) -> u64:\n\
+         \x20   quotient = numerator / denominator\n\
+         \x20   remainder = numerator % denominator\n\
+         \x20   twice = remainder * 2\n\
+         \x20   if twice > denominator or (twice == denominator and quotient % 2 == 1):\n\
+         \x20       return quotient + 1\n\
+         \x20   return quotient\n\
+         \n\
+         pub fn __wrela_pixels_p9_table_value(index: u64, filmic: bool) -> [u64; 2]:\n\
+         \x20   if index > 4096:\n\
+         \x20       return [0, 0]\n\
+         \x20   record = __WRELA_PIXELS_P9_SRGB_RECORD\n\
+         \x20   if filmic:\n\
+         \x20       record = __WRELA_PIXELS_P9_FILMIC_RECORD\n\
+         \x20   packed = __wrela_pixels_program_operand(0, 13, record, (5 + index / 4).to[u16]())\n\
+         \x20   if packed[0] != 1:\n\
+         \x20       return [0, 0]\n\
+         \x20   shift = (index % 4) * 16\n\
+         \x20   return [1, (packed[1] >> shift) & 65535]\n\
+         \n\
+         pub fn __wrela_pixels_p9_lut_interpolate(coordinate: u64, fraction_bits: u32, filmic: bool) -> [u64; 2]:\n\
+         \x20   index = coordinate >> fraction_bits.to[u64]()\n\
+         \x20   table_last: u64 = 4095\n\
+         \x20   table_last = table_last + 1\n\
+         \x20   if index >= table_last:\n\
+         \x20       return __wrela_pixels_p9_table_value(table_last, filmic)\n\
+         \x20   mask = (1.to[u64]() << fraction_bits.to[u64]()) - 1\n\
+         \x20   fraction = coordinate & mask\n\
+         \x20   scale = 1.to[u64]() << fraction_bits.to[u64]()\n\
+         \x20   low = __wrela_pixels_p9_table_value(index, filmic)\n\
+         \x20   high = __wrela_pixels_p9_table_value(index + 1, filmic)\n\
+         \x20   if low[0] != 1 or high[0] != 1:\n\
+         \x20       return [0, 0]\n\
+         \x20   value = __wrela_pixels_p9_round_ratio(low[1] * scale + (high[1] - low[1]) * fraction, scale)\n\
+         \x20   return [1, value]\n\
+         \n\
+         pub fn __wrela_pixels_p9_filmic_tone(value: f32) -> [u64; 2]:\n\
+         \x20   bits = __wrela_pixels_f32_to_bits(value)\n\
+         \x20   if bits & 2147483648 != 0 or bits & 2139095040 == 2139095040:\n\
+         \x20       if bits & 2139095040 == 2139095040:\n\
+         \x20           return [0, 0]\n\
+         \x20       return [1, 0]\n\
+         \x20   exponent_bits = (bits >> 23) & 255\n\
+         \x20   mantissa = (bits & 8388607).to[u64]()\n\
+         \x20   if exponent_bits == 0 and mantissa == 0:\n\
+         \x20       return [1, 0]\n\
+         \x20   exponent: i64 = exponent_bits.to[i64]() - 127\n\
+         \x20   if exponent_bits == 0:\n\
+         \x20       exponent = -126\n\
+         \x20       @budget(bound=23)\n\
+         \x20       while mantissa < 8388608:\n\
+         \x20           mantissa = mantissa << 1\n\
+         \x20           exponent = exponent - 1\n\
+         \x20   else:\n\
+         \x20       mantissa = mantissa | 8388608\n\
+         \x20   fraction: u64 = 0\n\
+         \x20   step: u32 = 0\n\
+         \x20   @budget(bound=15)\n\
+         \x20   while step < 15:\n\
+         \x20       squared = (mantissa * mantissa) >> 23\n\
+         \x20       if squared >= 16777216:\n\
+         \x20           mantissa = squared >> 1\n\
+         \x20           fraction = fraction | (1.to[u64]() << (14 - step).to[u64]())\n\
+         \x20       else:\n\
+         \x20           mantissa = squared\n\
+         \x20       step = step + 1\n\
+         \x20   log_q15 = exponent * 32768 + fraction.to[i64]()\n\
+         \x20   coordinate_q8: u64 = 0\n\
+         \x20   if log_q15 >= 524288:\n\
+         \x20       coordinate_q8 = 1048576\n\
+         \x20   elif log_q15 > -524288:\n\
+         \x20       coordinate_q8 = (log_q15 + 524288).to[u64]()\n\
+         \x20   return __wrela_pixels_p9_lut_interpolate(coordinate_q8, 8, true)\n\
+         \n\
+         pub fn __wrela_pixels_p9_encode_common(value: f32, filmic: bool) -> [u64; 2]:\n\
+         \x20   tone: u16 = 0\n\
+         \x20   if filmic:\n\
+         \x20       result = __wrela_pixels_p9_filmic_tone(value)\n\
+         \x20       if result[0] != 1:\n\
+         \x20           return [0, 0]\n\
+         \x20       tone = result[1].to[u16]()\n\
+         \x20   else:\n\
+         \x20       if value != value or value > 3.4028234663852886e38 or value < -3.4028234663852886e38:\n\
+         \x20           return [0, 0]\n\
+         \x20       clamped = value\n\
+         \x20       if clamped < 0.0:\n\
+         \x20           clamped = 0.0\n\
+         \x20       if clamped > 1.0:\n\
+         \x20           clamped = 1.0\n\
+         \x20       tone = (clamped * 65535.0 + 0.5).to[u16]()\n\
+         \x20   table_steps: u64 = 4095\n\
+         \x20   table_steps = table_steps + 1\n\
+         \x20   srgb_coordinate_q16 = __wrela_pixels_p9_round_ratio(tone.to[u64]() * table_steps * 65536, 65535)\n\
+         \x20   encoded = __wrela_pixels_p9_lut_interpolate(srgb_coordinate_q16, 16, false)\n\
+         \x20   if encoded[0] != 1:\n\
+         \x20       return [0, 0]\n\
+         \x20   byte = __wrela_pixels_p9_round_ratio(encoded[1] * 255, 65535)\n\
+         \x20   return [1, byte]\n\
+         \n\
+         pub fn __wrela_pixels_p9_encode(renderer: usize, value: f32) -> [u64; 2]:\n",
+    );
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        writeln!(
+            output,
+            "    if renderer == {renderer_index}:\n        return __wrela_pixels_p9_encode_common(value, {})",
+            renderer.config.tone_curve == "FilmicV1"
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0, 0]\n");
     Ok(())
 }
 
@@ -1252,7 +1875,7 @@ fn write_sealed_root_polynomial_evaluator(
             writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
                 .expect("String writes cannot fail");
         }
-        write_scalar_evaluator(output, renderer, &required_scalars, false)?;
+        write_scalar_evaluator(output, renderer, &required_scalars, false, false)?;
         let scalar_roots = equations
             .coefficients
             .nodes
@@ -2699,6 +3322,8 @@ fn write_visibility_polynomial_accessors(
          \x20   return __wrela_pixels_f32_from_bits(bits - 1)\n",
     );
     write_sealed_root_polynomial_evaluator(output, compiled)?;
+    write_p9_transfer_tables(output, compiled)?;
+    write_p9_material_evaluator(output, compiled)?;
     output.push_str(
         "\npub fn __wrela_pixels_p7_feature_polynomial(renderer: usize, feature: u32, u: f32, v: f32, read params: [f32; 16], read camera: [f32; 12]) -> [f32; 11]:\n\
              \x20   record = __wrela_pixels_program_record(renderer, 4, feature)\n\
@@ -4136,7 +4761,7 @@ pub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read
             writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
                 .expect("String writes cannot fail");
         }
-        write_scalar_evaluator(output, renderer, &required_scalars, true)?;
+        write_scalar_evaluator(output, renderer, &required_scalars, true, false)?;
         let mut scalar_groups = Vec::new();
         for (event, left, right) in material_events {
             if let Some((_, event_end, group_left, group_right)) = scalar_groups.last_mut()
@@ -4444,6 +5069,162 @@ pub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read
              \x20       bound = bound + 1\n\
              \x20   return result\n",
     );
+    // Replay the authoritative source-order coordinate transforms for texture
+    // evaluation. The returned point, normal, and footprint derivatives all
+    // live in the primitive/object frame; world triplanar mapping deliberately
+    // bypasses this helper in `core.render_light`.
+    for (renderer_index, renderer) in compiled.iter().enumerate() {
+        use super::graph::FieldKind;
+        use super::material_graph::{MaterialKind, NormalModel, UvSourceV1};
+
+        let structural = renderer.structural.program();
+        let needs_local_frame = renderer.symbolic.materials.iter().any(|(_, material)| {
+            let MaterialKind::Sample(sample) = &material.kind else {
+                return false;
+            };
+            sample
+                .pattern
+                .as_ref()
+                .is_some_and(|texture| texture.uv_source != UvSourceV1::WorldTriplanar)
+                || matches!(
+                    &sample.normal,
+                    NormalModel::TextureSlope { texture }
+                        if texture.uv_source != UvSourceV1::WorldTriplanar
+                )
+        });
+        if !needs_local_frame {
+            writeln!(
+                output,
+                "\npub fn __wrela_pixels_p9_feature_local_frame_r{renderer_index}(feature: u32, read point: [f32; 3], read normal: [f32; 3], read d_p_dx: [f32; 3], read d_p_dy: [f32; 3], read params: [f32; 16]) -> [f32; 13]:\n\
+                 \x20   return [0.0; 13]"
+            )
+            .expect("String writes cannot fail");
+            continue;
+        }
+        let mut roots = Vec::new();
+        for feature in &structural.features {
+            for step in feature.occurrence_path.iter().skip(1) {
+                match &renderer.symbolic.fields.get(step.field)?.kind {
+                    FieldKind::Transform { transform, .. } => {
+                        transform_scalar_ids(transform, &mut roots);
+                    }
+                    FieldKind::FiniteRepeat { period, .. } => roots.push(*period),
+                    _ => {}
+                }
+            }
+        }
+        let required_scalars = scalar_dependency_closure(renderer, roots)?;
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p9_feature_local_frame_r{renderer_index}(feature: u32, read point: [f32; 3], read normal: [f32; 3], read d_p_dx: [f32; 3], read d_p_dy: [f32; 3], read params: [f32; 16]) -> [f32; 13]:\n\
+             \x20   p_x = point[0]\n\
+             \x20   p_y = point[1]\n\
+             \x20   p_z = point[2]"
+        )
+        .expect("String writes cannot fail");
+        for scalar in &required_scalars {
+            writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
+                .expect("String writes cannot fail");
+        }
+        write_scalar_evaluator(output, renderer, &required_scalars, true, false)?;
+        for feature in &structural.features {
+            writeln!(
+                output,
+                "    if feature == {}:\n\
+                 \x20       local_p_x = point[0]\n\
+                 \x20       local_p_y = point[1]\n\
+                 \x20       local_p_z = point[2]\n\
+                 \x20       local_n_x = normal[0]\n\
+                 \x20       local_n_y = normal[1]\n\
+                 \x20       local_n_z = normal[2]\n\
+                 \x20       local_dx_x = d_p_dx[0]\n\
+                 \x20       local_dx_y = d_p_dx[1]\n\
+                 \x20       local_dx_z = d_p_dx[2]\n\
+                 \x20       local_dy_x = d_p_dy[0]\n\
+                 \x20       local_dy_y = d_p_dy[1]\n\
+                 \x20       local_dy_z = d_p_dy[2]",
+                feature.id.0,
+            )
+            .expect("String writes cannot fail");
+            let object = structural
+                .objects
+                .objects
+                .iter()
+                .find(|object| object.id == feature.object)
+                .ok_or_else(|| {
+                    format!(
+                        "pixels::glue: feature {} refers to missing object {}",
+                        feature.id, feature.object,
+                    )
+                })?;
+            let mut temporary = 0_u32;
+            for step in feature.occurrence_path.iter().skip(1) {
+                match &renderer.symbolic.fields.get(step.field)?.kind {
+                    FieldKind::Transform { transform, .. } => {
+                        write_p9_local_transform(output, transform, &mut temporary)?;
+                    }
+                    FieldKind::FiniteRepeat {
+                        axis,
+                        first,
+                        period,
+                        ..
+                    } => {
+                        let instance = object
+                            .repeat_instances
+                            .iter()
+                            .find(|instance| {
+                                instance.repeat_field == step.field
+                                    || instance.equivalent_fields.contains(&step.field)
+                            })
+                            .ok_or_else(|| {
+                                format!(
+                                    "pixels::glue: feature {} lacks repeat instance for {}",
+                                    feature.id, step.field,
+                                )
+                            })?;
+                        let ordinal = instance.index.checked_sub(*first).ok_or_else(|| {
+                            "pixels::glue: feature repeat ordinal underflow".to_string()
+                        })?;
+                        let source_first = wrela_f32_literal(*first as f32)?;
+                        let source_ordinal = wrela_f32_literal(ordinal as f32)?;
+                        let component = match axis {
+                            super::graph::Axis::X => "x",
+                            super::graph::Axis::Y => "y",
+                            super::graph::Axis::Z => "z",
+                        };
+                        writeln!(
+                            output,
+                            "        local_p_{component} = local_p_{component} - ({source_first} + {source_ordinal}) * {}",
+                            scalar_slot(*period),
+                        )
+                        .expect("String writes cannot fail");
+                    }
+                    _ => {}
+                }
+            }
+            output.push_str(
+                "        return [\n\
+                 \x20           1.0, local_p_x, local_p_y, local_p_z,\n\
+                 \x20           local_n_x, local_n_y, local_n_z,\n\
+                 \x20           local_dx_x, local_dx_y, local_dx_z,\n\
+                 \x20           local_dy_x, local_dy_y, local_dy_z,\n\
+                 \x20       ]\n",
+            );
+        }
+        output.push_str("    return [0.0; 13]\n");
+    }
+    output.push_str(
+        "\npub fn __wrela_pixels_p9_feature_local_frame(renderer: usize, feature: u32, read point: [f32; 3], read normal: [f32; 3], read d_p_dx: [f32; 3], read d_p_dy: [f32; 3], read params: [f32; 16]) -> [f32; 13]:\n",
+    );
+    for renderer_index in 0..compiled.len() {
+        writeln!(
+            output,
+            "    if renderer == {renderer_index}:\n\
+             \x20       return __wrela_pixels_p9_feature_local_frame_r{renderer_index}(feature, point, normal, d_p_dx, d_p_dy, params)"
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0.0; 13]\n");
     for (renderer_index, renderer) in compiled.iter().enumerate() {
         let required_scalars = scalar_dependency_closure(
             renderer,
@@ -4474,7 +5255,7 @@ pub fn __wrela_pixels_p8_axis_box_coverage(renderer: usize, x: u32, y: u32, read
             writeln!(output, "    __p7_scalar_{scalar}: f32 = 0.0")
                 .expect("String writes cannot fail");
         }
-        write_scalar_evaluator(output, renderer, &required_scalars, true)?;
+        write_scalar_evaluator(output, renderer, &required_scalars, true, false)?;
         for object in renderer
             .structural
             .program()
@@ -5586,6 +6367,8 @@ pub fn generate(
         environment_min: config.environment.min,
         environment_max: config.environment.max,
         camera_bounds,
+        world_min: [config.world_min.x, config.world_min.y, config.world_min.z],
+        world_max: [config.world_max.x, config.world_max.y, config.world_max.z],
         light_capacity: usize::try_from(config.light_capacity)
             .map_err(|_| "pixels::glue: light capacity exceeds usize".to_string())?,
         light_kinds,
@@ -7552,6 +8335,12 @@ pub fn configuration_source(
          # ordinary @layout nesting type the exact generated placed roots.\n",
     );
     output.push_str(&canonical_wire_view_source()?);
+    let debug_visibility = DEBUG_VISIBILITY.load(Ordering::Relaxed);
+    writeln!(
+        output,
+        "\npub fn __wrela_pixels_p9_debug_visibility() -> bool:\n    return {debug_visibility}"
+    )
+    .expect("String writes cannot fail");
     output.push_str(
         "\n\
          # These generated-only helpers are lowered as representation-preserving\n\
@@ -8522,6 +9311,13 @@ pub fn synthesize_image_graph(
         for bounds in generated.camera_bounds {
             frame_bounds.extend(bounds.map(crate::eval::value::Value::F32));
         }
+        frame_bounds.extend(
+            generated
+                .world_min
+                .into_iter()
+                .chain(generated.world_max)
+                .map(crate::eval::value::Value::F32),
+        );
         frame_bounds.push(crate::eval::value::Value::Usize(
             u64::try_from(generated.light_capacity)
                 .map_err(|_| "P015: generated light capacity exceeds u64".to_string())?,
@@ -8767,7 +9563,8 @@ mod tests {
                 "field",
                 "fixed-domain",
                 "object",
-                "scalar"
+                "scalar",
+                "shading-summary"
             ]
         );
     }
@@ -9205,6 +10002,37 @@ mod tests {
     }
 
     #[test]
+    fn p9_local_texture_frame_replays_rigid_source_order_for_all_differentials() {
+        use super::super::graph::TransformProgram;
+        use super::super::ids::ScalarId;
+
+        let transform = TransformProgram::Rigid {
+            translation: [ScalarId(0), ScalarId(1), ScalarId(2)],
+            row_x: [ScalarId(3), ScalarId(4), ScalarId(5)],
+            row_y: [ScalarId(6), ScalarId(7), ScalarId(8)],
+            row_z: [ScalarId(9), ScalarId(10), ScalarId(11)],
+        };
+        let mut source = String::new();
+        let mut temporary = 0;
+        write_p9_local_transform(&mut source, &transform, &mut temporary).unwrap();
+        assert_eq!(temporary, 1);
+        let translation = source
+            .find("local_p_x = local_p_x - __p7_scalar_0")
+            .expect("translation is emitted");
+        let saved_point = source
+            .find("uv_0_p_x = local_p_x")
+            .expect("translated point is saved before rotation");
+        assert!(translation < saved_point);
+        for vector in ["p", "n", "dx", "dy"] {
+            assert!(source.contains(&format!(
+                "local_{vector}_x = __p7_scalar_3 * uv_0_{vector}_x + __p7_scalar_4 * uv_0_{vector}_y + __p7_scalar_5 * uv_0_{vector}_z"
+            )));
+        }
+        assert!(!source.contains("local_n_x = local_n_x -"));
+        assert!(!source.contains("local_dx_x = local_dx_x -"));
+    }
+
+    #[test]
     fn placement_binding_gives_each_generated_actor_exact_addresses() {
         let mut graph = crate::eval::image::ImageGraph::default();
         let actor = |ty: crate::sema::types::Type, labels: &[&str]| crate::eval::image::ActorDecl {
@@ -9234,6 +10062,8 @@ mod tests {
             environment_min: [0.0; 3],
             environment_max: [1.0; 3],
             camera_bounds: [[-1.0, 1.0]; 12],
+            world_min: [-1.0; 3],
+            world_max: [1.0; 3],
             light_capacity: 0,
             light_kinds: [0; 8],
             rooted_functions: Vec::new(),

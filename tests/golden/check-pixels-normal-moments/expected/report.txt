@@ -7,21 +7,22 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/field.wr sha256=787a074c732b77703784f0822dd114472c1ee5522146d0d3c866fc23823250f7
-  Input path=core/render.wr sha256=c861492b55a76070a9582a8944eaeabee590837e078c4af3982722c7e6b338df
+  Input path=core/render.wr sha256=49be69579508d20e170336d3a39526d2c0a5ea3e30aa458d75159ead35c6adb8
   Input path=core/render_arrangement.wr sha256=189d472c6ee6775f244181670df65df8182ace64ee999b47444539a225f34cd5
   Input path=core/render_certificate.wr sha256=464f98cf8efae1909bfe9929688dbb1b9a602dc62956ba8f2494b43df563361b
   Input path=core/render_certify.wr sha256=3cd1ef8576d3ea1673f3ca871d1c001b72c179a7b6fd1a16bd4a8b09cbaf4973
   Input path=core/render_coverage.wr sha256=7ba30a2107a86b3b90389d849ba7fd79da6736698f6851f9f406ff84a90a5df0
   Input path=core/render_interval.wr sha256=02865a0800dd6fa78f8997f17b6df194e703c7dab1df7ed8614e3aa0ae734713
-  Input path=core/render_isolation.wr sha256=e1bf7e350a8d3dc9b86f898f32a3a83ef0262e8e1680398ca5b6dd6964a69437
-  Input path=core/render_orchestrate.wr sha256=47a5c7814494ad07062b23404b6792384e872eef11f68e3a5ce829f84732fecd
-  Input path=core/render_probe.wr sha256=09bf5cbb8e8df899949086413b5cd0afb967ae8c7bccd99d17871ee6621d3f6b
+  Input path=core/render_isolation.wr sha256=f6fc206330b9c598a37fa58ab2b02468c508d0bbd7e19e5672b16b69d037b6c1
+  Input path=core/render_light.wr sha256=1696f1aecf665b2e8a87417f20e0506e86c5a0c3c31fe5e7cf4dc529b6915e15
+  Input path=core/render_orchestrate.wr sha256=411fac380aeafdfa322bb55588dba955850907727b0796deabb85e3dd0cb07e4
+  Input path=core/render_probe.wr sha256=6665b7d4a9adb2a4f2a3c4ad9c953b1ab42f965572913a5fc9ca000bfff4b8e9
   Input path=core/render_program.wr sha256=82820a0291f016357d988adad7673811ac04902a50c7a6930b675b0a07f17295
   Input path=core/render_raster.wr sha256=c89ea178f7cc73ef31f3d17c9c78186919f0b88817e75173f157359a8986297b
   Input path=core/time.wr sha256=c93194aeb8812f2c3f52b886a9b322cb247c30f39caa25305a2f0f9ef01dca38
   Input path=drivers/display.wr sha256=ca4c2884e5834b9e9f7578231e35ea00c006e9bbfca4e7c498e7570a524c9496
-  Input path=examples/check_pixels_normal_moments.wr sha256=a9ec780a10e723fd010ef49850079a0097debefbf169cd3842313777ab7dbc02
-  Input path=<generated> sha256=8f35a567cd1bd061302fa1167267e408f88a8bc85b04514a77a63b5825b21823
+  Input path=examples/check_pixels_normal_moments.wr sha256=cb7d47c3647aaa62468045620a9ef367defc3fe7a49cb883514647875c1fbd04
+  Input path=<generated> sha256=d8d4f846a4b3b1015578b1333668087af02bd3582e406fb7dc7daea81c5a816e
   Name value=check-pixels-normal-moments
   Target value=Target.wrela_machine_v1
   Device index=0 type=DisplayDevice
@@ -35,8 +36,8 @@ ImageReport v0
     Arg label=workers value=(actor#1, actor#2, actor#3, actor#4)
     Arg label=worker_count value=1
     Arg label=renderer_index value=0
-    Arg label=placement value=(1084686336, 1086193664, 110550706, (16777216), (4503599627370496), (9007199254740992), (13510798882111488))
-    Arg label=bounds value=(-1, 1, 0, 0, 0, 1, 1, 1, -0.25000003, 0.25000003, -0.25000003, 0.25000003, -4.6000004, -4.1, -0.2502, 0.2502, -0.2502, 0.2502, 0.74979997, 1.0000001, 0.74979997, 1.0000001, -0.2502, 0.2502, -0.2502, 0.2502, -0.2502, 0.2502, 0.74979997, 1.0000001, -0.2502, 0.2502, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    Arg label=placement value=(1084686336, 1086259200, 110550706, (16777216), (4503599627370496), (9007199254740992), (13510798882111488))
+    Arg label=bounds value=(-1, 1, 0, 0, 0, 1, 1, 1, -0.25000003, 0.25000003, -0.25000003, 0.25000003, -4.6000004, -4.1, -0.2502, 0.2502, -0.2502, 0.2502, 0.74979997, 1.0000001, 0.74979997, 1.0000001, -0.2502, 0.2502, -0.2502, 0.2502, -0.2502, 0.2502, 0.74979997, 1.0000001, -0.2502, 0.2502, -4, -4, -4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0)
   Actor index=1 type=RendererWorker0
     Mailbox value=1
   Actor index=2 type=RendererWorker1
@@ -59,10 +60,10 @@ ImageReport v0
     Arg label=world_min value=(-4, -4, -4)
     Arg label=world_max value=(4, 4, 4)
     Arg label=camera_bounds value=(0.25)
-    Arg label=light_config value=(0, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1))
+    Arg label=light_config value=(0, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1), (((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504)))
     Arg label=exposure_range value=(-1, 1)
     Arg label=environment_range value=((0, 0, 0), (1, 1, 1))
-    Arg label=ao value=(false)
+    Arg label=ao value=(false, 1, 1)
     Arg label=probes value=(false, 0)
     Arg label=initialization_deadline_ms value=10
   Edge from=driver#0 to=device#0
@@ -74,31 +75,31 @@ ImageReport v0
   Edge from=renderer#0 to=driver#0
   OnFailure index=0 policy=Failure.Halt
   Placement id=driver#0 type=Display core=0 source=inferred work=0 work_source=unproved bytes=8 bytes_state=8 bytes_mailbox=0 bytes_pool=0
-  Placement id=actor#0 type=Renderer[SceneParams] core=0 source=explicit work=0 work_source=unproved bytes=544 bytes_state=448 bytes_mailbox=96 bytes_pool=0
+  Placement id=actor#0 type=Renderer[SceneParams] core=0 source=explicit work=0 work_source=unproved bytes=592 bytes_state=496 bytes_mailbox=96 bytes_pool=0
   Placement id=actor#1 type=RendererWorker0 core=0 source=explicit work=0 work_source=unproved bytes=48 bytes_state=0 bytes_mailbox=48 bytes_pool=0
   Placement id=actor#2 type=RendererWorker1 core=0 source=explicit work=0 work_source=unproved bytes=48 bytes_state=0 bytes_mailbox=48 bytes_pool=0
   Placement id=actor#3 type=RendererWorker2 core=0 source=explicit work=0 work_source=unproved bytes=48 bytes_state=0 bytes_mailbox=48 bytes_pool=0
   Placement id=actor#4 type=RendererWorker3 core=0 source=explicit work=0 work_source=unproved bytes=48 bytes_state=0 bytes_mailbox=48 bytes_pool=0
 PixelsCompilerReport v3
   Renderers count=1
-  Renderer index=0 coefficient_bytes=0 objects=1 features=26 production_state_bytes=4816562 instrumented_state_bytes=4866920 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
+  Renderer index=0 coefficient_bytes=0 objects=1 features=26 production_state_bytes=4816562 instrumented_state_bytes=4867016 dependency_schema=e537dd28900d229619dbf18d8ec9245ea472475dd161dae3dd0a980654419be2
     Capacities workers=1 objects=1 feature_templates=26 feature_slots=26 repeated_instances=0 scalar_slots=36 derivative_slots=36 parameter_slots=0 csg_stack=1 projected_row=26 projected_tile=26 row_start_roots=722 active_sheets=722 event_generators=122 event_subdivisions=112 event_records=13664 tile_row_runs=13665 csg_events=722 transparent_layers=1 rebuild_queue=13665
-    Storage candidate_bytes=1664 root_bytes=23104 sheet_bytes=46208 event_bytes=437248 run_bytes=1749120 corridor_bytes=874560 fixed_q_bytes=218640 shading_bytes=874560 transparency_bytes=437280 per_worker_scratch_bytes=4662384 all_worker_scratch_bytes=4662384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=3328 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 telemetry_production_bytes=0 telemetry_instrumented_bytes=50352
+    Storage candidate_bytes=1664 root_bytes=23104 sheet_bytes=46208 event_bytes=437248 run_bytes=1749120 corridor_bytes=874560 fixed_q_bytes=218640 shading_bytes=874560 transparency_bytes=437280 per_worker_scratch_bytes=4662384 all_worker_scratch_bytes=4662384 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=3328 state_header_bytes=256 coefficient_snapshot_bytes=0 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 telemetry_production_bytes=0 telemetry_instrumented_bytes=50448
     Capacity field=feature_count value=26 why=[1 maximal smooth objects; 26 immutable fused primitive feature templates; 26 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
     Capacity field=max_projected_features_per_row value=26 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
     Capacity field=max_run_records_per_tile_row value=13665 why=[122 generators; 26 primitive equation generators; 96 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 112 subdivisions each (28 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
     Capacity field=renderer_state_bytes value=4816562 why=[header=256; coefficient_snapshots=0; frame_snapshots=1376; frame_complexes=131072; scratch=4662384 (4662384 * 1 workers); output=16384; probes=0; page_alignment_padding=1328; kinetic=3328; tile_descriptors=368; tile_ownership=2; failure=64]
-    Capacity field=instrumented_renderer_state_bytes value=4866920 why=[production=4816562; telemetry=50352]
+    Capacity field=instrumented_renderer_state_bytes value=4867016 why=[production=4816562; telemetry=50448]
     AnalyticTiers pose_conditional=0 camera_pinned=0
     Projective features=26 polynomials=337 coefficients=1574 derivative_bundles=26 derivative_clusters=1 events=525 competition_pairs=325 exclusions=52 index_bytes=28492
-    ProjectiveCapacities candidate_features_per_tile=26 row_start_roots=722 active_sheets_per_row=722 competition_pairs_per_tile=325 row_event_intervals=482839 root_stack_nodes=2888 event_stack_nodes=6272 runs_per_row=482840 corridors_per_row=482839 max_index_slice=525 polynomial_terms_per_program=10 refined_per_worker_scratch_bytes=108863352 refined_all_worker_scratch_bytes=108863352 final_per_worker_scratch_bytes=110393832 final_all_worker_scratch_bytes=110393832 final_state_bytes=110550706 final_instrumented_state_bytes=110601064
+    ProjectiveCapacities candidate_features_per_tile=26 row_start_roots=722 active_sheets_per_row=722 competition_pairs_per_tile=325 row_event_intervals=482839 root_stack_nodes=2888 event_stack_nodes=6272 runs_per_row=482840 corridors_per_row=482839 max_index_slice=525 polynomial_terms_per_program=10 refined_per_worker_scratch_bytes=108863352 refined_all_worker_scratch_bytes=108863352 final_per_worker_scratch_bytes=110393832 final_all_worker_scratch_bytes=110393832 final_state_bytes=110550706 final_instrumented_state_bytes=110601160
     CompetitionPruning projected=0 q=0 csg_global=0 csg_pair=0 strict_order=0 same_feature=26 material_only=0
     ProjectiveCapacity field=p4_candidate_features_per_tile value=26 why=[exact endpoint/cell sweep gives row overlap 26 within P3 ceiling 26 and tile overlap 26 within P3 ceiling 26]
     ProjectiveCapacity field=p4_final_renderer_state_bytes value=110550706 why=[P4-refined six-class scratch=108863352 per worker; retained fixed-q/shading/transparency scratch=1530480 per worker; workers=1]
     ProjectiveCapacity field=p4_row_start_roots value=722 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
     ProjectiveCapacity field=p4_row_event_intervals value=482839 why=[525 completed local generators; 325 competition pairs survive; 2^2 leaves per isolated root]
     ProjectiveCapacity field=p4_index_bytes value=28492 why=[completed offset/count cells plus sorted contiguous ID tables]
-    FrameProgram version=1 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1 wire_bytes=1478864 digest=4b59e46e2e241c5d0e721c7341fa96517a5f4d36672a327ae61ee7fbac86ef40 rich_records=3133 rich_operands=59503
+    FrameProgram version=1 profile_revision=1 numeric_revision=4 formal_revision=1 formal_name=pixels-v1 wire_bytes=1535632 digest=69d422f62805d7cd008b28923b02a06d1348ea26c48ab7cafe949e00382f05dc rich_records=3147 rich_operands=61854
     WireTable kind=scalar count=36 record_bytes=16 offset=0x180 bytes=576
     WireTable kind=field count=3 record_bytes=16 offset=0x3c0 bytes=48
     WireTable kind=object count=1 record_bytes=16 offset=0x400 bytes=16
@@ -108,18 +109,18 @@ PixelsCompilerReport v3
     WireTable kind=event count=525 record_bytes=16 offset=0x640 bytes=8400
     WireTable kind=csg count=1 record_bytes=16 offset=0x2740 bytes=16
     WireTable kind=fixed-domain count=2539 record_bytes=16 offset=0x2780 bytes=40624
-    WireTable kind=immediate count=59503 record_bytes=24 offset=0xc640 bytes=1428072
-    WireTable kind=camera-light-post count=1 record_bytes=16 offset=0x1690c0 bytes=16
-    WireTable kind=texture count=0 record_bytes=16 offset=0x0 bytes=0
-    WireTable kind=shading-summary count=0 record_bytes=16 offset=0x0 bytes=0
+    WireTable kind=immediate count=61854 record_bytes=24 offset=0xc640 bytes=1484496
+    WireTable kind=camera-light-post count=1 record_bytes=16 offset=0x176d40 bytes=16
+    WireTable kind=texture count=1 record_bytes=16 offset=0x176d80 bytes=16
+    WireTable kind=shading-summary count=13 record_bytes=16 offset=0x176dc0 bytes=208
     WireTable kind=transparency count=0 record_bytes=16 offset=0x0 bytes=0
     WireTable kind=probe count=0 record_bytes=16 offset=0x0 bytes=0
     WireTable kind=kinetic count=0 record_bytes=16 offset=0x0 bytes=0
     WireTable kind=debug-name count=0 record_bytes=16 offset=0x0 bytes=0
-    MutableState production_bytes=110550706 instrumented_bytes=110601064 header=256 coefficients=0 frame_inputs=1376 frame_complex=131072 worker_scratch=110393832 framebuffers=16384 probes=0 tile_metadata=370 failure=64 telemetry_production=0 telemetry_instrumented=50352
-    Generated coordinator=__wrela_renderer_0_coordinator workers=1 mailbox_capacity=3 execution=certified-from-scratch presentation=machine-v1-bgra8-srgb palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,scalar]
+    MutableState production_bytes=110550706 instrumented_bytes=110601160 header=256 coefficients=0 frame_inputs=1376 frame_complex=131072 worker_scratch=110393832 framebuffers=16384 probes=0 tile_metadata=370 failure=64 telemetry_production=0 telemetry_instrumented=50448
+    Generated coordinator=__wrela_renderer_0_coordinator workers=1 mailbox_capacity=3 execution=certified-from-scratch presentation=machine-v1-bgra8-srgb palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,scalar,shading-summary,texture]
     GeneratedWorker actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,1) mailbox_capacity=1
-    ForceRoots keys=[RendererWorker0.init,RendererWorker1.init,RendererWorker2.init,RendererWorker3.init,__wrela_abort_val,__wrela_pixels_bootstrap_camera_light_post,__wrela_pixels_bootstrap_csg,__wrela_pixels_bootstrap_dispatch,__wrela_pixels_bootstrap_event,__wrela_pixels_bootstrap_feature,__wrela_pixels_bootstrap_field,__wrela_pixels_bootstrap_fixed_domain,__wrela_pixels_bootstrap_material,__wrela_pixels_bootstrap_object,__wrela_pixels_bootstrap_scalar,__wrela_pixels_program_validate,struct:Renderer[SceneParams].init]
+    ForceRoots keys=[RendererWorker0.init,RendererWorker1.init,RendererWorker2.init,RendererWorker3.init,__wrela_abort_val,__wrela_pixels_bootstrap_camera_light_post,__wrela_pixels_bootstrap_csg,__wrela_pixels_bootstrap_dispatch,__wrela_pixels_bootstrap_event,__wrela_pixels_bootstrap_feature,__wrela_pixels_bootstrap_field,__wrela_pixels_bootstrap_fixed_domain,__wrela_pixels_bootstrap_material,__wrela_pixels_bootstrap_object,__wrela_pixels_bootstrap_scalar,__wrela_pixels_bootstrap_shading_summary,__wrela_pixels_bootstrap_texture,__wrela_pixels_program_validate,struct:Renderer[SceneParams].init]
   Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
     Field name=now_ns type=u64 offset=0x0 size=8
   Layout name=ConsoleDataPage kind=runtime endian=little size=131072 padding=0
@@ -365,23 +366,23 @@ PixelsCompilerReport v3
   Cores count=1
   CoreStack core=0 base=0x5ff00000 size=0x100000
   Section name=entry base=0x40600000 size=80
-  Section name=code base=0x40600050 size=1671276
-  Section name=abort base=0x407980bc size=120
-  Section name=checkpoint base=0x40798134 size=28
-  Section name=rodata base=0x4079c000 size=1643
-  Section name=rtdata base=0x40a00000 size=150664
-  Section name=devregs base=0x40a24c88 size=8
+  Section name=code base=0x40600050 size=1880724
+  Section name=abort base=0x407cb2e4 size=120
+  Section name=checkpoint base=0x407cb35c size=28
+  Section name=rodata base=0x407cc000 size=1796
+  Section name=rtdata base=0x40a00000 size=150712
+  Section name=devregs base=0x40a24cb8 size=8
   Section name=stage1-vector base=0x40a40000 size=16384
   Section name=stage1-fault-record base=0x40a44000 size=16384
   Section name=stage1-tables base=0x40a48000 size=131072
-  Section name=frameprog base=0x40a70000 size=1478864
-  Section name=pixelsdata base=0x40be0000 size=110550706
-  Stage1 tables_base=0x40a48000 tables_bytes=131072 tables_sha256=919682c8145695a2c00c6513e4194d8d9a2575f8385125d026a747ccac8a9913 used_pages=8 ttbr0_el1=0x40a48000 tcr_el1=0x200803519 mair_el1=0xff04 sctlr_el1=0x30d85c1f vbar_el1=0x40a40000 system_allowlist_sha256=f0fa2ca128949ff8f7642221e568b67bcda1bd2ceee7d319e87a5c84b7209abc
+  Section name=frameprog base=0x40a70000 size=1535632
+  Section name=pixelsdata base=0x40bf0000 size=110550706
+  Stage1 tables_base=0x40a48000 tables_bytes=131072 tables_sha256=c649e4fb1a55d561d03b2a19c9c2453b75bc633a607830cc9753cad014c13b19 used_pages=8 ttbr0_el1=0x40a48000 tcr_el1=0x200803519 mair_el1=0xff04 sctlr_el1=0x30d85c1f vbar_el1=0x40a40000 system_allowlist_sha256=f0fa2ca128949ff8f7642221e568b67bcda1bd2ceee7d319e87a5c84b7209abc
   Protection base=0x40000000 size=6291456 class=normal-rw-nx owner=machine-shared
-  Protection base=0x40600000 size=1671168 class=normal-ro-rx owner=code
-  Protection base=0x40798000 size=16384 class=normal-ro-rx owner=checkpoint
-  Protection base=0x4079c000 size=16384 class=normal-ro-nx owner=rodata
-  Protection base=0x407a0000 size=2490368 class=invalid owner=unused
+  Protection base=0x40600000 size=1867776 class=normal-ro-rx owner=code
+  Protection base=0x407c8000 size=16384 class=normal-ro-rx owner=checkpoint
+  Protection base=0x407cc000 size=16384 class=normal-ro-nx owner=rodata
+  Protection base=0x407d0000 size=2293760 class=invalid owner=unused
   Protection base=0x40a00000 size=147456 class=normal-rw-nx owner=rtdata
   Protection base=0x40a24000 size=16384 class=normal-rw-nx owner=devregs
   Protection base=0x40a28000 size=98304 class=invalid owner=unused
@@ -389,14 +390,14 @@ PixelsCompilerReport v3
   Protection base=0x40a44000 size=16384 class=normal-rw-nx owner=stage1-fault-record
   Protection base=0x40a48000 size=131072 class=normal-ro-nx owner=stage1-tables
   Protection base=0x40a68000 size=32768 class=invalid owner=unused
-  Protection base=0x40a70000 size=1490944 class=normal-ro-nx owner=frameprog
-  Protection base=0x40bdc000 size=16384 class=invalid owner=unused
-  Protection base=0x40be0000 size=110559232 class=normal-rw-nx owner=pixelsdata
-  Protection base=0x47550000 size=412811264 class=invalid owner=unused
+  Protection base=0x40a70000 size=1540096 class=normal-ro-nx owner=frameprog
+  Protection base=0x40be8000 size=32768 class=invalid owner=unused
+  Protection base=0x40bf0000 size=110559232 class=normal-rw-nx owner=pixelsdata
+  Protection base=0x47560000 size=412745728 class=invalid owner=unused
   Protection base=0x5ff00000 size=1048576 class=normal-rw-nx owner=stack-core-0
-  RendererPlacement index=0 frameprog_base=0x40a70000 frameprog_bytes=1478864 state_base=0x40be0000 state_bytes=110550706 coordinator=__wrela_renderer_0_coordinator coordinator_core=0
-  RendererWorker renderer=0 index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,1) workspace_base=0x40c00660 workspace_bytes=110393832
-  RendererMemory renderer=0 framebuffer_base=0x47549000 framebuffer_bytes=16384 probe_base=0x4754d000 probe_bytes=0
+  RendererPlacement index=0 frameprog_base=0x40a70000 frameprog_bytes=1535632 state_base=0x40bf0000 state_bytes=110550706 coordinator=__wrela_renderer_0_coordinator coordinator_core=0
+  RendererWorker renderer=0 index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,1) workspace_base=0x40c10660 workspace_bytes=110393832
+  RendererMemory renderer=0 framebuffer_base=0x47559000 framebuffer_bytes=16384 probe_base=0x4755d000 probe_bytes=0
   Entry base=0x40600000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x4001c000 size=131072
@@ -405,402 +406,404 @@ PixelsCompilerReport v3
   PlacedStatic name=CONSOLE_RING_DOORBELL type=ConsoleRingDoorbellPage addr=0x4001b008 size=8
   PlacedStatic name=DISPLAY_MEMORY type=DisplayMemory addr=0x40100000 size=12288
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
-  PlacedStatic name=GROUPS type=GroupArena addr=0x40a24320 size=128
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40a24000 size=448
-  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x40a242e0 size=8
-  PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x40a243b0 size=8
-  PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x40a243b8 size=8
-  PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x40a243c0 size=8
-  PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x40a243c8 size=8
-  PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x40a243d0 size=8
-  PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x40a243d8 size=8
+  PlacedStatic name=GROUPS type=GroupArena addr=0x40a24350 size=128
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40a24000 size=496
+  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x40a24310 size=8
+  PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x40a243e0 size=8
+  PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x40a243e8 size=8
+  PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x40a243f0 size=8
+  PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x40a243f8 size=8
+  PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x40a24400 size=8
+  PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x40a24408 size=8
   PlacedStatic name=INPUT type=InputMmio addr=0x8011000 size=16
   PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
   PlacedStatic name=LANE2 type=Lane2Counters addr=0x40400000 size=131080
   PlacedStatic name=LANE2_SNAPSHOT type=Lane2Snapshot addr=0x40480000 size=131072
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
-  PlacedStatic name=MB0_CTL type=MbCtl addr=0x40a24208 size=24
-  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40a241c0 size=72
-  PlacedStatic name=MB10_CTL type=MbCtl addr=0x40a24700 size=24
-  PlacedStatic name=MB10_DATA type=Mb10Data addr=0x40a246e0 size=8
-  PlacedStatic name=MB11_CTL type=MbCtl addr=0x40a24740 size=24
-  PlacedStatic name=MB11_DATA type=Mb11Data addr=0x40a24720 size=8
-  PlacedStatic name=MB12_CTL type=MbCtl addr=0x40a24780 size=24
-  PlacedStatic name=MB12_DATA type=Mb12Data addr=0x40a24760 size=8
-  PlacedStatic name=MB13_CTL type=MbCtl addr=0x40a247c0 size=24
-  PlacedStatic name=MB13_DATA type=Mb13Data addr=0x40a247a0 size=8
-  PlacedStatic name=MB14_CTL type=MbCtl addr=0x40a24800 size=24
-  PlacedStatic name=MB14_DATA type=Mb14Data addr=0x40a247e0 size=8
-  PlacedStatic name=MB15_CTL type=MbCtl addr=0x40a24840 size=24
-  PlacedStatic name=MB15_DATA type=Mb15Data addr=0x40a24820 size=8
-  PlacedStatic name=MB16_CTL type=MbCtl addr=0x40a24880 size=24
-  PlacedStatic name=MB16_DATA type=Mb16Data addr=0x40a24860 size=8
-  PlacedStatic name=MB17_CTL type=MbCtl addr=0x40a248c0 size=24
-  PlacedStatic name=MB17_DATA type=Mb17Data addr=0x40a248a0 size=8
-  PlacedStatic name=MB18_CTL type=MbCtl addr=0x40a24900 size=24
-  PlacedStatic name=MB18_DATA type=Mb18Data addr=0x40a248e0 size=8
-  PlacedStatic name=MB19_CTL type=MbCtl addr=0x40a24940 size=24
-  PlacedStatic name=MB19_DATA type=Mb19Data addr=0x40a24920 size=8
-  PlacedStatic name=MB1_CTL type=MbCtl addr=0x40a24238 size=24
-  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x40a24220 size=24
-  PlacedStatic name=MB20_CTL type=MbCtl addr=0x40a24980 size=24
-  PlacedStatic name=MB20_DATA type=Mb20Data addr=0x40a24960 size=8
-  PlacedStatic name=MB21_CTL type=MbCtl addr=0x40a249c0 size=24
-  PlacedStatic name=MB21_DATA type=Mb21Data addr=0x40a249a0 size=8
-  PlacedStatic name=MB22_CTL type=MbCtl addr=0x40a24a00 size=24
-  PlacedStatic name=MB22_DATA type=Mb22Data addr=0x40a249e0 size=8
-  PlacedStatic name=MB23_CTL type=MbCtl addr=0x40a24a40 size=24
-  PlacedStatic name=MB23_DATA type=Mb23Data addr=0x40a24a20 size=8
-  PlacedStatic name=MB24_CTL type=MbCtl addr=0x40a24a80 size=24
-  PlacedStatic name=MB24_DATA type=Mb24Data addr=0x40a24a60 size=8
-  PlacedStatic name=MB25_CTL type=MbCtl addr=0x40a24ac0 size=24
-  PlacedStatic name=MB25_DATA type=Mb25Data addr=0x40a24aa0 size=8
-  PlacedStatic name=MB26_CTL type=MbCtl addr=0x40a24b00 size=24
-  PlacedStatic name=MB26_DATA type=Mb26Data addr=0x40a24ae0 size=8
-  PlacedStatic name=MB27_CTL type=MbCtl addr=0x40a24b40 size=24
-  PlacedStatic name=MB27_DATA type=Mb27Data addr=0x40a24b20 size=8
-  PlacedStatic name=MB28_CTL type=MbCtl addr=0x40a24b80 size=24
-  PlacedStatic name=MB28_DATA type=Mb28Data addr=0x40a24b60 size=8
-  PlacedStatic name=MB29_CTL type=MbCtl addr=0x40a24bc0 size=24
-  PlacedStatic name=MB29_DATA type=Mb29Data addr=0x40a24ba0 size=8
-  PlacedStatic name=MB2_CTL type=MbCtl addr=0x40a24268 size=24
-  PlacedStatic name=MB2_DATA type=Mb2Data addr=0x40a24250 size=24
-  PlacedStatic name=MB30_CTL type=MbCtl addr=0x40a24c00 size=24
-  PlacedStatic name=MB30_DATA type=Mb30Data addr=0x40a24be0 size=8
-  PlacedStatic name=MB31_CTL type=MbCtl addr=0x40a24c40 size=24
-  PlacedStatic name=MB31_DATA type=Mb31Data addr=0x40a24c20 size=8
-  PlacedStatic name=MB3_CTL type=MbCtl addr=0x40a24298 size=24
-  PlacedStatic name=MB3_DATA type=Mb3Data addr=0x40a24280 size=24
-  PlacedStatic name=MB4_CTL type=MbCtl addr=0x40a242c8 size=24
-  PlacedStatic name=MB4_DATA type=Mb4Data addr=0x40a242b0 size=24
-  PlacedStatic name=MB5_CTL type=MbCtl addr=0x40a245c0 size=24
-  PlacedStatic name=MB5_DATA type=Mb5Data addr=0x40a245a0 size=8
-  PlacedStatic name=MB6_CTL type=MbCtl addr=0x40a24600 size=24
-  PlacedStatic name=MB6_DATA type=Mb6Data addr=0x40a245e0 size=8
-  PlacedStatic name=MB7_CTL type=MbCtl addr=0x40a24640 size=24
-  PlacedStatic name=MB7_DATA type=Mb7Data addr=0x40a24620 size=8
-  PlacedStatic name=MB8_CTL type=MbCtl addr=0x40a24680 size=24
-  PlacedStatic name=MB8_DATA type=Mb8Data addr=0x40a24660 size=8
-  PlacedStatic name=MB9_CTL type=MbCtl addr=0x40a246c0 size=24
-  PlacedStatic name=MB9_DATA type=Mb9Data addr=0x40a246a0 size=8
+  PlacedStatic name=MB0_CTL type=MbCtl addr=0x40a24238 size=24
+  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40a241f0 size=72
+  PlacedStatic name=MB10_CTL type=MbCtl addr=0x40a24730 size=24
+  PlacedStatic name=MB10_DATA type=Mb10Data addr=0x40a24710 size=8
+  PlacedStatic name=MB11_CTL type=MbCtl addr=0x40a24770 size=24
+  PlacedStatic name=MB11_DATA type=Mb11Data addr=0x40a24750 size=8
+  PlacedStatic name=MB12_CTL type=MbCtl addr=0x40a247b0 size=24
+  PlacedStatic name=MB12_DATA type=Mb12Data addr=0x40a24790 size=8
+  PlacedStatic name=MB13_CTL type=MbCtl addr=0x40a247f0 size=24
+  PlacedStatic name=MB13_DATA type=Mb13Data addr=0x40a247d0 size=8
+  PlacedStatic name=MB14_CTL type=MbCtl addr=0x40a24830 size=24
+  PlacedStatic name=MB14_DATA type=Mb14Data addr=0x40a24810 size=8
+  PlacedStatic name=MB15_CTL type=MbCtl addr=0x40a24870 size=24
+  PlacedStatic name=MB15_DATA type=Mb15Data addr=0x40a24850 size=8
+  PlacedStatic name=MB16_CTL type=MbCtl addr=0x40a248b0 size=24
+  PlacedStatic name=MB16_DATA type=Mb16Data addr=0x40a24890 size=8
+  PlacedStatic name=MB17_CTL type=MbCtl addr=0x40a248f0 size=24
+  PlacedStatic name=MB17_DATA type=Mb17Data addr=0x40a248d0 size=8
+  PlacedStatic name=MB18_CTL type=MbCtl addr=0x40a24930 size=24
+  PlacedStatic name=MB18_DATA type=Mb18Data addr=0x40a24910 size=8
+  PlacedStatic name=MB19_CTL type=MbCtl addr=0x40a24970 size=24
+  PlacedStatic name=MB19_DATA type=Mb19Data addr=0x40a24950 size=8
+  PlacedStatic name=MB1_CTL type=MbCtl addr=0x40a24268 size=24
+  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x40a24250 size=24
+  PlacedStatic name=MB20_CTL type=MbCtl addr=0x40a249b0 size=24
+  PlacedStatic name=MB20_DATA type=Mb20Data addr=0x40a24990 size=8
+  PlacedStatic name=MB21_CTL type=MbCtl addr=0x40a249f0 size=24
+  PlacedStatic name=MB21_DATA type=Mb21Data addr=0x40a249d0 size=8
+  PlacedStatic name=MB22_CTL type=MbCtl addr=0x40a24a30 size=24
+  PlacedStatic name=MB22_DATA type=Mb22Data addr=0x40a24a10 size=8
+  PlacedStatic name=MB23_CTL type=MbCtl addr=0x40a24a70 size=24
+  PlacedStatic name=MB23_DATA type=Mb23Data addr=0x40a24a50 size=8
+  PlacedStatic name=MB24_CTL type=MbCtl addr=0x40a24ab0 size=24
+  PlacedStatic name=MB24_DATA type=Mb24Data addr=0x40a24a90 size=8
+  PlacedStatic name=MB25_CTL type=MbCtl addr=0x40a24af0 size=24
+  PlacedStatic name=MB25_DATA type=Mb25Data addr=0x40a24ad0 size=8
+  PlacedStatic name=MB26_CTL type=MbCtl addr=0x40a24b30 size=24
+  PlacedStatic name=MB26_DATA type=Mb26Data addr=0x40a24b10 size=8
+  PlacedStatic name=MB27_CTL type=MbCtl addr=0x40a24b70 size=24
+  PlacedStatic name=MB27_DATA type=Mb27Data addr=0x40a24b50 size=8
+  PlacedStatic name=MB28_CTL type=MbCtl addr=0x40a24bb0 size=24
+  PlacedStatic name=MB28_DATA type=Mb28Data addr=0x40a24b90 size=8
+  PlacedStatic name=MB29_CTL type=MbCtl addr=0x40a24bf0 size=24
+  PlacedStatic name=MB29_DATA type=Mb29Data addr=0x40a24bd0 size=8
+  PlacedStatic name=MB2_CTL type=MbCtl addr=0x40a24298 size=24
+  PlacedStatic name=MB2_DATA type=Mb2Data addr=0x40a24280 size=24
+  PlacedStatic name=MB30_CTL type=MbCtl addr=0x40a24c30 size=24
+  PlacedStatic name=MB30_DATA type=Mb30Data addr=0x40a24c10 size=8
+  PlacedStatic name=MB31_CTL type=MbCtl addr=0x40a24c70 size=24
+  PlacedStatic name=MB31_DATA type=Mb31Data addr=0x40a24c50 size=8
+  PlacedStatic name=MB3_CTL type=MbCtl addr=0x40a242c8 size=24
+  PlacedStatic name=MB3_DATA type=Mb3Data addr=0x40a242b0 size=24
+  PlacedStatic name=MB4_CTL type=MbCtl addr=0x40a242f8 size=24
+  PlacedStatic name=MB4_DATA type=Mb4Data addr=0x40a242e0 size=24
+  PlacedStatic name=MB5_CTL type=MbCtl addr=0x40a245f0 size=24
+  PlacedStatic name=MB5_DATA type=Mb5Data addr=0x40a245d0 size=8
+  PlacedStatic name=MB6_CTL type=MbCtl addr=0x40a24630 size=24
+  PlacedStatic name=MB6_DATA type=Mb6Data addr=0x40a24610 size=8
+  PlacedStatic name=MB7_CTL type=MbCtl addr=0x40a24670 size=24
+  PlacedStatic name=MB7_DATA type=Mb7Data addr=0x40a24650 size=8
+  PlacedStatic name=MB8_CTL type=MbCtl addr=0x40a246b0 size=24
+  PlacedStatic name=MB8_DATA type=Mb8Data addr=0x40a24690 size=8
+  PlacedStatic name=MB9_CTL type=MbCtl addr=0x40a246f0 size=24
+  PlacedStatic name=MB9_DATA type=Mb9Data addr=0x40a246d0 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
   PlacedStatic name=PENDING type=PendingPage addr=0x4003c000 size=2304
-  PlacedStatic name=R0_CAMERA_LIGHT_POST_TABLE type=R0CameraLightPostTableView addr=0x40bd90c0 size=16
+  PlacedStatic name=R0_CAMERA_LIGHT_POST_TABLE type=R0CameraLightPostTableView addr=0x40be6d40 size=16
   PlacedStatic name=R0_CSG_TABLE type=R0CsgTableView addr=0x40a72740 size=16
-  PlacedStatic name=R0_DEBUG_FRAMEBUFFER_CHUNK_0 type=R0DebugFramebufferChunk0View addr=0x47549000 size=16384
-  PlacedStatic name=R0_DISPLAY_LIST_CHUNK_0 type=R0DisplayListChunk0View addr=0x4754dd00 size=368
+  PlacedStatic name=R0_DEBUG_FRAMEBUFFER_CHUNK_0 type=R0DebugFramebufferChunk0View addr=0x47559000 size=16384
+  PlacedStatic name=R0_DISPLAY_LIST_CHUNK_0 type=R0DisplayListChunk0View addr=0x4755dd00 size=368
   PlacedStatic name=R0_EVENT_TABLE type=R0EventTableView addr=0x40a70640 size=8400
   PlacedStatic name=R0_FEATURE_TABLE type=R0FeatureTableView addr=0x40a70440 size=416
   PlacedStatic name=R0_FIELD_TABLE type=R0FieldTableView addr=0x40a703c0 size=48
   PlacedStatic name=R0_FIXED_DOMAIN_TABLE type=R0FixedDomainTableView addr=0x40a72780 size=40624
   PlacedStatic name=R0_FRAME_PROGRAM_DIRECTORY type=R0FrameProgramDirectoryView addr=0x40a70050 size=272
   PlacedStatic name=R0_FRAME_PROGRAM_HEADER type=FrameProgramHeaderV1 addr=0x40a70000 size=80
-  PlacedStatic name=R0_FRAME_SNAPSHOT type=R0FrameSnapshotView addr=0x40be0100 size=688
-  PlacedStatic name=R0_IMMEDIATE_TABLE type=R0ImmediateTableView addr=0x40a7c640 size=1428072
+  PlacedStatic name=R0_FRAME_SNAPSHOT type=R0FrameSnapshotView addr=0x40bf0100 size=688
+  PlacedStatic name=R0_IMMEDIATE_TABLE type=R0ImmediateTableView addr=0x40a7c640 size=1484496
   PlacedStatic name=R0_MATERIAL_TABLE type=R0MaterialTableView addr=0x40a70600 size=16
   PlacedStatic name=R0_OBJECT_TABLE type=R0ObjectTableView addr=0x40a70400 size=16
   PlacedStatic name=R0_SCALAR_TABLE type=R0ScalarTableView addr=0x40a70180 size=576
-  PlacedStatic name=R0_SCANOUT_STATE type=R0ScanoutStateView addr=0x40be0000 size=256
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_ACTIVE_FEATURES_CHUNK_0 type=R0Worker0WorkspaceACTIVE_FEATURESChunk0View addr=0x40c006a0 size=1664
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_ACTIVE_SHEETS_CHUNK_0 type=R0Worker0WorkspaceACTIVE_SHEETSChunk0View addr=0x40c393a0 size=46208
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_0 type=R0Worker0WorkspaceCORRIDORSChunk0View addr=0x4565a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_1 type=R0Worker0WorkspaceCORRIDORSChunk1View addr=0x456ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_10 type=R0Worker0WorkspaceCORRIDORSChunk10View addr=0x45a1a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_11 type=R0Worker0WorkspaceCORRIDORSChunk11View addr=0x45a7a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_12 type=R0Worker0WorkspaceCORRIDORSChunk12View addr=0x45ada018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_13 type=R0Worker0WorkspaceCORRIDORSChunk13View addr=0x45b3a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_14 type=R0Worker0WorkspaceCORRIDORSChunk14View addr=0x45b9a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_15 type=R0Worker0WorkspaceCORRIDORSChunk15View addr=0x45bfa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_16 type=R0Worker0WorkspaceCORRIDORSChunk16View addr=0x45c5a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_17 type=R0Worker0WorkspaceCORRIDORSChunk17View addr=0x45cba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_18 type=R0Worker0WorkspaceCORRIDORSChunk18View addr=0x45d1a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_19 type=R0Worker0WorkspaceCORRIDORSChunk19View addr=0x45d7a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_2 type=R0Worker0WorkspaceCORRIDORSChunk2View addr=0x4571a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_20 type=R0Worker0WorkspaceCORRIDORSChunk20View addr=0x45dda018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_21 type=R0Worker0WorkspaceCORRIDORSChunk21View addr=0x45e3a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_22 type=R0Worker0WorkspaceCORRIDORSChunk22View addr=0x45e9a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_23 type=R0Worker0WorkspaceCORRIDORSChunk23View addr=0x45efa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_24 type=R0Worker0WorkspaceCORRIDORSChunk24View addr=0x45f5a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_25 type=R0Worker0WorkspaceCORRIDORSChunk25View addr=0x45fba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_26 type=R0Worker0WorkspaceCORRIDORSChunk26View addr=0x4601a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_27 type=R0Worker0WorkspaceCORRIDORSChunk27View addr=0x4607a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_28 type=R0Worker0WorkspaceCORRIDORSChunk28View addr=0x460da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_29 type=R0Worker0WorkspaceCORRIDORSChunk29View addr=0x4613a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_3 type=R0Worker0WorkspaceCORRIDORSChunk3View addr=0x4577a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_30 type=R0Worker0WorkspaceCORRIDORSChunk30View addr=0x4619a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_31 type=R0Worker0WorkspaceCORRIDORSChunk31View addr=0x461fa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_32 type=R0Worker0WorkspaceCORRIDORSChunk32View addr=0x4625a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_33 type=R0Worker0WorkspaceCORRIDORSChunk33View addr=0x462ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_34 type=R0Worker0WorkspaceCORRIDORSChunk34View addr=0x4631a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_35 type=R0Worker0WorkspaceCORRIDORSChunk35View addr=0x4637a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_36 type=R0Worker0WorkspaceCORRIDORSChunk36View addr=0x463da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_37 type=R0Worker0WorkspaceCORRIDORSChunk37View addr=0x4643a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_38 type=R0Worker0WorkspaceCORRIDORSChunk38View addr=0x4649a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_39 type=R0Worker0WorkspaceCORRIDORSChunk39View addr=0x464fa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_4 type=R0Worker0WorkspaceCORRIDORSChunk4View addr=0x457da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_40 type=R0Worker0WorkspaceCORRIDORSChunk40View addr=0x4655a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_41 type=R0Worker0WorkspaceCORRIDORSChunk41View addr=0x465ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_42 type=R0Worker0WorkspaceCORRIDORSChunk42View addr=0x4661a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_43 type=R0Worker0WorkspaceCORRIDORSChunk43View addr=0x4667a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_44 type=R0Worker0WorkspaceCORRIDORSChunk44View addr=0x466da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_45 type=R0Worker0WorkspaceCORRIDORSChunk45View addr=0x4673a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_46 type=R0Worker0WorkspaceCORRIDORSChunk46View addr=0x4679a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_47 type=R0Worker0WorkspaceCORRIDORSChunk47View addr=0x467fa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_48 type=R0Worker0WorkspaceCORRIDORSChunk48View addr=0x4685a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_49 type=R0Worker0WorkspaceCORRIDORSChunk49View addr=0x468ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_5 type=R0Worker0WorkspaceCORRIDORSChunk5View addr=0x4583a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_50 type=R0Worker0WorkspaceCORRIDORSChunk50View addr=0x4691a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_51 type=R0Worker0WorkspaceCORRIDORSChunk51View addr=0x4697a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_52 type=R0Worker0WorkspaceCORRIDORSChunk52View addr=0x469da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_53 type=R0Worker0WorkspaceCORRIDORSChunk53View addr=0x46a3a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_54 type=R0Worker0WorkspaceCORRIDORSChunk54View addr=0x46a9a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_55 type=R0Worker0WorkspaceCORRIDORSChunk55View addr=0x46afa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_56 type=R0Worker0WorkspaceCORRIDORSChunk56View addr=0x46b5a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_57 type=R0Worker0WorkspaceCORRIDORSChunk57View addr=0x46bba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_58 type=R0Worker0WorkspaceCORRIDORSChunk58View addr=0x46c1a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_59 type=R0Worker0WorkspaceCORRIDORSChunk59View addr=0x46c7a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_6 type=R0Worker0WorkspaceCORRIDORSChunk6View addr=0x4589a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_60 type=R0Worker0WorkspaceCORRIDORSChunk60View addr=0x46cda018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_61 type=R0Worker0WorkspaceCORRIDORSChunk61View addr=0x46d3a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_62 type=R0Worker0WorkspaceCORRIDORSChunk62View addr=0x46d9a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_63 type=R0Worker0WorkspaceCORRIDORSChunk63View addr=0x46dfa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_64 type=R0Worker0WorkspaceCORRIDORSChunk64View addr=0x46e5a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_65 type=R0Worker0WorkspaceCORRIDORSChunk65View addr=0x46eba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_66 type=R0Worker0WorkspaceCORRIDORSChunk66View addr=0x46f1a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_67 type=R0Worker0WorkspaceCORRIDORSChunk67View addr=0x46f7a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_68 type=R0Worker0WorkspaceCORRIDORSChunk68View addr=0x46fda018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_69 type=R0Worker0WorkspaceCORRIDORSChunk69View addr=0x4703a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_7 type=R0Worker0WorkspaceCORRIDORSChunk7View addr=0x458fa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_70 type=R0Worker0WorkspaceCORRIDORSChunk70View addr=0x4709a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_71 type=R0Worker0WorkspaceCORRIDORSChunk71View addr=0x470fa018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_72 type=R0Worker0WorkspaceCORRIDORSChunk72View addr=0x4715a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_73 type=R0Worker0WorkspaceCORRIDORSChunk73View addr=0x471ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_74 type=R0Worker0WorkspaceCORRIDORSChunk74View addr=0x4721a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_75 type=R0Worker0WorkspaceCORRIDORSChunk75View addr=0x4727a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_76 type=R0Worker0WorkspaceCORRIDORSChunk76View addr=0x472da018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_77 type=R0Worker0WorkspaceCORRIDORSChunk77View addr=0x4733a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_78 type=R0Worker0WorkspaceCORRIDORSChunk78View addr=0x4739a018 size=230848
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_8 type=R0Worker0WorkspaceCORRIDORSChunk8View addr=0x4595a018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_9 type=R0Worker0WorkspaceCORRIDORSChunk9View addr=0x459ba018 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_0 type=R0Worker0WorkspaceEVENTSChunk0View addr=0x40c44820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_1 type=R0Worker0WorkspaceEVENTSChunk1View addr=0x40ca4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_10 type=R0Worker0WorkspaceEVENTSChunk10View addr=0x41004820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_11 type=R0Worker0WorkspaceEVENTSChunk11View addr=0x41064820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_12 type=R0Worker0WorkspaceEVENTSChunk12View addr=0x410c4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_13 type=R0Worker0WorkspaceEVENTSChunk13View addr=0x41124820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_14 type=R0Worker0WorkspaceEVENTSChunk14View addr=0x41184820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_15 type=R0Worker0WorkspaceEVENTSChunk15View addr=0x411e4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_16 type=R0Worker0WorkspaceEVENTSChunk16View addr=0x41244820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_17 type=R0Worker0WorkspaceEVENTSChunk17View addr=0x412a4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_18 type=R0Worker0WorkspaceEVENTSChunk18View addr=0x41304820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_19 type=R0Worker0WorkspaceEVENTSChunk19View addr=0x41364820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_2 type=R0Worker0WorkspaceEVENTSChunk2View addr=0x40d04820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_20 type=R0Worker0WorkspaceEVENTSChunk20View addr=0x413c4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_21 type=R0Worker0WorkspaceEVENTSChunk21View addr=0x41424820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_22 type=R0Worker0WorkspaceEVENTSChunk22View addr=0x41484820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_23 type=R0Worker0WorkspaceEVENTSChunk23View addr=0x414e4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_24 type=R0Worker0WorkspaceEVENTSChunk24View addr=0x41544820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_25 type=R0Worker0WorkspaceEVENTSChunk25View addr=0x415a4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_26 type=R0Worker0WorkspaceEVENTSChunk26View addr=0x41604820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_27 type=R0Worker0WorkspaceEVENTSChunk27View addr=0x41664820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_28 type=R0Worker0WorkspaceEVENTSChunk28View addr=0x416c4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_29 type=R0Worker0WorkspaceEVENTSChunk29View addr=0x41724820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_3 type=R0Worker0WorkspaceEVENTSChunk3View addr=0x40d64820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_30 type=R0Worker0WorkspaceEVENTSChunk30View addr=0x41784820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_31 type=R0Worker0WorkspaceEVENTSChunk31View addr=0x417e4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_32 type=R0Worker0WorkspaceEVENTSChunk32View addr=0x41844820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_33 type=R0Worker0WorkspaceEVENTSChunk33View addr=0x418a4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_34 type=R0Worker0WorkspaceEVENTSChunk34View addr=0x41904820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_35 type=R0Worker0WorkspaceEVENTSChunk35View addr=0x41964820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_36 type=R0Worker0WorkspaceEVENTSChunk36View addr=0x419c4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_37 type=R0Worker0WorkspaceEVENTSChunk37View addr=0x41a24820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_38 type=R0Worker0WorkspaceEVENTSChunk38View addr=0x41a84820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_39 type=R0Worker0WorkspaceEVENTSChunk39View addr=0x41ae4820 size=115424
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_4 type=R0Worker0WorkspaceEVENTSChunk4View addr=0x40dc4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_5 type=R0Worker0WorkspaceEVENTSChunk5View addr=0x40e24820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_6 type=R0Worker0WorkspaceEVENTSChunk6View addr=0x40e84820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_7 type=R0Worker0WorkspaceEVENTSChunk7View addr=0x40ee4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_8 type=R0Worker0WorkspaceEVENTSChunk8View addr=0x40f44820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_9 type=R0Worker0WorkspaceEVENTSChunk9View addr=0x40fa4820 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENT_STACK_CHUNK_0 type=R0Worker0WorkspaceEVENT_STACKChunk0View addr=0x41b00b00 size=100352
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_FIXED_Q_CHUNK_0 type=R0Worker0WorkspaceFIXED_QChunk0View addr=0x473d25d8 size=218640
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_HEADER type=R0Worker0WorkspaceHeaderView addr=0x40c00660 size=64
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_REBUILD_CHUNK_0 type=R0Worker0WorkspaceREBUILDChunk0View addr=0x45609f00 size=327960
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOTS_CHUNK_0 type=R0Worker0WorkspaceROOTSChunk0View addr=0x40c00d20 size=92416
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOTS_TMP_CHUNK_0 type=R0Worker0WorkspaceROOTS_TMPChunk0View addr=0x40c17620 size=92416
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOT_STACK_CHUNK_0 type=R0Worker0WorkspaceROOT_STACKChunk0View addr=0x40c2df20 size=46208
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_0 type=R0Worker0WorkspaceRUNSChunk0View addr=0x41b19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_1 type=R0Worker0WorkspaceRUNSChunk1View addr=0x41b79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_10 type=R0Worker0WorkspaceRUNSChunk10View addr=0x41ed9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_100 type=R0Worker0WorkspaceRUNSChunk100View addr=0x44099300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_101 type=R0Worker0WorkspaceRUNSChunk101View addr=0x440f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_102 type=R0Worker0WorkspaceRUNSChunk102View addr=0x44159300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_103 type=R0Worker0WorkspaceRUNSChunk103View addr=0x441b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_104 type=R0Worker0WorkspaceRUNSChunk104View addr=0x44219300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_105 type=R0Worker0WorkspaceRUNSChunk105View addr=0x44279300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_106 type=R0Worker0WorkspaceRUNSChunk106View addr=0x442d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_107 type=R0Worker0WorkspaceRUNSChunk107View addr=0x44339300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_108 type=R0Worker0WorkspaceRUNSChunk108View addr=0x44399300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_109 type=R0Worker0WorkspaceRUNSChunk109View addr=0x443f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_11 type=R0Worker0WorkspaceRUNSChunk11View addr=0x41f39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_110 type=R0Worker0WorkspaceRUNSChunk110View addr=0x44459300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_111 type=R0Worker0WorkspaceRUNSChunk111View addr=0x444b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_112 type=R0Worker0WorkspaceRUNSChunk112View addr=0x44519300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_113 type=R0Worker0WorkspaceRUNSChunk113View addr=0x44579300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_114 type=R0Worker0WorkspaceRUNSChunk114View addr=0x445d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_115 type=R0Worker0WorkspaceRUNSChunk115View addr=0x44639300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_116 type=R0Worker0WorkspaceRUNSChunk116View addr=0x44699300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_117 type=R0Worker0WorkspaceRUNSChunk117View addr=0x446f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_118 type=R0Worker0WorkspaceRUNSChunk118View addr=0x44759300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_119 type=R0Worker0WorkspaceRUNSChunk119View addr=0x447b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_12 type=R0Worker0WorkspaceRUNSChunk12View addr=0x41f99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_120 type=R0Worker0WorkspaceRUNSChunk120View addr=0x44819300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_121 type=R0Worker0WorkspaceRUNSChunk121View addr=0x44879300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_122 type=R0Worker0WorkspaceRUNSChunk122View addr=0x448d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_123 type=R0Worker0WorkspaceRUNSChunk123View addr=0x44939300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_124 type=R0Worker0WorkspaceRUNSChunk124View addr=0x44999300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_125 type=R0Worker0WorkspaceRUNSChunk125View addr=0x449f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_126 type=R0Worker0WorkspaceRUNSChunk126View addr=0x44a59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_127 type=R0Worker0WorkspaceRUNSChunk127View addr=0x44ab9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_128 type=R0Worker0WorkspaceRUNSChunk128View addr=0x44b19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_129 type=R0Worker0WorkspaceRUNSChunk129View addr=0x44b79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_13 type=R0Worker0WorkspaceRUNSChunk13View addr=0x41ff9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_130 type=R0Worker0WorkspaceRUNSChunk130View addr=0x44bd9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_131 type=R0Worker0WorkspaceRUNSChunk131View addr=0x44c39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_132 type=R0Worker0WorkspaceRUNSChunk132View addr=0x44c99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_133 type=R0Worker0WorkspaceRUNSChunk133View addr=0x44cf9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_134 type=R0Worker0WorkspaceRUNSChunk134View addr=0x44d59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_135 type=R0Worker0WorkspaceRUNSChunk135View addr=0x44db9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_136 type=R0Worker0WorkspaceRUNSChunk136View addr=0x44e19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_137 type=R0Worker0WorkspaceRUNSChunk137View addr=0x44e79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_138 type=R0Worker0WorkspaceRUNSChunk138View addr=0x44ed9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_139 type=R0Worker0WorkspaceRUNSChunk139View addr=0x44f39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_14 type=R0Worker0WorkspaceRUNSChunk14View addr=0x42059300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_140 type=R0Worker0WorkspaceRUNSChunk140View addr=0x44f99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_141 type=R0Worker0WorkspaceRUNSChunk141View addr=0x44ff9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_142 type=R0Worker0WorkspaceRUNSChunk142View addr=0x45059300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_143 type=R0Worker0WorkspaceRUNSChunk143View addr=0x450b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_144 type=R0Worker0WorkspaceRUNSChunk144View addr=0x45119300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_145 type=R0Worker0WorkspaceRUNSChunk145View addr=0x45179300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_146 type=R0Worker0WorkspaceRUNSChunk146View addr=0x451d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_147 type=R0Worker0WorkspaceRUNSChunk147View addr=0x45239300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_148 type=R0Worker0WorkspaceRUNSChunk148View addr=0x45299300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_149 type=R0Worker0WorkspaceRUNSChunk149View addr=0x452f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_15 type=R0Worker0WorkspaceRUNSChunk15View addr=0x420b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_150 type=R0Worker0WorkspaceRUNSChunk150View addr=0x45359300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_151 type=R0Worker0WorkspaceRUNSChunk151View addr=0x453b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_152 type=R0Worker0WorkspaceRUNSChunk152View addr=0x45419300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_153 type=R0Worker0WorkspaceRUNSChunk153View addr=0x45479300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_154 type=R0Worker0WorkspaceRUNSChunk154View addr=0x454d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_155 type=R0Worker0WorkspaceRUNSChunk155View addr=0x45539300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_156 type=R0Worker0WorkspaceRUNSChunk156View addr=0x45599300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_157 type=R0Worker0WorkspaceRUNSChunk157View addr=0x455f9300 size=68608
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_16 type=R0Worker0WorkspaceRUNSChunk16View addr=0x42119300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_17 type=R0Worker0WorkspaceRUNSChunk17View addr=0x42179300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_18 type=R0Worker0WorkspaceRUNSChunk18View addr=0x421d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_19 type=R0Worker0WorkspaceRUNSChunk19View addr=0x42239300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_2 type=R0Worker0WorkspaceRUNSChunk2View addr=0x41bd9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_20 type=R0Worker0WorkspaceRUNSChunk20View addr=0x42299300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_21 type=R0Worker0WorkspaceRUNSChunk21View addr=0x422f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_22 type=R0Worker0WorkspaceRUNSChunk22View addr=0x42359300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_23 type=R0Worker0WorkspaceRUNSChunk23View addr=0x423b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_24 type=R0Worker0WorkspaceRUNSChunk24View addr=0x42419300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_25 type=R0Worker0WorkspaceRUNSChunk25View addr=0x42479300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_26 type=R0Worker0WorkspaceRUNSChunk26View addr=0x424d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_27 type=R0Worker0WorkspaceRUNSChunk27View addr=0x42539300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_28 type=R0Worker0WorkspaceRUNSChunk28View addr=0x42599300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_29 type=R0Worker0WorkspaceRUNSChunk29View addr=0x425f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_3 type=R0Worker0WorkspaceRUNSChunk3View addr=0x41c39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_30 type=R0Worker0WorkspaceRUNSChunk30View addr=0x42659300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_31 type=R0Worker0WorkspaceRUNSChunk31View addr=0x426b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_32 type=R0Worker0WorkspaceRUNSChunk32View addr=0x42719300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_33 type=R0Worker0WorkspaceRUNSChunk33View addr=0x42779300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_34 type=R0Worker0WorkspaceRUNSChunk34View addr=0x427d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_35 type=R0Worker0WorkspaceRUNSChunk35View addr=0x42839300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_36 type=R0Worker0WorkspaceRUNSChunk36View addr=0x42899300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_37 type=R0Worker0WorkspaceRUNSChunk37View addr=0x428f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_38 type=R0Worker0WorkspaceRUNSChunk38View addr=0x42959300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_39 type=R0Worker0WorkspaceRUNSChunk39View addr=0x429b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_4 type=R0Worker0WorkspaceRUNSChunk4View addr=0x41c99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_40 type=R0Worker0WorkspaceRUNSChunk40View addr=0x42a19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_41 type=R0Worker0WorkspaceRUNSChunk41View addr=0x42a79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_42 type=R0Worker0WorkspaceRUNSChunk42View addr=0x42ad9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_43 type=R0Worker0WorkspaceRUNSChunk43View addr=0x42b39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_44 type=R0Worker0WorkspaceRUNSChunk44View addr=0x42b99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_45 type=R0Worker0WorkspaceRUNSChunk45View addr=0x42bf9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_46 type=R0Worker0WorkspaceRUNSChunk46View addr=0x42c59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_47 type=R0Worker0WorkspaceRUNSChunk47View addr=0x42cb9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_48 type=R0Worker0WorkspaceRUNSChunk48View addr=0x42d19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_49 type=R0Worker0WorkspaceRUNSChunk49View addr=0x42d79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_5 type=R0Worker0WorkspaceRUNSChunk5View addr=0x41cf9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_50 type=R0Worker0WorkspaceRUNSChunk50View addr=0x42dd9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_51 type=R0Worker0WorkspaceRUNSChunk51View addr=0x42e39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_52 type=R0Worker0WorkspaceRUNSChunk52View addr=0x42e99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_53 type=R0Worker0WorkspaceRUNSChunk53View addr=0x42ef9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_54 type=R0Worker0WorkspaceRUNSChunk54View addr=0x42f59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_55 type=R0Worker0WorkspaceRUNSChunk55View addr=0x42fb9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_56 type=R0Worker0WorkspaceRUNSChunk56View addr=0x43019300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_57 type=R0Worker0WorkspaceRUNSChunk57View addr=0x43079300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_58 type=R0Worker0WorkspaceRUNSChunk58View addr=0x430d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_59 type=R0Worker0WorkspaceRUNSChunk59View addr=0x43139300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_6 type=R0Worker0WorkspaceRUNSChunk6View addr=0x41d59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_60 type=R0Worker0WorkspaceRUNSChunk60View addr=0x43199300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_61 type=R0Worker0WorkspaceRUNSChunk61View addr=0x431f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_62 type=R0Worker0WorkspaceRUNSChunk62View addr=0x43259300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_63 type=R0Worker0WorkspaceRUNSChunk63View addr=0x432b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_64 type=R0Worker0WorkspaceRUNSChunk64View addr=0x43319300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_65 type=R0Worker0WorkspaceRUNSChunk65View addr=0x43379300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_66 type=R0Worker0WorkspaceRUNSChunk66View addr=0x433d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_67 type=R0Worker0WorkspaceRUNSChunk67View addr=0x43439300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_68 type=R0Worker0WorkspaceRUNSChunk68View addr=0x43499300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_69 type=R0Worker0WorkspaceRUNSChunk69View addr=0x434f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_7 type=R0Worker0WorkspaceRUNSChunk7View addr=0x41db9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_70 type=R0Worker0WorkspaceRUNSChunk70View addr=0x43559300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_71 type=R0Worker0WorkspaceRUNSChunk71View addr=0x435b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_72 type=R0Worker0WorkspaceRUNSChunk72View addr=0x43619300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_73 type=R0Worker0WorkspaceRUNSChunk73View addr=0x43679300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_74 type=R0Worker0WorkspaceRUNSChunk74View addr=0x436d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_75 type=R0Worker0WorkspaceRUNSChunk75View addr=0x43739300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_76 type=R0Worker0WorkspaceRUNSChunk76View addr=0x43799300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_77 type=R0Worker0WorkspaceRUNSChunk77View addr=0x437f9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_78 type=R0Worker0WorkspaceRUNSChunk78View addr=0x43859300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_79 type=R0Worker0WorkspaceRUNSChunk79View addr=0x438b9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_8 type=R0Worker0WorkspaceRUNSChunk8View addr=0x41e19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_80 type=R0Worker0WorkspaceRUNSChunk80View addr=0x43919300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_81 type=R0Worker0WorkspaceRUNSChunk81View addr=0x43979300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_82 type=R0Worker0WorkspaceRUNSChunk82View addr=0x439d9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_83 type=R0Worker0WorkspaceRUNSChunk83View addr=0x43a39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_84 type=R0Worker0WorkspaceRUNSChunk84View addr=0x43a99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_85 type=R0Worker0WorkspaceRUNSChunk85View addr=0x43af9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_86 type=R0Worker0WorkspaceRUNSChunk86View addr=0x43b59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_87 type=R0Worker0WorkspaceRUNSChunk87View addr=0x43bb9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_88 type=R0Worker0WorkspaceRUNSChunk88View addr=0x43c19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_89 type=R0Worker0WorkspaceRUNSChunk89View addr=0x43c79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_9 type=R0Worker0WorkspaceRUNSChunk9View addr=0x41e79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_90 type=R0Worker0WorkspaceRUNSChunk90View addr=0x43cd9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_91 type=R0Worker0WorkspaceRUNSChunk91View addr=0x43d39300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_92 type=R0Worker0WorkspaceRUNSChunk92View addr=0x43d99300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_93 type=R0Worker0WorkspaceRUNSChunk93View addr=0x43df9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_94 type=R0Worker0WorkspaceRUNSChunk94View addr=0x43e59300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_95 type=R0Worker0WorkspaceRUNSChunk95View addr=0x43eb9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_96 type=R0Worker0WorkspaceRUNSChunk96View addr=0x43f19300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_97 type=R0Worker0WorkspaceRUNSChunk97View addr=0x43f79300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_98 type=R0Worker0WorkspaceRUNSChunk98View addr=0x43fd9300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_99 type=R0Worker0WorkspaceRUNSChunk99View addr=0x44039300 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_0 type=R0Worker0WorkspaceSHADINGChunk0View addr=0x47407be8 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_1 type=R0Worker0WorkspaceSHADINGChunk1View addr=0x47467be8 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_2 type=R0Worker0WorkspaceSHADINGChunk2View addr=0x474c7be8 size=88128
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_0 type=R0Worker0WorkspaceTRANSPARENCYChunk0View addr=0x474dd428 size=393216
-  PlacedStatic name=R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_1 type=R0Worker0WorkspaceTRANSPARENCYChunk1View addr=0x4753d428 size=44064
+  PlacedStatic name=R0_SCANOUT_STATE type=R0ScanoutStateView addr=0x40bf0000 size=256
+  PlacedStatic name=R0_SHADING_SUMMARY_TABLE type=R0ShadingSummaryTableView addr=0x40be6dc0 size=208
+  PlacedStatic name=R0_TEXTURE_TABLE type=R0TextureTableView addr=0x40be6d80 size=16
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_ACTIVE_FEATURES_CHUNK_0 type=R0Worker0WorkspaceACTIVE_FEATURESChunk0View addr=0x40c106a0 size=1664
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_ACTIVE_SHEETS_CHUNK_0 type=R0Worker0WorkspaceACTIVE_SHEETSChunk0View addr=0x40c493a0 size=46208
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_0 type=R0Worker0WorkspaceCORRIDORSChunk0View addr=0x4566a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_1 type=R0Worker0WorkspaceCORRIDORSChunk1View addr=0x456ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_10 type=R0Worker0WorkspaceCORRIDORSChunk10View addr=0x45a2a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_11 type=R0Worker0WorkspaceCORRIDORSChunk11View addr=0x45a8a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_12 type=R0Worker0WorkspaceCORRIDORSChunk12View addr=0x45aea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_13 type=R0Worker0WorkspaceCORRIDORSChunk13View addr=0x45b4a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_14 type=R0Worker0WorkspaceCORRIDORSChunk14View addr=0x45baa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_15 type=R0Worker0WorkspaceCORRIDORSChunk15View addr=0x45c0a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_16 type=R0Worker0WorkspaceCORRIDORSChunk16View addr=0x45c6a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_17 type=R0Worker0WorkspaceCORRIDORSChunk17View addr=0x45cca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_18 type=R0Worker0WorkspaceCORRIDORSChunk18View addr=0x45d2a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_19 type=R0Worker0WorkspaceCORRIDORSChunk19View addr=0x45d8a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_2 type=R0Worker0WorkspaceCORRIDORSChunk2View addr=0x4572a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_20 type=R0Worker0WorkspaceCORRIDORSChunk20View addr=0x45dea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_21 type=R0Worker0WorkspaceCORRIDORSChunk21View addr=0x45e4a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_22 type=R0Worker0WorkspaceCORRIDORSChunk22View addr=0x45eaa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_23 type=R0Worker0WorkspaceCORRIDORSChunk23View addr=0x45f0a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_24 type=R0Worker0WorkspaceCORRIDORSChunk24View addr=0x45f6a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_25 type=R0Worker0WorkspaceCORRIDORSChunk25View addr=0x45fca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_26 type=R0Worker0WorkspaceCORRIDORSChunk26View addr=0x4602a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_27 type=R0Worker0WorkspaceCORRIDORSChunk27View addr=0x4608a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_28 type=R0Worker0WorkspaceCORRIDORSChunk28View addr=0x460ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_29 type=R0Worker0WorkspaceCORRIDORSChunk29View addr=0x4614a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_3 type=R0Worker0WorkspaceCORRIDORSChunk3View addr=0x4578a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_30 type=R0Worker0WorkspaceCORRIDORSChunk30View addr=0x461aa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_31 type=R0Worker0WorkspaceCORRIDORSChunk31View addr=0x4620a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_32 type=R0Worker0WorkspaceCORRIDORSChunk32View addr=0x4626a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_33 type=R0Worker0WorkspaceCORRIDORSChunk33View addr=0x462ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_34 type=R0Worker0WorkspaceCORRIDORSChunk34View addr=0x4632a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_35 type=R0Worker0WorkspaceCORRIDORSChunk35View addr=0x4638a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_36 type=R0Worker0WorkspaceCORRIDORSChunk36View addr=0x463ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_37 type=R0Worker0WorkspaceCORRIDORSChunk37View addr=0x4644a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_38 type=R0Worker0WorkspaceCORRIDORSChunk38View addr=0x464aa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_39 type=R0Worker0WorkspaceCORRIDORSChunk39View addr=0x4650a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_4 type=R0Worker0WorkspaceCORRIDORSChunk4View addr=0x457ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_40 type=R0Worker0WorkspaceCORRIDORSChunk40View addr=0x4656a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_41 type=R0Worker0WorkspaceCORRIDORSChunk41View addr=0x465ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_42 type=R0Worker0WorkspaceCORRIDORSChunk42View addr=0x4662a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_43 type=R0Worker0WorkspaceCORRIDORSChunk43View addr=0x4668a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_44 type=R0Worker0WorkspaceCORRIDORSChunk44View addr=0x466ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_45 type=R0Worker0WorkspaceCORRIDORSChunk45View addr=0x4674a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_46 type=R0Worker0WorkspaceCORRIDORSChunk46View addr=0x467aa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_47 type=R0Worker0WorkspaceCORRIDORSChunk47View addr=0x4680a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_48 type=R0Worker0WorkspaceCORRIDORSChunk48View addr=0x4686a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_49 type=R0Worker0WorkspaceCORRIDORSChunk49View addr=0x468ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_5 type=R0Worker0WorkspaceCORRIDORSChunk5View addr=0x4584a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_50 type=R0Worker0WorkspaceCORRIDORSChunk50View addr=0x4692a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_51 type=R0Worker0WorkspaceCORRIDORSChunk51View addr=0x4698a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_52 type=R0Worker0WorkspaceCORRIDORSChunk52View addr=0x469ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_53 type=R0Worker0WorkspaceCORRIDORSChunk53View addr=0x46a4a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_54 type=R0Worker0WorkspaceCORRIDORSChunk54View addr=0x46aaa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_55 type=R0Worker0WorkspaceCORRIDORSChunk55View addr=0x46b0a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_56 type=R0Worker0WorkspaceCORRIDORSChunk56View addr=0x46b6a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_57 type=R0Worker0WorkspaceCORRIDORSChunk57View addr=0x46bca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_58 type=R0Worker0WorkspaceCORRIDORSChunk58View addr=0x46c2a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_59 type=R0Worker0WorkspaceCORRIDORSChunk59View addr=0x46c8a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_6 type=R0Worker0WorkspaceCORRIDORSChunk6View addr=0x458aa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_60 type=R0Worker0WorkspaceCORRIDORSChunk60View addr=0x46cea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_61 type=R0Worker0WorkspaceCORRIDORSChunk61View addr=0x46d4a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_62 type=R0Worker0WorkspaceCORRIDORSChunk62View addr=0x46daa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_63 type=R0Worker0WorkspaceCORRIDORSChunk63View addr=0x46e0a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_64 type=R0Worker0WorkspaceCORRIDORSChunk64View addr=0x46e6a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_65 type=R0Worker0WorkspaceCORRIDORSChunk65View addr=0x46eca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_66 type=R0Worker0WorkspaceCORRIDORSChunk66View addr=0x46f2a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_67 type=R0Worker0WorkspaceCORRIDORSChunk67View addr=0x46f8a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_68 type=R0Worker0WorkspaceCORRIDORSChunk68View addr=0x46fea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_69 type=R0Worker0WorkspaceCORRIDORSChunk69View addr=0x4704a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_7 type=R0Worker0WorkspaceCORRIDORSChunk7View addr=0x4590a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_70 type=R0Worker0WorkspaceCORRIDORSChunk70View addr=0x470aa018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_71 type=R0Worker0WorkspaceCORRIDORSChunk71View addr=0x4710a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_72 type=R0Worker0WorkspaceCORRIDORSChunk72View addr=0x4716a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_73 type=R0Worker0WorkspaceCORRIDORSChunk73View addr=0x471ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_74 type=R0Worker0WorkspaceCORRIDORSChunk74View addr=0x4722a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_75 type=R0Worker0WorkspaceCORRIDORSChunk75View addr=0x4728a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_76 type=R0Worker0WorkspaceCORRIDORSChunk76View addr=0x472ea018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_77 type=R0Worker0WorkspaceCORRIDORSChunk77View addr=0x4734a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_78 type=R0Worker0WorkspaceCORRIDORSChunk78View addr=0x473aa018 size=230848
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_8 type=R0Worker0WorkspaceCORRIDORSChunk8View addr=0x4596a018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_9 type=R0Worker0WorkspaceCORRIDORSChunk9View addr=0x459ca018 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_0 type=R0Worker0WorkspaceEVENTSChunk0View addr=0x40c54820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_1 type=R0Worker0WorkspaceEVENTSChunk1View addr=0x40cb4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_10 type=R0Worker0WorkspaceEVENTSChunk10View addr=0x41014820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_11 type=R0Worker0WorkspaceEVENTSChunk11View addr=0x41074820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_12 type=R0Worker0WorkspaceEVENTSChunk12View addr=0x410d4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_13 type=R0Worker0WorkspaceEVENTSChunk13View addr=0x41134820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_14 type=R0Worker0WorkspaceEVENTSChunk14View addr=0x41194820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_15 type=R0Worker0WorkspaceEVENTSChunk15View addr=0x411f4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_16 type=R0Worker0WorkspaceEVENTSChunk16View addr=0x41254820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_17 type=R0Worker0WorkspaceEVENTSChunk17View addr=0x412b4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_18 type=R0Worker0WorkspaceEVENTSChunk18View addr=0x41314820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_19 type=R0Worker0WorkspaceEVENTSChunk19View addr=0x41374820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_2 type=R0Worker0WorkspaceEVENTSChunk2View addr=0x40d14820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_20 type=R0Worker0WorkspaceEVENTSChunk20View addr=0x413d4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_21 type=R0Worker0WorkspaceEVENTSChunk21View addr=0x41434820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_22 type=R0Worker0WorkspaceEVENTSChunk22View addr=0x41494820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_23 type=R0Worker0WorkspaceEVENTSChunk23View addr=0x414f4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_24 type=R0Worker0WorkspaceEVENTSChunk24View addr=0x41554820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_25 type=R0Worker0WorkspaceEVENTSChunk25View addr=0x415b4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_26 type=R0Worker0WorkspaceEVENTSChunk26View addr=0x41614820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_27 type=R0Worker0WorkspaceEVENTSChunk27View addr=0x41674820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_28 type=R0Worker0WorkspaceEVENTSChunk28View addr=0x416d4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_29 type=R0Worker0WorkspaceEVENTSChunk29View addr=0x41734820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_3 type=R0Worker0WorkspaceEVENTSChunk3View addr=0x40d74820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_30 type=R0Worker0WorkspaceEVENTSChunk30View addr=0x41794820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_31 type=R0Worker0WorkspaceEVENTSChunk31View addr=0x417f4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_32 type=R0Worker0WorkspaceEVENTSChunk32View addr=0x41854820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_33 type=R0Worker0WorkspaceEVENTSChunk33View addr=0x418b4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_34 type=R0Worker0WorkspaceEVENTSChunk34View addr=0x41914820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_35 type=R0Worker0WorkspaceEVENTSChunk35View addr=0x41974820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_36 type=R0Worker0WorkspaceEVENTSChunk36View addr=0x419d4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_37 type=R0Worker0WorkspaceEVENTSChunk37View addr=0x41a34820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_38 type=R0Worker0WorkspaceEVENTSChunk38View addr=0x41a94820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_39 type=R0Worker0WorkspaceEVENTSChunk39View addr=0x41af4820 size=115424
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_4 type=R0Worker0WorkspaceEVENTSChunk4View addr=0x40dd4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_5 type=R0Worker0WorkspaceEVENTSChunk5View addr=0x40e34820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_6 type=R0Worker0WorkspaceEVENTSChunk6View addr=0x40e94820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_7 type=R0Worker0WorkspaceEVENTSChunk7View addr=0x40ef4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_8 type=R0Worker0WorkspaceEVENTSChunk8View addr=0x40f54820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_9 type=R0Worker0WorkspaceEVENTSChunk9View addr=0x40fb4820 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_EVENT_STACK_CHUNK_0 type=R0Worker0WorkspaceEVENT_STACKChunk0View addr=0x41b10b00 size=100352
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_FIXED_Q_CHUNK_0 type=R0Worker0WorkspaceFIXED_QChunk0View addr=0x473e25d8 size=218640
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_HEADER type=R0Worker0WorkspaceHeaderView addr=0x40c10660 size=64
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_REBUILD_CHUNK_0 type=R0Worker0WorkspaceREBUILDChunk0View addr=0x45619f00 size=327960
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOTS_CHUNK_0 type=R0Worker0WorkspaceROOTSChunk0View addr=0x40c10d20 size=92416
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOTS_TMP_CHUNK_0 type=R0Worker0WorkspaceROOTS_TMPChunk0View addr=0x40c27620 size=92416
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_ROOT_STACK_CHUNK_0 type=R0Worker0WorkspaceROOT_STACKChunk0View addr=0x40c3df20 size=46208
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_0 type=R0Worker0WorkspaceRUNSChunk0View addr=0x41b29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_1 type=R0Worker0WorkspaceRUNSChunk1View addr=0x41b89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_10 type=R0Worker0WorkspaceRUNSChunk10View addr=0x41ee9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_100 type=R0Worker0WorkspaceRUNSChunk100View addr=0x440a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_101 type=R0Worker0WorkspaceRUNSChunk101View addr=0x44109300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_102 type=R0Worker0WorkspaceRUNSChunk102View addr=0x44169300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_103 type=R0Worker0WorkspaceRUNSChunk103View addr=0x441c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_104 type=R0Worker0WorkspaceRUNSChunk104View addr=0x44229300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_105 type=R0Worker0WorkspaceRUNSChunk105View addr=0x44289300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_106 type=R0Worker0WorkspaceRUNSChunk106View addr=0x442e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_107 type=R0Worker0WorkspaceRUNSChunk107View addr=0x44349300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_108 type=R0Worker0WorkspaceRUNSChunk108View addr=0x443a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_109 type=R0Worker0WorkspaceRUNSChunk109View addr=0x44409300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_11 type=R0Worker0WorkspaceRUNSChunk11View addr=0x41f49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_110 type=R0Worker0WorkspaceRUNSChunk110View addr=0x44469300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_111 type=R0Worker0WorkspaceRUNSChunk111View addr=0x444c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_112 type=R0Worker0WorkspaceRUNSChunk112View addr=0x44529300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_113 type=R0Worker0WorkspaceRUNSChunk113View addr=0x44589300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_114 type=R0Worker0WorkspaceRUNSChunk114View addr=0x445e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_115 type=R0Worker0WorkspaceRUNSChunk115View addr=0x44649300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_116 type=R0Worker0WorkspaceRUNSChunk116View addr=0x446a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_117 type=R0Worker0WorkspaceRUNSChunk117View addr=0x44709300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_118 type=R0Worker0WorkspaceRUNSChunk118View addr=0x44769300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_119 type=R0Worker0WorkspaceRUNSChunk119View addr=0x447c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_12 type=R0Worker0WorkspaceRUNSChunk12View addr=0x41fa9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_120 type=R0Worker0WorkspaceRUNSChunk120View addr=0x44829300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_121 type=R0Worker0WorkspaceRUNSChunk121View addr=0x44889300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_122 type=R0Worker0WorkspaceRUNSChunk122View addr=0x448e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_123 type=R0Worker0WorkspaceRUNSChunk123View addr=0x44949300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_124 type=R0Worker0WorkspaceRUNSChunk124View addr=0x449a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_125 type=R0Worker0WorkspaceRUNSChunk125View addr=0x44a09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_126 type=R0Worker0WorkspaceRUNSChunk126View addr=0x44a69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_127 type=R0Worker0WorkspaceRUNSChunk127View addr=0x44ac9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_128 type=R0Worker0WorkspaceRUNSChunk128View addr=0x44b29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_129 type=R0Worker0WorkspaceRUNSChunk129View addr=0x44b89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_13 type=R0Worker0WorkspaceRUNSChunk13View addr=0x42009300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_130 type=R0Worker0WorkspaceRUNSChunk130View addr=0x44be9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_131 type=R0Worker0WorkspaceRUNSChunk131View addr=0x44c49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_132 type=R0Worker0WorkspaceRUNSChunk132View addr=0x44ca9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_133 type=R0Worker0WorkspaceRUNSChunk133View addr=0x44d09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_134 type=R0Worker0WorkspaceRUNSChunk134View addr=0x44d69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_135 type=R0Worker0WorkspaceRUNSChunk135View addr=0x44dc9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_136 type=R0Worker0WorkspaceRUNSChunk136View addr=0x44e29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_137 type=R0Worker0WorkspaceRUNSChunk137View addr=0x44e89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_138 type=R0Worker0WorkspaceRUNSChunk138View addr=0x44ee9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_139 type=R0Worker0WorkspaceRUNSChunk139View addr=0x44f49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_14 type=R0Worker0WorkspaceRUNSChunk14View addr=0x42069300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_140 type=R0Worker0WorkspaceRUNSChunk140View addr=0x44fa9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_141 type=R0Worker0WorkspaceRUNSChunk141View addr=0x45009300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_142 type=R0Worker0WorkspaceRUNSChunk142View addr=0x45069300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_143 type=R0Worker0WorkspaceRUNSChunk143View addr=0x450c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_144 type=R0Worker0WorkspaceRUNSChunk144View addr=0x45129300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_145 type=R0Worker0WorkspaceRUNSChunk145View addr=0x45189300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_146 type=R0Worker0WorkspaceRUNSChunk146View addr=0x451e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_147 type=R0Worker0WorkspaceRUNSChunk147View addr=0x45249300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_148 type=R0Worker0WorkspaceRUNSChunk148View addr=0x452a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_149 type=R0Worker0WorkspaceRUNSChunk149View addr=0x45309300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_15 type=R0Worker0WorkspaceRUNSChunk15View addr=0x420c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_150 type=R0Worker0WorkspaceRUNSChunk150View addr=0x45369300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_151 type=R0Worker0WorkspaceRUNSChunk151View addr=0x453c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_152 type=R0Worker0WorkspaceRUNSChunk152View addr=0x45429300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_153 type=R0Worker0WorkspaceRUNSChunk153View addr=0x45489300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_154 type=R0Worker0WorkspaceRUNSChunk154View addr=0x454e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_155 type=R0Worker0WorkspaceRUNSChunk155View addr=0x45549300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_156 type=R0Worker0WorkspaceRUNSChunk156View addr=0x455a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_157 type=R0Worker0WorkspaceRUNSChunk157View addr=0x45609300 size=68608
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_16 type=R0Worker0WorkspaceRUNSChunk16View addr=0x42129300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_17 type=R0Worker0WorkspaceRUNSChunk17View addr=0x42189300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_18 type=R0Worker0WorkspaceRUNSChunk18View addr=0x421e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_19 type=R0Worker0WorkspaceRUNSChunk19View addr=0x42249300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_2 type=R0Worker0WorkspaceRUNSChunk2View addr=0x41be9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_20 type=R0Worker0WorkspaceRUNSChunk20View addr=0x422a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_21 type=R0Worker0WorkspaceRUNSChunk21View addr=0x42309300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_22 type=R0Worker0WorkspaceRUNSChunk22View addr=0x42369300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_23 type=R0Worker0WorkspaceRUNSChunk23View addr=0x423c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_24 type=R0Worker0WorkspaceRUNSChunk24View addr=0x42429300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_25 type=R0Worker0WorkspaceRUNSChunk25View addr=0x42489300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_26 type=R0Worker0WorkspaceRUNSChunk26View addr=0x424e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_27 type=R0Worker0WorkspaceRUNSChunk27View addr=0x42549300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_28 type=R0Worker0WorkspaceRUNSChunk28View addr=0x425a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_29 type=R0Worker0WorkspaceRUNSChunk29View addr=0x42609300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_3 type=R0Worker0WorkspaceRUNSChunk3View addr=0x41c49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_30 type=R0Worker0WorkspaceRUNSChunk30View addr=0x42669300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_31 type=R0Worker0WorkspaceRUNSChunk31View addr=0x426c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_32 type=R0Worker0WorkspaceRUNSChunk32View addr=0x42729300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_33 type=R0Worker0WorkspaceRUNSChunk33View addr=0x42789300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_34 type=R0Worker0WorkspaceRUNSChunk34View addr=0x427e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_35 type=R0Worker0WorkspaceRUNSChunk35View addr=0x42849300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_36 type=R0Worker0WorkspaceRUNSChunk36View addr=0x428a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_37 type=R0Worker0WorkspaceRUNSChunk37View addr=0x42909300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_38 type=R0Worker0WorkspaceRUNSChunk38View addr=0x42969300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_39 type=R0Worker0WorkspaceRUNSChunk39View addr=0x429c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_4 type=R0Worker0WorkspaceRUNSChunk4View addr=0x41ca9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_40 type=R0Worker0WorkspaceRUNSChunk40View addr=0x42a29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_41 type=R0Worker0WorkspaceRUNSChunk41View addr=0x42a89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_42 type=R0Worker0WorkspaceRUNSChunk42View addr=0x42ae9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_43 type=R0Worker0WorkspaceRUNSChunk43View addr=0x42b49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_44 type=R0Worker0WorkspaceRUNSChunk44View addr=0x42ba9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_45 type=R0Worker0WorkspaceRUNSChunk45View addr=0x42c09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_46 type=R0Worker0WorkspaceRUNSChunk46View addr=0x42c69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_47 type=R0Worker0WorkspaceRUNSChunk47View addr=0x42cc9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_48 type=R0Worker0WorkspaceRUNSChunk48View addr=0x42d29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_49 type=R0Worker0WorkspaceRUNSChunk49View addr=0x42d89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_5 type=R0Worker0WorkspaceRUNSChunk5View addr=0x41d09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_50 type=R0Worker0WorkspaceRUNSChunk50View addr=0x42de9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_51 type=R0Worker0WorkspaceRUNSChunk51View addr=0x42e49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_52 type=R0Worker0WorkspaceRUNSChunk52View addr=0x42ea9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_53 type=R0Worker0WorkspaceRUNSChunk53View addr=0x42f09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_54 type=R0Worker0WorkspaceRUNSChunk54View addr=0x42f69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_55 type=R0Worker0WorkspaceRUNSChunk55View addr=0x42fc9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_56 type=R0Worker0WorkspaceRUNSChunk56View addr=0x43029300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_57 type=R0Worker0WorkspaceRUNSChunk57View addr=0x43089300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_58 type=R0Worker0WorkspaceRUNSChunk58View addr=0x430e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_59 type=R0Worker0WorkspaceRUNSChunk59View addr=0x43149300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_6 type=R0Worker0WorkspaceRUNSChunk6View addr=0x41d69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_60 type=R0Worker0WorkspaceRUNSChunk60View addr=0x431a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_61 type=R0Worker0WorkspaceRUNSChunk61View addr=0x43209300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_62 type=R0Worker0WorkspaceRUNSChunk62View addr=0x43269300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_63 type=R0Worker0WorkspaceRUNSChunk63View addr=0x432c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_64 type=R0Worker0WorkspaceRUNSChunk64View addr=0x43329300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_65 type=R0Worker0WorkspaceRUNSChunk65View addr=0x43389300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_66 type=R0Worker0WorkspaceRUNSChunk66View addr=0x433e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_67 type=R0Worker0WorkspaceRUNSChunk67View addr=0x43449300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_68 type=R0Worker0WorkspaceRUNSChunk68View addr=0x434a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_69 type=R0Worker0WorkspaceRUNSChunk69View addr=0x43509300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_7 type=R0Worker0WorkspaceRUNSChunk7View addr=0x41dc9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_70 type=R0Worker0WorkspaceRUNSChunk70View addr=0x43569300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_71 type=R0Worker0WorkspaceRUNSChunk71View addr=0x435c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_72 type=R0Worker0WorkspaceRUNSChunk72View addr=0x43629300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_73 type=R0Worker0WorkspaceRUNSChunk73View addr=0x43689300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_74 type=R0Worker0WorkspaceRUNSChunk74View addr=0x436e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_75 type=R0Worker0WorkspaceRUNSChunk75View addr=0x43749300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_76 type=R0Worker0WorkspaceRUNSChunk76View addr=0x437a9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_77 type=R0Worker0WorkspaceRUNSChunk77View addr=0x43809300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_78 type=R0Worker0WorkspaceRUNSChunk78View addr=0x43869300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_79 type=R0Worker0WorkspaceRUNSChunk79View addr=0x438c9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_8 type=R0Worker0WorkspaceRUNSChunk8View addr=0x41e29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_80 type=R0Worker0WorkspaceRUNSChunk80View addr=0x43929300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_81 type=R0Worker0WorkspaceRUNSChunk81View addr=0x43989300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_82 type=R0Worker0WorkspaceRUNSChunk82View addr=0x439e9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_83 type=R0Worker0WorkspaceRUNSChunk83View addr=0x43a49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_84 type=R0Worker0WorkspaceRUNSChunk84View addr=0x43aa9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_85 type=R0Worker0WorkspaceRUNSChunk85View addr=0x43b09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_86 type=R0Worker0WorkspaceRUNSChunk86View addr=0x43b69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_87 type=R0Worker0WorkspaceRUNSChunk87View addr=0x43bc9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_88 type=R0Worker0WorkspaceRUNSChunk88View addr=0x43c29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_89 type=R0Worker0WorkspaceRUNSChunk89View addr=0x43c89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_9 type=R0Worker0WorkspaceRUNSChunk9View addr=0x41e89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_90 type=R0Worker0WorkspaceRUNSChunk90View addr=0x43ce9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_91 type=R0Worker0WorkspaceRUNSChunk91View addr=0x43d49300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_92 type=R0Worker0WorkspaceRUNSChunk92View addr=0x43da9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_93 type=R0Worker0WorkspaceRUNSChunk93View addr=0x43e09300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_94 type=R0Worker0WorkspaceRUNSChunk94View addr=0x43e69300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_95 type=R0Worker0WorkspaceRUNSChunk95View addr=0x43ec9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_96 type=R0Worker0WorkspaceRUNSChunk96View addr=0x43f29300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_97 type=R0Worker0WorkspaceRUNSChunk97View addr=0x43f89300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_98 type=R0Worker0WorkspaceRUNSChunk98View addr=0x43fe9300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_RUNS_CHUNK_99 type=R0Worker0WorkspaceRUNSChunk99View addr=0x44049300 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_0 type=R0Worker0WorkspaceSHADINGChunk0View addr=0x47417be8 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_1 type=R0Worker0WorkspaceSHADINGChunk1View addr=0x47477be8 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_SHADING_CHUNK_2 type=R0Worker0WorkspaceSHADINGChunk2View addr=0x474d7be8 size=88128
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_0 type=R0Worker0WorkspaceTRANSPARENCYChunk0View addr=0x474ed428 size=393216
+  PlacedStatic name=R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_1 type=R0Worker0WorkspaceTRANSPARENCYChunk1View addr=0x4754d428 size=44064
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
-  PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x40a24c68 size=24
-  PlacedStatic name=RINGS_DATA type=RingsData addr=0x40a24c80 size=8
+  PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x40a24c98 size=24
+  PlacedStatic name=RINGS_DATA type=RingsData addr=0x40a24cb0 size=8
   PlacedStatic name=RT type=RuntimeTables addr=0x40a00000 size=147456
-  PlacedStatic name=SCHED type=SchedStripe addr=0x40a242e8 size=56
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40a24318 size=56
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000218 size=21
-  PlacedStatic name=WAKE type=WakeTables addr=0x40a24c60 size=8
-  PlacedStatics count=395 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING_AVAIL,CONSOLE_RING_DESC,CONSOLE_RING_DOORBELL,DISPLAY_MEMORY,EXIT,GROUPS,INPUT,LANE1,LANE2,LANE2_SNAPSHOT,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=2 renderer_roots=307
-  Actor name=Renderer[SceneParams] mailbox=3 slot=24 frame=14160 state=448
+  PlacedStatic name=WAKE type=WakeTables addr=0x40a24c90 size=8
+  PlacedStatics count=397 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING_AVAIL,CONSOLE_RING_DESC,CONSOLE_RING_DOORBELL,DISPLAY_MEMORY,EXIT,GROUPS,INPUT,LANE1,LANE2,LANE2_SNAPSHOT,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=2 renderer_roots=309
+  Actor name=Renderer[SceneParams] mailbox=3 slot=24 frame=12320 state=496
   Actor name=RendererWorker0 mailbox=1 slot=24 frame=64 state=0
   Actor name=RendererWorker1 mailbox=1 slot=24 frame=64 state=0
   Actor name=RendererWorker2 mailbox=1 slot=24 frame=64 state=0
@@ -811,39 +814,39 @@ PixelsCompilerReport v3
   Turn fn=pixels_p7_worker_job_4_3 frame=176
   Driver name=Display state=8
   Turns count=9 stride=16384 bytes=147456
-  Totals actors=5 drivers=1 ready_queue=6 group_arena=1 bytes=150664
-  DeviceRegs device=device#0 type=DisplayDevice driver=Display base=0x40a24c88 size=8
+  Totals actors=5 drivers=1 ready_queue=6 group_arena=1 bytes=150712
+  DeviceRegs device=device#0 type=DisplayDevice driver=Display base=0x40a24cb8 size=8
 PixelsImageContract v1
-  GeneratedModule address=core.__image_pixels bytes=359171 digest=2d84219c2185f5bcc0432d9796a2c2b0748fdc593462b1c78540238c52ab8f9c
-  Renderer index=0 profile=AaaByteExact frameprog_base=0x40a70000 frameprog_bytes=1478864 frameprog_blob_digest=418ce300d3224e4570204e6b8bac4fcb19a9cb2255237d3b669d75aa48d540d5 state_base=0x40be0000 state_reservation_bytes=110550706 framebuffer_base=0x47549000 framebuffer_bytes=16384 probe_base=0x4754d000 probe_bytes=0 coordinator=__wrela_renderer_0_coordinator@core0 execution=certified-from-scratch presentation=machine-v1-bgra8-srgb
+  GeneratedModule address=core.__image_pixels bytes=388809 digest=a0d1d1b3c6f07130e0c4bf6aaa94f2ee9cbda60549255471d2a159ab5281c204
+  Renderer index=0 profile=AaaByteExact frameprog_base=0x40a70000 frameprog_bytes=1535632 frameprog_blob_digest=3c3cadb61e8c25ebadc2ae2da84a5c473c0323209fadc8a16af16e9d20260ffa state_base=0x40bf0000 state_reservation_bytes=110550706 framebuffer_base=0x47559000 framebuffer_bytes=16384 probe_base=0x4755d000 probe_bytes=0 coordinator=__wrela_renderer_0_coordinator@core0 execution=certified-from-scratch presentation=machine-v1-bgra8-srgb
     Field key=examples.check_pixels_normal_moments::world material_key=examples.check_pixels_normal_moments::shade display_ref=driver#0
     Mode width=64 height=32 refresh_hz=60 shade_hz=60 tone_curve=Linear
     Capacity objects=1 features=26 events=525 sheets_per_row=722 runs_per_row=482840 transparent_layers=1
-    Formal contract=pixels-v1 numeric_revision=1 formal_revision=1
+    Formal contract=pixels-v1 numeric_revision=4 formal_revision=1
     Execution from_scratch_sweep=true bounded_local_rebuild=true dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true raster=scalar+i32x4-asimd coverage=analytic-exact presentation=true front_swap=successful-completion-only
     Scanout format=Bgra8Srgb tile_width=64 tile_height=32 tile_stride=256 tile_bytes=8192 descriptor_bytes=24 generations=2 clear=boot-only
     DisplayReplay revision=1 digests=tile-descriptor,visible,raw-tile vsync_checkpoint=true failed_output_logged=false
-    BuildIdentity frame_program_digest=4b59e46e2e241c5d0e721c7341fa96517a5f4d36672a327ae61ee7fbac86ef40 tone_transfer_digest=274cdc9a881a2336f92e2c16f1c01a95db0f08c6b943c732b4d551789ae1c8d8 profile_revision=1 numeric_revision=1 formal_theorem_set=pixels-v1 renderer_layout_digest=a794c471b4060625aaa115f271097e7d08a55ba9ad190a1b63877acfb320496d
-    Worker index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,1) workspace_base=0x40c00660 workspace_bytes=110393832
-    CertificateTelemetry version=2 decision_input=false merge_order=tile-id counters_per_worker=150 production_bytes=0 instrumented_bytes=50352
+    BuildIdentity frame_program_digest=69d422f62805d7cd008b28923b02a06d1348ea26c48ab7cafe949e00382f05dc tone_transfer_digest=ebe74c6ba2326f9c2ed0a5ee32226463d75f777af7386077340b03ef8bd11085 profile_revision=1 numeric_revision=4 formal_theorem_set=pixels-v1 renderer_layout_digest=afe751c8c7546172e23a04e82a60cfe41a3b748e4477663b1454f545c90ba33f
+    Worker index=0 actor=__wrela_renderer_0_worker_0 core=0 tiles=[0,1) workspace_base=0x40c10660 workspace_bytes=110393832
+    CertificateTelemetry version=3 decision_input=false merge_order=tile-id counters_per_worker=162 production_bytes=0 instrumented_bytes=50448
       Schema run_length_bins=8 root_methods=[0:bernstein-faces,1:monotone-tube,2:krawczyk] composition_shapes=[0:general,1:plane,2:sphere,3:torus]
       Schema expiry_causes=[0:domain-end,1:residual,2:validity,3:order,4:branch,5:numeric,6:fixed-q,7:event] margin_owners=[0:root,1:feature,2:order,3:csg,4:branch,5:numeric,6:fixed-q,7:event]
       Schema density_bins=8 subdivision_bins=16 rebuild_reasons=[0:none,1:x-split,2:q-split,3:feature-split,4:branch-split,5:event-arrangement,6:pixel-cell,7:subpixel-integration,8:exhausted] numeric_failure_bins=8 pixel_classes=[regular,corridor] raster_evidence=[packets,scalar-edges,q-checked,normal-checked,world-positions,background,event,failures]
-  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=3926659 rank_cycles=3926659 schedule_cycles=262831 footprint_cycles=3663828 executable_words=417876 executable_code_bytes=1671504 fetched_text_bytes=1671552 rodata_bytes=1643 image_bytes=4344976 sync_frame_max_bytes=63376 async_frame_total_bytes=14544 ghz=2.4
-    Workload name=flat proxy_cycles=3926659
-    Owner name=app proxy_cycles=38879
-    Owner name=runtime proxy_cycles=223952
+  Cost version=3 scope=linked-image digest=a3fc98dfe12bd132 total=5099432 rank_cycles=5099432 schedule_cycles=310350 footprint_cycles=4789082 executable_words=470238 executable_code_bytes=1880952 fetched_text_bytes=1880960 rodata_bytes=1796 image_bytes=4345024 sync_frame_max_bytes=62304 async_frame_total_bytes=12704 ghz=2.4
+    Workload name=flat proxy_cycles=5099432
+    Owner name=app proxy_cycles=39016
+    Owner name=runtime proxy_cycles=271334
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=10921 max_entry_method_proxy_cycles=2388
-    Budget n=0 fetched_text_bytes=1671552 executable_code_bytes=1671504 l1i_bytes=65536 over_l1i_lines=25094 over_l2_lines=17926 over_l3_lines=9734 text_pages=409 itlb_entries=48 over_itlb_pages=361 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=32 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3663828
-    Shared proxy_cycles=251526
-    Scope name=linked-image executable_words=417876 executable_code_bytes=1671504 fetched_text_bytes=1671552 image_bytes=4344976 rodata_bytes=1643 sync_frame_max_bytes=63376 async_frame_total_bytes=14544
-  Convention fns=589 frameless=267 tail_calls=6
+    Core n=0 proxy_cycles=10971 max_entry_method_proxy_cycles=2390
+    Budget n=0 fetched_text_bytes=1880960 executable_code_bytes=1880952 l1i_bytes=65536 over_l1i_lines=28366 over_l2_lines=21198 over_l3_lines=13006 text_pages=460 itlb_entries=48 over_itlb_pages=412 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=32 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=4789082
+    Shared proxy_cycles=298995
+    Scope name=linked-image executable_words=470238 executable_code_bytes=1880952 fetched_text_bytes=1880960 image_bytes=4345024 rodata_bytes=1796 sync_frame_max_bytes=62304 async_frame_total_bytes=12704
+  Convention fns=664 frameless=270 tail_calls=6
     Fn key=Camera.__wrela_p5_finite frame=400 residents=35 regs=x0-x1 clobbers=all pool=24
     Fn key=Display.init frame=48 residents=8 regs=x1-x6 clobbers=x0-x6,x8-x10,x30-x31 pool=19
     Fn key=FixedDomain.full frame=48 residents=3 regs=x0-x2 clobbers=x0-x2,x8-x10,x30-x31 pool=23
-    Fn key=FrameInputSnapshot.make_frame frame=3072 residents=15 regs=x1,x4,x6-x7,x13-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=15
-    Fn key=FrameInputSnapshot.post_values frame=1424 residents=4 regs=x1-x4 clobbers=x0-x4,x8-x10,x30-x31 pool=23
+    Fn key=FrameInputSnapshot.from_packed frame=464 residents=1 regs=x1 clobbers=x0-x2,x8-x12,x30-x31 pool=19
+    Fn key=FrameInputSnapshot.make_frame frame=960 residents=19 regs=x1,x3-x7,x15-x17,x19-x22 clobbers=x0-x17,x19-x22,x30-x31 pool=17
     Fn key=I32x4.lane frame=64 residents=18 regs=x4-x7 clobbers=x0-x7,x9-x14,x30-x31 pool=17
     Fn key=Iv32.lower frame=32 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=Iv32.point frame=32 residents=1 regs=x0 clobbers=x0,x8-x10,x30-x31 pool=23
@@ -851,14 +854,15 @@ PixelsImageContract v1
     Fn key=Iv32.upper frame=32 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=Light.__wrela_p5_finite frame=512 residents=44 regs=x0-x1 clobbers=all pool=24
     Fn key=Light.__wrela_p5_matches_kind frame=144 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=22
-    Fn key=Light.zero frame=288 residents=2 regs=x0 clobbers=x0,x8-x10,x30-x31 pool=24
-    Fn key=LightFrame.from_snapshot frame=5728 residents=17 regs=x4-x7,x15-x17,x19-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=16
+    Fn key=Light.__wrela_p9_area_axes_valid frame=480 residents=83 regs=x0-x8,x12-x13 clobbers=x0-x13,x30-x31 pool=23
+    Fn key=Light.__wrela_p9_in_world frame=672 residents=23 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
+    Fn key=Light.__wrela_p9_valid frame=1904 residents=242 regs=x0,x3-x7 clobbers=x0-x14,x30-x31 pool=18
     Fn key=LightFrame.snapshot_kinds frame=2384 residents=14 regs=x1-x7,x15-x17,x19-x20 clobbers=x0-x17,x19-x20,x30-x31 pool=19
     Fn key=LightFrame.snapshot_scalars frame=5888 residents=18 regs=x4-x7,x15-x17,x19-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=16
     Fn key=P7CertifiedRow.failure frame=2080 residents=1 regs=x0 clobbers=x0-x12,x30-x31 pool=23
     Fn key=P7CertifiedRow.failure_with frame=6064 residents=6 regs=x1-x3,x5-x7 clobbers=x0-x12,x30-x31 pool=21
-    Fn key=P7PixelArrangement.failure frame=432 residents=3 regs=x1,x5-x6 clobbers=x0-x6,x8-x10,x30-x31 pool=23
-    Fn key=P7PixelArrangement.success frame=432 residents=3 regs=x1-x3 clobbers=x0-x3,x8-x10,x30-x31 pool=23
+    Fn key=P7PixelArrangement.failure frame=432 residents=3 regs=x1,x5-x6 clobbers=x0-x6,x8-x12,x30-x31 pool=21
+    Fn key=P7PixelArrangement.success frame=432 residents=3 regs=x1-x3 clobbers=x0-x3,x8-x12,x30-x31 pool=21
     Fn key=P7StoredRoot.failure frame=128 residents=4 regs=x0-x3 clobbers=x0-x3,x8-x10,x30-x31 pool=24
     Fn key=P7VisibilitySample.background frame=192 residents=5 regs=x0-x4 clobbers=x0-x4,x8-x10,x30-x31 pool=24
     Fn key=P7VisibilitySample.failure_with frame=192 residents=5 regs=x0-x4 clobbers=x0-x4,x8-x10,x30-x31 pool=23
@@ -867,11 +871,11 @@ PixelsImageContract v1
     Fn key=QRunScalar.error frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=QRunScalar.second_delta frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=QRunScalar.value frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
-    Fn key=RendererFrameBounds.__wrela_p5_accepts_camera frame=1024 residents=95 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
-    Fn key=RendererWorker0.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
-    Fn key=RendererWorker1.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
-    Fn key=RendererWorker2.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
-    Fn key=RendererWorker3.run_job frame=64 residents=19 regs=x0-x1,x4-x8,x13 clobbers=all pool=18
+    Fn key=RendererFrameBounds.__wrela_p5_accepts_camera frame=1072 residents=95 regs=x0,x2-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
+    Fn key=RendererWorker0.run_job frame=64 residents=2 regs=x0-x1 clobbers=all pool=23
+    Fn key=RendererWorker1.run_job frame=64 residents=2 regs=x0-x1 clobbers=all pool=23
+    Fn key=RendererWorker2.run_job frame=64 residents=2 regs=x0-x1 clobbers=all pool=23
+    Fn key=RendererWorker3.run_job frame=64 residents=2 regs=x0-x1 clobbers=all pool=23
     Fn key=RendererWorkerP8RSubdivisionCell.charge frame=64 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=RendererWorkerP8RSubdivisionCell.depth frame=64 residents=4 regs=x1-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
     Fn key=RendererWorkerP8RSubdivisionCell.proof_state frame=64 residents=6 regs=x4-x6 clobbers=x0-x6,x9-x12,x14,x30-x31 pool=18
@@ -1161,7 +1165,7 @@ PixelsImageContract v1
     Fn key=__wrela_method_suspends frame=0 residents=39 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_camera_light_post frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_csg frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
-    Fn key=__wrela_pixels_bootstrap_dispatch frame=400 residents=106 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_bootstrap_dispatch frame=448 residents=119 regs=x0-x3 clobbers=all pool=21
     Fn key=__wrela_pixels_bootstrap_event frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_feature frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_field frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
@@ -1169,6 +1173,8 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_bootstrap_material frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_object frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_bootstrap_scalar frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
+    Fn key=__wrela_pixels_bootstrap_shading_summary frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
+    Fn key=__wrela_pixels_bootstrap_texture frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
     Fn key=__wrela_pixels_display_submit_and_wait frame=16 residents=3 regs=x0-x1 clobbers=all pool=23
     Fn key=__wrela_pixels_f32_from_bits frame=16 residents=1 regs=x0 clobbers=all pool=25
     Fn key=__wrela_pixels_f32_to_bits frame=16 residents=1 regs=x0 clobbers=all pool=23
@@ -1177,20 +1183,20 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_local_index_word frame=1072 residents=12 regs=x0-x1,x4-x6 clobbers=all pool=16
     Fn key=__wrela_pixels_p5_finite frame=48 residents=5 regs=x0-x1 clobbers=all pool=24
     Fn key=__wrela_pixels_p7_abs frame=32 residents=1 regs=x1 clobbers=all pool=24
-    Fn key=__wrela_pixels_p7_active_object_feature frame=13392 residents=9 regs=x7,x15-x16 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_active_object_feature frame=10176 residents=9 regs=x7,x15-x16 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_aligned_deformation_depth_miss frame=368 residents=1 regs=x0 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_analytic_front frame=1136 residents=99 regs=x7,x15-x17 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_append_root frame=368 residents=36 regs=x0-x1,x3-x7,x12-x14 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_arrangement_boundary_crosses frame=6128 residents=83 regs=x7,x15-x16 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_certify_pixel_row frame=63376 residents=73 regs=x0,x2,x15-x17,x19-x27 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_certify_row frame=45440 residents=59 regs=x2,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_arrangement_boundary_crosses frame=5056 residents=83 regs=x7,x15-x16 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_certify_pixel_row frame=62304 residents=73 regs=x0,x2,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_certify_row frame=44368 residents=59 regs=x2,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_charge_run_telemetry frame=176 residents=44 regs=x0,x2-x6 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_choose_arrangement_axis frame=5280 residents=111 regs=x1,x3,x15-x17,x19 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_clip_curve_misses_cell frame=4384 residents=53 regs=x0,x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_choose_arrangement_axis frame=4208 residents=111 regs=x1,x3,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_clip_curve_misses_cell frame=3312 residents=53 regs=x0,x7,x15 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_coefficient_scalar frame=192 residents=4 regs=x0-x1,x3-x4 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_coefficient_scalar_r0 frame=320 residents=7 regs=x0,x2-x3 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_collect_roots_box frame=29568 residents=96 regs=x1,x15-x17,x19-x20 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_combined_arrangement_coverage frame=32832 residents=77 regs=x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_collect_roots_box frame=24208 residents=90 regs=x1,x15-x17,x19-x20 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_combined_arrangement_coverage frame=31760 residents=77 regs=x3,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_csg_evaluate frame=80 residents=13 regs=x0-x5 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_csg_influence frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_csg_occupancy frame=48 residents=6 regs=x0-x3 clobbers=all pool=21
@@ -1206,7 +1212,7 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p7_digest_result frame=336 residents=59 regs=x0,x2-x5 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_event_class frame=0 residents=583 regs=x0-x5 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_event_clip_q frame=48 residents=2 regs=x0-x1 clobbers=all pool=22
-    Fn key=__wrela_pixels_p7_event_coverage frame=2128 residents=70 regs=x1,x4,x7,x15-x17 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_event_coverage frame=1056 residents=70 regs=x1,x4,x7,x15-x17 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_event_owner frame=608 residents=14 regs=x0-x1,x3-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_event_pixel_span frame=368 residents=74 regs=x0-x1,x3-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_event_polynomial frame=432 residents=2 regs=x0-x1 clobbers=all pool=18
@@ -1236,8 +1242,8 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p7_initial_inside_r0 frame=400 residents=22 regs=x0,x6-x7,x15 clobbers=all pool=14
     Fn key=__wrela_pixels_p7_interval_from_f32 frame=352 residents=54 regs=x0,x2-x7,x14-x15 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_interval_sin frame=432 residents=33 regs=x0,x2-x7,x13-x17,x19-x25 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_isolate_power_roots frame=12912 residents=92 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_isolate_smooth_object frame=10160 residents=84 regs=x0-x1,x3,x7,x15-x17,x19-x21 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_isolate_power_roots frame=9696 residents=92 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_isolate_smooth_object frame=6944 residents=84 regs=x0-x1,x3,x7,x15-x17,x19-x21 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_job_value frame=80 residents=43 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_load_root frame=592 residents=49 regs=x0-x1,x3-x7,x15-x17,x19-x20 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_material_event_coverage frame=304 residents=9 regs=x0-x3,x7,x12-x13 clobbers=all pool=16
@@ -1247,7 +1253,7 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p7_numeric_config frame=240 residents=31 regs=x0-x7,x12-x17,x19 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_object_composed_root frame=16 residents=6 regs=x0-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_object_composed_root_r0 frame=0 residents=17 regs=x0,x4-x8 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_object_identity_span frame=10288 residents=9 regs=x4-x6 clobbers=all pool=16
+    Fn key=__wrela_pixels_p7_object_identity_span frame=9216 residents=9 regs=x4-x6 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_object_q_tube frame=464 residents=4 regs=x0-x1,x7,x12 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_object_q_tube_r0 frame=2320 residents=52 regs=x6-x7 clobbers=all pool=14
     Fn key=__wrela_pixels_p7_object_scalar_r0 frame=1344 residents=15 regs=x6-x7 clobbers=all pool=14
@@ -1256,19 +1262,19 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p7_outward_low frame=48 residents=11 regs=x1-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_param_slot frame=32 residents=4 regs=x0-x3 clobbers=all pool=22
     Fn key=__wrela_pixels_p7_pinned_camera frame=224 residents=1 regs=x0 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_pixel_visibility_from_candidates frame=3856 residents=18 regs=x0,x2-x4,x13,x15-x17 clobbers=all pool=13
-    Fn key=__wrela_pixels_p7_point_union_occupancy frame=3952 residents=43 regs=x1-x3,x12-x15 clobbers=all pool=15
+    Fn key=__wrela_pixels_p7_pixel_visibility_from_candidates frame=2784 residents=18 regs=x0,x2-x4,x13,x15-x17 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_point_union_occupancy frame=2880 residents=43 regs=x1-x3,x13-x16 clobbers=all pool=14
     Fn key=__wrela_pixels_p7_power frame=240 residents=3 regs=x2-x3 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_predicate_curve_cell frame=4592 residents=51 regs=x0,x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_predicate_curve_cell frame=3520 residents=51 regs=x0,x7,x15 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_predicate_region_area frame=16320 residents=34 regs=x5-x7,x15-x17 clobbers=all pool=15
-    Fn key=__wrela_pixels_p7_predicate_region_coverage frame=8000 residents=57 regs=x3,x15-x17 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_predicate_region_coverage frame=6928 residents=57 regs=x3,x15-x17 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_projected_union_mode frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_proposal_matches frame=8800 residents=25 regs=x0,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_quartic_discriminant frame=2336 residents=30 regs=x1-x2 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_raw_to_f32 frame=64 residents=25 regs=x0-x8,x13-x15 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement frame=4112 residents=7 regs=x7,x13-x15 clobbers=all pool=14
-    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement_tier frame=40560 residents=137 regs=x0,x2-x3,x7,x15-x17,x19-x22 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_resolve_silhouette_owner frame=4784 residents=82 regs=x0-x1,x3,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement frame=3040 residents=7 regs=x7,x13-x15 clobbers=all pool=14
+    Fn key=__wrela_pixels_p7_resolve_pixel_arrangement_tier frame=39488 residents=137 regs=x0,x2-x3,x7,x15-x17,x19-x22 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_resolve_silhouette_owner frame=3712 residents=82 regs=x0-x1,x3,x15-x17,x19 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_revalidated_proposal_count frame=8368 residents=25 regs=x0,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
     Fn key=__wrela_pixels_p7_root_camera_coefficient frame=336 residents=41 regs=x4-x7 clobbers=all pool=16
     Fn key=__wrela_pixels_p7_root_coefficient frame=3568 residents=42 regs=x0,x4-x7,x15-x17,x19-x25 clobbers=all pool=16
@@ -1277,31 +1283,31 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p7_root_polynomial frame=4448 residents=94 regs=x1,x3,x6-x7,x15-x16 clobbers=all pool=14
     Fn key=__wrela_pixels_p7_root_polynomial_base frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_root_predicate_base frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
-    Fn key=__wrela_pixels_p7_row_candidates frame=13712 residents=76 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_row_candidates frame=12640 residents=70 regs=x0,x7,x15-x17,x19-x27 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_row_candidates_with_proposal frame=16224 residents=51 regs=x0,x2-x7,x13-x17,x19-x27 clobbers=all pool=19
-    Fn key=__wrela_pixels_p7_run_job frame=45408 residents=119 regs=x0-x2,x15-x17,x19-x21 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_run_job frame=45920 residents=110 regs=x0-x2,x15-x17,x19-x21 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_run_length_bin frame=0 residents=23 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_sealed_feature_valid_filter frame=3712 residents=46 regs=x0-x1,x3,x7,x15-x17 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_select_visibility frame=8640 residents=16 regs=x0,x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_silhouette_coverage frame=51520 residents=173 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_smooth_object_q_span frame=12144 residents=25 regs=x7,x15-x16 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_silhouette_coverage frame=50448 residents=173 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_smooth_object_q_span frame=10000 residents=25 regs=x7,x15-x16 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_standard_torus_cell_positive_hit frame=80 residents=2 regs=x5-x6 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_standard_torus_coefficients frame=1024 residents=2 regs=x0-x1 clobbers=all pool=21
     Fn key=__wrela_pixels_p7_standard_torus_feature frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
     Fn key=__wrela_pixels_p7_standard_torus_positive_hit frame=64 residents=2 regs=x3-x4 clobbers=all pool=21
-    Fn key=__wrela_pixels_p7_store_root frame=272 residents=34 regs=x0-x1,x4-x8,x12-x14 clobbers=all pool=20
+    Fn key=__wrela_pixels_p7_store_root frame=272 residents=34 regs=x0-x1,x4-x8,x13-x15 clobbers=all pool=19
     Fn key=__wrela_pixels_p7_structural_corridor_pixel frame=576 residents=11 regs=x0,x4-x6 clobbers=all pool=16
-    Fn key=__wrela_pixels_p7_support_q_span frame=4096 residents=84 regs=x1,x3,x7,x15-x17,x19 clobbers=all pool=13
+    Fn key=__wrela_pixels_p7_support_q_span frame=3024 residents=84 regs=x1,x3,x7,x15-x17,x19 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_telemetry_charge frame=0 residents=8 regs=x0-x5 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_telemetry_counter frame=48 residents=9 regs=x0-x4 clobbers=all pool=20
     Fn key=__wrela_pixels_p7_telemetry_reset frame=0 residents=3 regs=x0-x1 clobbers=all pool=24
     Fn key=__wrela_pixels_p7_torus_event_magnitudes frame=1280 residents=2 regs=x0-x1 clobbers=all pool=20
-    Fn key=__wrela_pixels_p7_try_certify_regular_row frame=36464 residents=246 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_union_silhouette_coverage frame=3664 residents=26 regs=x1,x7,x15-x17,x19 clobbers=all pool=12
-    Fn key=__wrela_pixels_p7_union_silhouette_coverage_at_slack frame=57744 residents=214 regs=x0-x1,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_try_certify_regular_row frame=35392 residents=246 regs=x0,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_union_silhouette_coverage frame=2592 residents=26 regs=x1,x7,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p7_union_silhouette_coverage_at_slack frame=56672 residents=214 regs=x0-x1,x15-x17,x19-x27 clobbers=all pool=12
     Fn key=__wrela_pixels_p7_verify_analytic_front frame=2496 residents=19 regs=x1,x7,x15-x17,x26-x27 clobbers=all pool=13
     Fn key=__wrela_pixels_p7_worker_error frame=0 residents=13 regs=x0,x4-x8 clobbers=all pool=17
-    Fn key=__wrela_pixels_p7_worker_error_class frame=0 residents=110 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_pixels_p7_worker_error_class frame=0 residents=116 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_worker_error_code frame=0 residents=17 regs=x0,x4-x7 clobbers=all pool=18
     Fn key=__wrela_pixels_p7_worker_error_tile frame=0 residents=9 regs=x0-x3 clobbers=all pool=23
     Fn key=__wrela_pixels_p7_workspace_charge frame=0 residents=55 regs=x0-x7 clobbers=all pool=17
@@ -1326,8 +1332,8 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p8_digest frame=96 residents=8 regs=x0-x5 clobbers=all pool=22
     Fn key=__wrela_pixels_p8_digest_r0 frame=448 residents=39 regs=x4-x7,x15-x17,x19-x27 clobbers=all pool=16
     Fn key=__wrela_pixels_p8_display_doorbell frame=48 residents=7 regs=x0-x2 clobbers=all pool=22
-    Fn key=__wrela_pixels_p8_geometry_lane_valid frame=768 residents=85 regs=x0-x2,x4-x5,x7-x8,x15-x17,x19 clobbers=all pool=14
-    Fn key=__wrela_pixels_p8_geometry_packet_valid frame=496 residents=2 regs=x0,x5 clobbers=all pool=19
+    Fn key=__wrela_pixels_p8_geometry_lane_valid frame=2000 residents=85 regs=x0-x2,x4-x5,x7-x8,x15-x17,x19 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8_geometry_packet_valid frame=1728 residents=2 regs=x0,x5 clobbers=all pool=19
     Fn key=__wrela_pixels_p8_geometry_valid frame=496 residents=13 regs=x0-x2,x7 clobbers=all pool=15
     Fn key=__wrela_pixels_p8_i32_fits frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_pixels_p8_i64_magnitude frame=0 residents=5 regs=x0-x3 clobbers=all pool=23
@@ -1337,23 +1343,95 @@ PixelsImageContract v1
     Fn key=__wrela_pixels_p8_present frame=64 residents=7 regs=x0-x4 clobbers=all pool=21
     Fn key=__wrela_pixels_p8_present_r0 frame=1552 residents=119 regs=x0-x1,x4-x7,x15 clobbers=all pool=16
     Fn key=__wrela_pixels_p8_raster_evidence_store frame=0 residents=14 regs=x0-x7 clobbers=all pool=18
-    Fn key=__wrela_pixels_p8_raster_regular frame=1584 residents=94 regs=x0-x2,x6-x8,x13,x15-x17 clobbers=all pool=16
+    Fn key=__wrela_pixels_p8_raster_regular frame=4368 residents=102 regs=x0-x3,x6-x7,x15-x17,x19-x20 clobbers=all pool=14
     Fn key=__wrela_pixels_p8_raster_setup frame=880 residents=188 regs=x0-x2,x4-x5,x15-x17,x19-x24 clobbers=all pool=12
     Fn key=__wrela_pixels_p8_raw_digest frame=96 residents=8 regs=x0-x5 clobbers=all pool=22
     Fn key=__wrela_pixels_p8_recurrence_valid frame=256 residents=7 regs=x0-x1,x5-x7 clobbers=all pool=19
     Fn key=__wrela_pixels_p8_submit frame=16 residents=3 regs=x0-x2 clobbers=all pool=25
     Fn key=__wrela_pixels_p8_write frame=0 residents=146 regs=x0-x2,x4-x8,x15-x17,x19-x20 clobbers=all pool=15
     Fn key=__wrela_pixels_p8_write4 frame=0 residents=111 regs=x0-x2,x4-x8,x15-x16 clobbers=all pool=15
-    Fn key=__wrela_pixels_p8r_clip_handler frame=1376 residents=7 regs=x0-x1,x7,x11 clobbers=all pool=17
-    Fn key=__wrela_pixels_p8r_deformation_handler frame=1600 residents=9 regs=x0-x1,x13-x14 clobbers=all pool=14
-    Fn key=__wrela_pixels_p8r_dispatch_handler frame=1488 residents=15 regs=x12-x13 clobbers=all pool=15
+    Fn key=__wrela_pixels_p8r_clip_handler frame=304 residents=7 regs=x0-x1,x7,x11 clobbers=all pool=17
+    Fn key=__wrela_pixels_p8r_deformation_handler frame=528 residents=9 regs=x0-x1,x13-x14 clobbers=all pool=14
+    Fn key=__wrela_pixels_p8r_dispatch_handler frame=416 residents=15 regs=x12-x13 clobbers=all pool=15
     Fn key=__wrela_pixels_p8r_handler_class frame=0 residents=31 regs=x0-x5 clobbers=all pool=22
-    Fn key=__wrela_pixels_p8r_polynomial_handler frame=2640 residents=12 regs=x7,x15 clobbers=all pool=13
-    Fn key=__wrela_pixels_p8r_predicate_handler frame=1344 residents=4 regs=x0-x1,x5-x6 clobbers=all pool=19
+    Fn key=__wrela_pixels_p8r_polynomial_handler frame=1568 residents=12 regs=x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p8r_predicate_handler frame=272 residents=4 regs=x0-x1,x5-x6 clobbers=all pool=19
     Fn key=__wrela_pixels_p8r_smooth_band_handler frame=128 residents=11 regs=x0-x5 clobbers=all pool=17
-    Fn key=__wrela_pixels_p8r_torus_handler frame=2672 residents=12 regs=x0-x1,x7,x15 clobbers=all pool=13
-    Fn key=__wrela_pixels_program_operand frame=608 residents=483 regs=x4-x7,x15-x17,x19-x20 clobbers=all pool=16
-    Fn key=__wrela_pixels_program_record frame=416 residents=242 regs=x4-x7,x15-x17,x19-x21 clobbers=all pool=16
+    Fn key=__wrela_pixels_p8r_torus_handler frame=1600 residents=12 regs=x0-x1,x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p9_aabb_overlaps frame=208 residents=23 regs=x0,x2 clobbers=all pool=20
+    Fn key=__wrela_pixels_p9_ao_config frame=112 residents=3 regs=x0-x2 clobbers=all pool=22
+    Fn key=__wrela_pixels_p9_area_brdf_common frame=1840 residents=15 regs=x5 clobbers=all pool=15
+    Fn key=__wrela_pixels_p9_area_cell_bounds frame=1872 residents=20 regs=x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p9_area_channel_bounds frame=1472 residents=44 regs=x5-x7,x15-x17,x19-x27 clobbers=all pool=15
+    Fn key=__wrela_pixels_p9_area_geometry_bounds frame=3216 residents=102 regs=x4-x5 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_area_sample_id frame=0 residents=26 regs=x0,x4-x8 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_area_visibility_failure frame=896 residents=24 regs=x0-x7,x11-x17,x19-x27 clobbers=all pool=24
+    Fn key=__wrela_pixels_p9_area_visibility_mask frame=11392 residents=120 regs=x0,x2-x3,x7,x15-x17,x19-x27 clobbers=all pool=13
+    Fn key=__wrela_pixels_p9_brdf_channel frame=1056 residents=4 regs=x8 clobbers=all pool=17
+    Fn key=__wrela_pixels_p9_brdf_channel_bounds frame=1392 residents=20 regs=x15-x16 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_concentric_disk frame=320 residents=6 regs=x2 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_constant_summary_eligible frame=1536 residents=35 regs=x0-x7,x15-x17,x19-x23 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_debug_visibility frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__wrela_pixels_p9_disk_offset frame=224 residents=9 regs=x0,x4-x6 clobbers=all pool=17
+    Fn key=__wrela_pixels_p9_encode frame=64 residents=6 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_encode_certified frame=720 residents=33 regs=x4-x7,x15 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_encode_common frame=256 residents=48 regs=x0-x5 clobbers=all pool=17
+    Fn key=__wrela_pixels_p9_event_color frame=16400 residents=208 regs=x0-x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_event_composite frame=7984 residents=27 regs=x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_exposure_multiplier frame=400 residents=63 regs=x1-x7,x13-x15 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_feature_local_frame frame=560 residents=4 regs=x0-x1,x7,x12 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_feature_local_frame_r0 frame=8400 residents=368 regs=x0,x6-x7 clobbers=all pool=14
+    Fn key=__wrela_pixels_p9_filmic_tone frame=208 residents=85 regs=x1-x2,x4-x7,x15-x17,x19-x27 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_floor frame=32 residents=5 regs=x1-x3 clobbers=all pool=22
+    Fn key=__wrela_pixels_p9_hdr_pixel frame=16000 residents=459 regs=x0-x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_iv_add frame=128 residents=4 regs=x2 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_iv_clamp01 frame=144 residents=6 regs=x1 clobbers=all pool=19
+    Fn key=__wrela_pixels_p9_iv_mul frame=304 residents=23 regs=x2-x7,x15-x17,x19-x21 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_iv_reciprocal_positive frame=176 residents=9 regs=x1-x2 clobbers=all pool=19
+    Fn key=__wrela_pixels_p9_iv_sqrt frame=176 residents=5 regs=x1 clobbers=all pool=19
+    Fn key=__wrela_pixels_p9_iv_square frame=192 residents=10 regs=x2 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_iv_sub frame=128 residents=4 regs=x2 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_iv_widen frame=192 residents=7 regs=x1 clobbers=all pool=19
+    Fn key=__wrela_pixels_p9_job_from_word frame=48 residents=19 regs=x4-x7,x13,x15 clobbers=all pool=17
+    Fn key=__wrela_pixels_p9_light_contribution frame=1456 residents=59 regs=x15-x16 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_light_contribution_bounds frame=2352 residents=45 regs=x7,x15 clobbers=all pool=13
+    Fn key=__wrela_pixels_p9_light_range frame=1936 residents=42 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_light_rate_valid frame=96 residents=8 regs=x0,x3-x6 clobbers=all pool=20
+    Fn key=__wrela_pixels_p9_light_sample frame=3312 residents=28 regs=x0,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_light_sample_leaf frame=8880 residents=257 regs=x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_lighting_certificate frame=19760 residents=119 regs=x4,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_lighting_clear frame=1536 residents=61 regs=x0-x7,x13-x17,x19-x27 clobbers=all pool=22
+    Fn key=__wrela_pixels_p9_lighting_failure frame=1536 residents=61 regs=x0-x7,x13-x17,x19-x27 clobbers=all pool=22
+    Fn key=__wrela_pixels_p9_lut_interpolate frame=176 residents=45 regs=x0,x4-x7 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_map_uv frame=1568 residents=91 regs=x0,x5-x7 clobbers=all pool=15
+    Fn key=__wrela_pixels_p9_material frame=800 residents=4 regs=x0-x1,x5-x6 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_material_inputs frame=48 residents=11 regs=x0-x3 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_material_r0 frame=1760 residents=23 regs=x0,x4-x5 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_normalize frame=256 residents=4 regs=x3-x4 clobbers=all pool=20
+    Fn key=__wrela_pixels_p9_origin_epsilon frame=496 residents=25 regs=x0-x7,x15-x17,x19-x21 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_raster_color frame=12240 residents=162 regs=x0-x1,x4,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_round_ratio frame=0 residents=19 regs=x0-x6 clobbers=all pool=21
+    Fn key=__wrela_pixels_p9_sample_texture frame=5136 residents=131 regs=x1,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_scene_distance frame=272 residents=3 regs=x0,x3-x4 clobbers=all pool=20
+    Fn key=__wrela_pixels_p9_scene_distance_r0 frame=1456 residents=8 regs=x2-x3 clobbers=all pool=18
+    Fn key=__wrela_pixels_p9_secondary_bundle_candidates frame=160 residents=2 regs=x0-x1 clobbers=all pool=19
+    Fn key=__wrela_pixels_p9_secondary_candidates frame=208 residents=5 regs=x0-x1,x5 clobbers=all pool=15
+    Fn key=__wrela_pixels_p9_secondary_candidates_common frame=8864 residents=99 regs=x0-x1,x3,x5-x7,x15-x17,x19-x27 clobbers=all pool=15
+    Fn key=__wrela_pixels_p9_segment_bundle_visibility frame=14688 residents=217 regs=x0-x1,x3,x15-x17,x19-x27 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_segment_intersects_aabb frame=368 residents=21 regs=x0,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
+    Fn key=__wrela_pixels_p9_segment_visibility frame=13936 residents=69 regs=x1,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_select_refinement frame=1072 residents=26 regs=x4-x7,x15-x17,x19-x27 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_shade_pixel frame=7232 residents=15 regs=x0,x2-x3,x15-x17 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_table_value frame=112 residents=32 regs=x1-x7 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_texture_bilinear frame=1504 residents=40 regs=x0-x1,x3,x15-x17,x19 clobbers=all pool=12
+    Fn key=__wrela_pixels_p9_texture_decode frame=384 residents=26 regs=x1-x5 clobbers=all pool=20
+    Fn key=__wrela_pixels_p9_texture_mip_bounds frame=1488 residents=41 regs=x1,x3-x6 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_texture_mip_cursor frame=736 residents=14 regs=x2,x4-x6 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_texture_moments frame=2624 residents=123 regs=x0-x1,x3,x6-x7,x15-x17 clobbers=all pool=14
+    Fn key=__wrela_pixels_p9_texture_record frame=304 residents=3 regs=x4-x5 clobbers=all pool=16
+    Fn key=__wrela_pixels_p9_texture_texel frame=368 residents=107 regs=x1,x3,x7,x15-x17,x19-x22 clobbers=all pool=13
+    Fn key=__wrela_pixels_program_operand frame=736 residents=589 regs=x4-x7,x15-x17,x19-x20 clobbers=all pool=16
+    Fn key=__wrela_pixels_program_record frame=496 residents=294 regs=x4-x7,x15-x17,x19-x21 clobbers=all pool=16
     Fn key=__wrela_pixels_program_table_count frame=0 residents=99 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_pixels_program_validate frame=2800 residents=158 regs=x0-x8,x15-x17,x19-x27 clobbers=all pool=20
     Fn key=__wrela_pixels_tile_event frame=272 residents=84 regs=x1-x6 clobbers=all pool=17
@@ -1420,11 +1498,11 @@ PixelsImageContract v1
     Fn key=polynomial_horner9 frame=624 residents=10 regs=x0,x4-x5,x26-x27 clobbers=x0-x17,x19-x27,x30-x31 pool=16
     Fn key=sin_scalar frame=384 residents=6 regs=x1 clobbers=x0-x1,x9,x11-x12,x30-x31 pool=23
     Fn key=sqrt_scalar frame=128 residents=22 regs=x1-x8,x12-x17,x19-x22 clobbers=x0-x17,x19-x22,x30-x31 pool=23
-    Fn key=struct:Renderer[SceneParams].__construct_debug_frame frame=10480 residents=105 regs=x0-x7,x15-x17,x19-x27 clobbers=all pool=16
-    Fn key=struct:Renderer[SceneParams].__internal_error frame=2096 residents=3 regs=x2-x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21
-    Fn key=struct:Renderer[SceneParams].__render_error frame=2096 residents=1 regs=x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21
-    Fn key=struct:Renderer[SceneParams].__snapshot_frame frame=6944 residents=27 regs=x0-x1,x4,x6-x7,x15-x16 clobbers=all pool=13
-    Fn key=struct:Renderer[SceneParams].__validate_fixed_frame frame=10992 residents=60 regs=x0,x2-x5 clobbers=all pool=18
-    Fn key=struct:Renderer[SceneParams].__validate_frame frame=3664 residents=111 regs=x0,x2-x5 clobbers=all pool=18
-    Fn key=struct:Renderer[SceneParams].__worker_error frame=4352 residents=37 regs=x2,x4-x7,x15-x16 clobbers=all pool=16
-    Fn key=struct:Renderer[SceneParams].init frame=896 residents=13 regs=x0,x2-x4,x7 clobbers=all pool=16
+    Fn key=struct:Renderer[SceneParams].__construct_final_frame frame=10528 residents=105 regs=x0-x7,x15-x17,x19-x27 clobbers=all pool=16
+    Fn key=struct:Renderer[SceneParams].__internal_error frame=2144 residents=3 regs=x2-x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21
+    Fn key=struct:Renderer[SceneParams].__render_error frame=2144 residents=1 regs=x3 clobbers=x0-x3,x8-x10,x30-x31 pool=21
+    Fn key=struct:Renderer[SceneParams].__snapshot_frame frame=2752 residents=23 regs=x0-x1,x3-x5 clobbers=all pool=17
+    Fn key=struct:Renderer[SceneParams].__validate_fixed_frame frame=19728 residents=89 regs=x0,x4-x7 clobbers=all pool=16
+    Fn key=struct:Renderer[SceneParams].__validate_frame frame=3712 residents=111 regs=x0,x2-x5 clobbers=all pool=18
+    Fn key=struct:Renderer[SceneParams].__worker_error frame=4400 residents=37 regs=x2,x4-x7,x15-x16 clobbers=all pool=16
+    Fn key=struct:Renderer[SceneParams].init frame=992 residents=13 regs=x0,x2-x4,x7 clobbers=all pool=16

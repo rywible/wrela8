@@ -76,4 +76,22 @@ theorem exposure_channel_contains
   Interval.mulHull_contains color multiplier value exposure
     colorContains multiplierContains
 
+def refinementMeasureLess
+    (beforeDepth beforeWidth afterDepth afterWidth : Nat) : Prop :=
+  afterDepth < beforeDepth ∨
+    (afterDepth = beforeDepth ∧ afterWidth < beforeWidth)
+
+theorem refinement_measure_irreflexive
+    (depth width : Nat) :
+    ¬ refinementMeasureLess depth width depth width := by
+  simp [refinementMeasureLess]
+
+theorem unresolved_endpoints_cannot_choose_candidate
+    (encode : ℝ → Nat) (lo candidate hi : ℝ)
+    (contained : lo ≤ candidate ∧ candidate ≤ hi)
+    (different : encode lo ≠ encode hi) :
+    ¬ (encode candidate = encode lo ∧ encode candidate = encode hi) := by
+  intro both
+  exact different (both.1.symm.trans both.2)
+
 end Pixels

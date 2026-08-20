@@ -5,12 +5,12 @@ p7 0000000000000078
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 a36c242e28f78a33
-p7 9deaf42cb198fa03
-p7 7e230d58f3b8b9d4
-p7 9291f5d9043e73b9
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
 test displaced_surface_renders_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=99ce423c1f6a9b6a67172cbef90ad9b888862491c0e39e6d82c15585b10f87c0 visible=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 raw=4e99a5ac88fbc5a075845889a923b3c0d93e0d183932ea0a314f6d2d7051fc49 vsync=5 checkpoint=5
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=8ffa80edaeb31be8588a4791adaccdf34daf1656a09e34ba552411b49f2fa610 visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=5 checkpoint=5

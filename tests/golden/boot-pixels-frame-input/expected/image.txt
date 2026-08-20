@@ -35,10 +35,10 @@ ImageGraph v0
     Arg label=world_min value=(-4, -4, -4)
     Arg label=world_max value=(4, 4, 4)
     Arg label=camera_bounds value=(0.25)
-    Arg label=light_config value=(0, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1))
+    Arg label=light_config value=(0, (variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1, variant#1), (((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504), ((-65504, -65504, -65504), (65504, 65504, 65504), 65504, (65504, 65504, 65504), 65504)))
     Arg label=exposure_range value=(-1, 1)
     Arg label=environment_range value=((0, 0, 0), (1, 1, 1))
-    Arg label=ao value=(false)
+    Arg label=ao value=(false, 1, 1)
     Arg label=probes value=(false, 0)
     Arg label=initialization_deadline_ms value=10
   OnFailure index=0

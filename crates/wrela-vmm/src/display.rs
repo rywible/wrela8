@@ -425,6 +425,30 @@ impl<B: PresentationBackend> DisplayDevice<B> {
                 ))
             })?;
         }
+        if let Some(path) = std::env::var_os("WRELA_P9_FRAME_SEQUENCE_DUMP") {
+            use std::io::Write as _;
+            let mut output = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|error| {
+                    VmmError::Io(format!(
+                        "open requested P9 frame-sequence dump {}: {error}",
+                        std::path::Path::new(&path).display()
+                    ))
+                })?;
+            output
+                .write_all(b"WRELAP9F")
+                .and_then(|()| output.write_all(&frame.sequence.to_le_bytes()))
+                .and_then(|()| output.write_all(&(frame.bgra.len() as u64).to_le_bytes()))
+                .and_then(|()| output.write_all(&frame.bgra))
+                .map_err(|error| {
+                    VmmError::Io(format!(
+                        "append requested P9 frame-sequence dump {}: {error}",
+                        std::path::Path::new(&path).display()
+                    ))
+                })?;
+        }
         if let Err(error) = self.backend.present(&frame) {
             if error.commit_may_have_happened {
                 return Err(VmmError::Io(format!(

@@ -1057,7 +1057,7 @@ fn evaluate_kernel(kernel: &str, input: [i32; 4]) -> Result<i64, iv32::NumericEr
         "monotone_lut" => {
             let raw = input[0].unsigned_abs().min(64) as i32;
             let value =
-                display::monotone_lut(iv32::Iv32::point(raw), &display::SRGB_TRANSFER_LUT, 2)?;
+                display::monotone_lut(iv32::Iv32::point(raw), display::srgb_transfer_lut(), 2)?;
             fold(&[value.lo, value.hi])
         }
         "quantize_ties_even" => i64::from(display::quantize_u8_ties_even(input[0], 2)?),
@@ -1598,6 +1598,12 @@ pub fn vector_digest() -> u64 {
 }
 
 pub fn guest_module_text() -> String {
+    let srgb_lut_prefix = super::reference::display::srgb_transfer_lut()
+        .iter()
+        .take(17)
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     let mut output = format!(
         r#"module render_test_vectors
 
@@ -2107,7 +2113,7 @@ pub fn vector_result_raw_mid(kernel: i32, in0: i32, in1: i32, in2: i32, in3: i32
             raw = -raw
         if raw > 64:
             raw = 64
-        return numeric_result(monotone_lut17(Iv32.point(raw), [0, 18173, 25465, 30815, 35199, 38980, 42341, 45388, 48192, 50797, 53238, 55541, 57725, 59805, 61793, 63701, 65535], 2))
+        return numeric_result(monotone_lut17(Iv32.point(raw), [{}], 2))
     if kernel == 42:
         match quantize_ties_even(in0, 2):
             case .Value(code):
@@ -2502,7 +2508,8 @@ pub fn vector_case_matches(kernel: i32, in0: i32, in1: i32, in2: i32, in3: i32, 
             return expect_error
 "#,
         deterministic_vectors().len(),
-        vector_digest()
+        vector_digest(),
+        srgb_lut_prefix,
     );
     let vectors = deterministic_vectors();
     for (chunk_index, chunk) in vectors.chunks(96).enumerate() {

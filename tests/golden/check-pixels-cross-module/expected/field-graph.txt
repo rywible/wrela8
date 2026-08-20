@@ -4,7 +4,7 @@ Renderers count=1
     Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,10]
       World min=[-2,-2,-2] max=[2,2,2]
       RuntimeBounds camera_max_motion=0 light_capacity=0 light_kinds=[] exposure=[0,1] environment=[0,0,0]-[1,1,1]
-      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=1
+      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=1
     Param id=p0 path=SceneParams.radius indexes=[0] component=scalar ty=f32 range=[0.5,2]
     Param id=p1 path=SceneParams.offset.x indexes=[1] component=0 ty=f32 range=[-2,2]
     Param id=p2 path=SceneParams.offset.y indexes=[1] component=1 ty=f32 range=[-2,2]
@@ -45,9 +45,9 @@ Renderers count=1
     Origin kind=scalar id=s9 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
     Origin kind=scalar id=s10 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
     Origin kind=scalar id=s11 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0]
-    Origin kind=scalar id=s12 primary=lib.pixels_scene:31:40@bytes=817..820 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
-    Origin kind=scalar id=s13 primary=lib.pixels_scene:31:47@bytes=824..827 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
-    Origin kind=scalar id=s14 primary=lib.pixels_scene:31:54@bytes=831..834 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
+    Origin kind=scalar id=s12 primary=lib.pixels_scene:31:40@bytes=817..820 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s13 primary=lib.pixels_scene:31:47@bytes=824..827 expansion=[lib.pixels_scene:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=lib.pixels_scene:31:54@bytes=831..834 expansion=[lib.pixels_scene:0:0@bytes=0..0]
     Origin kind=scalar id=s15 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
     Origin kind=scalar id=s16 primary=lib.pixels_scene:24:13@bytes=576..577 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
     Origin kind=scalar id=s17 primary=lib.pixels_constants:3:36@bytes=64..67 expansion=[lib.pixels_scene:0:0@bytes=0..0] merged=[lib.pixels_scene:31:27@bytes=804..805]
@@ -56,7 +56,7 @@ Renderers count=1
     Origin kind=field id=f1 primary=lib.pixels_scene:23:15@bytes=562..563 expansion=[lib.pixels_scene:0:0@bytes=0..0]
     Origin kind=material id=m0 primary=lib.pixels_scene:31:27@bytes=804..805 expansion=[lib.pixels_scene:0:0@bytes=0..0]
     Roots field=f1 material=m0
-    SymbolicQuota steps=21/1000000 nodes=30/250000 unrolled_statements=0/250000 aggregate_elements=3/250000 call_depth=1/128
+    SymbolicQuota steps=21/1000000 nodes=28/250000 unrolled_statements=0/250000 aggregate_elements=3/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=lib.pixels_scene::world material_key=lib.pixels_scene::shade
     ParameterLayout slots=4 packed_bytes=16 dependency_schema=445221bc62b5982814c8bae4e01286312dcc88c2e907997eacdd0600f60aa496
       FrameDependencies runtime_bytes=72 camera_contract=[0.1, 10.0, -2.0, -2.0, -2.0, 2.0, 2.0, 2.0, 0.0] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[0.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
@@ -119,13 +119,13 @@ Renderers count=1
     Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
       Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Quadric bounds=[-2,-2,-2]-[2,2,2] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(1), ScalarId(2)], radius: ScalarId(3) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=19 derivative_slots=19 parameter_slots=4 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=2 active_sheets=2 event_generators=1 event_subdivisions=8 event_records=8 tile_row_runs=16 csg_events=2 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5376 all_worker_scratch_bytes=5376 telemetry_production_bytes=0 telemetry_instrumented_bytes=50352 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=32 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=156210 instrumented_state_bytes=206568
+    Capacities workers=1 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=19 derivative_slots=19 parameter_slots=4 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=2 active_sheets=2 event_generators=1 event_subdivisions=8 event_records=8 tile_row_runs=16 csg_events=2 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=64 sheet_bytes=128 event_bytes=256 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5376 all_worker_scratch_bytes=5376 telemetry_production_bytes=0 telemetry_instrumented_bytes=50448 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=32 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=156210 instrumented_state_bytes=206664
       CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
       CapacityDerivation field=max_run_records_per_tile_row value=16 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
       CapacityDerivation field=renderer_state_bytes value=156210 why=[header=256; coefficient_snapshots=32; frame_snapshots=1376; frame_complexes=131072; scratch=5376 (5376 * 1 workers); output=16384; probes=0; page_alignment_padding=1152; kinetic=128; tile_descriptors=368; tile_ownership=2; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=206568 why=[production=156210; telemetry=50352]
-    StructuralReport coefficient_bytes=16 objects=1 features=1 production_state_bytes=156210 instrumented_state_bytes=206568 dependency_schema=445221bc62b5982814c8bae4e01286312dcc88c2e907997eacdd0600f60aa496
+      CapacityDerivation field=instrumented_renderer_state_bytes value=206664 why=[production=156210; telemetry=50448]
+    StructuralReport coefficient_bytes=16 objects=1 features=1 production_state_bytes=156210 instrumented_state_bytes=206664 dependency_schema=445221bc62b5982814c8bae4e01286312dcc88c2e907997eacdd0600f60aa496
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.09999999999999999,10.000000000000002] max_motion=0
     CameraRateBounds eye=[[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324]] forward=[[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324]] right=[[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324]] up=[[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324],[-4.94065645841246544e-324,4.94065645841246544e-324]]
     Coefficient id=c0 op=const:2
@@ -766,7 +766,7 @@ Renderers count=1
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
     DirectIndexes feature_derivatives=[d0] material_programs=[0:m0] bytes=520
-    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=2 active_sheets_per_row=2 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=7 root_stack_nodes=8 event_stack_nodes=8 runs_per_row=16 corridors_per_row=16 max_index_slice=4 polynomial_programs=17 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=485 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=4704 refined_all_worker_scratch_bytes=4704 final_per_worker_scratch_bytes=6496 final_all_worker_scratch_bytes=6496 final_state_bytes=156210 final_instrumented_state_bytes=206568
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=2 active_sheets_per_row=2 event_generators=4 competition_pairs_per_tile=0 row_event_intervals=7 root_stack_nodes=8 event_stack_nodes=8 runs_per_row=16 corridors_per_row=16 max_index_slice=4 polynomial_programs=17 rational_programs=0 polynomial_terms_per_program=10 coefficient_nodes=485 derivative_bundles=1 derivative_clusters=1 index_bytes=520 refined_per_worker_scratch_bytes=4704 refined_all_worker_scratch_bytes=4704 final_per_worker_scratch_bytes=6496 final_all_worker_scratch_bytes=6496 final_state_bytes=156210 final_instrumented_state_bytes=206664
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
       ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=156210 why=[P4-refined six-class scratch=4704 per worker; retained fixed-q/shading/transparency scratch=1792 per worker; workers=1]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=2 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]

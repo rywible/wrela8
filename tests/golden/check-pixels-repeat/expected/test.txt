@@ -5,12 +5,12 @@ p7 000000000000019c
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 7a59ea7d7774d5bb
-p7 0d8aa448ae2f19ab
-p7 c60ad4b6d6efefd2
-p7 b98e58e390218519
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
 test repeat_events_resolve_from_scratch: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=50873f018803b0aa0cdf93746ba5ba958e2c4b93ca2308e404b8f42891009bbe visible=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 raw=6f1e3ffcb38a4bd516344ff06b9020f2edc08bc16a77f6fdb5c20040c7223507 vsync=4 checkpoint=4
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=54e342f62f903ac5918df9ff29560c71554c84f9f14428932707e030c6f39cfe visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=4 checkpoint=4

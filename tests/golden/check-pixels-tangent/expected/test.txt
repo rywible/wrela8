@@ -5,12 +5,12 @@ p7 0000000000000078
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 dc09e94cde72d943
-p7 0677f2e6081fe723
-p7 53c6200f6321b4d0
-p7 5d8386401e049b5c
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
 test tangency_takes_bounded_event_path: ok
 2 passed, 0 failed
 lane1 turns=3 run_one=6 messages=3
 lane1 hits=0:2,1:2,2:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=f62f5ae1def737ae294416305e7c203935f364186e423277018466d286a5e6e1 raw=f62f5ae1def737ae294416305e7c203935f364186e423277018466d286a5e6e1 vsync=15 checkpoint=15
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2ea4b45b683ba8e9df2f75309f2194bc96cdee46ba3fa009530fe7f4cfbeaea7 visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=15 checkpoint=15

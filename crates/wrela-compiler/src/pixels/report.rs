@@ -435,7 +435,7 @@ pub fn append_layout(
             format!("pixels-tone-transfer-v1\0{}\0", config.tone_curve).into_bytes();
         for value in tone_lut
             .iter()
-            .chain(super::reference::display::SRGB_TRANSFER_LUT.iter())
+            .chain(super::reference::display::srgb_transfer_lut().iter())
         {
             tone_transfer_bytes.extend(value.to_le_bytes());
         }

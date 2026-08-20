@@ -5,12 +5,12 @@ p7 00000000000000f0
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 b30401e5467db9cb
-p7 d8556cdfc28638eb
-p7 bad96080a9e42822
-p7 dd79ea33b17346e9
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
 test smooth_object_sweeps_all_roots: ok
 2 passed, 0 failed
 lane1 turns=3 run_one=6 messages=3
 lane1 hits=0:2,1:2,2:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=4e0b94759f90fef796c39112abd9d151b55dc43bc40b81315556a450e9d832ba visible=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 raw=52750252332570562d4465da4e91964f91eb2536f594d99ef5912d7f508832c5 vsync=3 checkpoint=3
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2f906bbf1d5999c435c9e1bbc037a561ddb45184eda147213cb2829d6ee455c2 visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=3 checkpoint=3

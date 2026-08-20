@@ -61,7 +61,7 @@ fn dump_config(config: &RendererConfig, out: &mut String) {
         config.world_max.z,
     ));
     out.push_str(&format!(
-        "    Contracts camera_max_motion={} light_capacity={} light_kinds=[{}] exposure=[{},{}] environment=[{},{},{}]-[{},{},{}] ao={} probes={} probe_initialization_worst_case_ms={} initialization_deadline_ms={}\n",
+        "    Contracts camera_max_motion={} light_capacity={} light_kinds=[{}] exposure=[{},{}] environment=[{},{},{}]-[{},{},{}] ao={} ao_radius={} ao_strength={} probes={} probe_initialization_worst_case_ms={} initialization_deadline_ms={}\n",
         config.camera_max_motion,
         config.light_capacity,
         config.light_kinds.join(","),
@@ -74,6 +74,8 @@ fn dump_config(config: &RendererConfig, out: &mut String) {
         config.environment.max[1],
         config.environment.max[2],
         config.ao_enabled,
+        config.ao_radius,
+        config.ao_strength,
         config.probes_enabled,
         config.probe_initialization_worst_case_ms,
         config.initialization_deadline_ms,
@@ -178,8 +180,10 @@ pub fn dump_symbolic_graphs(
             format_f64(f64::from(config.environment.max[2])),
         ));
         out.push_str(&format!(
-            "      Initialization ao={} probes={} probe_worst_case_ms={} deadline_ms={}\n",
+            "      Initialization ao={} ao_radius={} ao_strength={} probes={} probe_worst_case_ms={} deadline_ms={}\n",
             config.ao_enabled,
+            format_f64(f64::from(config.ao_radius)),
+            format_f64(f64::from(config.ao_strength)),
             config.probes_enabled,
             config.probe_initialization_worst_case_ms,
             config.initialization_deadline_ms,
@@ -2151,6 +2155,12 @@ fn render_material(kind: &MaterialKind) -> String {
             match &sample.normal {
                 NormalModel::Geometric => "geometric".to_string(),
                 NormalModel::AnalyticSlope { x, y } => format!("analytic-slope({x},{y})"),
+                NormalModel::TextureSlope { texture } => {
+                    format!(
+                        "texture-slope(id={},digest={})",
+                        texture.stable_id, texture.content_digest
+                    )
+                }
             },
             sample.pattern.as_ref().map_or_else(
                 || "none".to_string(),
@@ -2351,6 +2361,28 @@ pub fn dump_frame_program(
         "  FixedQDomain exponent={} maximum_raw={} reset_width={} error_radius={}\n",
         fixed_q.operands[0] as i64, fixed_q.operands[1], fixed_q.operands[2], fixed_q.operands[3],
     ));
+    let shading = program
+        .table(super::version::FrameProgramTableKindV1::ShadingSummary)
+        .ok_or_else(|| "pixels::dump: shading-summary table is missing".to_string())?;
+    for light in shading.records.iter().filter(|record| record.tag == 6) {
+        let value = |index: usize| -> Result<String, String> {
+            let bits = u32::try_from(light.operands[index]).map_err(|_| {
+                format!(
+                    "pixels::dump: light contract {} operand {index} exceeds f32 bits",
+                    light.stable_id
+                )
+            })?;
+            Ok(format_f64(f64::from(f32::from_bits(bits))))
+        };
+        out.push_str(&format!(
+            "  LightContract slot={} source_position=[{},{},{}]-[{},{},{}] axis_component_max={} radiance_max=[{},{},{}] max_delta={} influence=[{},{},{}]-[{},{},{}] maximum_incident=[{},{},{}]\n",
+            light.operands[0],
+            value(1)?, value(2)?, value(3)?, value(4)?, value(5)?, value(6)?,
+            value(7)?, value(8)?, value(9)?, value(10)?, value(11)?,
+            value(12)?, value(13)?, value(14)?, value(15)?, value(16)?, value(17)?,
+            value(18)?, value(19)?, value(20)?,
+        ));
+    }
     for event in &projective.events.generators {
         out.push_str(&format!(
             "  Event id={} kind={} repr={} roots={} subdivision_depth={} pixels=[{},{};{},{}] \
@@ -2543,12 +2575,15 @@ mod tests {
                 camera_max_motion: 0.0,
                 light_capacity: 0,
                 light_kinds: vec![],
+                light_ranges: crate::pixels::config::default_light_ranges(),
                 exposure: crate::pixels::config::ScalarRangeConfig { min: 0.0, max: 1.0 },
                 environment: crate::pixels::config::RgbRangeConfig {
                     min: [0.0; 3],
                     max: [1.0; 3],
                 },
                 ao_enabled: false,
+                ao_radius: 1.0,
+                ao_strength: 1.0,
                 probes_enabled: false,
                 probe_initialization_worst_case_ms: 0,
                 initialization_deadline_ms: 1,

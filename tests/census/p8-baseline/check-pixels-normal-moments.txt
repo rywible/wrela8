@@ -6,67 +6,68 @@ case = check-pixels-normal-moments
 source = tests/golden/check-pixels-normal-moments/src/examples/check_pixels_normal_moments.wr
 phase = P8R.7-final
 phase_backend = direct-fp
-source_tree_sha256 = 2d91e6b3af91ee9a489c9ef8dec89945dd28504678e5da0b56cade634ec8bd4d
-kernel_words_sha256 = 9c9641e4b85f55b1b2a4605ac859a0f52b9d25320df1b1c512ae02a68e004df2
-codegen_dump_sha256 = 73195852890d0b365e829573ad5a8d954e2aedb3265730856471cb4170ad3403
+source_tree_sha256 = b29becdbd5f7cefe0b8c3230c4c9db5c0cdbfff9e34aa1f14effb0e24a62e4d7
+kernel_words_sha256 = b85c63d83329a82d2b87e083acb0e17e3b3554c58a8053ca014216e6aeeb17bb
+codegen_dump_sha256 = 74bd5320497313c2bfbafedd547da59da5d0ddb5af6761932cd48b4346ad049c
 cost_provenance = 96e1aad226833198
-image_sha256 = 802cf19cc22800710a756b08b5fc18aea32e1c56ebaa287692717df30d92a1af
+image_sha256 = 6d70fcdb0437a6cf836815d37cffbb9e499e2cf2e9c26d4485e2db63b23b54f6
 family.p8_write present=["__wrela_pixels_p8_write", "__wrela_pixels_p8_write4"] absent=[]
 family.sealed_numeric present=["sqrt_scalar", "rsqrt_scalar", "raster_rsqrt"] absent=[]
 
 ## [M] measured counts
 
 [fn.__wrela_pixels_p8_raster_regular]
-frame_size = 1584
-word_sha256 = 7f2e0f5f96d2133743ae6be5e6970eb97061106a399228363491a7d90bd4f5d8
-region.unmarked words=225 calls=0 indirect_calls=0 frame_loads=10 frame_stores=65
-region.unmarked.class.abort = 5
-region.unmarked.class.abort_val = 2
-region.unmarked.class.adrp = 9
-region.unmarked.class.alu = 60
-region.unmarked.class.branch = 12
-region.unmarked.class.load = 50
-region.unmarked.class.mov_wide = 22
-region.unmarked.class.store = 65
-region.raster.scalar_prefix words=232 calls=5 indirect_calls=0 frame_loads=77 frame_stores=73
-region.raster.scalar_prefix.class.abort = 3
-region.raster.scalar_prefix.class.adrp = 3
-region.raster.scalar_prefix.class.alu = 40
-region.raster.scalar_prefix.class.branch = 14
-region.raster.scalar_prefix.class.call = 5
-region.raster.scalar_prefix.class.load = 77
-region.raster.scalar_prefix.class.mov_wide = 14
-region.raster.scalar_prefix.class.mul = 1
+frame_size = 4224
+word_sha256 = 5a79d31312e247aebc4ab4616c86894912327e04b4e62489aa7c5d2c75511192
+region.unmarked words=442 calls=0 indirect_calls=0 frame_loads=7 frame_stores=202
+region.unmarked.class.abort = 2
+region.unmarked.class.adrp = 2
+region.unmarked.class.alu = 22
+region.unmarked.class.branch = 7
+region.unmarked.class.load = 201
+region.unmarked.class.mov_wide = 6
+region.unmarked.class.store = 202
+region.raster.scalar_prefix words=300 calls=6 indirect_calls=0 frame_loads=88 frame_stores=88
+region.raster.scalar_prefix.class.abort = 5
+region.raster.scalar_prefix.class.adrp = 5
+region.raster.scalar_prefix.class.alu = 61
+region.raster.scalar_prefix.class.branch = 18
+region.raster.scalar_prefix.class.call = 6
+region.raster.scalar_prefix.class.load = 90
+region.raster.scalar_prefix.class.mov_wide = 22
+region.raster.scalar_prefix.class.mul = 3
 region.raster.scalar_prefix.class.mul_w = 1
-region.raster.scalar_prefix.class.store = 73
+region.raster.scalar_prefix.class.store = 88
 region.raster.scalar_prefix.class.udiv = 1
-region.raster.packet_loop words=436 calls=2 indirect_calls=0 frame_loads=95 frame_stores=91
-region.raster.packet_loop.class.abort = 13
-region.raster.packet_loop.class.adrp = 13
-region.raster.packet_loop.class.alu = 138
+region.raster.packet_loop words=1177 calls=14 indirect_calls=0 frame_loads=251 frame_stores=278
+region.raster.packet_loop.class.abort = 26
+region.raster.packet_loop.class.abort_val = 2
+region.raster.packet_loop.class.adrp = 30
+region.raster.packet_loop.class.alu = 310
 region.raster.packet_loop.class.asimd_int = 2
 region.raster.packet_loop.class.asimd_permute = 3
-region.raster.packet_loop.class.branch = 26
-region.raster.packet_loop.class.call = 2
+region.raster.packet_loop.class.branch = 65
+region.raster.packet_loop.class.call = 14
 region.raster.packet_loop.class.fp_load_q = 10
 region.raster.packet_loop.class.fp_store_q = 5
-region.raster.packet_loop.class.load = 85
-region.raster.packet_loop.class.mov_wide = 37
-region.raster.packet_loop.class.mul = 15
-region.raster.packet_loop.class.mul_w = 1
-region.raster.packet_loop.class.store = 86
-region.raster.scalar_suffix words=133 calls=2 indirect_calls=0 frame_loads=43 frame_stores=34
-region.raster.scalar_suffix.class.abort = 2
-region.raster.scalar_suffix.class.adrp = 2
-region.raster.scalar_suffix.class.alu = 28
-region.raster.scalar_suffix.class.branch = 11
-region.raster.scalar_suffix.class.call = 2
-region.raster.scalar_suffix.class.load = 43
-region.raster.scalar_suffix.class.mov_wide = 10
+region.raster.packet_loop.class.load = 262
+region.raster.packet_loop.class.mov_wide = 137
+region.raster.packet_loop.class.mul = 36
+region.raster.packet_loop.class.mul_w = 2
+region.raster.packet_loop.class.store = 273
+region.raster.scalar_suffix words=201 calls=3 indirect_calls=0 frame_loads=54 frame_stores=49
+region.raster.scalar_suffix.class.abort = 4
+region.raster.scalar_suffix.class.adrp = 4
+region.raster.scalar_suffix.class.alu = 49
+region.raster.scalar_suffix.class.branch = 15
+region.raster.scalar_suffix.class.call = 3
+region.raster.scalar_suffix.class.load = 56
+region.raster.scalar_suffix.class.mov_wide = 18
+region.raster.scalar_suffix.class.mul = 2
 region.raster.scalar_suffix.class.mul_w = 1
-region.raster.scalar_suffix.class.store = 34
-region.raster.charge words=23 calls=1 indirect_calls=0 frame_loads=7 frame_stores=1
-region.raster.charge.class.alu = 7
+region.raster.scalar_suffix.class.store = 49
+region.raster.charge words=24 calls=1 indirect_calls=0 frame_loads=7 frame_stores=1
+region.raster.charge.class.alu = 8
 region.raster.charge.class.branch = 5
 region.raster.charge.class.call = 1
 region.raster.charge.class.load = 7
@@ -74,9 +75,9 @@ region.raster.charge.class.mov_wide = 2
 region.raster.charge.class.store = 1
 
 [fn.__wrela_pixels_p8_geometry_lane_valid]
-frame_size = 768
-word_sha256 = beed4ee1d4d0999faf2fd2fce7602e30bf927262bd302b7bda24c356c71c9a89
-region.unmarked words=628 calls=5 indirect_calls=0 frame_loads=79 frame_stores=154
+frame_size = 2000
+word_sha256 = 998a4967a747ef5aeff65b824cb04bbc55344a6da6fb9f636f1b8b7eac000ebd
+region.unmarked words=936 calls=5 indirect_calls=0 frame_loads=79 frame_stores=308
 region.unmarked.class.abort = 23
 region.unmarked.class.abort_val = 3
 region.unmarked.class.adrp = 29
@@ -87,25 +88,25 @@ region.unmarked.class.fp_convert = 4
 region.unmarked.class.fp_div_sqrt = 2
 region.unmarked.class.fp_load = 4
 region.unmarked.class.fp_store = 6
-region.unmarked.class.load = 115
+region.unmarked.class.load = 269
 region.unmarked.class.mov_wide = 51
 region.unmarked.class.mul = 4
 region.unmarked.class.mul_high = 4
 region.unmarked.class.mul_w = 1
-region.unmarked.class.store = 148
+region.unmarked.class.store = 302
 
 [fn.__wrela_pixels_p8_geometry_packet_valid]
-frame_size = 496
-word_sha256 = 6a28a78afa1bc0022e8b0e91cb8d39c6da7f5420a2851d0f445630bda4e20045
-region.unmarked words=200 calls=2 indirect_calls=0 frame_loads=23 frame_stores=71
+frame_size = 1728
+word_sha256 = 6ee0771bbe8843fa711f54a4faa5686932300fe092b9e677a19db404b4c315a9
+region.unmarked words=508 calls=2 indirect_calls=0 frame_loads=23 frame_stores=225
 region.unmarked.class.abort = 4
 region.unmarked.class.adrp = 4
 region.unmarked.class.alu = 30
 region.unmarked.class.branch = 12
 region.unmarked.class.call = 2
-region.unmarked.class.load = 65
+region.unmarked.class.load = 219
 region.unmarked.class.mov_wide = 12
-region.unmarked.class.store = 71
+region.unmarked.class.store = 225
 
 [fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack]
 frame_size = 57744
@@ -266,16 +267,16 @@ region.unmarked.class.store = 9
 ## [I] modelled cycles
 # Derived from the [M] counts above through the A76 cost table.
 # Never summed with an [M] row; anything citing a cycle cites [I].
-fn.__wrela_pixels_p8_raster_regular.proxy_cycles = 796
-fn.__wrela_pixels_p8_raster_regular.region.unmarked.latency_weighted_cycles = 375
-fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_prefix.latency_weighted_cycles = 486
-fn.__wrela_pixels_p8_raster_regular.region.raster.packet_loop.latency_weighted_cycles = 792
-fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_suffix.latency_weighted_cycles = 263
-fn.__wrela_pixels_p8_raster_regular.region.raster.charge.latency_weighted_cycles = 44
-fn.__wrela_pixels_p8_geometry_lane_valid.proxy_cycles = 438
-fn.__wrela_pixels_p8_geometry_lane_valid.region.unmarked.latency_weighted_cycles = 1048
-fn.__wrela_pixels_p8_geometry_packet_valid.proxy_cycles = 138
-fn.__wrela_pixels_p8_geometry_packet_valid.region.unmarked.latency_weighted_cycles = 395
+fn.__wrela_pixels_p8_raster_regular.proxy_cycles = 1643
+fn.__wrela_pixels_p8_raster_regular.region.unmarked.latency_weighted_cycles = 1045
+fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_prefix.latency_weighted_cycles = 599
+fn.__wrela_pixels_p8_raster_regular.region.raster.packet_loop.latency_weighted_cycles = 2128
+fn.__wrela_pixels_p8_raster_regular.region.raster.scalar_suffix.latency_weighted_cycles = 376
+fn.__wrela_pixels_p8_raster_regular.region.raster.charge.latency_weighted_cycles = 45
+fn.__wrela_pixels_p8_geometry_lane_valid.proxy_cycles = 592
+fn.__wrela_pixels_p8_geometry_lane_valid.region.unmarked.latency_weighted_cycles = 1818
+fn.__wrela_pixels_p8_geometry_packet_valid.proxy_cycles = 292
+fn.__wrela_pixels_p8_geometry_packet_valid.region.unmarked.latency_weighted_cycles = 1165
 fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.proxy_cycles = 23270
 fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.unmarked.latency_weighted_cycles = 2221
 fn.__wrela_pixels_p7_union_silhouette_coverage_at_slack.region.coverage.entry.latency_weighted_cycles = 18885

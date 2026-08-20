@@ -24,6 +24,7 @@ from core.render import (
     __wrela_pixels_p7_debug_certified_run_word,
     __wrela_pixels_p7_debug_frame_digest,
     __wrela_pixels_p7_run_worker_with_proposals,
+    __wrela_pixels_p9_debug_visibility_enabled,
 )
 from drivers.display import Display, DisplayDevice
 
@@ -59,6 +60,7 @@ fn shade(
     return MaterialSample.standard(
         color=Rgb(r=0.25, g=0.5, b=0.75),
         roughness=0.5,
+        emissive=Rgb(r=0.125, g=0.25, b=0.5),
     )
 
 @test(runtime)
@@ -96,18 +98,22 @@ struct OneCorePlaneProbe:
                 __wrela_trace_p7_u64(4922225244575680596)
                 exact_digest = __wrela_pixels_p7_debug_frame_digest(0)
                 assert exact_digest[0] == 1, "single-core exact frame is complete"
+                debug_visibility = __wrela_pixels_p9_debug_visibility_enabled()
                 word: usize = 0
                 @budget(bound=4)
                 while word < 4:
                     packed = exact_digest[word + 1]
-                    if word == 0:
-                        assert packed == 3954935440892105603, "single-core exact digest word zero"
-                    elif word == 1:
-                        assert packed == 12936886627447603635, "single-core exact digest word one"
-                    elif word == 2:
-                        assert packed == 9115567371493163330, "single-core exact digest word two"
+                    if debug_visibility:
+                        pass
                     else:
-                        assert packed == 13084624655846693369, "single-core exact digest word three"
+                        if word == 0:
+                            assert packed == 13875709220895249283, "single-core exact digest word zero"
+                        elif word == 1:
+                            assert packed == 6310658851647062451, "single-core exact digest word one"
+                        elif word == 2:
+                            assert packed == 7917518507304040770, "single-core exact digest word two"
+                        else:
+                            assert packed == 5642142049223440889, "single-core exact digest word three"
                     __wrela_trace_p7_u64(packed)
                     word = word + 1
                 evidence = __wrela_pixels_p7_debug_certified_run_word(0, 0, 0, 0)
@@ -153,10 +159,16 @@ struct OneCorePlaneProbe:
                 assert disabled_count == 2048, "disabled proposals preserve success and pixel count"
                 disabled_digest = __wrela_pixels_p7_debug_frame_digest(0)
                 assert disabled_digest[0] == 1, "disabled proposal frame is complete"
-                assert disabled_digest[1] == 3954935440892105603, "disabled proposals preserve digest word zero"
-                assert disabled_digest[2] == 12936886627447603635, "disabled proposals preserve digest word one"
-                assert disabled_digest[3] == 9115567371493163330, "disabled proposals preserve digest word two"
-                assert disabled_digest[4] == 13084624655846693369, "disabled proposals preserve digest word three"
+                if debug_visibility:
+                    assert disabled_digest[1] == exact_digest[1], "disabled proposals preserve debug digest word zero"
+                    assert disabled_digest[2] == exact_digest[2], "disabled proposals preserve debug digest word one"
+                    assert disabled_digest[3] == exact_digest[3], "disabled proposals preserve debug digest word two"
+                    assert disabled_digest[4] == exact_digest[4], "disabled proposals preserve debug digest word three"
+                else:
+                    assert disabled_digest[1] == 13875709220895249283, "disabled proposals preserve digest word zero"
+                    assert disabled_digest[2] == 6310658851647062451, "disabled proposals preserve digest word one"
+                    assert disabled_digest[3] == 7917518507304040770, "disabled proposals preserve digest word two"
+                    assert disabled_digest[4] == 5642142049223440889, "disabled proposals preserve digest word three"
                 return exact_digest[1]
 @test(runtime)
 async fn one_core_matches_four_core_digest(probe: Actor[OneCorePlaneProbe]):

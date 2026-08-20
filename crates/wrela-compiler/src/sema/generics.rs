@@ -710,7 +710,7 @@ fn write_renderer_snapshot_scalar(
         "    slot_info = __wrela_pixels_p7_param_slot(self.renderer_index.to[usize](), {key})\n\
          \x20   if slot_info[0] == 1:\n\
          \x20       if slot_info[1] != used_count.to[u64]() or used_count >= 16:\n\
-         \x20           return FrameInputSnapshot.make_frame(params=values, param_count=65535, camera=frame.camera, lights=frame.lights, exposure=frame.exposure, environment=frame.environment, frame_index=frame.frame_index)\n\
+         \x20           return FrameInputSnapshot.make_frame(params=values, param_count=65535, camera=frame.camera)\n\
          \x20       values[used_count.to[usize]()] = {source}.to[f32]()\n\
          \x20       used_count = used_count + 1"
     )
@@ -871,7 +871,7 @@ fn renderer_snapshot_body(parameter_type: &Type, mctx: &ModuleCtx) -> Result<Vec
     )?;
     writeln!(
         body,
-        "    return FrameInputSnapshot.make_frame(params=values, param_count=used_count, camera=frame.camera, lights=frame.lights, exposure=frame.exposure, environment=frame.environment, frame_index=frame.frame_index)"
+        "    return FrameInputSnapshot.make_frame(params=values, param_count=used_count, camera=frame.camera)"
     )
     .expect("String writes cannot fail");
     let source = format!("module __wrela_renderer_snapshot\n\nfn snapshot():\n{body}");

@@ -3,6 +3,7 @@ Module path=__image_pixels
   Const N_RENDER_WORKERS: usize
   Fn __wrela_pixels_p8r_packet_selftest() -> bool
   Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
+  Fn __wrela_pixels_f64_bits_to_f32(bits: read u64) -> f32
   Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
   Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
   Fn __wrela_pixels_program_digest_byte(renderer: read usize, byte: read usize) -> u8
@@ -10,6 +11,7 @@ Module path=__image_pixels
   Fn __wrela_pixels_tile_feature(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
   Fn __wrela_pixels_tile_event_count(renderer: read usize, tile: read u32) -> u32
   Fn __wrela_pixels_tile_event(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_program_table_count(renderer: read usize, table: read u16) -> u32
   Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
   Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
   Fn __wrela_pixels_p7_abs(value: read f32) -> f32
@@ -44,12 +46,25 @@ Module path=__image_pixels
   Fn __wrela_pixels_p8_axis_box_coverage(renderer: read usize, x: read u32, y: read u32, camera: read [f32; 12]) -> [i64; 4]
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
+  Fn __wrela_pixels_p9_debug_visibility() -> bool
+  Fn __wrela_pixels_p9_round_ratio(numerator: read u64, denominator: read u64) -> u64
+  Fn __wrela_pixels_p9_table_value(index: read u64, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_lut_interpolate(coordinate: read u64, fraction_bits: read u32, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_filmic_tone(value: read f32) -> [u64; 2]
+  Fn __wrela_pixels_p9_encode_common(value: read f32, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_encode(renderer: read usize, value: read f32) -> [u64; 2]
+  Fn __wrela_pixels_p9_material(renderer: read usize, identity: read u32, surface: read [f32; 6], params: read [f32; 16], camera: read [f32; 12]) -> [f32; 21]
+  Fn __wrela_pixels_p9_material_inputs(renderer: read usize, identity: read u32) -> [u64; 2]
+  Fn __wrela_pixels_p9_scene_distance(renderer: read usize, point: read [f32; 3], params: read [f32; 16]) -> [f32; 4]
+  Fn __wrela_pixels_p9_light_range(renderer: read usize, slot: read usize) -> [f32; 12]
+  Fn __wrela_pixels_p9_ao_config(renderer: read usize) -> [f32; 3]
   Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
   Fn __wrela_pixels_p7_material_event_coverage(renderer: read usize, x: read u32, y: read u32, q: read f32, hit: read bool, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 3]
   Fn __wrela_pixels_p7_feature_valid(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
   Fn __wrela_pixels_p7_feature_valid_filter(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], exponent: read i32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_q_span(renderer: read usize, feature: read u32) -> [f32; 3]
   Fn __wrela_pixels_p7_feature_world_bounds(renderer: read usize, feature: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p9_feature_local_frame(renderer: read usize, feature: read u32, point: read [f32; 3], normal: read [f32; 3], d_p_dx: read [f32; 3], d_p_dy: read [f32; 3], params: read [f32; 16]) -> [f32; 13]
   Fn __wrela_pixels_p7_object_composed_root(renderer: read usize, object: read u32) -> bool
   Fn __wrela_pixels_p7_object_support(renderer: read usize, object: read u32) -> [f32; 2]
   Fn __wrela_pixels_p7_object_q_tube(renderer: read usize, object: read u32, uv: read [f32; 4], q_lo: read f32, q_hi: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 7]

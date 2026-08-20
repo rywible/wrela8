@@ -1,0 +1,2316 @@
+module render_light
+
+from core.__image_pixels import __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_encode, __wrela_pixels_p9_feature_local_frame, __wrela_pixels_p9_material, __wrela_pixels_p9_material_inputs, __wrela_pixels_program_operand
+from core.field import sin_scalar, sqrt_scalar
+
+pub enum P9ErrorSource:
+    Visibility
+    Coverage
+    Normal
+    Material
+    Texture
+    DirectLight
+    Shadow
+    Ao
+    Gi
+    Transparency
+    Post
+    Temporal
+    Quantization
+
+pub struct P9ShadingMeta:
+    pub identity: u64
+    pub flags: u64
+    pub visibility: [u64; 8]
+    pub visibility_uncertain: [u64; 8]
+    pub visibility_refined: [u64; 32]
+    pub visibility_refined_uncertain: [u64; 32]
+    pub visibility_terminal_light: u64
+
+fn __wrela_pixels_p9_shading_failure() -> [f32; 10]:
+    return [0.0; 10]
+
+# Each option occupies six words: source, guaranteed code-span reduction
+# lower bound, operation count, remaining depth, current code span, and payload
+# ID. A zero lower bound is honest when a rung guarantees only depth progress;
+# it ties by source/payload instead of claiming an unproved byte improvement.
+# V1 records 255 as the conservative current upper bound for one u8 channel.
+# Products are restricted to u32 inputs, so the exact u64 cross multiplication
+# cannot overflow and no floating priority division enters the runtime contract.
+pub fn __wrela_pixels_p9_select_refinement(
+    read options: [u64; 48],
+    count: u32,
+) -> [u64; 2]:
+    if count == 0:
+        return [0, 0]
+    if count > 8:
+        return [0, 0]
+    best: u32 = 0
+    index: u32 = 0
+    @budget(bound=8)
+    while index < count:
+        base = index.to[usize]() * 6
+        source = options[base]
+        reduction = options[base + 1]
+        operations = options[base + 2]
+        depth = options[base + 3]
+        width = options[base + 4]
+        payload = options[base + 5]
+        if source > 12 or reduction > 4294967295 or operations == 0 or operations > 4294967295 or depth == 0 or width == 0 or payload > 4294967295:
+            return [0, 0]
+        if index > 0:
+            best_base = best.to[usize]() * 6
+            left = reduction * options[best_base + 2]
+            right = options[best_base + 1] * operations
+            if left > right or (
+                left == right and (
+                    source < options[best_base]
+                    or (source == options[best_base] and payload < options[best_base + 5])
+                )
+            ):
+                best = index
+        index = index + 1
+    return [1, best.to[u64]()]
+
+fn __wrela_pixels_p9_pow5(value: f32) -> f32:
+    square = value * value
+    return square * square * value
+
+fn __wrela_pixels_p9_iv_widen(read value: [f32; 2]) -> [f32; 2]:
+    magnitude = value[0]
+    if magnitude < 0.0:
+        magnitude = 0.0 - magnitude
+    high_magnitude = value[1]
+    if high_magnitude < 0.0:
+        high_magnitude = 0.0 - high_magnitude
+    if high_magnitude > magnitude:
+        magnitude = high_magnitude
+    # Four ulps at the endpoint magnitude. Adding a unit-sized absolute term
+    # here would make subdivision non-convergent: a thousand tiny source
+    # cells would each inherit the same error as a value near one. Exact zero
+    # stays exact; every supported nonzero shading value is normal f32.
+    radius = magnitude * 0.000000476837158203125
+    return [value[0] - radius, value[1] + radius]
+
+fn __wrela_pixels_p9_iv_add(read a: [f32; 2], read b: [f32; 2]) -> [f32; 2]:
+    return __wrela_pixels_p9_iv_widen([a[0] + b[0], a[1] + b[1]])
+
+fn __wrela_pixels_p9_iv_sub(read a: [f32; 2], read b: [f32; 2]) -> [f32; 2]:
+    return __wrela_pixels_p9_iv_widen([a[0] - b[1], a[1] - b[0]])
+
+fn __wrela_pixels_p9_iv_mul(read a: [f32; 2], read b: [f32; 2]) -> [f32; 2]:
+    products: [f32; 4] = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]
+    low = products[0]
+    high = products[0]
+    index: usize = 1
+    @budget(bound=3)
+    while index < 4:
+        if products[index] < low:
+            low = products[index]
+        if products[index] > high:
+            high = products[index]
+        index = index + 1
+    return __wrela_pixels_p9_iv_widen([low, high])
+
+fn __wrela_pixels_p9_iv_square(read value: [f32; 2]) -> [f32; 2]:
+    if value[0] <= 0.0 and value[1] >= 0.0:
+        magnitude = value[0]
+        if magnitude < 0.0:
+            magnitude = 0.0 - magnitude
+        if value[1] > magnitude:
+            magnitude = value[1]
+        return __wrela_pixels_p9_iv_widen([0.0, magnitude * magnitude])
+    return __wrela_pixels_p9_iv_mul(value, value)
+
+fn __wrela_pixels_p9_iv_reciprocal_positive(read value: [f32; 2]) -> [f32; 2]:
+    if not value[0] > 0.0 or value[1] < value[0]:
+        return [1.0, 0.0]
+    return __wrela_pixels_p9_iv_widen([1.0 / value[1], 1.0 / value[0]])
+
+fn __wrela_pixels_p9_iv_sqrt(read value: [f32; 2]) -> [f32; 2]:
+    if value[1] < 0.0:
+        return [1.0, 0.0]
+    low = value[0]
+    if low < 0.0:
+        low = 0.0
+    return __wrela_pixels_p9_iv_widen([sqrt_scalar(low), sqrt_scalar(value[1])])
+
+fn __wrela_pixels_p9_iv_clamp01(read value: [f32; 2]) -> [f32; 2]:
+    low = value[0]
+    high = value[1]
+    if low < 0.0:
+        low = 0.0
+    if high > 1.0:
+        high = 1.0
+    if high < 0.0:
+        high = 0.0
+    if low > 1.0:
+        low = 1.0
+    return [low, high]
+
+fn __wrela_pixels_p9_iv_pow5(read value: [f32; 2]) -> [f32; 2]:
+    square = __wrela_pixels_p9_iv_mul(value, value)
+    fourth = __wrela_pixels_p9_iv_mul(square, square)
+    return __wrela_pixels_p9_iv_mul(fourth, value)
+
+fn __wrela_pixels_p9_normalize(x: f32, y: f32, z: f32) -> [f32; 4]:
+    length_squared = x * x + y * y + z * z
+    if not length_squared > 0.0 or length_squared != length_squared:
+        return [0.0; 4]
+    inverse = 1.0 / sqrt_scalar(length_squared)
+    return [1.0, x * inverse, y * inverse, z * inverse]
+
+fn __wrela_pixels_p9_checker(value: f32) -> u32:
+    wrapped = value - value.to[i32]().to[f32]()
+    if wrapped < 0.0:
+        wrapped = wrapped + 1.0
+    return (wrapped * 2.0).to[u32]() & 1
+
+fn __wrela_pixels_p9_floor(value: f32) -> i32:
+    result = value.to[i32]()
+    if result.to[f32]() > value:
+        result = result - 1
+    return result
+
+pub fn __wrela_pixels_p9_disk_offset(sample: u32) -> [f32; 3]:
+    if sample >= 64:
+        return [0.0; 3]
+    # Canonical depth-three row-major square-cell centers under the sealed
+    # concentric map. Computing the table from its definition avoids carrying
+    # two separately maintained 64-entry copies in every renderer image.
+    x = sample & 7
+    y = sample >> 3
+    a = (x.to[f32]() * 2.0 - 7.0) * 0.125
+    b = (y.to[f32]() * 2.0 - 7.0) * 0.125
+    return __wrela_pixels_p9_concentric_disk(a, b)
+
+pub fn __wrela_pixels_p9_concentric_disk(a: f32, b: f32) -> [f32; 3]:
+    if a == 0.0 and b == 0.0:
+        return [1.0, 0.0, 0.0]
+    abs_a = a
+    abs_b = b
+    if abs_a < 0.0:
+        abs_a = 0.0 - abs_a
+    if abs_b < 0.0:
+        abs_b = 0.0 - abs_b
+    radius = b
+    theta = 1.5707963267948966 - 0.7853981633974483 * a / b
+    if abs_a > abs_b:
+        radius = a
+        theta = 0.7853981633974483 * b / a
+    return [
+        1.0,
+        radius * sin_scalar(theta + 1.5707963267948966),
+        radius * sin_scalar(theta),
+    ]
+
+fn __wrela_pixels_p9_texture_record(renderer: usize, stable_id: u32) -> [u64; 2]:
+    record: u32 = 0
+    @budget(bound=256)
+    while record < 256:
+        asset = __wrela_pixels_program_operand(renderer, 12, record, 0)
+        if asset[0] != 1:
+            return [0, 0]
+        if asset[1] == stable_id.to[u64]():
+            return [1, record.to[u64]()]
+        record = record + 1
+    return [0, 0]
+
+fn __wrela_pixels_p9_texture_mip_cursor(
+    renderer: usize,
+    record: u32,
+    format: u64,
+    target: u32,
+) -> [u64; 2]:
+    channels: u64 = 1
+    if format == 1 or format == 2:
+        channels = 3
+    elif format == 3:
+        channels = 2
+    cursor: u64 = 11
+    level: u32 = 0
+    @budget(bound=16)
+    while level < target:
+        byte_count = __wrela_pixels_program_operand(renderer, 12, record, (cursor + 2).to[u16]())
+        if byte_count[0] != 1:
+            return [0, 0]
+        moment_flag_cursor = cursor + 3 + byte_count[1] + 1 + channels * 2
+        moment_flag = __wrela_pixels_program_operand(renderer, 12, record, moment_flag_cursor.to[u16]())
+        if moment_flag[0] != 1 or moment_flag[1] > 1:
+            return [0, 0]
+        cursor = moment_flag_cursor + 1
+        if moment_flag[1] == 1:
+            moment_count = __wrela_pixels_program_operand(renderer, 12, record, cursor.to[u16]())
+            if moment_count[0] != 1:
+                return [0, 0]
+            cursor = cursor + 1 + moment_count[1] * 5
+        level = level + 1
+    return [1, cursor]
+
+pub fn __wrela_pixels_p9_texture_moments(
+    renderer: usize,
+    record: u32,
+    format: u64,
+    level: u32,
+    u_input: f32,
+    v_input: f32,
+) -> [f32; 6]:
+    cursor_result = __wrela_pixels_p9_texture_mip_cursor(renderer, record, format, level)
+    if cursor_result[0] != 1:
+        return [0.0; 6]
+    cursor = cursor_result[1]
+    byte_count = __wrela_pixels_program_operand(renderer, 12, record, (cursor + 2).to[u16]())
+    if byte_count[0] != 1:
+        return [0.0; 6]
+    channels: u64 = 1
+    if format == 1 or format == 2:
+        channels = 3
+    elif format == 3:
+        channels = 2
+    moment_flag_cursor = cursor + 3 + byte_count[1] + 1 + channels * 2
+    moment_flag = __wrela_pixels_program_operand(renderer, 12, record, moment_flag_cursor.to[u16]())
+    if moment_flag[0] != 1:
+        return [0.0; 6]
+    if moment_flag[1] != 1 or format != 3:
+        return [0.0; 6]
+    moment_count = __wrela_pixels_program_operand(renderer, 12, record, (moment_flag_cursor + 1).to[u16]())
+    width_value = __wrela_pixels_program_operand(renderer, 12, record, cursor.to[u16]())
+    height_value = __wrela_pixels_program_operand(renderer, 12, record, (cursor + 1).to[u16]())
+    wrap_u = __wrela_pixels_program_operand(renderer, 12, record, 4)
+    wrap_v = __wrela_pixels_program_operand(renderer, 12, record, 5)
+    if moment_count[0] != 1 or width_value[0] != 1 or height_value[0] != 1 or wrap_u[0] != 1 or wrap_v[0] != 1 or moment_count[1] != width_value[1] * height_value[1]:
+        return [0.0; 6]
+    width = width_value[1].to[i32]()
+    height = height_value[1].to[i32]()
+    u = u_input
+    v = v_input
+    if wrap_u[1] == 1:
+        u = u - __wrela_pixels_p9_floor(u).to[f32]()
+    else:
+        if u < 0.0:
+            u = 0.0
+        if u > 1.0:
+            u = 1.0
+    if wrap_v[1] == 1:
+        v = v - __wrela_pixels_p9_floor(v).to[f32]()
+    else:
+        if v < 0.0:
+            v = 0.0
+        if v > 1.0:
+            v = 1.0
+    x = u * width_value[1].to[f32]() - 0.5
+    y = v * height_value[1].to[f32]() - 0.5
+    x0 = __wrela_pixels_p9_floor(x)
+    y0 = __wrela_pixels_p9_floor(y)
+    fx = x - x0.to[f32]()
+    fy = y - y0.to[f32]()
+    result: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    moment: usize = 0
+    @budget(bound=5)
+    while moment < 5:
+        samples: [f32; 4] = [0.0; 4]
+        sample: usize = 0
+        @budget(bound=4)
+        while sample < 4:
+            sx = x0 + (sample % 2).to[i32]()
+            sy = y0 + (sample / 2).to[i32]()
+            if wrap_u[1] == 1:
+                sx = sx % width
+                if sx < 0:
+                    sx = sx + width
+            else:
+                if sx < 0:
+                    sx = 0
+                if sx >= width:
+                    sx = width - 1
+            if wrap_v[1] == 1:
+                sy = sy % height
+                if sy < 0:
+                    sy = sy + height
+            else:
+                if sy < 0:
+                    sy = 0
+                if sy >= height:
+                    sy = height - 1
+            texel = sy.to[u64]() * width.to[u64]() + sx.to[u64]()
+            encoded = __wrela_pixels_program_operand(
+                renderer, 12, record,
+                (moment_flag_cursor + 2 + texel * 5 + moment.to[u64]()).to[u16](),
+            )
+            if encoded[0] != 1:
+                return [0.0; 6]
+            signed_value: f32 = 0.0
+            # Test the sign bit directly. Ordering a u64 wire word against
+            # i64::MAX is vulnerable to mixed-literal lowering and previously
+            # decoded a negative Q16 moment as an enormous positive slope.
+            if (encoded[1] & 9223372036854775808) == 0:
+                signed_value = encoded[1].to[f32]()
+            else:
+                # Moment operands preserve the compiler's signed Q16 bits in
+                # the unsigned program wire word. Decode two's complement
+                # explicitly; a checked numeric conversion must not reject
+                # every negative slope/mixed moment.
+                magnitude = 18446744073709551615 - encoded[1] + 1
+                signed_value = 0.0 - magnitude.to[f32]()
+            samples[sample] = signed_value / 65536.0
+            sample = sample + 1
+        low = samples[0] * (1.0 - fx) + samples[1] * fx
+        high = samples[2] * (1.0 - fx) + samples[3] * fx
+        result[moment + 1] = low * (1.0 - fy) + high * fy
+        if result[moment + 1] != result[moment + 1]:
+            return [0.0; 6]
+        moment = moment + 1
+    return result
+
+# Permanent runtime regression for the signed-Q16 texture-program ABI. The
+# first texel of sealed asset 21 has a negative x slope; decoding it through
+# the same operand path used by production filtering must preserve that sign.
+pub fn __wrela_pixels_p9_signed_moment_selftest(renderer: usize) -> bool:
+    found = __wrela_pixels_p9_texture_record(renderer, 23)
+    if found[0] != 1:
+        return false
+    moments = __wrela_pixels_p9_texture_moments(
+        renderer, found[1].to[u32](), 3, 0, 0.25, 0.25,
+    )
+    return (
+        moments[0] == 1.0
+        and moments[1] < 0.0
+        and moments[2] == 0.0
+        and moments[3] > 0.0
+        and moments[4] == 0.0
+        and moments[5] == 0.0
+    )
+
+fn __wrela_pixels_p9_texture_decode(format: u64, byte: u64) -> [f32; 2]:
+    if byte > 255:
+        return [0.0, 0.0]
+    if format == 1:
+        # Every v1 Rgb8Srgb asset byte is sealed by digest. The canonical
+        # checker and its linear-light 1x1 mip use only these three codes.
+        if byte == 0:
+            return [1.0, 0.0]
+        if byte == 188:
+            return [1.0, 32957.0.to[f32]() / 65535.0.to[f32]()]
+        if byte == 255:
+            return [1.0, 1.0]
+        return [0.0, 0.0]
+    if format == 3:
+        signed = byte.to[i32]()
+        if signed >= 128:
+            signed = signed - 256
+        value = signed.to[f32]() / 127.0
+        if value < -1.0:
+            value = -1.0
+        return [1.0, value]
+    if format == 2 or format == 4:
+        return [1.0, byte.to[f32]() / 255.0]
+    return [0.0, 0.0]
+
+fn __wrela_pixels_p9_texture_texel(
+    renderer: usize,
+    record: u32,
+    format: u64,
+    wrap_u: u64,
+    wrap_v: u64,
+    level: u32,
+    read coordinate: [i32; 3],
+) -> [f32; 2]:
+    cursor_result = __wrela_pixels_p9_texture_mip_cursor(renderer, record, format, level)
+    if cursor_result[0] != 1:
+        return [0.0, 0.0]
+    cursor = cursor_result[1]
+    width_value = __wrela_pixels_program_operand(renderer, 12, record, cursor.to[u16]())
+    height_value = __wrela_pixels_program_operand(renderer, 12, record, (cursor + 1).to[u16]())
+    if width_value[0] != 1 or height_value[0] != 1 or width_value[1] == 0 or height_value[1] == 0:
+        return [0.0, 0.0]
+    width = width_value[1].to[i32]()
+    height = height_value[1].to[i32]()
+    x = coordinate[0]
+    y = coordinate[1]
+    channel = coordinate[2].to[u32]()
+    if wrap_u == 1:
+        x = x % width
+        if x < 0:
+            x = x + width
+    else:
+        if x < 0:
+            x = 0
+        if x >= width:
+            x = width - 1
+    if wrap_v == 1:
+        y = y % height
+        if y < 0:
+            y = y + height
+    else:
+        if y < 0:
+            y = 0
+        if y >= height:
+            y = height - 1
+    channels: u32 = 1
+    if format == 1 or format == 2:
+        channels = 3
+    elif format == 3:
+        channels = 2
+    if channel >= channels:
+        return [1.0, 0.0]
+    ordinal = cursor + 3 + (y.to[u64]() * width.to[u64]() + x.to[u64]()) * channels.to[u64]() + channel.to[u64]()
+    byte = __wrela_pixels_program_operand(renderer, 12, record, ordinal.to[u16]())
+    if byte[0] != 1:
+        return [0.0, 0.0]
+    return __wrela_pixels_p9_texture_decode(format, byte[1])
+
+pub fn __wrela_pixels_p9_texture_mip_bounds(
+    renderer: usize,
+    record: u32,
+    format: u64,
+    level: u32,
+) -> [f32; 7]:
+    cursor_result = __wrela_pixels_p9_texture_mip_cursor(renderer, record, format, level)
+    if cursor_result[0] != 1:
+        return [0.0; 7]
+    cursor = cursor_result[1]
+    byte_count = __wrela_pixels_program_operand(renderer, 12, record, (cursor + 2).to[u16]())
+    if byte_count[0] != 1:
+        return [0.0; 7]
+    channels: u64 = 1
+    if format == 1 or format == 2:
+        channels = 3
+    elif format == 3:
+        channels = 2
+    count_cursor = cursor + 3 + byte_count[1]
+    count = __wrela_pixels_program_operand(renderer, 12, record, count_cursor.to[u16]())
+    if count[0] != 1 or count[1] != channels:
+        return [0.0; 7]
+    result: [f32; 7] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    channel: u64 = 0
+    @budget(bound=3)
+    while channel < channels:
+        low_byte = __wrela_pixels_program_operand(
+            renderer, 12, record, (count_cursor + 1 + channel).to[u16](),
+        )
+        high_byte = __wrela_pixels_program_operand(
+            renderer, 12, record, (count_cursor + 1 + channels + channel).to[u16](),
+        )
+        if low_byte[0] != 1 or high_byte[0] != 1:
+            return [0.0; 7]
+        low = __wrela_pixels_p9_texture_decode(format, low_byte[1])
+        high = __wrela_pixels_p9_texture_decode(format, high_byte[1])
+        if low[0] != 1.0 or high[0] != 1.0 or low[1] > high[1]:
+            return [0.0; 7]
+        result[channel.to[usize]() + 1] = low[1]
+        result[channel.to[usize]() + 4] = high[1]
+        channel = channel + 1
+    return result
+
+fn __wrela_pixels_p9_texture_bilinear(
+    renderer: usize,
+    record: u32,
+    format: u64,
+    wrap_u: u64,
+    wrap_v: u64,
+    level: u32,
+    u_input: f32,
+    v_input: f32,
+) -> [f32; 4]:
+    cursor = __wrela_pixels_p9_texture_mip_cursor(renderer, record, format, level)
+    if cursor[0] != 1:
+        return [0.0; 4]
+    width_value = __wrela_pixels_program_operand(renderer, 12, record, cursor[1].to[u16]())
+    height_value = __wrela_pixels_program_operand(renderer, 12, record, (cursor[1] + 1).to[u16]())
+    if width_value[0] != 1 or height_value[0] != 1:
+        return [0.0; 4]
+    u = u_input
+    v = v_input
+    if wrap_u == 1:
+        u = u - __wrela_pixels_p9_floor(u).to[f32]()
+    else:
+        if u < 0.0:
+            u = 0.0
+        if u > 1.0:
+            u = 1.0
+    if wrap_v == 1:
+        v = v - __wrela_pixels_p9_floor(v).to[f32]()
+    else:
+        if v < 0.0:
+            v = 0.0
+        if v > 1.0:
+            v = 1.0
+    x = u * width_value[1].to[f32]() - 0.5
+    y = v * height_value[1].to[f32]() - 0.5
+    x0 = __wrela_pixels_p9_floor(x)
+    y0 = __wrela_pixels_p9_floor(y)
+    fx = x - x0.to[f32]()
+    fy = y - y0.to[f32]()
+    result: [f32; 4] = [1.0, 0.0, 0.0, 0.0]
+    channel: u32 = 0
+    @budget(bound=3)
+    while channel < 3:
+        a = __wrela_pixels_p9_texture_texel(renderer, record, format, wrap_u, wrap_v, level, [x0, y0, channel.to[i32]()] )
+        b = __wrela_pixels_p9_texture_texel(renderer, record, format, wrap_u, wrap_v, level, [x0 + 1, y0, channel.to[i32]()] )
+        c = __wrela_pixels_p9_texture_texel(renderer, record, format, wrap_u, wrap_v, level, [x0, y0 + 1, channel.to[i32]()] )
+        d = __wrela_pixels_p9_texture_texel(renderer, record, format, wrap_u, wrap_v, level, [x0 + 1, y0 + 1, channel.to[i32]()] )
+        if a[0] != 1.0 or b[0] != 1.0 or c[0] != 1.0 or d[0] != 1.0:
+            return [0.0; 4]
+        low = a[1] * (1.0 - fx) + b[1] * fx
+        high = c[1] * (1.0 - fx) + d[1] * fx
+        result[channel.to[usize]() + 1] = low * (1.0 - fy) + high * fy
+        channel = channel + 1
+    return result
+
+fn __wrela_pixels_p9_sample_texture(
+    renderer: usize,
+    stable_id: u32,
+    filter: u32,
+    u: f32,
+    v: f32,
+    read du: [f32; 2],
+    read dv: [f32; 2],
+) -> [f32; 15]:
+    found = __wrela_pixels_p9_texture_record(renderer, stable_id)
+    if found[0] != 1:
+        return [0.0; 15]
+    record = found[1].to[u32]()
+    format = __wrela_pixels_program_operand(renderer, 12, record, 1)
+    width = __wrela_pixels_program_operand(renderer, 12, record, 2)
+    height = __wrela_pixels_program_operand(renderer, 12, record, 3)
+    wrap_u = __wrela_pixels_program_operand(renderer, 12, record, 4)
+    wrap_v = __wrela_pixels_program_operand(renderer, 12, record, 5)
+    mip_count = __wrela_pixels_program_operand(renderer, 12, record, 6)
+    if format[0] != 1 or width[0] != 1 or height[0] != 1 or wrap_u[0] != 1 or wrap_v[0] != 1 or mip_count[0] != 1 or mip_count[1] == 0 or mip_count[1] > 16 or filter > 3:
+        return [0.0; 15]
+    axis_u = sqrt_scalar(
+        du[0] * du[0] * width[1].to[f32]() * width[1].to[f32]()
+        + du[1] * du[1] * height[1].to[f32]() * height[1].to[f32]()
+    )
+    axis_v = sqrt_scalar(
+        dv[0] * dv[0] * width[1].to[f32]() * width[1].to[f32]()
+        + dv[1] * dv[1] * height[1].to[f32]() * height[1].to[f32]()
+    )
+    major = axis_u
+    minor = axis_v
+    major_uv = du
+    if axis_v > axis_u:
+        major = axis_v
+        minor = axis_u
+        major_uv = dv
+    if major < 1.0:
+        major = 1.0
+    if minor < 1.0:
+        minor = 1.0
+    level: u32 = 0
+    blend: f32 = 0.0
+    if filter >= 2:
+        lod_axis = major
+        if filter == 3 and major / minor > 2.0:
+            lod_axis = minor
+        @budget(bound=15)
+        while lod_axis >= 2.0 and level + 1 < mip_count[1].to[u32]():
+            lod_axis = lod_axis * 0.5
+            level = level + 1
+        # In each power-of-two octave, log2(lod_axis) lies between the
+        # secant endpoints (1,0) and (2,1). The sealed candidate uses the
+        # monotone fixed octave coordinate; the adjacent-mip min/max record
+        # is the certification premise, never this interpolation proposal.
+        blend = lod_axis - 1.0
+        if blend < 0.0:
+            blend = 0.0
+        if blend > 1.0:
+            blend = 1.0
+    tap_count: u32 = 1
+    anisotropy_scale: f32 = 0.0
+    if filter == 3 and major / minor > 2.0:
+        tap_count = 4
+        anisotropy_scale = 4.0 * minor / major
+        if anisotropy_scale > 1.0:
+            anisotropy_scale = 1.0
+    result: [f32; 15] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.4028234663852886e38, 3.4028234663852886e38, 3.4028234663852886e38, -3.4028234663852886e38, -3.4028234663852886e38, -3.4028234663852886e38]
+    tap: u32 = 0
+    @budget(bound=4)
+    while tap < tap_count:
+        position: f32 = 0.0
+        if tap_count == 4:
+            position = (tap.to[f32]() * 2.0 - 3.0) * 0.125
+        sample_u = u + major_uv[0] * anisotropy_scale * position
+        sample_v = v + major_uv[1] * anisotropy_scale * position
+        high_level = level + 1
+        if high_level >= mip_count[1].to[u32]():
+            high_level = level
+            blend = 0.0
+        if filter == 0:
+            # Nearest exists for compiler/reference probes but is not a P9
+            # production filter. A source program that reaches it fails closed.
+            return [0.0; 15]
+        low = __wrela_pixels_p9_texture_bilinear(renderer, record, format[1], wrap_u[1], wrap_v[1], level, sample_u, sample_v)
+        high = __wrela_pixels_p9_texture_bilinear(renderer, record, format[1], wrap_u[1], wrap_v[1], high_level, sample_u, sample_v)
+        if low[0] != 1.0 or high[0] != 1.0:
+            return [0.0; 15]
+        # The machine verifier admits only the compiler-owned 2x2 v1 assets,
+        # whose complete chain is base plus terminal mip. Enclosing both is
+        # therefore the rounded-outward LOD certificate for every selection.
+        low_bounds = __wrela_pixels_p9_texture_mip_bounds(renderer, record, format[1], 0)
+        high_bounds = __wrela_pixels_p9_texture_mip_bounds(
+            renderer, record, format[1], mip_count[1].to[u32]() - 1,
+        )
+        if low_bounds[0] != 1.0 or high_bounds[0] != 1.0:
+            return [0.0; 15]
+        channel: usize = 0
+        @budget(bound=3)
+        while channel < 3:
+            result[channel + 1] = result[channel + 1] + (
+                low[channel + 1] * (1.0 - blend) + high[channel + 1] * blend
+            ) / tap_count.to[f32]()
+            bound_low = low_bounds[channel + 1]
+            if high_bounds[channel + 1] < bound_low:
+                bound_low = high_bounds[channel + 1]
+            bound_high = low_bounds[channel + 4]
+            if high_bounds[channel + 4] > bound_high:
+                bound_high = high_bounds[channel + 4]
+            if bound_low < result[channel + 9]:
+                result[channel + 9] = bound_low
+            if bound_high > result[channel + 12]:
+                result[channel + 12] = bound_high
+            channel = channel + 1
+        if format[1] == 3:
+            low_moments = __wrela_pixels_p9_texture_moments(renderer, record, format[1], level, sample_u, sample_v)
+            high_moments = __wrela_pixels_p9_texture_moments(renderer, record, format[1], high_level, sample_u, sample_v)
+            if low_moments[0] != 1.0 or high_moments[0] != 1.0:
+                return [0.0; 15]
+            moment: usize = 0
+            @budget(bound=5)
+            while moment < 5:
+                result[moment + 4] = result[moment + 4] + (
+                    low_moments[moment + 1] * (1.0 - blend)
+                    + high_moments[moment + 1] * blend
+                ) / tap_count.to[f32]()
+                moment = moment + 1
+        tap = tap + 1
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        if result[channel + 9] > result[channel + 1] or result[channel + 12] < result[channel + 1]:
+            return [0.0; 15]
+        channel = channel + 1
+    return result
+
+fn __wrela_pixels_p9_exposure_multiplier(stops: f32) -> [f32; 2]:
+    if stops != stops or stops < -32.0 or stops > 32.0:
+        return [0.0, 0.0]
+    whole = stops.to[i32]()
+    fraction = stops - whole.to[f32]()
+    if fraction < 0.0:
+        whole = whole - 1
+        fraction = fraction + 1.0
+    # Accepted frame inputs are sealed to the exact 1/256-stop lattice by
+    # Renderer.__validate_fixed_frame. Recheck here because this helper is a
+    # public compiler surface and must fail closed when called independently.
+    scaled_fraction = fraction * 256.0
+    fraction_code = scaled_fraction.to[u32]()
+    if fraction_code.to[f32]() != scaled_fraction:
+        return [0.0, 0.0]
+    multiplier: f32 = 1.0
+    if fraction_code & 128 != 0:
+        multiplier = multiplier * 1.4142135623730951
+    if fraction_code & 64 != 0:
+        multiplier = multiplier * 1.189207115002721
+    if fraction_code & 32 != 0:
+        multiplier = multiplier * 1.0905077326652577
+    if fraction_code & 16 != 0:
+        multiplier = multiplier * 1.0442737824274138
+    if fraction_code & 8 != 0:
+        multiplier = multiplier * 1.0218971486541166
+    if fraction_code & 4 != 0:
+        multiplier = multiplier * 1.0108892860517005
+    if fraction_code & 2 != 0:
+        multiplier = multiplier * 1.0054299011128027
+    if fraction_code & 1 != 0:
+        multiplier = multiplier * 1.0027112750502025
+    @budget(bound=32)
+    while whole > 0:
+        multiplier = multiplier * 2.0
+        whole = whole - 1
+    @budget(bound=32)
+    while whole < 0:
+        multiplier = multiplier * 0.5
+        whole = whole + 1
+    return [1.0, multiplier]
+
+fn __wrela_pixels_p9_brdf_channel(
+    base: f32,
+    metallic: f32,
+    roughness: f32,
+    specular_level: f32,
+    no_v: f32,
+    no_l: f32,
+    no_h: f32,
+    vo_h: f32,
+) -> f32:
+    alpha = roughness * roughness
+    if alpha < 0.0004:
+        alpha = 0.0004
+    alpha2 = alpha * alpha
+    denominator = no_h * no_h * (alpha2 - 1.0) + 1.0
+    distribution_denominator = 3.141592653589793 * (
+        denominator * denominator + 0.000000000001
+    )
+    distribution = alpha2 / distribution_denominator
+    no_v2 = no_v * no_v
+    no_l2 = no_l * no_l
+    if no_v2 < 0.000000000001:
+        no_v2 = 0.000000000001
+    if no_l2 < 0.000000000001:
+        no_l2 = 0.000000000001
+    lambda_v = (sqrt_scalar(alpha2 * (1.0 - no_v2) / no_v2 + 1.0) - 1.0) * 0.5
+    lambda_l = (sqrt_scalar(alpha2 * (1.0 - no_l2) / no_l2 + 1.0) - 1.0) * 0.5
+    visibility = 1.0 / (1.0 + lambda_v + lambda_l)
+    f0 = (0.08 * specular_level) * (1.0 - metallic) + base * metallic
+    fresnel = f0 + (1.0 - f0) * __wrela_pixels_p9_pow5(1.0 - vo_h)
+    fd90 = 0.5 + 2.0 * roughness * vo_h * vo_h
+    diffuse_shape = (
+        1.0 + (fd90 - 1.0) * __wrela_pixels_p9_pow5(1.0 - no_l)
+    ) * (
+        1.0 + (fd90 - 1.0) * __wrela_pixels_p9_pow5(1.0 - no_v)
+    )
+    diffuse = base * (1.0 - metallic) * (1.0 - fresnel) * diffuse_shape / 3.141592653589793
+    specular_denominator = 4.0 * no_v * no_l
+    if specular_denominator < 0.000000000001:
+        specular_denominator = 0.000000000001
+    reflected = diffuse + distribution * visibility * fresnel / specular_denominator
+    return reflected * no_l
+
+# With every non-color material input fixed, the v1 BRDF is a concave
+# quadratic in one base-color channel: Schlick is affine in F0, F0 is affine
+# in base color, diffuse multiplies base by (1-F), and specular is affine in
+# F. Therefore its extrema on a closed base interval occur at the endpoints
+# or at the one quadratic vertex. This is the complete bound used for texture
+# min/max propagation; evaluating only the endpoints would miss the interior
+# maximum for metallic mixtures.
+fn __wrela_pixels_p9_brdf_channel_bounds(
+    base_lo: f32,
+    base_hi: f32,
+    metallic: f32,
+    roughness: f32,
+    specular_level: f32,
+    read geometry: [f32; 4],
+) -> [f32; 3]:
+    no_v = geometry[0]
+    no_l = geometry[1]
+    no_h = geometry[2]
+    vo_h = geometry[3]
+    if base_lo < 0.0 or base_hi > 1.0 or base_lo > base_hi:
+        return [0.0; 3]
+    low_value = __wrela_pixels_p9_brdf_channel(
+        base_lo, metallic, roughness, specular_level, no_v, no_l, no_h, vo_h,
+    )
+    high_value = __wrela_pixels_p9_brdf_channel(
+        base_hi, metallic, roughness, specular_level, no_v, no_l, no_h, vo_h,
+    )
+    result_lo = low_value
+    result_hi = high_value
+    if result_hi < result_lo:
+        swap = result_lo
+        result_lo = result_hi
+        result_hi = swap
+    alpha = roughness * roughness
+    if alpha < 0.0004:
+        alpha = 0.0004
+    alpha2 = alpha * alpha
+    denominator = no_h * no_h * (alpha2 - 1.0) + 1.0
+    distribution = alpha2 / (3.141592653589793 * (denominator * denominator + 0.000000000001))
+    no_v2 = no_v * no_v
+    no_l2 = no_l * no_l
+    if no_v2 < 0.000000000001:
+        no_v2 = 0.000000000001
+    if no_l2 < 0.000000000001:
+        no_l2 = 0.000000000001
+    lambda_v = (sqrt_scalar(alpha2 * (1.0 - no_v2) / no_v2 + 1.0) - 1.0) * 0.5
+    lambda_l = (sqrt_scalar(alpha2 * (1.0 - no_l2) / no_l2 + 1.0) - 1.0) * 0.5
+    visibility = 1.0 / (1.0 + lambda_v + lambda_l)
+    specular_denominator = 4.0 * no_v * no_l
+    if specular_denominator < 0.000000000001:
+        specular_denominator = 0.000000000001
+    specular_coefficient = distribution * visibility / specular_denominator
+    schlick = __wrela_pixels_p9_pow5(1.0 - vo_h)
+    fresnel_constant = 0.08 * specular_level * (1.0 - metallic) * (1.0 - schlick) + schlick
+    fresnel_slope = metallic * (1.0 - schlick)
+    fd90 = 0.5 + 2.0 * roughness * vo_h * vo_h
+    diffuse_shape = (
+        1.0 + (fd90 - 1.0) * __wrela_pixels_p9_pow5(1.0 - no_l)
+    ) * (
+        1.0 + (fd90 - 1.0) * __wrela_pixels_p9_pow5(1.0 - no_v)
+    )
+    diffuse_coefficient = (1.0 - metallic) * diffuse_shape / 3.141592653589793
+    quadratic = 0.0 - diffuse_coefficient * fresnel_slope
+    linear = diffuse_coefficient * (1.0 - fresnel_constant) + specular_coefficient * fresnel_slope
+    if quadratic < 0.0:
+        vertex = (0.0 - linear) / (2.0 * quadratic)
+        if vertex > base_lo and vertex < base_hi:
+            vertex_value = __wrela_pixels_p9_brdf_channel(
+                vertex, metallic, roughness, specular_level, no_v, no_l, no_h, vo_h,
+            )
+            if vertex_value > result_hi:
+                result_hi = vertex_value
+            if vertex_value < result_lo:
+                result_lo = vertex_value
+    return [1.0, result_lo, result_hi]
+
+pub fn __wrela_pixels_p9_brdf_selftest() -> bool:
+    value = __wrela_pixels_p9_brdf_channel(
+        0.5, 0.0, 0.5, 0.5,
+        1.0, 1.0, 1.0, 1.0,
+    )
+    grazing = __wrela_pixels_p9_brdf_channel(
+        0.5, 0.0, 0.5, 0.5,
+        0.00000001, 1.0, 0.70710677, 0.70710677,
+    )
+    return (
+        value >= 0.2037083 and value <= 0.2037284
+        and grazing >= 0.7454 and grazing <= 0.7458
+    )
+
+fn __wrela_pixels_p9_light_contribution(
+    read material: [f32; 21],
+    read point: [f32; 3],
+    read normal: [f32; 3],
+    read view: [f32; 3],
+    read light_vector: [f32; 3],
+    read radiance: [f32; 3],
+    attenuation: f32,
+) -> [f32; 4]:
+    light = __wrela_pixels_p9_normalize(light_vector[0], light_vector[1], light_vector[2])
+    if light[0] != 1.0:
+        return [0.0; 4]
+    no_v = normal[0] * view[0] + normal[1] * view[1] + normal[2] * view[2]
+    no_l = normal[0] * light[1] + normal[1] * light[2] + normal[2] * light[3]
+    if no_v <= 0.0 or no_l <= 0.0:
+        return [1.0, 0.0, 0.0, 0.0]
+    half = __wrela_pixels_p9_normalize(
+        view[0] + light[1],
+        view[1] + light[2],
+        view[2] + light[3],
+    )
+    if half[0] != 1.0:
+        return [0.0; 4]
+    no_h = normal[0] * half[1] + normal[1] * half[2] + normal[2] * half[3]
+    vo_h = view[0] * half[1] + view[1] * half[2] + view[2] * half[3]
+    if no_h < 0.0:
+        no_h = 0.0
+    if no_h > 1.0:
+        no_h = 1.0
+    if vo_h < 0.0:
+        vo_h = 0.0
+    if vo_h > 1.0:
+        vo_h = 1.0
+    return [
+        1.0,
+        __wrela_pixels_p9_brdf_channel(material[1], material[4], material[5], material[6], no_v, no_l, no_h, vo_h) * radiance[0] * attenuation,
+        __wrela_pixels_p9_brdf_channel(material[2], material[4], material[5], material[6], no_v, no_l, no_h, vo_h) * radiance[1] * attenuation,
+        __wrela_pixels_p9_brdf_channel(material[3], material[4], material[5], material[6], no_v, no_l, no_h, vo_h) * radiance[2] * attenuation,
+    ]
+
+fn __wrela_pixels_p9_light_contribution_bounds(
+    read material_lower: [f32; 21],
+    read material_upper: [f32; 21],
+    read normal: [f32; 3],
+    read view: [f32; 3],
+    read light_vector: [f32; 3],
+    read radiance: [f32; 3],
+    attenuation: f32,
+) -> [f32; 7]:
+    light = __wrela_pixels_p9_normalize(light_vector[0], light_vector[1], light_vector[2])
+    if light[0] != 1.0:
+        return [0.0; 7]
+    no_v = normal[0] * view[0] + normal[1] * view[1] + normal[2] * view[2]
+    no_l = normal[0] * light[1] + normal[1] * light[2] + normal[2] * light[3]
+    if no_v <= 0.0 or no_l <= 0.0:
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    half = __wrela_pixels_p9_normalize(
+        view[0] + light[1], view[1] + light[2], view[2] + light[3],
+    )
+    if half[0] != 1.0:
+        return [0.0; 7]
+    no_h = normal[0] * half[1] + normal[1] * half[2] + normal[2] * half[3]
+    vo_h = view[0] * half[1] + view[1] * half[2] + view[2] * half[3]
+    if no_h < 0.0:
+        no_h = 0.0
+    if no_h > 1.0:
+        no_h = 1.0
+    if vo_h < 0.0:
+        vo_h = 0.0
+    if vo_h > 1.0:
+        vo_h = 1.0
+    result: [f32; 7] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        bound = __wrela_pixels_p9_brdf_channel_bounds(
+            material_lower[channel + 1], material_upper[channel + 1],
+            material_lower[4], material_lower[5], material_lower[6],
+            [no_v, no_l, no_h, vo_h],
+        )
+        if bound[0] != 1.0 or radiance[channel] < 0.0 or attenuation < 0.0:
+            return [0.0; 7]
+        scale = radiance[channel] * attenuation
+        curvature_error = material_upper[13] * scale
+        result[channel + 1] = bound[1] * scale - curvature_error
+        if result[channel + 1] < 0.0:
+            result[channel + 1] = 0.0
+        result[channel + 4] = bound[2] * scale + curvature_error
+        channel = channel + 1
+    return result
+
+# Complete per-cell source-integrand enclosure. `source` stores kind, center,
+# two half-axis vectors, and s0/s1/t0/t1. Visibility is certified separately
+# over the same source cell; this routine encloses the remaining
+# BRDF*cosines/distance/Jacobian product.
+fn __wrela_pixels_p9_area_geometry_bounds(
+    read normal: [f32; 3],
+    read view: [f32; 3],
+    read point: [f32; 3],
+    read source: [f32; 15],
+) -> [f32; 10]:
+    kind = source[0].to[u32]()
+    if kind != 3 and kind != 4:
+        return __wrela_pixels_p9_shading_failure()
+    if source[10] > source[11] or source[12] > source[13]:
+        return __wrela_pixels_p9_shading_failure()
+    center_s = (source[10] + source[11]) * 0.5
+    center_t = (source[12] + source[13]) * 0.5
+    half_s = (source[11] - source[10]) * 0.5
+    half_t = (source[13] - source[12]) * 0.5
+    axis_u_length = sqrt_scalar(
+        source[4] * source[4] + source[5] * source[5] + source[6] * source[6]
+    )
+    axis_v_length = sqrt_scalar(
+        source[7] * source[7] + source[8] * source[8] + source[9] * source[9]
+    )
+    radius = axis_u_length * half_s + axis_v_length * half_t
+    light_x = source[1] + source[4] * center_s + source[7] * center_t - point[0]
+    light_y = source[2] + source[5] * center_s + source[8] * center_t - point[1]
+    light_z = source[3] + source[6] * center_s + source[9] * center_t - point[2]
+    distance = sqrt_scalar(light_x * light_x + light_y * light_y + light_z * light_z)
+    distance_lower = distance - radius
+    if not distance_lower > 0.0:
+        return __wrela_pixels_p9_shading_failure()
+    distance_upper = distance + radius
+    direction_x = light_x / distance
+    direction_y = light_y / distance
+    direction_z = light_z / distance
+    # If two nonzero vectors differ by at most radius and the smaller norm is
+    # distance-radius, their normalized directions differ by at most this
+    # triangle-inequality bound. Dot products with unit vectors inherit it.
+    direction_error = 2.0 * radius / distance_lower
+    no_l_center = normal[0] * direction_x + normal[1] * direction_y + normal[2] * direction_z
+    no_l: [f32; 2] = [no_l_center - direction_error, no_l_center + direction_error]
+    no_l = __wrela_pixels_p9_iv_clamp01(no_l)
+    no_v = normal[0] * view[0] + normal[1] * view[1] + normal[2] * view[2]
+    if no_v <= 0.0:
+        return [1.0, no_v, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    half_x = direction_x + view[0]
+    half_y = direction_y + view[1]
+    half_z = direction_z + view[2]
+    half_length = sqrt_scalar(half_x * half_x + half_y * half_y + half_z * half_z)
+    half_length_lower = half_length - direction_error
+    if not half_length_lower > 0.0:
+        return __wrela_pixels_p9_shading_failure()
+    half_direction_x = half_x / half_length
+    half_direction_y = half_y / half_length
+    half_direction_z = half_z / half_length
+    half_error = 2.0 * direction_error / half_length_lower
+    no_h_center = normal[0] * half_direction_x + normal[1] * half_direction_y + normal[2] * half_direction_z
+    vo_h_center = view[0] * half_direction_x + view[1] * half_direction_y + view[2] * half_direction_z
+    no_h = __wrela_pixels_p9_iv_clamp01([no_h_center - half_error, no_h_center + half_error])
+    vo_h = __wrela_pixels_p9_iv_clamp01([vo_h_center - half_error, vo_h_center + half_error])
+    cross_x = source[5] * source[9] - source[6] * source[8]
+    cross_y = source[6] * source[7] - source[4] * source[9]
+    cross_z = source[4] * source[8] - source[5] * source[7]
+    cross_length = sqrt_scalar(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
+    if not cross_length > 0.0:
+        return __wrela_pixels_p9_shading_failure()
+    emitter_center = (0.0 - cross_x * direction_x - cross_y * direction_y - cross_z * direction_z) / cross_length
+    emitter_cosine = __wrela_pixels_p9_iv_clamp01([
+        emitter_center - direction_error, emitter_center + direction_error,
+    ])
+    # Every accepted record expands to one canonical depth-three leaf. Its
+    # normalized source-domain area is exactly 1/16, independent of the wider
+    # coordinate enclosure used for a concentric-disk leaf.
+    if not source[14] > 0.0 or source[14] > 4.0:
+        return __wrela_pixels_p9_shading_failure()
+    cell_area = source[14] * cross_length
+    if kind == 4:
+        cell_area = cell_area * 0.7853981633974483
+    attenuation = __wrela_pixels_p9_iv_widen([
+        cell_area * emitter_cosine[0] / (distance_upper * distance_upper),
+        cell_area * emitter_cosine[1] / (distance_lower * distance_lower),
+    ])
+    return [
+        1.0, no_v,
+        no_l[0], no_l[1],
+        no_h[0], no_h[1],
+        vo_h[0], vo_h[1],
+        attenuation[0], attenuation[1],
+    ]
+
+fn __wrela_pixels_p9_area_brdf_common(
+    roughness: f32,
+    no_v: f32,
+    read no_l: [f32; 2],
+    read no_h: [f32; 2],
+    read vo_h: [f32; 2],
+) -> [f32; 10]:
+    alpha = roughness * roughness
+    if alpha < 0.0004:
+        alpha = 0.0004
+    alpha2 = alpha * alpha
+    denominator = __wrela_pixels_p9_iv_add(
+        __wrela_pixels_p9_iv_mul(
+            __wrela_pixels_p9_iv_square(no_h), [alpha2 - 1.0, alpha2 - 1.0],
+        ),
+        [1.0, 1.0],
+    )
+    distribution = __wrela_pixels_p9_iv_mul(
+        [alpha2 / 3.141592653589793, alpha2 / 3.141592653589793],
+        __wrela_pixels_p9_iv_reciprocal_positive(
+            __wrela_pixels_p9_iv_add(__wrela_pixels_p9_iv_square(denominator), [0.000000000001, 0.000000000001]),
+        ),
+    )
+    no_l_squared = __wrela_pixels_p9_iv_square(no_l)
+    if no_l_squared[0] < 0.000000000001:
+        no_l_squared[0] = 0.000000000001
+    no_v_squared = no_v * no_v
+    if no_v_squared < 0.000000000001:
+        no_v_squared = 0.000000000001
+    lambda_v = (sqrt_scalar(alpha2 * (1.0 - no_v_squared) / no_v_squared + 1.0) - 1.0) * 0.5
+    lambda_l = __wrela_pixels_p9_iv_mul(
+        __wrela_pixels_p9_iv_sub(
+            __wrela_pixels_p9_iv_sqrt(
+                __wrela_pixels_p9_iv_add(
+                    __wrela_pixels_p9_iv_mul(
+                        [alpha2, alpha2],
+                        __wrela_pixels_p9_iv_mul(
+                            __wrela_pixels_p9_iv_sub([1.0, 1.0], no_l_squared),
+                            __wrela_pixels_p9_iv_reciprocal_positive(no_l_squared),
+                        ),
+                    ),
+                    [1.0, 1.0],
+                )
+            ),
+            [1.0, 1.0],
+        ),
+        [0.5, 0.5],
+    )
+    visibility = __wrela_pixels_p9_iv_reciprocal_positive(
+        __wrela_pixels_p9_iv_add([1.0 + lambda_v, 1.0 + lambda_v], lambda_l),
+    )
+    schlick = __wrela_pixels_p9_iv_pow5(__wrela_pixels_p9_iv_sub([1.0, 1.0], vo_h))
+    fd90 = __wrela_pixels_p9_iv_add(
+        [0.5, 0.5],
+        __wrela_pixels_p9_iv_mul(
+            [2.0 * roughness, 2.0 * roughness],
+            __wrela_pixels_p9_iv_square(vo_h),
+        ),
+    )
+    diffuse_shape = __wrela_pixels_p9_iv_mul(
+        __wrela_pixels_p9_iv_add(
+            [1.0, 1.0],
+            __wrela_pixels_p9_iv_mul(__wrela_pixels_p9_iv_sub(fd90, [1.0, 1.0]), __wrela_pixels_p9_iv_pow5(__wrela_pixels_p9_iv_sub([1.0, 1.0], no_l))),
+        ),
+        __wrela_pixels_p9_iv_add(
+            [1.0, 1.0],
+            __wrela_pixels_p9_iv_mul(__wrela_pixels_p9_iv_sub(fd90, [1.0, 1.0]), [__wrela_pixels_p9_pow5(1.0 - no_v), __wrela_pixels_p9_pow5(1.0 - no_v)]),
+        ),
+    )
+    # The outgoing contribution multiplies the BRDF by N.L. Cancel that
+    # factor from the GGX denominator before interval evaluation. Bounding
+    # `1 / N.L` and `N.L` independently creates an unbounded dependency loss
+    # at silhouettes even though their physical product is finite.
+    specular_denominator: [f32; 2] = [4.0 * no_v, 4.0 * no_v]
+    return [
+        distribution[0], distribution[1],
+        visibility[0], visibility[1],
+        schlick[0], schlick[1],
+        diffuse_shape[0], diffuse_shape[1],
+        specular_denominator[0], specular_denominator[1],
+    ]
+
+fn __wrela_pixels_p9_area_channel_bounds(
+    # base_lo/base_hi/metallic/specular_level/curvature_error
+    read material: [f32; 5],
+    radiance: f32,
+    read no_l: [f32; 2],
+    read attenuation: [f32; 2],
+    read common: [f32; 10],
+) -> [f32; 2]:
+    base: [f32; 2] = [material[0], material[1]]
+    distribution: [f32; 2] = [common[0], common[1]]
+    visibility: [f32; 2] = [common[2], common[3]]
+    schlick: [f32; 2] = [common[4], common[5]]
+    diffuse_shape: [f32; 2] = [common[6], common[7]]
+    specular_denominator: [f32; 2] = [common[8], common[9]]
+    f0 = __wrela_pixels_p9_iv_add(
+        [0.08 * material[3] * (1.0 - material[2]), 0.08 * material[3] * (1.0 - material[2])],
+        __wrela_pixels_p9_iv_mul(base, [material[2], material[2]]),
+    )
+    fresnel = __wrela_pixels_p9_iv_add(
+        f0,
+        __wrela_pixels_p9_iv_mul(__wrela_pixels_p9_iv_sub([1.0, 1.0], f0), schlick),
+    )
+    diffuse_coefficient = __wrela_pixels_p9_iv_mul(
+        __wrela_pixels_p9_iv_mul(
+            __wrela_pixels_p9_iv_mul(base, [1.0 - material[2], 1.0 - material[2]]),
+            __wrela_pixels_p9_iv_mul(diffuse_shape, [0.3183098861837907, 0.3183098861837907]),
+        ),
+        no_l,
+    )
+    specular_coefficient = __wrela_pixels_p9_iv_mul(
+        __wrela_pixels_p9_iv_mul(distribution, visibility),
+        __wrela_pixels_p9_iv_reciprocal_positive(specular_denominator),
+    )
+    # `diffuse=A*(1-F)` and `specular=B*F` share the same Fresnel F. Bounding
+    # those products independently would admit the impossible combination of
+    # both maxima. `A + F*(B-A)` is trilinear in independent intervals A/B/F,
+    # so its exact box extrema occur at these eight vertices.
+    reflected_base: [f32; 2] = [3.4028234663852886e38, -3.4028234663852886e38]
+    corner: u32 = 0
+    @budget(bound=8)
+    while corner < 8:
+        a = diffuse_coefficient[(corner & 1).to[usize]()]
+        b = specular_coefficient[((corner >> 1) & 1).to[usize]()]
+        f = fresnel[((corner >> 2) & 1).to[usize]()]
+        value = a + f * (b - a)
+        if value < reflected_base[0]:
+            reflected_base[0] = value
+        if value > reflected_base[1]:
+            reflected_base[1] = value
+        corner = corner + 1
+    contribution = __wrela_pixels_p9_iv_mul(
+        __wrela_pixels_p9_iv_mul(reflected_base, [radiance, radiance]), attenuation,
+    )
+    if contribution[0] < 0.0:
+        contribution[0] = 0.0
+    curvature = material[4] * radiance * attenuation[1]
+    lower = contribution[0] - curvature
+    if lower < 0.0:
+        lower = 0.0
+    return [lower, contribution[1] + curvature]
+
+# Keeping geometry and reflectance in separate kernels bounds the resident
+# worker frame: the Wrela ABI retains every fixed-size local for the duration
+# of one call. This split is semantic too—the first proof encloses only source
+# geometry, while this proof consumes that sealed enclosure.
+fn __wrela_pixels_p9_area_cell_bounds(
+    read material_lower: [f32; 21],
+    read material_upper: [f32; 21],
+    read normal: [f32; 3],
+    read view: [f32; 3],
+    read point: [f32; 3],
+    read source: [f32; 15],
+    read radiance: [f32; 3],
+) -> [f32; 7]:
+    geometry = __wrela_pixels_p9_area_geometry_bounds(normal, view, point, source)
+    if geometry[0] != 1.0:
+        return [0.0; 7]
+    no_v = geometry[1]
+    no_l: [f32; 2] = [geometry[2], geometry[3]]
+    no_h: [f32; 2] = [geometry[4], geometry[5]]
+    vo_h: [f32; 2] = [geometry[6], geometry[7]]
+    attenuation: [f32; 2] = [geometry[8], geometry[9]]
+    if no_v <= 0.0 or no_l[1] <= 0.0 or attenuation[1] <= 0.0:
+        return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    common = __wrela_pixels_p9_area_brdf_common(material_lower[5], no_v, no_l, no_h, vo_h)
+    result: [f32; 7] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        bound = __wrela_pixels_p9_area_channel_bounds(
+            [
+                material_lower[channel + 1], material_upper[channel + 1],
+            material_lower[4], material_lower[6], material_upper[13],
+            ],
+            radiance[channel], no_l, attenuation, common,
+        )
+        result[channel + 1] = bound[0]
+        result[channel + 4] = bound[1]
+        channel = channel + 1
+    return result
+
+pub fn __wrela_pixels_p9_map_uv(
+    source: u32,
+    read point: [f32; 3],
+    read normal: [f32; 3],
+    read d_p_dx: [f32; 3],
+    read d_p_dy: [f32; 3],
+) -> [f32; 13]:
+    if source < 1 or source > 8:
+        return [0.0; 13]
+    abs_x = normal[0]
+    abs_y = normal[1]
+    abs_z = normal[2]
+    if abs_x < 0.0:
+        abs_x = -abs_x
+    if abs_y < 0.0:
+        abs_y = -abs_y
+    if abs_z < 0.0:
+        abs_z = -abs_z
+    mapped_point = point
+    # Plane, feature-local boxes, and both triplanar modes select a stable
+    # dominant face with x/y/z tie order. Except for world triplanar, the
+    # caller has already replayed the authoritative source-order transforms
+    # into the primitive/object frame.
+    result: [f32; 13] = [
+        1.0, mapped_point[0], mapped_point[1],
+        d_p_dx[0], d_p_dx[1], d_p_dy[0], d_p_dy[1],
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    ]
+    if abs_x >= abs_y and abs_x >= abs_z:
+        result[1] = mapped_point[2]
+        result[2] = mapped_point[1]
+        result[3] = d_p_dx[2]
+        result[4] = d_p_dx[1]
+        result[5] = d_p_dy[2]
+        result[6] = d_p_dy[1]
+        result[7] = 0.0
+        result[9] = 1.0
+    elif abs_y >= abs_z:
+        result[1] = mapped_point[0]
+        result[2] = mapped_point[2]
+        result[3] = d_p_dx[0]
+        result[4] = d_p_dx[2]
+        result[5] = d_p_dy[0]
+        result[6] = d_p_dy[2]
+        result[11] = 0.0
+        result[12] = 1.0
+    if source == 2 or source == 3 or source == 4:
+        # Closed octahedral angular coordinate for sphere/cylinder/torus
+        # wrap. It uses the certified geometric normal, so translation does
+        # not leak into analytic primitive UV. The footprint is deliberately
+        # widened from the complete world derivatives before mip selection.
+        angular_denominator = abs_x + abs_y + abs_z
+        if not angular_denominator > 0.0:
+            return [0.0; 13]
+        result[1] = normal[0] / angular_denominator * 0.5 + 0.5
+        result[2] = normal[1] / angular_denominator * 0.5 + 0.5
+        if source == 3:
+            result[2] = mapped_point[1]
+        elif source == 4:
+            result[2] = sqrt_scalar(mapped_point[0] * mapped_point[0] + mapped_point[2] * mapped_point[2])
+        dx_length = sqrt_scalar(
+            d_p_dx[0] * d_p_dx[0] + d_p_dx[1] * d_p_dx[1] + d_p_dx[2] * d_p_dx[2]
+        )
+        dy_length = sqrt_scalar(
+            d_p_dy[0] * d_p_dy[0] + d_p_dy[1] * d_p_dy[1] + d_p_dy[2] * d_p_dy[2]
+        )
+        result[3] = dx_length * 2.0
+        result[4] = dx_length * 2.0
+        result[5] = dy_length * 2.0
+        result[6] = dy_length * 2.0
+    return result
+
+fn __wrela_pixels_p9_light_sample_leaf(
+    read material: [f32; 21],
+    read material_lower: [f32; 21],
+    read material_upper: [f32; 21],
+    # Point, normal, view direction, then zero or one followed by four
+    # terminal normal-detail taps. Bundling these keeps the closed ABI within
+    # the runtime's eight-argument call limit.
+    read geometry: [f32; 22],
+    read light_values: [f32; 120],
+    kind: u64,
+    base: usize,
+    # sample index, sample count, and the area-refinement flag.
+    read sample_info: [u32; 3],
+) -> [f32; 10]:
+    exact_normals: [f32; 13] = [0.0; 13]
+    exact_index: usize = 0
+    @budget(bound=13)
+    while exact_index < 13:
+        exact_normals[exact_index] = geometry[exact_index + 9]
+        exact_index = exact_index + 1
+    sample = sample_info[0]
+    samples = sample_info[1]
+    refined_area = sample_info[2] & 1 != 0
+    deep_area = sample_info[2] & 2 != 0
+    l_x: f32 = 0.0
+    l_y: f32 = 0.0
+    l_z: f32 = 0.0
+    attenuation: f32 = 1.0 / samples.to[f32]()
+    cross_x: f32 = 0.0
+    cross_y: f32 = 0.0
+    cross_z: f32 = 0.0
+    cross_length: f32 = 1.0
+    sign_u: f32 = 0.0
+    sign_v: f32 = 0.0
+    if kind == 1 or kind == 3 or kind == 4:
+        source_x = light_values[base]
+        source_y = light_values[base + 1]
+        source_z = light_values[base + 2]
+        if kind == 3 or kind == 4:
+            cross_x = light_values[base + 7] * light_values[base + 11] - light_values[base + 8] * light_values[base + 10]
+            cross_y = light_values[base + 8] * light_values[base + 9] - light_values[base + 6] * light_values[base + 11]
+            cross_z = light_values[base + 6] * light_values[base + 10] - light_values[base + 7] * light_values[base + 9]
+            cross_length = sqrt_scalar(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
+            if not cross_length > 0.0:
+                return __wrela_pixels_p9_shading_failure()
+            attenuation = attenuation * 4.0 * cross_length
+            parent_sample = sample
+            child_sample: u32 = 0
+            if refined_area:
+                # Regular shading uses 4x4 grandchildren per certified 8x8
+                # parent. The event density terminal retains the same 32x32
+                # contribution cells and tightens only each unresolved
+                # cell's complete visible-area fraction.
+                parent_sample = sample >> 4
+                child_sample = sample & 15
+                if deep_area:
+                    parent_sample = sample >> 6
+                    child_sample = sample & 63
+            cell_x = parent_sample & 7
+            cell_y = parent_sample >> 3
+            sign_u = (cell_x.to[f32]() * 2.0 - 7.0) * 0.125
+            sign_v = (cell_y.to[f32]() * 2.0 - 7.0) * 0.125
+            if refined_area:
+                local_x = child_sample & 3
+                local_y = child_sample >> 2
+                sign_u = sign_u + (local_x.to[f32]() * 2.0 - 3.0) * 0.03125
+                sign_v = sign_v + (local_y.to[f32]() * 2.0 - 3.0) * 0.03125
+                if deep_area:
+                    local_x = child_sample & 7
+                    local_y = child_sample >> 3
+                    sign_u = (cell_x.to[f32]() * 2.0 - 7.0) * 0.125 + (local_x.to[f32]() * 2.0 - 7.0) * 0.015625
+                    sign_v = (cell_y.to[f32]() * 2.0 - 7.0) * 0.125 + (local_y.to[f32]() * 2.0 - 7.0) * 0.015625
+            if kind == 4:
+                disk_offset = __wrela_pixels_p9_disk_offset(parent_sample)
+                if refined_area:
+                    disk_offset = __wrela_pixels_p9_concentric_disk(sign_u, sign_v)
+                if disk_offset[0] != 1.0:
+                    return __wrela_pixels_p9_shading_failure()
+                sign_u = disk_offset[1]
+                sign_v = disk_offset[2]
+                attenuation = attenuation * 0.7853981633974483
+            source_x = source_x + sign_u * light_values[base + 6] + sign_v * light_values[base + 9]
+            source_y = source_y + sign_u * light_values[base + 7] + sign_v * light_values[base + 10]
+            source_z = source_z + sign_u * light_values[base + 8] + sign_v * light_values[base + 11]
+        l_x = source_x - geometry[0]
+        l_y = source_y - geometry[1]
+        l_z = source_z - geometry[2]
+        distance_squared = l_x * l_x + l_y * l_y + l_z * l_z
+        radius = light_values[base + 6]
+        if kind != 1:
+            radius = 0.0
+        if kind == 1 and not radius > 0.0:
+            return __wrela_pixels_p9_shading_failure()
+        radius_squared = radius * radius
+        if distance_squared < radius_squared:
+            distance_squared = radius_squared
+        attenuation = attenuation / distance_squared
+        if kind == 3 or kind == 4:
+            inverse_distance = 1.0 / sqrt_scalar(distance_squared)
+            emitter_cosine = (
+                cross_x * (0.0 - l_x) + cross_y * (0.0 - l_y) + cross_z * (0.0 - l_z)
+            ) / cross_length * inverse_distance
+            if emitter_cosine < 0.0:
+                emitter_cosine = 0.0
+            attenuation = attenuation * emitter_cosine
+    elif kind == 2:
+        l_x = light_values[base + 3]
+        l_y = light_values[base + 4]
+        l_z = light_values[base + 5]
+    else:
+        return __wrela_pixels_p9_shading_failure()
+    contribution = __wrela_pixels_p9_light_contribution(
+        material,
+        [geometry[0], geometry[1], geometry[2]],
+        [geometry[3], geometry[4], geometry[5]],
+        [geometry[6], geometry[7], geometry[8]],
+        [l_x, l_y, l_z],
+        [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+        attenuation,
+    )
+    if contribution[0] != 1.0:
+        return __wrela_pixels_p9_shading_failure()
+    contribution_bounds = __wrela_pixels_p9_light_contribution_bounds(
+        material_lower,
+        material_upper,
+        [geometry[3], geometry[4], geometry[5]],
+        [geometry[6], geometry[7], geometry[8]],
+        [l_x, l_y, l_z],
+        [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+        attenuation,
+    )
+    if exact_normals[0] == 1.0:
+        contribution = [1.0, 0.0, 0.0, 0.0]
+        contribution_bounds = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        normal_tap: usize = 0
+        @budget(bound=4)
+        while normal_tap < 4:
+            normal_base = 1 + normal_tap * 3
+            tap_normal: [f32; 3] = [
+                exact_normals[normal_base],
+                exact_normals[normal_base + 1],
+                exact_normals[normal_base + 2],
+            ]
+            tap_contribution = __wrela_pixels_p9_light_contribution(
+                material,
+                [geometry[0], geometry[1], geometry[2]],
+                tap_normal,
+                [geometry[6], geometry[7], geometry[8]],
+                [l_x, l_y, l_z],
+                [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+                attenuation,
+            )
+            tap_bounds = __wrela_pixels_p9_light_contribution_bounds(
+                material_lower,
+                material_upper,
+                tap_normal,
+                [geometry[6], geometry[7], geometry[8]],
+                [l_x, l_y, l_z],
+                [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+                attenuation,
+            )
+            if tap_contribution[0] != 1.0 or tap_bounds[0] != 1.0:
+                return __wrela_pixels_p9_shading_failure()
+            tap_channel: usize = 0
+            @budget(bound=3)
+            while tap_channel < 3:
+                contribution[tap_channel + 1] = contribution[tap_channel + 1] + tap_contribution[tap_channel + 1] * 0.25
+                # Moment mips are convex mixtures of the four base slopes.
+                # The exact mixture weights depend on the certified footprint;
+                # min/max over all tap responses encloses every such mixture.
+                if normal_tap == 0 or tap_bounds[tap_channel + 1] < contribution_bounds[tap_channel + 1]:
+                    contribution_bounds[tap_channel + 1] = tap_bounds[tap_channel + 1]
+                if normal_tap == 0 or tap_bounds[tap_channel + 4] > contribution_bounds[tap_channel + 4]:
+                    contribution_bounds[tap_channel + 4] = tap_bounds[tap_channel + 4]
+                tap_channel = tap_channel + 1
+            normal_tap = normal_tap + 1
+    if kind == 3 or kind == 4:
+        parent_sample = sample
+        child_sample: u32 = 0
+        if refined_area:
+            parent_sample = sample >> 4
+            child_sample = sample & 15
+            if deep_area:
+                parent_sample = sample >> 6
+                child_sample = sample & 63
+        cell_x = parent_sample & 7
+        cell_y = parent_sample >> 3
+        cell_width: f32 = 0.25
+        if refined_area:
+            cell_width = 0.0625
+            if deep_area:
+                cell_width = 0.03125
+        cell_s0: f32 = 0.0.to[f32]() - 1.0 + cell_x.to[f32]() * 0.25
+        cell_t0: f32 = 0.0.to[f32]() - 1.0 + cell_y.to[f32]() * 0.25
+        if refined_area:
+            cell_s0 = cell_s0 + (child_sample & 3).to[f32]() * cell_width
+            cell_t0 = cell_t0 + (child_sample >> 2).to[f32]() * cell_width
+            if deep_area:
+                cell_s0 = 0.0.to[f32]() - 1.0 + cell_x.to[f32]() * 0.25 + (child_sample & 7).to[f32]() * cell_width
+                cell_t0 = 0.0.to[f32]() - 1.0 + cell_y.to[f32]() * 0.25 + (child_sample >> 3).to[f32]() * cell_width
+        bound_s0 = cell_s0
+        bound_s1 = cell_s0 + cell_width
+        bound_t0 = cell_t0
+        bound_t1 = cell_t0 + cell_width
+        if kind == 4:
+            disk_radius: f32 = 0.3125
+            if refined_area:
+                disk_radius = 0.078125
+                if deep_area:
+                    disk_radius = 0.0390625
+            bound_s0 = sign_u - disk_radius
+            bound_s1 = sign_u + disk_radius
+            bound_t0 = sign_v - disk_radius
+            bound_t1 = sign_v + disk_radius
+            if bound_s0 < -1.0:
+                bound_s0 = -1.0
+            if bound_s1 > 1.0:
+                bound_s1 = 1.0
+            if bound_t0 < -1.0:
+                bound_t0 = -1.0
+            if bound_t1 > 1.0:
+                bound_t1 = 1.0
+        contribution_bounds = __wrela_pixels_p9_area_cell_bounds(
+            material_lower,
+            material_upper,
+            [geometry[3], geometry[4], geometry[5]],
+            [geometry[6], geometry[7], geometry[8]],
+            [geometry[0], geometry[1], geometry[2]],
+            [
+                kind.to[f32](),
+                light_values[base], light_values[base + 1], light_values[base + 2],
+                light_values[base + 6], light_values[base + 7], light_values[base + 8],
+                light_values[base + 9], light_values[base + 10], light_values[base + 11],
+                bound_s0, bound_s1, bound_t0, bound_t1,
+                4.0 / samples.to[f32](),
+            ],
+            [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+        )
+        if exact_normals[0] == 1.0:
+            contribution_bounds = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            normal_tap: usize = 0
+            @budget(bound=4)
+            while normal_tap < 4:
+                normal_base = 1 + normal_tap * 3
+                tap_bounds = __wrela_pixels_p9_area_cell_bounds(
+                    material_lower,
+                    material_upper,
+                    [
+                        exact_normals[normal_base],
+                        exact_normals[normal_base + 1],
+                        exact_normals[normal_base + 2],
+                    ],
+                    [geometry[6], geometry[7], geometry[8]],
+                    [geometry[0], geometry[1], geometry[2]],
+                    [
+                        kind.to[f32](),
+                        light_values[base], light_values[base + 1], light_values[base + 2],
+                        light_values[base + 6], light_values[base + 7], light_values[base + 8],
+                        light_values[base + 9], light_values[base + 10], light_values[base + 11],
+                        bound_s0, bound_s1, bound_t0, bound_t1,
+                        4.0 / samples.to[f32](),
+                    ],
+                    [light_values[base + 12], light_values[base + 13], light_values[base + 14]],
+                )
+                if tap_bounds[0] != 1.0:
+                    return __wrela_pixels_p9_shading_failure()
+                tap_channel: usize = 0
+                @budget(bound=3)
+                while tap_channel < 3:
+                    if normal_tap == 0 or tap_bounds[tap_channel + 1] < contribution_bounds[tap_channel + 1]:
+                        contribution_bounds[tap_channel + 1] = tap_bounds[tap_channel + 1]
+                    if normal_tap == 0 or tap_bounds[tap_channel + 4] > contribution_bounds[tap_channel + 4]:
+                        contribution_bounds[tap_channel + 4] = tap_bounds[tap_channel + 4]
+                    tap_channel = tap_channel + 1
+                normal_tap = normal_tap + 1
+    if contribution_bounds[0] != 1.0:
+        return __wrela_pixels_p9_shading_failure()
+    return [
+        1.0,
+        contribution[1], contribution[2], contribution[3],
+        contribution_bounds[1], contribution_bounds[2], contribution_bounds[3],
+        contribution_bounds[4], contribution_bounds[5], contribution_bounds[6],
+    ]
+
+pub fn __wrela_pixels_p9_area_sample_id(sample: u32) -> u32:
+    coarse_parent = sample >> 4
+    local_child = sample & 15
+    parent_x = (coarse_parent & 7) * 4 + (local_child & 3)
+    parent_y = (coarse_parent >> 3) * 4 + (local_child >> 2)
+    return parent_y * 32 + parent_x
+
+# Permanent regression for the scheduler-to-visibility indexing contract.
+# The scheduler groups sixteen children under each 8x8 parent, whereas masks
+# and density records use canonical 32x32 row-major IDs.
+pub fn __wrela_pixels_p9_area_sample_selftest() -> bool:
+    seen: [u64; 16] = [0; 16]
+    sample: u32 = 0
+    @budget(bound=1024)
+    while sample < 1024:
+        canonical = __wrela_pixels_p9_area_sample_id(sample)
+        if canonical >= 1024:
+            return false
+        word = (canonical >> 6).to[usize]()
+        bit = (canonical & 63).to[u64]()
+        if ((seen[word] >> bit) & 1) != 0:
+            return false
+        seen[word] = seen[word] | (1.to[u64]() << bit)
+        sample = sample + 1
+    word: usize = 0
+    @budget(bound=16)
+    while word < 16:
+        if seen[word] != 18446744073709551615:
+            return false
+        word = word + 1
+    return (
+        __wrela_pixels_p9_area_sample_id(0) == 0
+        and __wrela_pixels_p9_area_sample_id(15) == 99
+        and __wrela_pixels_p9_area_sample_id(16) == 4
+        and __wrela_pixels_p9_area_sample_id(127) == 127
+        and __wrela_pixels_p9_area_sample_id(128) == 128
+        and __wrela_pixels_p9_area_sample_id(1023) == 1023
+    )
+
+fn __wrela_pixels_p9_light_sample(
+    read material: [f32; 21],
+    read material_lower: [f32; 21],
+    read material_upper: [f32; 21],
+    read geometry: [f32; 22],
+    read light_values: [f32; 120],
+    kind: u64,
+    base: usize,
+    read sample_info: [u32; 3],
+) -> [f32; 10]:
+    if sample_info[2] & 2 == 0:
+        return __wrela_pixels_p9_light_sample_leaf(
+            material, material_lower, material_upper, geometry,
+            light_values, kind, base, sample_info,
+        )
+    # The event terminal owns one canonical 32x32 cell. Evaluate its four
+    # 64x64 children, then retain the minimum/maximum radiance density across
+    # them. Multiplying those extrema by a proved visible-area fraction is
+    # sound for every unknown spatial allocation of clear microcells.
+    # The outer loop groups the 32x32 grid as sixteen row-major children of
+    # each 8x8 parent. Convert that traversal index to the canonical row-major
+    # visibility-cell ID before deriving the four 64x64 contribution cells.
+    parent_sample = __wrela_pixels_p9_area_sample_id(sample_info[0])
+    parent_x = parent_sample & 31
+    parent_y = parent_sample >> 5
+    candidate: [f32; 3] = [0.0; 3]
+    density_lower: [f32; 3] = [0.0; 3]
+    density_upper: [f32; 3] = [0.0; 3]
+    child: u32 = 0
+    @budget(bound=4)
+    while child < 4:
+        child_x = parent_x * 2 + (child & 1)
+        child_y = parent_y * 2 + (child >> 1)
+        coarse_x = child_x >> 3
+        coarse_y = child_y >> 3
+        local_x = child_x & 7
+        local_y = child_y & 7
+        deep_sample = (coarse_y * 8 + coarse_x) * 64 + local_y * 8 + local_x
+        sampled = __wrela_pixels_p9_light_sample_leaf(
+            material,
+            material_lower,
+            material_upper,
+            geometry,
+            light_values,
+            kind,
+            base,
+            [deep_sample, 4096, 3],
+        )
+        if sampled[0] != 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        channel: usize = 0
+        @budget(bound=3)
+        while channel < 3:
+            candidate[channel] = candidate[channel] + sampled[channel + 1]
+            if child == 0 or sampled[channel + 4] < density_lower[channel]:
+                density_lower[channel] = sampled[channel + 4]
+            if child == 0 or sampled[channel + 7] > density_upper[channel]:
+                density_upper[channel] = sampled[channel + 7]
+            channel = channel + 1
+        child = child + 1
+    result: [f32; 10] = [1.0; 10]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        result[channel + 1] = candidate[channel]
+        result[channel + 4] = density_lower[channel] * 4.0
+        result[channel + 7] = density_upper[channel] * 4.0
+        channel = channel + 1
+    return result
+
+pub fn __wrela_pixels_p9_hdr_pixel(
+    renderer: usize,
+    read meta: P9ShadingMeta,
+    read surface: [f32; 15],
+    read params: [f32; 16],
+    read camera: [f32; 12],
+    read light_kinds: [u64; 8],
+    read light_values: [f32; 120],
+    read post: [f32; 4],
+) -> [f32; 10]:
+    identity = meta.identity.to[u32]()
+    hit = (meta.flags & 1) == 1
+    exact_texture_taps = (meta.flags & 2) != 0
+    exact_normal_taps = (meta.flags & 4) != 0
+    refined_area = (meta.flags & 8) != 0
+    deep_area = (meta.flags & 64) != 0
+    exact_direct = (meta.flags & 16) != 0
+    exact_ao = (meta.flags & 32) != 0
+    u = surface[0]
+    v = surface[1]
+    q = surface[2]
+    color: [f32; 3] = [post[1], post[2], post[3]]
+    color_lower: [f32; 3] = color
+    color_upper: [f32; 3] = color
+    if hit:
+        material = __wrela_pixels_p9_material(
+            renderer,
+            identity,
+            [surface[0], surface[1], surface[2], surface[3], surface[4], surface[5]],
+            params,
+            camera,
+        )
+        if material[0] != 1.0 or material[10] != 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        if material[1] < 0.0 or material[1] > 1.0 or material[2] < 0.0 or material[2] > 1.0 or material[3] < 0.0 or material[3] > 1.0 or material[4] < 0.0 or material[4] > 1.0 or material[5] < 0.02 or material[5] > 1.0 or material[6] < 0.0 or material[6] > 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        p_x = camera[0] + (camera[3] + u * camera[6] + v * camera[9]) / q
+        p_y = camera[1] + (camera[4] + u * camera[7] + v * camera[10]) / q
+        p_z = camera[2] + (camera[5] + u * camera[8] + v * camera[11]) / q
+        feature_word = (meta.flags >> 8) & 16777215
+        normal = __wrela_pixels_p9_normalize(surface[3], surface[4], surface[5])
+        view = __wrela_pixels_p9_normalize(camera[0] - p_x, camera[1] - p_y, camera[2] - p_z)
+        if normal[0] != 1.0 or view[0] != 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        geometric_normal: [f32; 3] = [normal[1], normal[2], normal[3]]
+        exact_normals: [f32; 13] = [0.0; 13]
+        world_point: [f32; 3] = [p_x, p_y, p_z]
+        world_normal: [f32; 3] = [normal[1], normal[2], normal[3]]
+        world_dx: [f32; 3] = [surface[6], surface[7], surface[8]]
+        world_dy: [f32; 3] = [surface[9], surface[10], surface[11]]
+        local_point = world_point
+        local_normal = world_normal
+        local_dx = world_dx
+        local_dy = world_dy
+        if material[18] != 8.0 or material[20] != 8.0:
+            if feature_word == 0:
+                return __wrela_pixels_p9_shading_failure()
+            local_frame = __wrela_pixels_p9_feature_local_frame(
+                renderer,
+                (feature_word - 1).to[u32](),
+                world_point,
+                world_normal,
+                world_dx,
+                world_dy,
+                params,
+            )
+            if local_frame[0] != 1.0:
+                return __wrela_pixels_p9_shading_failure()
+            local_point = [local_frame[1], local_frame[2], local_frame[3]]
+            local_normal = [local_frame[4], local_frame[5], local_frame[6]]
+            local_dx = [local_frame[7], local_frame[8], local_frame[9]]
+            local_dy = [local_frame[10], local_frame[11], local_frame[12]]
+        mapped_point = local_point
+        mapped_normal = local_normal
+        mapped_dx = local_dx
+        mapped_dy = local_dy
+        if material[18] == 8.0:
+            mapped_point = world_point
+            mapped_normal = world_normal
+            mapped_dx = world_dx
+            mapped_dy = world_dy
+        pattern_uv = __wrela_pixels_p9_map_uv(
+            material[18].to[u32](),
+            mapped_point,
+            mapped_normal,
+            mapped_dx,
+            mapped_dy,
+        )
+        if pattern_uv[0] != 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        base_r = material[1]
+        base_g = material[2]
+        base_b = material[3]
+        material_lower: [f32; 21] = material
+        material_upper: [f32; 21] = material
+        if material[11] >= 0.0:
+            filtered = __wrela_pixels_p9_sample_texture(
+                renderer,
+                material[11].to[u32](),
+                material[17].to[u32](),
+                pattern_uv[1],
+                pattern_uv[2],
+                [pattern_uv[3], pattern_uv[4]],
+                [pattern_uv[5], pattern_uv[6]],
+            )
+            if filtered[0] != 1.0:
+                return __wrela_pixels_p9_shading_failure()
+            material[1] = base_r * filtered[1]
+            material[2] = base_g * filtered[2]
+            material[3] = base_b * filtered[3]
+            material_lower[1] = base_r * filtered[9]
+            material_lower[2] = base_g * filtered[10]
+            material_lower[3] = base_b * filtered[11]
+            material_upper[1] = base_r * filtered[12]
+            material_upper[2] = base_g * filtered[13]
+            material_upper[3] = base_b * filtered[14]
+            if exact_texture_taps:
+                # The sampler has reached the terminal deterministic tap set;
+                # those bilinear/trilinear operations are the exact v1 filter
+                # definition, so this refinement has zero remaining texture
+                # approximation width.
+                material_lower[1] = material[1]
+                material_lower[2] = material[2]
+                material_lower[3] = material[3]
+                material_upper[1] = material[1]
+                material_upper[2] = material[2]
+                material_upper[3] = material[3]
+        else:
+            material_lower[1] = material[1]
+            material_lower[2] = material[2]
+            material_lower[3] = material[3]
+            material_upper[1] = material[1]
+            material_upper[2] = material[2]
+            material_upper[3] = material[3]
+        slope_x = material[14]
+        slope_y = material[15]
+        normal_map_point = local_point
+        normal_map_normal = local_normal
+        normal_map_dx = local_dx
+        normal_map_dy = local_dy
+        if material[20] == 8.0:
+            normal_map_point = world_point
+            normal_map_normal = world_normal
+            normal_map_dx = world_dx
+            normal_map_dy = world_dy
+        normal_uv = __wrela_pixels_p9_map_uv(
+            material[20].to[u32](),
+            normal_map_point,
+            normal_map_normal,
+            normal_map_dx,
+            normal_map_dy,
+        )
+        if normal_uv[0] != 1.0:
+            return __wrela_pixels_p9_shading_failure()
+        tangent_u: [f32; 3] = [normal_uv[7], normal_uv[8], normal_uv[9]]
+        tangent_v: [f32; 3] = [normal_uv[10], normal_uv[11], normal_uv[12]]
+        if material[12] == 2.0:
+            if material[16] != 21.0 and material[16] != 23.0:
+                return __wrela_pixels_p9_shading_failure()
+            filtered_normal = __wrela_pixels_p9_sample_texture(
+                renderer,
+                material[16].to[u32](),
+                material[19].to[u32](),
+                normal_uv[1],
+                normal_uv[2],
+                [normal_uv[3], normal_uv[4]],
+                [normal_uv[5], normal_uv[6]],
+            )
+            if filtered_normal[0] != 1.0:
+                return __wrela_pixels_p9_shading_failure()
+            slope_x = filtered_normal[1]
+            slope_y = filtered_normal[2]
+            mean_x = filtered_normal[4]
+            mean_y = filtered_normal[5]
+            variance_x = filtered_normal[6] - mean_x * mean_x
+            covariance = filtered_normal[7] - mean_x * mean_y
+            variance_y = filtered_normal[8] - mean_y * mean_y
+            determinant = variance_x * variance_y - covariance * covariance
+            if variance_x < -0.00001 or variance_y < -0.00001 or determinant < -0.00001:
+                return __wrela_pixels_p9_shading_failure()
+            if variance_x < 0.0:
+                variance_x = 0.0
+            if variance_y < 0.0:
+                variance_y = 0.0
+            slope_x = mean_x
+            slope_y = mean_y
+            geometric_roughness = material[5]
+            material[5] = sqrt_scalar(
+                material[5] * material[5] + variance_x + variance_y
+            )
+            if material[5] > 1.0:
+                material[5] = 1.0
+            # Moment covariance alone cannot bound the sharp GGX response at
+            # the v1 roughness floor. For any nonzero variance, carry the
+            # universal unit-radiance BRDF-response box until the deterministic
+            # four-normal terminal rung below. The bound follows from
+            # D <= 1/(pi*1e-12), the 1e-12 specular denominator floor, and the
+            # [0,1] Fresnel/visibility/cosine contracts; 4e23 also covers the
+            # diffuse maximum. Lighting applies radiance/attenuation afterward.
+            material[13] = 0.0
+            if variance_x + variance_y > 0.0:
+                material[13] = 400000000000000000000000.0
+            if exact_normal_taps:
+                found_normal = __wrela_pixels_p9_texture_record(renderer, material[16].to[u32]())
+                if found_normal[0] != 1:
+                    return __wrela_pixels_p9_shading_failure()
+                normal_record = found_normal[1].to[u32]()
+                normal_format = __wrela_pixels_program_operand(renderer, 12, normal_record, 1)
+                normal_width = __wrela_pixels_program_operand(renderer, 12, normal_record, 2)
+                normal_height = __wrela_pixels_program_operand(renderer, 12, normal_record, 3)
+                normal_wrap_u = __wrela_pixels_program_operand(renderer, 12, normal_record, 4)
+                normal_wrap_v = __wrela_pixels_program_operand(renderer, 12, normal_record, 5)
+                if normal_format[0] != 1 or normal_format[1] != 3 or normal_width[0] != 1 or normal_width[1] != 2 or normal_height[0] != 1 or normal_height[1] != 2 or normal_wrap_u[0] != 1 or normal_wrap_v[0] != 1:
+                    return __wrela_pixels_p9_shading_failure()
+                exact_normals[0] = 1.0
+                normal_tap: usize = 0
+                @budget(bound=4)
+                while normal_tap < 4:
+                    tap_x = (normal_tap % 2).to[i32]()
+                    tap_y = (normal_tap / 2).to[i32]()
+                    tap_slope_x = __wrela_pixels_p9_texture_texel(
+                        renderer, normal_record, 3, normal_wrap_u[1], normal_wrap_v[1], 0,
+                        [tap_x, tap_y, 0],
+                    )
+                    tap_slope_y = __wrela_pixels_p9_texture_texel(
+                        renderer, normal_record, 3, normal_wrap_u[1], normal_wrap_v[1], 0,
+                        [tap_x, tap_y, 1],
+                    )
+                    if tap_slope_x[0] != 1.0 or tap_slope_y[0] != 1.0:
+                        return __wrela_pixels_p9_shading_failure()
+                    tap_normal = __wrela_pixels_p9_normalize(
+                        geometric_normal[0] - tap_slope_x[1] * tangent_u[0] - tap_slope_y[1] * tangent_v[0],
+                        geometric_normal[1] - tap_slope_x[1] * tangent_u[1] - tap_slope_y[1] * tangent_v[1],
+                        geometric_normal[2] - tap_slope_x[1] * tangent_u[2] - tap_slope_y[1] * tangent_v[2],
+                    )
+                    if tap_normal[0] != 1.0:
+                        return __wrela_pixels_p9_shading_failure()
+                    normal_base = 1 + normal_tap * 3
+                    exact_normals[normal_base] = tap_normal[1]
+                    exact_normals[normal_base + 1] = tap_normal[2]
+                    exact_normals[normal_base + 2] = tap_normal[3]
+                    normal_tap = normal_tap + 1
+                # Terminal evaluation bounds the complete four-normal convex
+                # hull, so neither the moment roughness proposal nor its
+                # curvature remainder is consumed as a premise.
+                material[5] = geometric_roughness
+                material[13] = 0.0
+        if material[12] == 1.0 or material[12] == 2.0:
+            detailed = __wrela_pixels_p9_normalize(
+                normal[1] - slope_x * tangent_u[0] - slope_y * tangent_v[0],
+                normal[2] - slope_x * tangent_u[1] - slope_y * tangent_v[1],
+                normal[3] - slope_x * tangent_u[2] - slope_y * tangent_v[2],
+            )
+            if detailed[0] != 1.0:
+                return __wrela_pixels_p9_shading_failure()
+            normal = detailed
+        elif material[12] != 0.0:
+            return __wrela_pixels_p9_shading_failure()
+        material_lower[5] = material[5]
+        material_upper[5] = material[5]
+        material_lower[13] = material[13]
+        material_upper[13] = material[13]
+        color = [material[7], material[8], material[9]]
+        color_lower = color
+        color_upper = color
+        pixel_ao = surface[12]
+        pixel_ao_lower = surface[13]
+        pixel_ao_upper = surface[14]
+        if exact_ao:
+            # The lighting certificate's candidate is the complete five-tap
+            # f32 AO definition. Its wider endpoints additionally enclose the
+            # real-valued field interpretation; the terminal local-evaluation
+            # rung consumes the source-language f32 result itself.
+            pixel_ao_lower = pixel_ao
+            pixel_ao_upper = pixel_ao
+        light_index: usize = 0
+        @budget(bound=8)
+        while light_index < 8:
+            kind = light_kinds[light_index]
+            visibility_word = meta.visibility[light_index]
+            visibility_uncertain_word = meta.visibility_uncertain[light_index]
+            base = light_index * 15
+            terminal_area = refined_area and light_index.to[u64]() == meta.visibility_terminal_light
+            samples: u32 = 1
+            if kind == 3 or kind == 4:
+                # Depth-three dyadic leaves. The visibility word was produced
+                # by complete source-cell bundle certification in core.render;
+                # these centers are only candidates for the bounded integral.
+                samples = 64
+                if terminal_area:
+                    samples = 1024
+                if visibility_word == 0:
+                    # The complete source was proved fully blocked (or has
+                    # exactly black radiance). Hemisphere decisions are made
+                    # only after normal-detail resolution below.
+                    samples = 0
+            sample: u32 = 0
+            @budget(bound=4096)
+            while sample < samples:
+                if kind != 0:
+                    sample_flags: u32 = 0
+                    visibility_sample = sample
+                    if terminal_area:
+                        sample_flags = sample_flags | 1
+                        if deep_area:
+                            sample_flags = sample_flags | 2
+                    sampled = __wrela_pixels_p9_light_sample(
+                        material,
+                        material_lower,
+                        material_upper,
+                        [
+                            p_x, p_y, p_z,
+                            normal[1], normal[2], normal[3],
+                            view[1], view[2], view[3],
+                            exact_normals[0],
+                            exact_normals[1], exact_normals[2], exact_normals[3],
+                            exact_normals[4], exact_normals[5], exact_normals[6],
+                            exact_normals[7], exact_normals[8], exact_normals[9],
+                            exact_normals[10], exact_normals[11], exact_normals[12],
+                        ],
+                        light_values,
+                        kind,
+                        base,
+                        [sample, samples, sample_flags],
+                    )
+                    if sampled[0] != 1.0:
+                        return __wrela_pixels_p9_shading_failure()
+                    if exact_direct and kind != 3 and kind != 4 and (material[11] < 0.0 or exact_texture_taps):
+                        # The scalar point/directional path is the terminal
+                        # per-pixel rung: geometry, normalized directions,
+                        # attenuation, material, and BRDF are all evaluated
+                        # at this pixel with the sealed f32 program. Once a
+                        # texture has likewise reached its deterministic tap
+                        # definition, this source-language f32 result is the
+                        # exact v1 contribution: no run, source, or
+                        # real-arithmetic approximation remains.
+                        exact_channel: usize = 0
+                        @budget(bound=3)
+                        while exact_channel < 3:
+                            exact_value = sampled[exact_channel + 1]
+                            sampled[exact_channel + 4] = exact_value
+                            sampled[exact_channel + 7] = exact_value
+                            exact_channel = exact_channel + 1
+                    if terminal_area:
+                        visibility_sample = __wrela_pixels_p9_area_sample_id(sample)
+                        visibility_word_index = (visibility_sample >> 6).to[usize]()
+                        visibility_word = meta.visibility_refined[visibility_word_index]
+                        visibility_uncertain_word = meta.visibility_refined_uncertain[visibility_word_index]
+                        visibility_bit = (visibility_sample & 63).to[u64]()
+                    visibility_bit = (sample & 63).to[u64]()
+                    if terminal_area:
+                        visibility_bit = (visibility_sample & 63).to[u64]()
+                    visible = ((visibility_word >> visibility_bit) & 1).to[f32]()
+                    visibility_uncertain = ((visibility_uncertain_word >> visibility_bit) & 1) != 0
+                    visibility_lower = visible
+                    visibility_upper = visible
+                    if visibility_uncertain:
+                        visibility_lower = 0.0
+                        visibility_upper = 1.0
+                    if deep_area and terminal_area and visibility_uncertain:
+                        density_count = meta.visibility_refined[16]
+                        if density_count == 0 or density_count > 62:
+                            return __wrela_pixels_p9_shading_failure()
+                        density_found = false
+                        density_index: usize = 0
+                        @budget(bound=62)
+                        while density_index < density_count.to[usize]():
+                            density_word_index = density_index >> 1
+                            density_word: u64 = 0
+                            if density_word_index < 15:
+                                density_word = meta.visibility_refined[17 + density_word_index]
+                            else:
+                                density_word = meta.visibility_refined_uncertain[16 + density_word_index - 15]
+                            density_record = density_word & 268435455
+                            if density_index & 1 != 0:
+                                density_record = density_word >> 28
+                            if (density_record & 1023) == visibility_sample.to[u64]():
+                                clear_count = (density_record >> 10) & 511
+                                possible_count = (density_record >> 19) & 511
+                                if clear_count > possible_count or possible_count > 64:
+                                    return __wrela_pixels_p9_shading_failure()
+                                visibility_lower = clear_count.to[f32]() / 64.0
+                                visibility_upper = possible_count.to[f32]() / 64.0
+                                visible = (clear_count + possible_count).to[f32]() / 128.0
+                                density_found = true
+                            density_index = density_index + 1
+                        if not density_found:
+                            return __wrela_pixels_p9_shading_failure()
+                    ao = pixel_ao
+                    ao_lower = pixel_ao_lower
+                    ao_upper = pixel_ao_upper
+                    if visible < 0.0 or visible > 1.0 or ao < 0.0 or ao > 1.0 or ao_lower < 0.0 or ao_lower > ao or ao_upper < ao or ao_upper > 1.0:
+                        return __wrela_pixels_p9_shading_failure()
+                    color[0] = color[0] + sampled[1] * visible * ao
+                    color[1] = color[1] + sampled[2] * visible * ao
+                    color[2] = color[2] + sampled[3] * visible * ao
+                    bound_channel: usize = 0
+                    @budget(bound=3)
+                    while bound_channel < 3:
+                        bound_low = sampled[bound_channel + 4]
+                        bound_high = sampled[bound_channel + 7]
+                        if sampled[bound_channel + 1] < bound_low:
+                            bound_low = sampled[bound_channel + 1]
+                        if sampled[bound_channel + 1] > bound_high:
+                            bound_high = sampled[bound_channel + 1]
+                        if visibility_uncertain:
+                            color_lower[bound_channel] = color_lower[bound_channel] + bound_low * visibility_lower * ao_lower
+                            color_upper[bound_channel] = color_upper[bound_channel] + bound_high * visibility_upper * ao_upper
+                        else:
+                            color_lower[bound_channel] = color_lower[bound_channel] + bound_low * visible * ao_lower
+                            color_upper[bound_channel] = color_upper[bound_channel] + bound_high * visible * ao_upper
+                        bound_channel = bound_channel + 1
+                sample = sample + 1
+            light_index = light_index + 1
+    exposure_multiplier = __wrela_pixels_p9_exposure_multiplier(post[0])
+    if exposure_multiplier[0] != 1.0:
+        return __wrela_pixels_p9_shading_failure()
+    color[0] = color[0] * exposure_multiplier[1]
+    color[1] = color[1] * exposure_multiplier[1]
+    color[2] = color[2] * exposure_multiplier[1]
+    color_lower[0] = color_lower[0] * exposure_multiplier[1]
+    color_lower[1] = color_lower[1] * exposure_multiplier[1]
+    color_lower[2] = color_lower[2] * exposure_multiplier[1]
+    color_upper[0] = color_upper[0] * exposure_multiplier[1]
+    color_upper[1] = color_upper[1] * exposure_multiplier[1]
+    color_upper[2] = color_upper[2] * exposure_multiplier[1]
+    # The interval primitives above already round every real-valued enclosure
+    # outward. Include the sealed f32 candidate explicitly as well; no extra
+    # terminal radius stands in for an untracked arithmetic path.
+    rounding_channel: usize = 0
+    @budget(bound=3)
+    while rounding_channel < 3:
+        if color[rounding_channel] < color_lower[rounding_channel]:
+            color_lower[rounding_channel] = color[rounding_channel]
+        if color[rounding_channel] > color_upper[rounding_channel]:
+            color_upper[rounding_channel] = color[rounding_channel]
+        rounding_channel = rounding_channel + 1
+    if color[0] != color[0] or color[1] != color[1] or color[2] != color[2] or color_lower[0] > color[0] or color_lower[1] > color[1] or color_lower[2] > color[2] or color_upper[0] < color[0] or color_upper[1] < color[1] or color_upper[2] < color[2]:
+        return __wrela_pixels_p9_shading_failure()
+    return [
+        1.0,
+        color_lower[0], color_lower[1], color_lower[2],
+        color_upper[0], color_upper[1], color_upper[2],
+        color[0], color[1], color[2],
+    ]
+
+pub fn __wrela_pixels_p9_encode_hdr(renderer: usize, r: f32, g: f32, b: f32) -> [u64; 2]:
+    return __wrela_pixels_p9_encode_certified(
+        renderer,
+        [r, g, b],
+        [r, g, b],
+        [r, g, b],
+    )
+
+pub fn __wrela_pixels_p9_encode_certified(
+    renderer: usize,
+    read candidate: [f32; 3],
+    read lower: [f32; 3],
+    read upper: [f32; 3],
+) -> [u64; 2]:
+    codes: [u64; 3] = [0; 3]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        if lower[channel] > candidate[channel] or candidate[channel] > upper[channel]:
+            return [0, 0]
+        low = __wrela_pixels_p9_encode(renderer, lower[channel])
+        high = __wrela_pixels_p9_encode(renderer, upper[channel])
+        selected = __wrela_pixels_p9_encode(renderer, candidate[channel])
+        # This is the terminal condition of the global refinement queue. An
+        # approximation may never choose the candidate's nearest byte when
+        # its encoded interval still spans two codes.
+        if low[0] != 1 or high[0] != 1 or selected[0] != 1 or low[1] != high[1] or selected[1] != low[1]:
+            return [0, 0]
+        codes[channel] = low[1]
+        channel = channel + 1
+    if codes[0] > 255 or codes[1] > 255 or codes[2] > 255:
+        return [0, 0]
+    return [
+        1,
+        # The raster API consumes semantic RGB in low-to-high byte order and
+        # performs the one explicit RGB-to-BGRA scanout permutation.
+        codes[0] | (codes[1] << 8) | (codes[2] << 16),
+    ]
+
+pub fn __wrela_pixels_p9_shade_pixel(
+    renderer: usize,
+    read meta: P9ShadingMeta,
+    read surface: [f32; 15],
+    read params: [f32; 16],
+    read camera: [f32; 12],
+    read light_kinds: [u64; 8],
+    read light_values: [f32; 120],
+    read post: [f32; 4],
+) -> [u64; 2]:
+    refined_meta = meta
+    worker = (meta.flags >> 32).to[u32]()
+    if worker >= 4:
+        return [0, 0]
+    step: u32 = 0
+    @budget(bound=6)
+    while step < 6:
+        inputs = __wrela_pixels_p9_material_inputs(renderer, refined_meta.identity.to[u32]())
+        if inputs[0] != 1:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        hdr = __wrela_pixels_p9_hdr_pixel(
+            renderer, refined_meta, surface, params, camera,
+            light_kinds, light_values, post,
+        )
+        if hdr[0] != 1.0:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        encoded = __wrela_pixels_p9_encode_certified(
+            renderer,
+            [hdr[7], hdr[8], hdr[9]],
+            [hdr[1], hdr[2], hdr[3]],
+            [hdr[4], hdr[5], hdr[6]],
+        )
+        # A moment proposal is never a byte-certificate premise. Normal detail
+        # must first take the exact deterministic tap rung; this remains true
+        # even when an accidentally narrow proposal happens to encode to one
+        # byte today.
+        normal_terminal_required = (refined_meta.flags & 1) == 1 and (refined_meta.flags & 4) == 0 and inputs[1] & 64 != 0
+        if encoded[0] == 1 and not normal_terminal_required:
+            return encoded
+
+        # Build every remaining contributor option and let the single exact
+        # integer selector choose globally. Each applied bit removes one
+        # option, so `(remaining options, interval width)` decreases and the
+        # sealed loop bound is a structural termination proof.
+        options: [u64; 48] = [0; 48]
+        option_count: u32 = 0
+        if (refined_meta.flags & 1) == 1 and (refined_meta.flags & 4) == 0 and inputs[0] == 1 and inputs[1] & 64 != 0:
+            option_base = option_count.to[usize]() * 6
+            options[option_base] = 2
+            options[option_base + 1] = 0
+            options[option_base + 2] = 256
+            options[option_base + 3] = 1
+            options[option_base + 4] = 255
+            options[option_base + 5] = refined_meta.identity
+            option_count = option_count + 1
+        if (refined_meta.flags & 1) == 1 and (refined_meta.flags & 2) == 0 and inputs[0] == 1 and inputs[1] & 48 != 0:
+            option_base = option_count.to[usize]() * 6
+            options[option_base] = 4
+            options[option_base + 1] = 0
+            options[option_base + 2] = 64
+            options[option_base + 3] = 1
+            options[option_base + 4] = 255
+            options[option_base + 5] = refined_meta.identity
+            option_count = option_count + 1
+        area_payload: u64 = 0
+        if refined_meta.visibility_terminal_light < 8:
+            area_payload = refined_meta.visibility_terminal_light + 1
+        if (refined_meta.flags & 1) == 1 and (refined_meta.flags & 8) == 0 and area_payload != 0:
+            option_base = option_count.to[usize]() * 6
+            options[option_base] = 6
+            options[option_base + 1] = 0
+            # Regular pixels consume the complete canonical 32x32 mask.
+            # Event pixels have a separate density terminal and cost below.
+            options[option_base + 2] = 1024
+            options[option_base + 3] = 1
+            options[option_base + 4] = 255
+            options[option_base + 5] = area_payload - 1
+            option_count = option_count + 1
+        has_direct = false
+        direct_light: usize = 0
+        @budget(bound=8)
+        while direct_light < 8:
+            if light_kinds[direct_light] == 1 or light_kinds[direct_light] == 2:
+                has_direct = true
+            direct_light = direct_light + 1
+        if (refined_meta.flags & 1) == 1 and (refined_meta.flags & 16) == 0 and has_direct:
+            option_base = option_count.to[usize]() * 6
+            options[option_base] = 5
+            options[option_base + 1] = 0
+            options[option_base + 2] = 128
+            options[option_base + 3] = 1
+            options[option_base + 4] = 255
+            options[option_base + 5] = refined_meta.identity
+            option_count = option_count + 1
+        if (refined_meta.flags & 1) == 1 and (refined_meta.flags & 32) == 0 and __wrela_pixels_p9_ao_config(renderer)[0] == 1.0:
+            # AO is offered only when the sealed renderer enables it. The
+            # exact local five-tap candidate is already carried by `surface`;
+            # this rung removes only its real-interpretation enclosure.
+            option_base = option_count.to[usize]() * 6
+            options[option_base] = 7
+            options[option_base + 1] = 0
+            options[option_base + 2] = 320
+            options[option_base + 3] = 1
+            options[option_base + 4] = 255
+            options[option_base + 5] = 0
+            option_count = option_count + 1
+        selected = __wrela_pixels_p9_select_refinement(options, option_count)
+        if selected[0] != 1:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        selected_base = selected[1].to[usize]() * 6
+        source = options[selected_base]
+        if source == 2:
+            refined_meta.flags = refined_meta.flags | 4
+        elif source == 4:
+            refined_meta.flags = refined_meta.flags | 2
+        elif source == 5:
+            refined_meta.flags = refined_meta.flags | 16
+        elif source == 6:
+            refined_meta.flags = refined_meta.flags | 8
+        elif source == 7:
+            refined_meta.flags = refined_meta.flags | 32
+        else:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 158, 1)
+        step = step + 1
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+    return [0, 0]

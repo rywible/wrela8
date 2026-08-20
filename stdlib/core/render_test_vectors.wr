@@ -13,7 +13,7 @@ from core.render_transfer import Transfer, TransferOutcome, transfer_balanced2, 
 from core.render_display import ByteSingletonOutcome, QuantizeOutcome, RgbSingletonOutcome, byte_singleton, color_matrix_channel, exposure_channel, monotone_lut17, quantize_ties_even, rgb_singleton
 
 pub const VECTOR_COUNT: u64 = 1215
-pub const VECTOR_DIGEST: u64 = 13470461152987803753
+pub const VECTOR_DIGEST: u64 = 8004717999221078613
 
 pub fn fold2(a: i32, b: i32) -> i64:
     return a.to[i64]() * 257 + b.to[i64]()
@@ -506,7 +506,7 @@ pub fn vector_result_raw_mid(kernel: i32, in0: i32, in1: i32, in2: i32, in3: i32
             raw = -raw
         if raw > 64:
             raw = 64
-        return numeric_result(monotone_lut17(Iv32.point(raw), [0, 18173, 25465, 30815, 35199, 38980, 42341, 45388, 48192, 50797, 53238, 55541, 57725, 59805, 61793, 63701, 65535], 2))
+        return numeric_result(monotone_lut17(Iv32.point(raw), [0, 207, 413, 620, 827, 1034, 1240, 1447, 1654, 1860, 2067, 2274, 2481, 2687, 2884, 3073, 3255], 2))
     if kernel == 42:
         match quantize_ties_even(in0, 2):
             case .Value(code):
@@ -1263,12 +1263,12 @@ pub fn run_vector_chunk_3():
     assert vector_case_matches(38, 0, 7, 1, -1, 0, true), "material_residual case 100"
     assert vector_case_matches(38, -8, -1, 5, -1, 0, true), "material_residual case 101"
     assert vector_case_matches(38, 7, 7, 5, -3, 0, true), "material_residual case 102"
-    assert vector_case_matches(41, -8, -4, 4, 8, 6569970, false), "monotone_lut case 0"
-    assert vector_case_matches(41, -1, 0, 0, 1, 1172095, false), "monotone_lut case 1"
+    assert vector_case_matches(41, -8, -4, 4, 8, 106554, false), "monotone_lut case 0"
+    assert vector_case_matches(41, -1, 0, 0, 1, 13159, false), "monotone_lut case 1"
     assert vector_case_matches(41, 0, 0, 0, 0, 0, false), "monotone_lut case 2"
-    assert vector_case_matches(41, -1, 2, 5, 7, 1172095, false), "monotone_lut case 100"
-    assert vector_case_matches(41, 4, 8, 0, -2, 4688634, false), "monotone_lut case 101"
-    assert vector_case_matches(41, -1, 7, 4, -5, 1172095, false), "monotone_lut case 102"
+    assert vector_case_matches(41, -1, 2, 5, 7, 13159, false), "monotone_lut case 100"
+    assert vector_case_matches(41, 4, 8, 0, -2, 53406, false), "monotone_lut case 101"
+    assert vector_case_matches(41, -1, 7, 4, -5, 13159, false), "monotone_lut case 102"
     assert vector_case_matches(13, 2147483647, 0, 0, 2, 0, true), "normal_bound case 0"
     assert vector_case_matches(13, -2147483648, 0, 0, -1, 0, true), "normal_bound case 1"
     assert vector_case_matches(13, 0, 0, 0, 0, 0, false), "normal_bound case 2"

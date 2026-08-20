@@ -31,7 +31,6 @@ pub fn __wrela_pixels_p7_debug_probe_cell(
         params,
         __wrela_pixels_p7_numeric_config(renderer)[6].to[u16](),
         camera,
-        0,
     )
     candidates = __wrela_pixels_p7_row_candidates(renderer, tile, y, snapshot)
     roots = __wrela_pixels_p7_collect_roots_box(
@@ -115,7 +114,6 @@ pub fn __wrela_pixels_p7_debug_probe_coverage(
         params,
         __wrela_pixels_p7_numeric_config(renderer)[6].to[u16](),
         camera,
-        0,
     )
     candidates = __wrela_pixels_p7_row_candidates(renderer, tile, y, snapshot)
     config = __wrela_pixels_p7_numeric_config(renderer)
@@ -347,7 +345,6 @@ pub fn __wrela_pixels_p7_debug_probe_row(
         params,
         __wrela_pixels_p7_numeric_config(renderer)[6].to[u16](),
         camera,
-        0,
     )
     candidates = __wrela_pixels_p7_row_candidates(renderer, tile, y, snapshot)
     row = __wrela_pixels_p7_certify_pixel_row(
@@ -439,8 +436,8 @@ pub fn __wrela_pixels_p7_debug_frame_dump_word(renderer: usize, index: u64) -> [
         return [0; 2]
     frame_bytes = config[1].to[u64]() * config[2].to[u64]() * 4
     frame_words = (frame_bytes + 7) / 8
-    # One schema word plus four workers times 150 counters.
-    telemetry_words: u64 = 601
+    # One schema word plus four workers times 162 counters.
+    telemetry_words: u64 = 649
     total = frame_words + 15 + telemetry_words
     if total > 65550:
         return [0; 2]
@@ -465,15 +462,15 @@ pub fn __wrela_pixels_p7_debug_frame_dump_word(renderer: usize, index: u64) -> [
         return __wrela_pixels_p8_visible_word(renderer, word.to[usize]())
     telemetry_index = word - frame_words
     if telemetry_index == 0:
-        return [1, 2.to[u64]() | (150.to[u64]() << 16)]
+        return [1, 3.to[u64]() | (162.to[u64]() << 16)]
     if telemetry_index >= telemetry_words:
         return [0; 2]
     flat = telemetry_index - 1
-    worker = (flat / 150).to[u32]()
+    worker = (flat / 162).to[u32]()
     counter = __wrela_pixels_p7_telemetry_counter(
         renderer,
         worker,
-        (flat % 150).to[usize](),
+        (flat % 162).to[usize](),
     )
     if counter[0] == 1:
         return counter

@@ -4,7 +4,7 @@ Renderers count=1
     Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
       World min=[-4,-4,-4] max=[4,4,4]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
-      Initialization ao=false probes=false probe_worst_case_ms=0 deadline_ms=10
+      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=10
     Param id=p0 path=SceneParams.phase indexes=[0] component=scalar ty=f32 range=[-2,2]
       Rate max_delta=0.25 max_second_delta=0.0625
     Scalar id=s0 dependency=constant kind=ConstF32 value=0 bits=0x00000000
@@ -18,29 +18,31 @@ Renderers count=1
     Scalar id=s8 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
     Scalar id=s9 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
     Scalar id=s10 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
-    Scalar id=s11 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s11 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s12 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
     Field id=f0 scalar=s7 kind=Plane normal=[s0,s0,s1] offset=s2
     Field id=f1 scalar=s7 kind=Mark child=f0 object=examples.boot_pixels_plane::ObjectId::Ground material=examples.boot_pixels_plane::MaterialId::Ground
-    Material id=m0 kind=Sample base_color=[s8,s9,s10] opacity=s1 emissive=[s0,s0,s0] roughness=s9 metallic=s0 specular=s9 ior=s11 normal=geometric pattern=none
+    Material id=m0 kind=Sample base_color=[s8,s9,s10] opacity=s1 emissive=[s11,s8,s9] roughness=s9 metallic=s0 specular=s9 ior=s12 normal=geometric pattern=none
     Identity kind=material enum=examples.boot_pixels_plane::MaterialId variant=Ground
     Identity kind=object enum=examples.boot_pixels_plane::ObjectId variant=Ground
-    Origin kind=scalar id=s0 primary=examples.boot_pixels_plane:59:28@bytes=1281..1284 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:59:17@bytes=1270..1271,examples.boot_pixels_plane:59:35@bytes=1288..1291,examples.boot_pixels_plane:64:35@bytes=1536..1537]
-    Origin kind=scalar id=s1 primary=examples.boot_pixels_plane:59:42@bytes=1295..1298 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:59:17@bytes=1270..1271,examples.boot_pixels_plane:64:35@bytes=1536..1537]
-    Origin kind=scalar id=s2 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s0 primary=examples.boot_pixels_plane:60:28@bytes=1343..1346 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:60:17@bytes=1332..1333,examples.boot_pixels_plane:60:35@bytes=1350..1353,examples.boot_pixels_plane:68:35@bytes=1802..1803]
+    Origin kind=scalar id=s1 primary=examples.boot_pixels_plane:60:42@bytes=1357..1360 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:60:17@bytes=1332..1333,examples.boot_pixels_plane:68:35@bytes=1802..1803]
+    Origin kind=scalar id=s2 primary=examples.boot_pixels_plane:60:17@bytes=1332..1333 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
     Origin kind=scalar id=s3 primary=examples.boot_pixels_plane:0:0@bytes=0..0
     Origin kind=scalar id=s4 primary=examples.boot_pixels_plane:0:0@bytes=0..0
     Origin kind=scalar id=s5 primary=examples.boot_pixels_plane:0:0@bytes=0..0
-    Origin kind=scalar id=s6 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=scalar id=s7 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=scalar id=s8 primary=examples.boot_pixels_plane:64:48@bytes=1549..1553 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537]
-    Origin kind=scalar id=s9 primary=examples.boot_pixels_plane:64:56@bytes=1557..1560 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537,examples.boot_pixels_plane:64:80@bytes=1581..1584]
-    Origin kind=scalar id=s10 primary=examples.boot_pixels_plane:64:63@bytes=1564..1568 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:64:35@bytes=1536..1537]
-    Origin kind=scalar id=s11 primary=examples.boot_pixels_plane:64:35@bytes=1536..1537 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=field id=f0 primary=examples.boot_pixels_plane:59:17@bytes=1270..1271 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=field id=f1 primary=examples.boot_pixels_plane:60:16@bytes=1337..1338 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
-    Origin kind=material id=m0 primary=examples.boot_pixels_plane:64:35@bytes=1536..1537 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.boot_pixels_plane:60:17@bytes=1332..1333 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s7 primary=examples.boot_pixels_plane:60:17@bytes=1332..1333 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.boot_pixels_plane:69:21@bytes=1824..1828 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:71:33@bytes=1901..1905]
+    Origin kind=scalar id=s9 primary=examples.boot_pixels_plane:69:29@bytes=1832..1835 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0] merged=[examples.boot_pixels_plane:68:35@bytes=1802..1803,examples.boot_pixels_plane:70:19@bytes=1864..1867,examples.boot_pixels_plane:71:41@bytes=1909..1912]
+    Origin kind=scalar id=s10 primary=examples.boot_pixels_plane:69:36@bytes=1839..1843 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.boot_pixels_plane:71:24@bytes=1892..1897 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.boot_pixels_plane:68:35@bytes=1802..1803 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.boot_pixels_plane:60:17@bytes=1332..1333 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.boot_pixels_plane:61:16@bytes=1399..1400 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.boot_pixels_plane:68:35@bytes=1802..1803 expansion=[examples.boot_pixels_plane:0:0@bytes=0..0]
     Roots field=f1 material=m0
-    SymbolicQuota steps=21/1000000 nodes=23/250000 unrolled_statements=0/250000 aggregate_elements=6/250000 call_depth=1/128
+    SymbolicQuota steps=25/1000000 nodes=22/250000 unrolled_statements=0/250000 aggregate_elements=9/250000 call_depth=1/128
   StructuralRenderer index=0 field_key=examples.boot_pixels_plane::world material_key=examples.boot_pixels_plane::shade
     ParameterLayout slots=1 packed_bytes=4 dependency_schema=42521de5920e509cfa0fe5090bcab763e209d50158bfcbec5af828d5a3f3fded
       FrameDependencies runtime_bytes=72 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=0:[] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=Linear ao_version=0 probe_version=0 output=AaaByteExact:64x32:display0 phase=60:60
@@ -71,7 +73,8 @@ Renderers count=1
     ScalarProof id=s8 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s9 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     ScalarProof id=s10 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
-    ScalarProof id=s11 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s11 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s12 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
     WorldBound field=f0 bounds=[-4,-4,-4]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
     WorldBound field=f1 bounds=[-4,-4,-4]-[4,4,4] rule=identity-mark contributors=[f0] pruned=none
     Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
@@ -81,13 +84,13 @@ Renderers count=1
     Csg constant=none instructions=[Push(ObjectId(0))] max_stack=1
       Influence object=o0 false=constant:Some(false):stack:0:instructions:[]:digest:4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
     Feature id=g0 template=0 object=o0 primitive=f0 path=[f0@0] kind=Plane bounds=[-4,-4,-4]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
-    Capacities workers=4 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=12 derivative_slots=12 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=1 event_subdivisions=4 event_records=4 tile_row_runs=16 csg_events=1 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=128 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5152 all_worker_scratch_bytes=20608 telemetry_production_bytes=0 telemetry_instrumented_bytes=53952 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=172594 instrumented_state_bytes=226552
+    Capacities workers=3 objects=1 feature_templates=1 feature_slots=1 repeated_instances=0 scalar_slots=13 derivative_slots=13 parameter_slots=1 csg_stack=1 projected_row=1 projected_tile=1 row_start_roots=1 active_sheets=1 event_generators=1 event_subdivisions=4 event_records=4 tile_row_runs=16 csg_events=1 transparent_layers=1 rebuild_queue=16 candidate_bytes=64 root_bytes=32 sheet_bytes=64 event_bytes=128 run_bytes=2048 corridor_bytes=1024 fixed_q_bytes=256 shading_bytes=1024 transparency_bytes=512 per_worker_scratch_bytes=5152 all_worker_scratch_bytes=15456 telemetry_production_bytes=0 telemetry_instrumented_bytes=53040 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=128 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=131072 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=168498 instrumented_state_bytes=221544
       CapacityDerivation field=feature_count value=1 why=[1 maximal smooth objects; 1 immutable fused primitive feature templates; 1 total feature slots after instantiating those templates across 1 objects; 0 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=1 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
       CapacityDerivation field=max_run_records_per_tile_row value=16 why=[1 generators; 1 primitive equation generators; 0 feature-validity boundary generators; 0 material event/owner generators; 0 repeat wrap generators; 4 subdivisions each (1 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
-      CapacityDerivation field=renderer_state_bytes value=172594 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=131072; scratch=20608 (5152 * 4 workers); output=16384; probes=0; page_alignment_padding=2328; kinetic=128; tile_descriptors=368; tile_ownership=2; failure=64]
-      CapacityDerivation field=instrumented_renderer_state_bytes value=226552 why=[production=172594; telemetry=53952]
-    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=172594 instrumented_state_bytes=226552 dependency_schema=42521de5920e509cfa0fe5090bcab763e209d50158bfcbec5af828d5a3f3fded
+      CapacityDerivation field=renderer_state_bytes value=168498 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=131072; scratch=15456 (5152 * 3 workers); output=16384; probes=0; page_alignment_padding=3384; kinetic=128; tile_descriptors=368; tile_ownership=2; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=221544 why=[production=168498; telemetry=53040]
+    StructuralReport coefficient_bytes=4 objects=1 features=1 production_state_bytes=168498 instrumented_state_bytes=221544 dependency_schema=42521de5920e509cfa0fe5090bcab763e209d50158bfcbec5af828d5a3f3fded
     ProjectiveContract width=64 height=32 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
     CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
     Coefficient id=c0 op=scalar:s0
@@ -294,9 +297,9 @@ Renderers count=1
       Cell id=7 offset=0 count=0 values=[]
     ObjectFeatureIndex object=o0 first=g0 count=1
     DirectIndexes feature_derivatives=[d0] material_programs=[0:m0] bytes=488
-    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_generators=3 competition_pairs_per_tile=0 row_event_intervals=3 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=16 corridors_per_row=16 max_index_slice=3 polynomial_programs=9 rational_programs=1 polynomial_terms_per_program=4 coefficient_nodes=104 derivative_bundles=1 derivative_clusters=1 index_bytes=488 refined_per_worker_scratch_bytes=4128 refined_all_worker_scratch_bytes=16512 final_per_worker_scratch_bytes=5920 final_all_worker_scratch_bytes=23680 final_state_bytes=176690 final_instrumented_state_bytes=230648
+    ProjectiveCapacities candidate_features_per_tile=1 row_start_roots=1 active_sheets_per_row=1 event_generators=3 competition_pairs_per_tile=0 row_event_intervals=3 root_stack_nodes=4 event_stack_nodes=4 runs_per_row=16 corridors_per_row=16 max_index_slice=3 polynomial_programs=9 rational_programs=1 polynomial_terms_per_program=4 coefficient_nodes=104 derivative_bundles=1 derivative_clusters=1 index_bytes=488 refined_per_worker_scratch_bytes=4128 refined_all_worker_scratch_bytes=12384 final_per_worker_scratch_bytes=5920 final_all_worker_scratch_bytes=17760 final_state_bytes=168498 final_instrumented_state_bytes=221544
       ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=1 why=[exact endpoint/cell sweep gives row overlap 1 within P3 ceiling 1 and tile overlap 1 within P3 ceiling 1]
-      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=176690 why=[P4-refined six-class scratch=4128 per worker; retained fixed-q/shading/transparency scratch=1792 per worker; workers=4]
+      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=168498 why=[P4-refined six-class scratch=4128 per worker; retained fixed-q/shading/transparency scratch=1792 per worker; workers=3]
       ProjectiveCapacityDerivation field=p4_row_start_roots value=1 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
       ProjectiveCapacityDerivation field=p4_row_event_intervals value=3 why=[3 completed local generators; 0 competition pairs survive; 2^2 leaves per isolated root]
       ProjectiveCapacityDerivation field=p4_index_bytes value=488 why=[completed offset/count cells plus sorted contiguous ID tables]

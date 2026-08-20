@@ -13,6 +13,7 @@ from core.render import (
     AoConfig,
     CameraBounds,
     LightConfig,
+    LightKind,
     MaterialSample,
     ProbeConfig,
     RenderProfile,
@@ -24,7 +25,6 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 11
-# production Pixels stage is not implemented; implemented in task P9.8
 
 fn fixture_id() -> u32:
     return FIXTURE_ID
@@ -75,7 +75,19 @@ pub fn build() -> Image:
         world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
         world_max=Vec3(x=4.0, y=4.0, z=4.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
-        light_config=LightConfig.fixed(capacity=1),
+        light_config=LightConfig.declared(
+            capacity=1,
+            kinds=[
+                LightKind.Rectangle,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+            ],
+        ),
         exposure_range=ScalarRange(min=-1.0, max=1.0),
         environment_range=RgbRange(
             min=Rgb(r=0.0, g=0.0, b=0.0),

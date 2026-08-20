@@ -136,6 +136,8 @@ pub fn classify(name: &str) -> Class {
                     | "OBJECT_TABLE"
                     | "FEATURE_TABLE"
                     | "MATERIAL_TABLE"
+                    | "TEXTURE_TABLE"
+                    | "SHADING_SUMMARY_TABLE"
                     | "PARAMETER_TABLE"
                     | "EVENT_TABLE"
                     | "CSG_TABLE"
@@ -249,6 +251,8 @@ mod tests {
         assert_eq!(classify("INIT_SPAN0"), Class::InitSpan(0));
         assert_eq!(classify("INIT_SPAN7"), Class::InitSpan(7));
         assert_eq!(classify("INIT_SPAN8"), Class::Unexpected);
+        assert_eq!(classify("R0_TEXTURE_TABLE"), Class::RendererRoot(0));
+        assert_eq!(classify("R3_SHADING_SUMMARY_TABLE"), Class::RendererRoot(3));
         assert_eq!(classify("R0_FRAME_PROGRAM"), Class::RendererRoot(0));
         assert_eq!(classify("R17_FRAME_PROGRAM"), Class::RendererRoot(17));
         assert_eq!(classify("R0_EVENT_TABLE"), Class::RendererRoot(0));

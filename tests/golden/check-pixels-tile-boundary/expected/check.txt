@@ -3,6 +3,7 @@ Module path=__image_pixels
   Const N_RENDER_WORKERS: usize
   Fn __wrela_pixels_p8r_packet_selftest() -> bool
   Fn __wrela_pixels_f32_to_bits(value: read f32) -> u32
+  Fn __wrela_pixels_f64_bits_to_f32(bits: read u64) -> f32
   Fn __wrela_pixels_program_validate(renderer: read usize) -> bool
   Fn __wrela_pixels_program_header(renderer: read usize) -> [u64; 6]
   Fn __wrela_pixels_program_digest_byte(renderer: read usize, byte: read usize) -> u8
@@ -10,6 +11,7 @@ Module path=__image_pixels
   Fn __wrela_pixels_tile_feature(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
   Fn __wrela_pixels_tile_event_count(renderer: read usize, tile: read u32) -> u32
   Fn __wrela_pixels_tile_event(renderer: read usize, tile: read u32, ordinal: read u32) -> [u64; 2]
+  Fn __wrela_pixels_program_table_count(renderer: read usize, table: read u16) -> u32
   Fn __wrela_pixels_program_record(renderer: read usize, table: read u16, id: read u32) -> [u64; 5]
   Fn __wrela_pixels_program_operand(renderer: read usize, table: read u16, id: read u32, ordinal: read u16) -> [u64; 2]
   Fn __wrela_pixels_p7_abs(value: read f32) -> f32
@@ -44,12 +46,25 @@ Module path=__image_pixels
   Fn __wrela_pixels_p8_axis_box_coverage(renderer: read usize, x: read u32, y: read u32, camera: read [f32; 12]) -> [i64; 4]
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
+  Fn __wrela_pixels_p9_debug_visibility() -> bool
+  Fn __wrela_pixels_p9_round_ratio(numerator: read u64, denominator: read u64) -> u64
+  Fn __wrela_pixels_p9_table_value(index: read u64, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_lut_interpolate(coordinate: read u64, fraction_bits: read u32, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_filmic_tone(value: read f32) -> [u64; 2]
+  Fn __wrela_pixels_p9_encode_common(value: read f32, filmic: read bool) -> [u64; 2]
+  Fn __wrela_pixels_p9_encode(renderer: read usize, value: read f32) -> [u64; 2]
+  Fn __wrela_pixels_p9_material(renderer: read usize, identity: read u32, surface: read [f32; 6], params: read [f32; 16], camera: read [f32; 12]) -> [f32; 21]
+  Fn __wrela_pixels_p9_material_inputs(renderer: read usize, identity: read u32) -> [u64; 2]
+  Fn __wrela_pixels_p9_scene_distance(renderer: read usize, point: read [f32; 3], params: read [f32; 16]) -> [f32; 4]
+  Fn __wrela_pixels_p9_light_range(renderer: read usize, slot: read usize) -> [f32; 12]
+  Fn __wrela_pixels_p9_ao_config(renderer: read usize) -> [f32; 3]
   Fn __wrela_pixels_p7_feature_support_q_span(renderer: read usize, feature: read u32, object: read u32, uv: read [f32; 2], q_domain: read [i64; 3]) -> [i64; 3]
   Fn __wrela_pixels_p7_material_event_coverage(renderer: read usize, x: read u32, y: read u32, q: read f32, hit: read bool, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 3]
   Fn __wrela_pixels_p7_feature_valid(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> bool
   Fn __wrela_pixels_p7_feature_valid_filter(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], exponent: read i32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_q_span(renderer: read usize, feature: read u32) -> [f32; 3]
   Fn __wrela_pixels_p7_feature_world_bounds(renderer: read usize, feature: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p9_feature_local_frame(renderer: read usize, feature: read u32, point: read [f32; 3], normal: read [f32; 3], d_p_dx: read [f32; 3], d_p_dy: read [f32; 3], params: read [f32; 16]) -> [f32; 13]
   Fn __wrela_pixels_p7_object_composed_root(renderer: read usize, object: read u32) -> bool
   Fn __wrela_pixels_p7_object_support(renderer: read usize, object: read u32) -> [f32; 2]
   Fn __wrela_pixels_p7_object_q_tube(renderer: read usize, object: read u32, uv: read [f32; 4], q_lo: read f32, q_hi: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 7]
@@ -170,6 +185,10 @@ Module path=field
   Fn scalar_length_semantics_cover_large_exact_radius() -> unit
   Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
 Module path=render
+  Fn __wrela_pixels_p9_debug_visibility_enabled() -> bool
+  Fn __wrela_pixels_p9_light_rate_valid(current: read f32, previous: read f32, max_delta: read f32, frame_steps: read u64) -> bool
+  Fn __wrela_pixels_p9_point_radius_valid(radius: read f32, maximum: read f32) -> bool
+  Fn p9_light_rate_boundary_is_closed_and_excess_fails() -> unit
   Fn __wrela_pixels_p7_program_validate(renderer: read usize) -> bool
   Fn __wrela_pixels_p7_program_digest_byte(renderer: read usize, byte: read usize) -> u8
   Struct RenderPath data
@@ -212,11 +231,15 @@ Module path=render
     field radiance: Rgb
     fn zero() -> Light
     fn point(position: read Vec3, radiance: read Rgb) -> Light
+    fn point_radius(position: read Vec3, radius: read f32, radiance: read Rgb) -> Light
     fn directional(direction: read Vec3, radiance: read Rgb) -> Light
     fn rectangle(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
     fn disk(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
     fn __wrela_p5_matches_kind(read self, expected: read usize) -> bool
     fn __wrela_p5_finite(read self) -> bool
+    fn __wrela_p9_in_world(read self, bounds: read RendererFrameBounds) -> bool
+    fn __wrela_p9_area_axes_valid(read self) -> bool
+    fn __wrela_p9_valid(read self, bounds: read RendererFrameBounds, range: read [f32; 12]) -> bool
   Struct LightFrame data
     field lights: [Light; 8]
     fn empty() -> LightFrame
@@ -235,15 +258,27 @@ Module path=render
     field max_motion: f32
     fn bounded(max_motion: read f32) -> CameraBounds
     fn gameplay_default() -> CameraBounds
+  Struct LightRange data
+    field position_min: Vec3
+    field position_max: Vec3
+    field axis_component_max: f32
+    field radiance_max: Rgb
+    field max_delta: f32
+    fn bounded(position_min: read Vec3, position_max: read Vec3, axis_component_max: read f32, radiance_max: read Rgb, max_delta: read f32) -> LightRange
+    fn gameplay_default() -> LightRange
   Struct LightConfig data
     field capacity: u32
     field kinds: [LightKind; 8]
+    field ranges: [LightRange; 8]
     fn fixed(capacity: read u32) -> LightConfig
-    fn declared(capacity: read u32, kinds: read [LightKind; 8]) -> LightConfig
+    fn declared(capacity: read u32, kinds: read [LightKind; 8], ranges: read [LightRange; 8]) -> LightConfig
     fn gameplay_default() -> LightConfig
   Struct AoConfig data
     field enabled: bool
+    field radius: f32
+    field strength: f32
     fn fixed(enabled: read bool) -> AoConfig
+    fn configured(radius: read f32, strength: read f32) -> AoConfig
     fn deterministic_v1() -> AoConfig
   Struct ProbeConfig data
     field enabled: bool
@@ -255,6 +290,7 @@ Module path=render
   Enum ToneCurve data
     variant Linear
     variant FilmicV1
+    variant __wrela_NonMonotoneFixture
   Enum RenderError data
     variant ParameterOutOfRange(RenderPath)
     variant NonFiniteInput(RenderPath)
@@ -273,15 +309,41 @@ Module path=render
   Enum TextureFilter data
     variant Nearest
     variant Bilinear
+    variant Trilinear
+    variant Anisotropic4
+  Enum UvSource data
+    variant Plane
+    variant Sphere
+    variant Cylinder
+    variant Torus
+    variant BoxFeature
+    variant RoundBoxFeature
+    variant ObjectTriplanar
+    variant WorldTriplanar
+  Enum NormalDetail data
+    variant Geometric
+    variant AnalyticSlope(sx: f32, sy: f32)
+    variant TextureSlope(texture_id: u32, width: u32, height: u32, filter: TextureFilter)
+    variant TextureSlopeUv(texture_id: u32, width: u32, height: u32, filter: TextureFilter, uv_source: UvSource)
+    variant ObjectSlope(sx: f32, sy: f32)
   Struct MaterialSample data
     field color: Rgb
+    field metallic: f32
     field roughness: f32
-    fn standard(color: read Rgb, roughness: read f32) -> MaterialSample
+    field specular: f32
+    field emissive: Rgb
+    field opacity: f32
+    field normal_detail: NormalDetail
+    fn standard(color: read Rgb, roughness: read f32, metallic: read f32, specular: read f32, emissive: read Rgb, opacity: read f32, normal_detail: read NormalDetail) -> MaterialSample
     fn clay(color: read Rgb, roughness: read f32) -> MaterialSample
     fn porcelain(color: read Rgb, roughness: read f32) -> MaterialSample
-    fn textured(color: read Rgb, roughness: read f32, texture_id: read u32, width: read u32, height: read u32, filter: read TextureFilter) -> MaterialSample
+    fn textured(color: read Rgb, roughness: read f32, texture_id: read u32, width: read u32, height: read u32, filter: read TextureFilter, uv_source: read UvSource) -> MaterialSample
     fn sample_color(read self) -> Rgb
     fn sample_roughness(read self) -> f32
+    fn sample_metallic(read self) -> f32
+    fn sample_specular(read self) -> f32
+    fn sample_emissive(read self) -> Rgb
+    fn sample_opacity(read self) -> f32
   Struct RenderFrame[P] data
     pub field params: P
     pub field camera: Camera
@@ -304,19 +366,15 @@ Module path=render
   Struct RenderFailure[P] data
     pub field params: P
     pub field error: RenderError
+  Fn __wrela_pixels_p9_post_values(exposure: read f32, r: read f32, g: read f32, b: read f32) -> [f32; 4]
+  Fn __wrela_pixels_p9_job_from_word(word: read u64) -> RendererWorkerJob
   Struct FrameInputSnapshot data
     pub field params: [f32; 16]
-    pub field param_count: u16
     pub field camera: [f32; 12]
-    pub field lights: LightFrame
-    pub field exposure: f32
-    pub field environment: Rgb
-    pub field frame_index: u64
     fn zero() -> FrameInputSnapshot
-    fn from_packed(params: read [f32; 16], param_count: read u16, camera: read [f32; 12], frame_index: read u64) -> FrameInputSnapshot
-    fn make(params: read [f32; 16], param_count: read u16, camera: read Camera, frame_index: read u64) -> FrameInputSnapshot
-    fn make_frame(params: read [f32; 16], param_count: read u16, camera: read Camera, lights: read LightFrame, exposure: read f32, environment: read Rgb, frame_index: read u64) -> FrameInputSnapshot
-    fn post_values(read self) -> [f32; 4]
+    fn from_packed(params: read [f32; 16], param_count: read u16, camera: read [f32; 12]) -> FrameInputSnapshot
+    fn make(params: read [f32; 16], param_count: read u16, camera: read Camera) -> FrameInputSnapshot
+    fn make_frame(params: read [f32; 16], param_count: read u16, camera: read Camera) -> FrameInputSnapshot
   Struct RendererWorkerAssignment data
     field word: u64
   Struct RendererWorkerJob data
@@ -416,7 +474,39 @@ Module path=render
     pub field height: u32
     pub field camera: [f32; 12]
     pub field scale: f32
-    pub field color: u32
+    pub field identity: u32
+    pub field feature: u32
+    pub field hit: bool
+    pub field normal: [f32; 3]
+    pub field params: [f32; 16]
+    pub field light_kinds: [u64; 8]
+    pub field light_values: [f32; 120]
+    pub field exposure: f32
+    pub field environment: [f32; 3]
+    pub field debug_color: u32
+  Struct P9LightingCertificate data
+    pub field ok: bool
+    pub field visibility: [u64; 8]
+    pub field visibility_uncertain: [u64; 8]
+    pub field visibility_refined: [u64; 32]
+    pub field visibility_refined_uncertain: [u64; 32]
+    pub field visibility_terminal_light: u64
+    pub field ao: f32
+    pub field ao_lower: f32
+    pub field ao_upper: f32
+  Fn __wrela_pixels_p9_origin_epsilon(renderer: read usize, point: read [f32; 3]) -> [f32; 2]
+  Fn __wrela_pixels_p9_segment_intersects_aabb(origin: read [f32; 3], direction: read [f32; 3], t_max: read f32, bounds: read [f32; 6]) -> bool
+  Fn __wrela_pixels_p9_aabb_overlaps(a: read [f32; 6], b: read [f32; 6]) -> bool
+  Fn __wrela_pixels_p9_secondary_candidates_common(renderer: read usize, bundle: read bool, query: read [f32; 6], direction: read [f32; 3], t_max: read f32) -> [u64; 5]
+  Fn __wrela_pixels_p9_secondary_candidates(renderer: read usize, origin: read [f32; 3], direction: read [f32; 3], t_max: read f32) -> [u64; 5]
+  Fn __wrela_pixels_p9_secondary_bundle_candidates(renderer: read usize, bundle_bounds: read [f32; 6]) -> [u64; 5]
+  Fn __wrela_pixels_p9_segment_bundle_visibility(renderer: read usize, worker: read u32, point: read [f32; 3], source_frame: read [f32; 13], exclude_feature: read u32, params: read [f32; 16]) -> u32
+  Fn __wrela_pixels_p9_area_visibility_failure() -> [u64; 67]
+  Fn __wrela_pixels_p9_area_visibility_mask(renderer: read usize, worker: read u32, point: read [f32; 3], source_frame: read [f32; 10], exclude_feature: read u32, params: read [f32; 16], density_terminal: read bool) -> [u64; 67]
+  Fn __wrela_pixels_p9_segment_visibility(renderer: read usize, worker: read u32, point: read [f32; 3], direction_input: read [f32; 3], t_max: read f32, exclude_feature: read u32, params: read [f32; 16]) -> [f32; 4]
+  Fn __wrela_pixels_p9_lighting_failure() -> P9LightingCertificate
+  Fn __wrela_pixels_p9_lighting_clear() -> P9LightingCertificate
+  Fn __wrela_pixels_p9_lighting_certificate(renderer: read usize, worker: read u32, point: read [f32; 3], normal_input: read [f32; 3], feature: read u32, params: read [f32; 16], light_kinds: read [u64; 8], light_values: read [f32; 120]) -> P9LightingCertificate
   Struct P8RasterSetupOutcome data
     pub field ok: bool
     pub field raster: RasterRun
@@ -426,6 +516,8 @@ Module path=render
   Fn __wrela_pixels_p8_raster_setup(sample: read P7VisibilitySample, model: read [i64; 8], modeled: read bool, x: read u32, x1: read u32, exponent: read i32, height: read u32, derivatives: read [i64; 4]) -> P8RasterSetupOutcome
   Fn __wrela_pixels_p8_geometry_lane_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_raw: read i32, geometry_required: read bool) -> bool
   Fn __wrela_pixels_p8_geometry_packet_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_packet: read I32x4, geometry_required: read bool) -> bool
+  Fn __wrela_pixels_p9_raster_color(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_raw: read i32) -> [u64; 2]
+  Fn __wrela_pixels_p9_constant_summary_eligible(context: read P8RasterContext) -> bool
   Fn __wrela_pixels_p8_raster_regular(context: read P8RasterContext, raster: read RasterRun) -> u64
   Fn __wrela_pixels_p7_run_worker_with_proposals(renderer_index: read usize, worker_index: read usize, proposals_enabled: read bool) -> u64
   Struct RendererWorker0 resource
@@ -526,6 +618,12 @@ Module path=render
     field camera_up_y_max: f32
     field camera_up_z_min: f32
     field camera_up_z_max: f32
+    field world_min_x: f32
+    field world_min_y: f32
+    field world_min_z: f32
+    field world_max_x: f32
+    field world_max_y: f32
+    field world_max_z: f32
     field light_capacity: usize
     field light_kind_0: usize
     field light_kind_1: usize
@@ -554,7 +652,7 @@ Module path=render
     fn __validate_fixed_frame(read self, frame: read RenderFrame[P]) -> Result[unit, RenderError]
     fn __validate_frame(read self, frame: read RenderFrame[P]) -> Result[unit, RenderError]
     fn __snapshot_frame(read self, frame: read RenderFrame[P]) -> FrameInputSnapshot
-    fn __construct_debug_frame(read self, frame: take RenderFrame[P], worker_digest: read u64, renderer_index_value: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
+    fn __construct_final_frame(read self, frame: take RenderFrame[P], worker_digest: read u64, renderer_index_value: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
     fn __render_error(read self, frame: take RenderFrame[P], error: take RenderError) -> Result[RenderedFrame[P], RenderFailure[P]]
     fn __internal_error(read self, frame: take RenderFrame[P], kind: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
     fn __worker_error(read self, frame: take RenderFrame[P], error: read u8, tile: read u32) -> Result[RenderedFrame[P], RenderFailure[P]]
@@ -570,6 +668,8 @@ Module path=render
   Fn __wrela_pixels_bootstrap_csg(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_fixed_domain(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_camera_light_post(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_texture(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_shading_summary(tag: read u32) -> Result[u32, RenderError]
 Module path=render_arrangement
   Struct RendererWorkerP8RSubdivisionCell data
     field center_u: f32
@@ -727,10 +827,80 @@ Module path=render_isolation
   Fn __wrela_pixels_p7_collect_roots(renderer: read usize, worker: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7RootList
   Fn __wrela_pixels_p7_select_visibility(renderer: read usize, roots: read P7RootList) -> P7VisibilitySample
   Fn __wrela_pixels_p7_quartic_discriminant(polynomial: read [f32; 11]) -> [f32; 11]
+Module path=render_light
+  Enum P9ErrorSource data
+    variant Visibility
+    variant Coverage
+    variant Normal
+    variant Material
+    variant Texture
+    variant DirectLight
+    variant Shadow
+    variant Ao
+    variant Gi
+    variant Transparency
+    variant Post
+    variant Temporal
+    variant Quantization
+  Struct P9ShadingMeta data
+    pub field identity: u64
+    pub field flags: u64
+    pub field visibility: [u64; 8]
+    pub field visibility_uncertain: [u64; 8]
+    pub field visibility_refined: [u64; 32]
+    pub field visibility_refined_uncertain: [u64; 32]
+    pub field visibility_terminal_light: u64
+  Fn __wrela_pixels_p9_shading_failure() -> [f32; 10]
+  Fn __wrela_pixels_p9_select_refinement(options: read [u64; 48], count: read u32) -> [u64; 2]
+  Fn __wrela_pixels_p9_pow5(value: read f32) -> f32
+  Fn __wrela_pixels_p9_iv_widen(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_add(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_sub(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_mul(a: read [f32; 2], b: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_square(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_reciprocal_positive(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_sqrt(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_clamp01(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_iv_pow5(value: read [f32; 2]) -> [f32; 2]
+  Fn __wrela_pixels_p9_normalize(x: read f32, y: read f32, z: read f32) -> [f32; 4]
+  Fn __wrela_pixels_p9_checker(value: read f32) -> u32
+  Fn __wrela_pixels_p9_floor(value: read f32) -> i32
+  Fn __wrela_pixels_p9_disk_offset(sample: read u32) -> [f32; 3]
+  Fn __wrela_pixels_p9_concentric_disk(a: read f32, b: read f32) -> [f32; 3]
+  Fn __wrela_pixels_p9_texture_record(renderer: read usize, stable_id: read u32) -> [u64; 2]
+  Fn __wrela_pixels_p9_texture_mip_cursor(renderer: read usize, record: read u32, format: read u64, target: read u32) -> [u64; 2]
+  Fn __wrela_pixels_p9_texture_moments(renderer: read usize, record: read u32, format: read u64, level: read u32, u_input: read f32, v_input: read f32) -> [f32; 6]
+  Fn __wrela_pixels_p9_signed_moment_selftest(renderer: read usize) -> bool
+  Fn __wrela_pixels_p9_texture_decode(format: read u64, byte: read u64) -> [f32; 2]
+  Fn __wrela_pixels_p9_texture_texel(renderer: read usize, record: read u32, format: read u64, wrap_u: read u64, wrap_v: read u64, level: read u32, coordinate: read [i32; 3]) -> [f32; 2]
+  Fn __wrela_pixels_p9_texture_mip_bounds(renderer: read usize, record: read u32, format: read u64, level: read u32) -> [f32; 7]
+  Fn __wrela_pixels_p9_texture_bilinear(renderer: read usize, record: read u32, format: read u64, wrap_u: read u64, wrap_v: read u64, level: read u32, u_input: read f32, v_input: read f32) -> [f32; 4]
+  Fn __wrela_pixels_p9_sample_texture(renderer: read usize, stable_id: read u32, filter: read u32, u: read f32, v: read f32, du: read [f32; 2], dv: read [f32; 2]) -> [f32; 15]
+  Fn __wrela_pixels_p9_exposure_multiplier(stops: read f32) -> [f32; 2]
+  Fn __wrela_pixels_p9_brdf_channel(base: read f32, metallic: read f32, roughness: read f32, specular_level: read f32, no_v: read f32, no_l: read f32, no_h: read f32, vo_h: read f32) -> f32
+  Fn __wrela_pixels_p9_brdf_channel_bounds(base_lo: read f32, base_hi: read f32, metallic: read f32, roughness: read f32, specular_level: read f32, geometry: read [f32; 4]) -> [f32; 3]
+  Fn __wrela_pixels_p9_brdf_selftest() -> bool
+  Fn __wrela_pixels_p9_light_contribution(material: read [f32; 21], point: read [f32; 3], normal: read [f32; 3], view: read [f32; 3], light_vector: read [f32; 3], radiance: read [f32; 3], attenuation: read f32) -> [f32; 4]
+  Fn __wrela_pixels_p9_light_contribution_bounds(material_lower: read [f32; 21], material_upper: read [f32; 21], normal: read [f32; 3], view: read [f32; 3], light_vector: read [f32; 3], radiance: read [f32; 3], attenuation: read f32) -> [f32; 7]
+  Fn __wrela_pixels_p9_area_geometry_bounds(normal: read [f32; 3], view: read [f32; 3], point: read [f32; 3], source: read [f32; 15]) -> [f32; 10]
+  Fn __wrela_pixels_p9_area_brdf_common(roughness: read f32, no_v: read f32, no_l: read [f32; 2], no_h: read [f32; 2], vo_h: read [f32; 2]) -> [f32; 10]
+  Fn __wrela_pixels_p9_area_channel_bounds(material: read [f32; 5], radiance: read f32, no_l: read [f32; 2], attenuation: read [f32; 2], common: read [f32; 10]) -> [f32; 2]
+  Fn __wrela_pixels_p9_area_cell_bounds(material_lower: read [f32; 21], material_upper: read [f32; 21], normal: read [f32; 3], view: read [f32; 3], point: read [f32; 3], source: read [f32; 15], radiance: read [f32; 3]) -> [f32; 7]
+  Fn __wrela_pixels_p9_map_uv(source: read u32, point: read [f32; 3], normal: read [f32; 3], d_p_dx: read [f32; 3], d_p_dy: read [f32; 3]) -> [f32; 13]
+  Fn __wrela_pixels_p9_light_sample_leaf(material: read [f32; 21], material_lower: read [f32; 21], material_upper: read [f32; 21], geometry: read [f32; 22], light_values: read [f32; 120], kind: read u64, base: read usize, sample_info: read [u32; 3]) -> [f32; 10]
+  Fn __wrela_pixels_p9_area_sample_id(sample: read u32) -> u32
+  Fn __wrela_pixels_p9_area_sample_selftest() -> bool
+  Fn __wrela_pixels_p9_light_sample(material: read [f32; 21], material_lower: read [f32; 21], material_upper: read [f32; 21], geometry: read [f32; 22], light_values: read [f32; 120], kind: read u64, base: read usize, sample_info: read [u32; 3]) -> [f32; 10]
+  Fn __wrela_pixels_p9_hdr_pixel(renderer: read usize, meta: read P9ShadingMeta, surface: read [f32; 15], params: read [f32; 16], camera: read [f32; 12], light_kinds: read [u64; 8], light_values: read [f32; 120], post: read [f32; 4]) -> [f32; 10]
+  Fn __wrela_pixels_p9_encode_hdr(renderer: read usize, r: read f32, g: read f32, b: read f32) -> [u64; 2]
+  Fn __wrela_pixels_p9_encode_certified(renderer: read usize, candidate: read [f32; 3], lower: read [f32; 3], upper: read [f32; 3]) -> [u64; 2]
+  Fn __wrela_pixels_p9_shade_pixel(renderer: read usize, meta: read P9ShadingMeta, surface: read [f32; 15], params: read [f32; 16], camera: read [f32; 12], light_kinds: read [u64; 8], light_values: read [f32; 120], post: read [f32; 4]) -> [u64; 2]
 Module path=render_orchestrate
   Fn __wrela_pixels_p7_worker_error(error: read u8, tile: read u32) -> u64
   Fn __wrela_pixels_p7_worker_error_code(value: read u64) -> u8
   Fn __wrela_pixels_p7_worker_error_tile(value: read u64) -> u32
+  Fn __wrela_pixels_p9_event_composite(renderer: read usize, front_identity: read u64, back_identity: read u64, flags: read u64, surface: read [f32; 15], snapshot: read FrameInputSnapshot, lighting: read P9LightingCertificate, factor: read f32) -> [f32; 10]
+  Fn __wrela_pixels_p9_event_color(renderer: read usize, worker: read u32, tile: read u32, geometry: read [u32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot, sample: read P7VisibilitySample) -> [u64; 2]
   Fn __wrela_pixels_p7_run_job(job: read RendererWorkerJob, proposals_enabled: read bool) -> u64
   Fn __wrela_pixels_p7_job_value(result: take Result[u64, CallError[never]]) -> u64
 Module path=render_probe
@@ -1249,6 +1419,7 @@ Module path=display
 Module path=examples.check_pixels_tile_boundary
   Const FIXTURE_ID: u32
   Fn fixture_id() -> u32
+  Fn telemetry_words_from_dump_counts(packed: read u64) -> u64
   Const TILE_WIDTH: u32
   Const EDGE_X: u32
   Struct SceneParams data

@@ -124,12 +124,83 @@ pub struct FrameContract {
     pub output_mode: u32,
     pub light_kinds: [u8; MAX_LIGHTS],
     pub light_count: u8,
+    pub light_bounds: [LightBounds; MAX_LIGHTS],
     pub texture_ids: [u32; MAX_LIGHTS],
     pub texture_count: u8,
     pub exposure_min: f32,
     pub exposure_max: f32,
     pub environment_min: Vec3,
     pub environment_max: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightBounds {
+    pub position_min: Vec3,
+    pub position_max: Vec3,
+    pub axis_component_max: f32,
+    pub radiance_max: Vec3,
+    pub max_delta: f32,
+}
+
+fn light_contract_valid(light: LightInput, bounds: LightBounds) -> bool {
+    let nonnegative_radiance = light.radiance.x >= 0.0
+        && light.radiance.y >= 0.0
+        && light.radiance.z >= 0.0
+        && light.radiance.x <= bounds.radiance_max.x
+        && light.radiance.y <= bounds.radiance_max.y
+        && light.radiance.z <= bounds.radiance_max.z;
+    if !nonnegative_radiance {
+        return false;
+    }
+    let axes_bounded = [
+        light.direction.x,
+        light.direction.y,
+        light.direction.z,
+        light.axis_u.x,
+        light.axis_u.y,
+        light.axis_u.z,
+        light.axis_v.x,
+        light.axis_v.y,
+        light.axis_v.z,
+    ]
+    .into_iter()
+    .all(|value| value.abs() <= bounds.axis_component_max);
+    if !axes_bounded {
+        return false;
+    }
+    let in_position_range = light.position.x >= bounds.position_min.x
+        && light.position.y >= bounds.position_min.y
+        && light.position.z >= bounds.position_min.z
+        && light.position.x <= bounds.position_max.x
+        && light.position.y <= bounds.position_max.y
+        && light.position.z <= bounds.position_max.z;
+    match light.kind {
+        0 => light == LightInput::default(),
+        1 => in_position_range && light.axis_u.x >= super::light::POINT_RADIUS_MIN_V1 as f32,
+        2 => {
+            let squared = light.direction.dot(light.direction);
+            squared >= super::light::UNIT_DIRECTION_LENGTH_SQUARED_MIN_V1 as f32
+                && squared <= super::light::UNIT_DIRECTION_LENGTH_SQUARED_MAX_V1 as f32
+        }
+        3 => {
+            let (Some(u), Some(v)) = (light.axis_u.normalized(), light.axis_v.normalized()) else {
+                return false;
+            };
+            in_position_range && u.dot(v).abs() <= super::light::AREA_AXIS_DOT_MAX_V1 as f32
+        }
+        4 => {
+            let (Some(u), Some(v)) = (light.axis_u.normalized(), light.axis_v.normalized()) else {
+                return false;
+            };
+            let u2 = light.axis_u.dot(light.axis_u);
+            let v2 = light.axis_v.dot(light.axis_v);
+            let largest = u2.max(v2);
+            in_position_range
+                && u.dot(v).abs() <= super::light::AREA_AXIS_DOT_MAX_V1 as f32
+                && (u2 - v2).abs() <= largest * 1.0e-4
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +233,21 @@ impl CoeffSnapshot {
 
     fn parameter(&self, slot: usize) -> Option<f32> {
         let start = slot.checked_mul(4)?;
+        let bytes: [u8; 4] = self.bytes.get(start..start + 4)?.try_into().ok()?;
+        Some(f32::from_bits(u32::from_le_bytes(bytes)))
+    }
+
+    fn light_component(
+        &self,
+        parameter_count: usize,
+        slot: usize,
+        component: usize,
+    ) -> Option<f32> {
+        let scalar = parameter_count
+            .checked_add(CANONICAL_FRAME_SCALARS)?
+            .checked_add(slot.checked_mul(LIGHT_SCALARS)?)?
+            .checked_add(component)?;
+        let start = scalar.checked_mul(4)?;
         let bytes: [u8; 4] = self.bytes.get(start..start + 4)?.try_into().ok()?;
         Some(f32::from_bits(u32::from_le_bytes(bytes)))
     }
@@ -213,6 +299,23 @@ pub fn validate_and_pack<P>(
         || contract.environment_min.x > contract.environment_max.x
         || contract.environment_min.y > contract.environment_max.y
         || contract.environment_min.z > contract.environment_max.z
+        || contract.light_bounds[..usize::from(contract.light_count)]
+            .iter()
+            .any(|bound| {
+                !bound.position_min.finite()
+                    || !bound.position_max.finite()
+                    || !bound.radiance_max.finite()
+                    || !bound.axis_component_max.is_finite()
+                    || !bound.max_delta.is_finite()
+                    || bound.position_min.x > bound.position_max.x
+                    || bound.position_min.y > bound.position_max.y
+                    || bound.position_min.z > bound.position_max.z
+                    || bound.radiance_max.x < 0.0
+                    || bound.radiance_max.y < 0.0
+                    || bound.radiance_max.z < 0.0
+                    || bound.axis_component_max <= 0.0
+                    || bound.max_delta < 0.0
+            })
         || contract.light_kinds[..usize::from(contract.light_count)]
             .iter()
             .any(|kind| *kind > 4)
@@ -263,6 +366,10 @@ pub fn validate_and_pack<P>(
             slot: parameter_count,
         });
     }
+    let exposure_code = exposure * 256.0;
+    if exposure_code.trunc() != exposure_code {
+        fail!(SnapshotError::FrameContractMismatch { component: 2 });
+    }
     for (slot, value) in parameters[..usize::from(parameter_count)]
         .iter()
         .copied()
@@ -293,6 +400,11 @@ pub fn validate_and_pack<P>(
         if light.kind != contract.light_kinds[slot] {
             fail!(SnapshotError::FrameContractMismatch {
                 component: 0x100 + u16::try_from(slot).unwrap_or(u16::MAX),
+            });
+        }
+        if !light_contract_valid(light, contract.light_bounds[slot]) {
+            fail!(SnapshotError::ParameterOutOfRange {
+                slot: 0x100 + u16::try_from(slot).unwrap_or(u16::MAX),
             });
         }
     }
@@ -380,6 +492,9 @@ pub fn validate_and_pack<P>(
             snapshot.reuse_eligible = false;
             return Ok((params_owner, snapshot));
         };
+        if previous.frame_index.checked_add(1) != Some(frame_index) {
+            snapshot.reuse_eligible = false;
+        }
         let mut deltas_complete = true;
         for (slot, value) in parameters[..usize::from(parameter_count)]
             .iter()
@@ -403,6 +518,39 @@ pub fn validate_and_pack<P>(
             }
         }
         snapshot.has_parameter_deltas = deltas_complete;
+        for (slot, light) in lights[..usize::from(light_count)].iter().enumerate() {
+            let components = [
+                light.position.x,
+                light.position.y,
+                light.position.z,
+                light.direction.x,
+                light.direction.y,
+                light.direction.z,
+                light.axis_u.x,
+                light.axis_u.y,
+                light.axis_u.z,
+                light.axis_v.x,
+                light.axis_v.y,
+                light.axis_v.z,
+                light.radiance.x,
+                light.radiance.y,
+                light.radiance.z,
+            ];
+            for (component, value) in components.into_iter().enumerate() {
+                let Some(old) = previous.light_component(
+                    usize::from(contract.parameter_count),
+                    slot,
+                    component,
+                ) else {
+                    snapshot.reuse_eligible = false;
+                    break;
+                };
+                let delta = value - old;
+                if !delta.is_finite() || delta.abs() > contract.light_bounds[slot].max_delta {
+                    snapshot.reuse_eligible = false;
+                }
+            }
+        }
     } else {
         snapshot.reuse_eligible = false;
     }
@@ -429,6 +577,25 @@ mod tests {
             output_mode: 1,
             light_kinds: [0; MAX_LIGHTS],
             light_count: 0,
+            light_bounds: [LightBounds {
+                position_min: Vec3 {
+                    x: -10.0,
+                    y: -10.0,
+                    z: -10.0,
+                },
+                position_max: Vec3 {
+                    x: 10.0,
+                    y: 10.0,
+                    z: 10.0,
+                },
+                axis_component_max: 16.0,
+                radiance_max: Vec3 {
+                    x: 16.0,
+                    y: 16.0,
+                    z: 16.0,
+                },
+                max_delta: 0.25,
+            }; MAX_LIGHTS],
             texture_ids: [0; MAX_LIGHTS],
             texture_count: 0,
             exposure_min: -1.0,
@@ -507,11 +674,29 @@ mod tests {
     }
 
     #[test]
+    fn exposure_must_lie_on_the_sealed_one_over_256_stop_grid() {
+        let mut on_grid = frame(23, 0.0);
+        on_grid.exposure = 1.0 / 256.0;
+        assert!(validate_and_pack(on_grid, &contract(), None, false).is_ok());
+
+        let mut between_grid_points = frame(29, 0.0);
+        between_grid_points.exposure = 1.0 / 512.0;
+        let (owner, error) =
+            validate_and_pack(between_grid_points, &contract(), None, false).unwrap_err();
+        assert_eq!(owner, 29);
+        assert_eq!(error, SnapshotError::FrameContractMismatch { component: 2 });
+    }
+
+    #[test]
     fn out_of_rate_is_legal_for_from_scratch_and_only_disables_reuse() {
-        let previous = validate_and_pack(frame(1, 0.0), &contract(), None, false)
+        let mut first_input = frame(1, 0.0);
+        first_input.frame_index = 1;
+        let previous = validate_and_pack(first_input, &contract(), None, false)
             .unwrap()
             .1;
-        let current = validate_and_pack(frame(2, 0.75), &contract(), Some(&previous), true)
+        let mut second_input = frame(2, 0.75);
+        second_input.frame_index = 2;
+        let current = validate_and_pack(second_input, &contract(), Some(&previous), true)
             .unwrap()
             .1;
         assert!(!current.reuse_eligible);
@@ -519,14 +704,20 @@ mod tests {
 
     #[test]
     fn second_delta_violation_disables_reuse_without_rejecting_frame() {
-        let first = validate_and_pack(frame(1, 0.0), &contract(), None, true)
+        let mut first_input = frame(1, 0.0);
+        first_input.frame_index = 1;
+        let first = validate_and_pack(first_input, &contract(), None, true)
             .unwrap()
             .1;
-        let second = validate_and_pack(frame(2, 0.1), &contract(), Some(&first), true)
+        let mut second_input = frame(2, 0.1);
+        second_input.frame_index = 2;
+        let second = validate_and_pack(second_input, &contract(), Some(&first), true)
             .unwrap()
             .1;
         assert!(second.reuse_eligible);
-        let third = validate_and_pack(frame(3, 0.3), &contract(), Some(&second), true)
+        let mut third_input = frame(3, 0.3);
+        third_input.frame_index = 3;
+        let third = validate_and_pack(third_input, &contract(), Some(&second), true)
             .unwrap()
             .1;
         assert!(!third.reuse_eligible);
@@ -545,6 +736,207 @@ mod tests {
             (1 + CANONICAL_FRAME_SCALARS + MAX_LIGHTS * LIGHT_SCALARS) * 4
         );
         assert!(snapshot.bytes().len() <= MAX_SNAPSHOT_BYTES);
+    }
+
+    #[test]
+    fn light_motion_and_source_shape_must_fit_the_sealed_contract() {
+        let mut contract = contract();
+        contract.light_count = 1;
+        contract.light_kinds[0] = 1;
+        let mut input = frame(4, 0.0);
+        input.light_count = 1;
+        input.lights[0] = LightInput {
+            kind: 1,
+            position: Vec3 {
+                x: 11.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            axis_u: Vec3 {
+                x: 0.1,
+                y: 0.0,
+                z: 0.0,
+            },
+            radiance: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            ..LightInput::default()
+        };
+        assert!(matches!(
+            validate_and_pack(input, &contract, None, false),
+            Err((_, SnapshotError::ParameterOutOfRange { .. }))
+        ));
+    }
+
+    #[test]
+    fn area_axis_orthogonality_is_scale_invariant() {
+        let mut contract = contract();
+        contract.light_count = 1;
+        contract.light_kinds[0] = 3;
+
+        let area = |axis_v| LightInput {
+            kind: 3,
+            axis_u: Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            axis_v,
+            ..LightInput::default()
+        };
+        let mut perpendicular = frame(5, 0.0);
+        perpendicular.light_count = 1;
+        perpendicular.lights[0] = area(Vec3 {
+            x: 0.0,
+            y: 0.000_001,
+            z: 0.0,
+        });
+        assert!(validate_and_pack(perpendicular, &contract, None, false).is_ok());
+
+        let mut parallel = frame(6, 0.0);
+        parallel.light_count = 1;
+        parallel.lights[0] = area(Vec3 {
+            x: 0.000_001,
+            y: 0.0,
+            z: 0.0,
+        });
+        assert_eq!(
+            validate_and_pack(parallel, &contract, None, false),
+            Err((6, SnapshotError::ParameterOutOfRange { slot: 0x100 }))
+        );
+    }
+
+    #[test]
+    fn light_shape_boundaries_match_guest_admission() {
+        let bounds = contract().light_bounds[0];
+        assert!(light_contract_valid(LightInput::default(), bounds));
+        assert!(!light_contract_valid(
+            LightInput {
+                position: Vec3 {
+                    x: f32::EPSILON,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                ..LightInput::default()
+            },
+            bounds,
+        ));
+
+        let point = |radius| LightInput {
+            kind: 1,
+            axis_u: Vec3 {
+                x: radius,
+                y: 0.0,
+                z: 0.0,
+            },
+            ..LightInput::default()
+        };
+        let minimum_radius = super::super::light::POINT_RADIUS_MIN_V1 as f32;
+        assert!(light_contract_valid(point(minimum_radius), bounds));
+        assert!(!light_contract_valid(point(minimum_radius * 0.5), bounds));
+
+        let directional = |length| LightInput {
+            kind: 2,
+            direction: Vec3 {
+                x: length,
+                y: 0.0,
+                z: 0.0,
+            },
+            ..LightInput::default()
+        };
+        assert!(light_contract_valid(directional(1.0), bounds));
+        assert!(!light_contract_valid(directional(0.5), bounds));
+
+        let disk = |axis_v| LightInput {
+            kind: 4,
+            axis_u: Vec3 {
+                x: 1.0,
+                ..Vec3::default()
+            },
+            axis_v,
+            ..LightInput::default()
+        };
+        assert!(light_contract_valid(
+            disk(Vec3 {
+                y: 1.0,
+                ..Vec3::default()
+            }),
+            bounds,
+        ));
+        assert!(!light_contract_valid(
+            disk(Vec3 {
+                y: 0.5,
+                ..Vec3::default()
+            }),
+            bounds,
+        ));
+    }
+
+    #[test]
+    fn negative_light_radiance_is_rejected_before_snapshot_publication() {
+        let mut contract = contract();
+        contract.light_count = 1;
+        contract.light_kinds[0] = 1;
+        let mut input = frame(5, 0.0);
+        input.light_count = 1;
+        input.lights[0] = LightInput {
+            kind: 1,
+            position: Vec3::default(),
+            axis_u: Vec3 {
+                x: 0.25,
+                y: 0.0,
+                z: 0.0,
+            },
+            radiance: Vec3 {
+                x: -f32::EPSILON,
+                y: 0.0,
+                z: 0.0,
+            },
+            ..LightInput::default()
+        };
+        assert!(matches!(
+            validate_and_pack(input, &contract, None, false),
+            Err((5, SnapshotError::ParameterOutOfRange { slot: 0x100 }))
+        ));
+    }
+
+    #[test]
+    fn light_rate_is_a_sealed_reuse_premise() {
+        let mut contract = contract();
+        contract.light_count = 1;
+        contract.light_kinds[0] = 1;
+        let point = |x| LightInput {
+            kind: 1,
+            position: Vec3 { x, y: 0.0, z: 0.0 },
+            axis_u: Vec3 {
+                x: 0.1,
+                y: 0.0,
+                z: 0.0,
+            },
+            radiance: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            ..LightInput::default()
+        };
+        let mut first_input = frame(1, 0.0);
+        first_input.frame_index = 1;
+        first_input.light_count = 1;
+        first_input.lights[0] = point(0.0);
+        let first = validate_and_pack(first_input, &contract, None, true)
+            .unwrap()
+            .1;
+        let mut second_input = frame(2, 0.0);
+        second_input.frame_index = 2;
+        second_input.light_count = 1;
+        second_input.lights[0] = point(0.5);
+        let second = validate_and_pack(second_input, &contract, Some(&first), true)
+            .unwrap()
+            .1;
+        assert!(!second.reuse_eligible);
     }
 
     #[test]

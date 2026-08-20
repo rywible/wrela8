@@ -263,6 +263,18 @@ pub const WORKER_ERRORS: &[WorkerErrorSpec] = &[
         doc: "analytic silhouette coverage: area bounds out of order",
     },
     WorkerErrorSpec {
+        code: 90,
+        name: "shading-byte-certificate",
+        class: WorkerErrorClass::CertificateExhausted,
+        doc: "material, light, post, or output-byte evaluation did not produce a certified final code",
+    },
+    WorkerErrorSpec {
+        code: 91,
+        name: "event-output-byte-not-unique",
+        class: WorkerErrorClass::CertificateExhausted,
+        doc: "event shading/refinement did not prove a singleton output byte",
+    },
+    WorkerErrorSpec {
         code: 100,
         name: "analytic-coverage-indefinite",
         class: WorkerErrorClass::CertificateExhausted,

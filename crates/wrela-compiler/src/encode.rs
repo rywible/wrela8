@@ -100,6 +100,14 @@ pub fn enc_str_x_reg(rt: u8, rn: u8, rm: u8) -> u32 {
     0xf820_6800 | (reg(rm) << 16) | (reg(rn) << 5) | reg(rt)
 }
 
+pub fn enc_ldr_x_reg_scaled(rt: u8, rn: u8, rm: u8) -> u32 {
+    enc_ldr_x_reg(rt, rn, rm) | (1 << 12)
+}
+
+pub fn enc_str_x_reg_scaled(rt: u8, rn: u8, rm: u8) -> u32 {
+    enc_str_x_reg(rt, rn, rm) | (1 << 12)
+}
+
 pub fn enc_str_w_imm(rt: u8, rn: u8, byte_offset: u16) -> u32 {
     ldr_str_imm(0b10, 0b00, scaled_offset(byte_offset, 4), rn, rt)
 }
@@ -1089,6 +1097,8 @@ mod tests {
     fn ldr_str_x_register_offset() {
         assert_eq!(enc_ldr_x_reg(0, 17, 18), 0xf872_6a20);
         assert_eq!(enc_str_x_reg(0, 17, 18), 0xf832_6a20);
+        assert_eq!(enc_ldr_x_reg_scaled(0, 18, 17), 0xf871_7a40);
+        assert_eq!(enc_str_x_reg_scaled(0, 18, 17), 0xf831_7a40);
     }
 
     #[test]

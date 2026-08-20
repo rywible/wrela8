@@ -5,12 +5,12 @@ p7 00000000000001b8
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 d9ec4f267649a233
-p7 683519e6af0b42b3
-p7 260f0c517a5a2ba2
-p7 023df25f814ae2f9
+p7 46d2505958464383
+p7 cb9bf1cad9ce31b3
+p7 371b7b9bdf834942
+p7 f6ca7bd04e4b79f9
 test thin_feature_is_not_sample_culled: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=4bd3b326f6a3100576affb425026854c63eaf686cd29715f1af13d8b5e3b9507 visible=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 raw=076d4099564f4c622a689dc8321ae678d49fe9e2734008e1c90ef531615164c2 vsync=7 checkpoint=7
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=e38e80765ecb8abd574a2095f00984b6c09babe081bd8748447bfede0e4e955f visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=7 checkpoint=7

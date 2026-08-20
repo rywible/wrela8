@@ -1458,6 +1458,7 @@ mod tests {
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),
+            light_ranges: super::super::config::default_light_ranges(),
             exposure: ScalarRangeConfig {
                 min: -1.0,
                 max: 1.0,
@@ -1467,6 +1468,8 @@ mod tests {
                 max: [1.0; 3],
             },
             ao_enabled,
+            ao_radius: 1.0,
+            ao_strength: 1.0,
             probes_enabled: false,
             probe_initialization_worst_case_ms: 0,
             initialization_deadline_ms: 1,

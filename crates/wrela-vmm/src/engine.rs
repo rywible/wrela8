@@ -1192,7 +1192,9 @@ pub(crate) fn boot_image<H: HostBackend>(
                     return;
                 }
                 let mut state = VcpuBootState::wrela(entry, sp_top, translation_boot);
-                state.x[18] = (core as u64) * wrela_machine::lane2::CORE_STRIDE;
+                state.x[18] = wrela_machine::lane2::BASE
+                    + wrela_machine::lane2::HITS_OFFSET
+                    + (core as u64) * wrela_machine::lane2::CORE_STRIDE;
                 let (vcpu, handle) = match vm.create_vcpu(core, &state) {
                     Ok(pair) => pair,
                     Err(error) => {

@@ -1,5 +1,8 @@
 module examples.err_pixels_tone_table
 
+# @wrela-compiler-internal: this fixture selects the reserved malformed LUT
+# variant so the canonical compiler validator emits P018 deterministically.
+
 from core.field import (
     Field,
     Rgb,
@@ -26,9 +29,6 @@ const FIXTURE_ID: u32 = 31
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P9.1"
-
 const TABLE_LEFT_CODE: u8 = 2
 const TABLE_RIGHT_CODE: u8 = 1
 
@@ -45,7 +45,7 @@ const INVALID_TONE_TABLE: [u8; 2] = [TABLE_LEFT_CODE, TABLE_RIGHT_CODE]
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
     base = sphere(p, Vec3(x=0.0, y=0.0, z=0.0), radius=1.0)
-    return mark(base, object=31, material=MaterialId.Ground)
+    return mark(base, object=MaterialId.Ground, material=MaterialId.Ground)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
@@ -70,7 +70,7 @@ pub fn build() -> Image:
         refresh_hz=60,
         shade_hz=60,
         profile=RenderProfile.AaaByteExact,
-        tone_curve=ToneCurve.Linear,
+        tone_curve=ToneCurve.__wrela_NonMonotoneFixture,
         near=0.1,
         far=128.0,
         world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),

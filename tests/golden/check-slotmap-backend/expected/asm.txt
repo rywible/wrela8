@@ -21,84 +21,69 @@ Program
     0018: 94000000  bl <__wrela_abort>
     0019: f900012b  str x11, [x9]
     0020: f90003eb  str x11, [sp, #0]
-    0021: f94003e9  ldr x9, [sp, #0]
-    0022: f90033e9  str x9, [sp, #96]
-    0023: f94007e9  ldr x9, [sp, #8]
-    0024: f90037e9  str x9, [sp, #104]
-    0025: f9400be9  ldr x9, [sp, #16]
-    0026: f9003be9  str x9, [sp, #112]
-    0027: f9400fe9  ldr x9, [sp, #24]
-    0028: f9003fe9  str x9, [sp, #120]
-    0029: f94013e9  ldr x9, [sp, #32]
-    0030: f90043e9  str x9, [sp, #128]
-    0031: f94017e9  ldr x9, [sp, #40]
-    0032: f90047e9  str x9, [sp, #136]
-    0033: f9401be9  ldr x9, [sp, #48]
-    0034: f9004be9  str x9, [sp, #144]
-    0035: f9401fe9  ldr x9, [sp, #56]
-    0036: f9004fe9  str x9, [sp, #152]
-    0037: f94023e9  ldr x9, [sp, #64]
-    0038: f90053e9  str x9, [sp, #160]
-    0039: f94027e9  ldr x9, [sp, #72]
-    0040: f90057e9  str x9, [sp, #168]
-    0041: f9402be9  ldr x9, [sp, #80]
-    0042: f9005be9  str x9, [sp, #176]
-    0043: f9402fe9  ldr x9, [sp, #88]
-    0044: f9005fe9  str x9, [sp, #184]
-    0045: d2800141  movz x1, #0xa
-    0046: 910183e0  add x0, sp, #96
-    0047: 910303e8  add x8, sp, #192
-    0048: 94000000  bl <struct:SlotMap[u64, 2].insert>
-    0049: f94063e9  ldr x9, [sp, #192]
-    0050: aa0903e2  mov x2, x9
-    0051: d2800003  movz x3, #0x0
-    0052: eb03005f  cmp x2, x3
-    0053: 9a9f17e4  cset x4, eq
-    0054: f94067e9  ldr x9, [sp, #200]
-    0055: f9007fe9  str x9, [sp, #248]
-    0056: f9406be9  ldr x9, [sp, #208]
-    0057: f90083e9  str x9, [sp, #256]
-    0058: f9406fe9  ldr x9, [sp, #216]
-    0059: f90087e9  str x9, [sp, #264]
-    0060: f9407fe9  ldr x9, [sp, #248]
-    0061: f90073e9  str x9, [sp, #224]
-    0062: f94083e9  ldr x9, [sp, #256]
-    0063: f90077e9  str x9, [sp, #232]
-    0064: f94087e9  ldr x9, [sp, #264]
-    0065: f9007be9  str x9, [sp, #240]
-    0066: d2800022  movz x2, #0x1
-    0067: 8a020083  and x3, x4, x2
-    0068: b4000123  cbz x3, #36
-    0069: 910183e0  add x0, sp, #96
-    0070: 910383e1  add x1, sp, #224
-    0071: 94000000  bl <struct:SlotMap[u64, 2].contains>
-    0072: b4000060  cbz x0, #12
-    0073: d2800020  movz x0, #0x1
-    0074: 14000015  b #84
-    0075: d2800000  movz x0, #0x0
-    0076: 14000013  b #76
-    0077: f94063e9  ldr x9, [sp, #192]
-    0078: aa0903e2  mov x2, x9
-    0079: d2800023  movz x3, #0x1
-    0080: eb03005f  cmp x2, x3
-    0081: 9a9f17e4  cset x4, eq
-    0082: d2800022  movz x2, #0x1
-    0083: 8a020083  and x3, x4, x2
-    0084: b4000063  cbz x3, #12
-    0085: d2800000  movz x0, #0x0
-    0086: 14000009  b #36
-    0087: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0088: 90000009  adrp x9, rodata+0x4e
-    0089: 91000129  add x9, x9, rodata+0x4e
-    0090: f90003e9  str x9, [sp]  ; Bytes.base
-    0091: d2800b49  movz x9, #0x5a
-    0092: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0093: 910003e0  add x0, sp, #0  ; *Bytes
-    0094: 94000000  bl <__wrela_abort>
-    0095: f9408fe9  ldr x9, [sp, #280]
-    0096: f94093fe  ldr lr, [sp, #288]
-    0097: 9104c3ff  add sp, sp, #304
-    0098: d65f03c0  ret
+    0021: 910183e9  add x9, sp, #96
+    0022: 910003ea  add x10, sp, #0
+    0023: d280018b  movz x11, #0xc
+    0024: f940014c  ldr x12, [x10, #0]
+    0025: f900012c  str x12, [x9, #0]
+    0026: 91002129  add x9, x9, #8
+    0027: 9100214a  add x10, x10, #8
+    0028: d100056b  sub x11, x11, #1
+    0029: b5ffff6b  cbnz x11, #-20
+    0030: d2800141  movz x1, #0xa
+    0031: 910183e0  add x0, sp, #96
+    0032: 910303e8  add x8, sp, #192
+    0033: 94000000  bl <struct:SlotMap[u64, 2].insert>
+    0034: f94063e9  ldr x9, [sp, #192]
+    0035: aa0903e2  mov x2, x9
+    0036: d2800003  movz x3, #0x0
+    0037: eb03005f  cmp x2, x3
+    0038: 9a9f17e4  cset x4, eq
+    0039: f94067e9  ldr x9, [sp, #200]
+    0040: f9007fe9  str x9, [sp, #248]
+    0041: f9406be9  ldr x9, [sp, #208]
+    0042: f90083e9  str x9, [sp, #256]
+    0043: f9406fe9  ldr x9, [sp, #216]
+    0044: f90087e9  str x9, [sp, #264]
+    0045: f9407fe9  ldr x9, [sp, #248]
+    0046: f90073e9  str x9, [sp, #224]
+    0047: f94083e9  ldr x9, [sp, #256]
+    0048: f90077e9  str x9, [sp, #232]
+    0049: f94087e9  ldr x9, [sp, #264]
+    0050: f9007be9  str x9, [sp, #240]
+    0051: d2800022  movz x2, #0x1
+    0052: 8a020083  and x3, x4, x2
+    0053: b4000123  cbz x3, #36
+    0054: 910183e0  add x0, sp, #96
+    0055: 910383e1  add x1, sp, #224
+    0056: 94000000  bl <struct:SlotMap[u64, 2].contains>
+    0057: b4000060  cbz x0, #12
+    0058: d2800020  movz x0, #0x1
+    0059: 14000015  b #84
+    0060: d2800000  movz x0, #0x0
+    0061: 14000013  b #76
+    0062: f94063e9  ldr x9, [sp, #192]
+    0063: aa0903e2  mov x2, x9
+    0064: d2800023  movz x3, #0x1
+    0065: eb03005f  cmp x2, x3
+    0066: 9a9f17e4  cset x4, eq
+    0067: d2800022  movz x2, #0x1
+    0068: 8a020083  and x3, x4, x2
+    0069: b4000063  cbz x3, #12
+    0070: d2800000  movz x0, #0x0
+    0071: 14000009  b #36
+    0072: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0073: 90000009  adrp x9, rodata+0x4e
+    0074: 91000129  add x9, x9, rodata+0x4e
+    0075: f90003e9  str x9, [sp]  ; Bytes.base
+    0076: d2800b49  movz x9, #0x5a
+    0077: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0078: 910003e0  add x0, sp, #0  ; *Bytes
+    0079: 94000000  bl <__wrela_abort>
+    0080: f9408fe9  ldr x9, [sp, #280]
+    0081: f94093fe  ldr lr, [sp, #288]
+    0082: 9104c3ff  add sp, sp, #304
+    0083: d65f03c0  ret
   Fn key=__wrela_abort frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000ffe  str lr, [sp, #24]

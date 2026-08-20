@@ -40,7 +40,14 @@ pub(crate) fn pi(args: &[String]) -> Result<(), String> {
         [command, host, workload] if command == "bench" => benchmark(host, workload),
         [command, host, flag, class]
             if command == "validate-proxy" && flag == "--class" => validate_proxy(host, class),
-        _ => Err("usage: cargo xtask pi probe|prepare|remote-build-fallback <host>\n       cargo xtask pi cleanup <host> <run-id>\n       cargo xtask pi run|guest-pmu <host> <golden-case>\n       cargo xtask pi conformance <host>\n       cargo xtask pi stage1-pair <host>\n       cargo xtask pi bench <host> <workload>\n       cargo xtask pi validate-proxy <host> --class kernel|frame|sequence".into()),
+        [command, host, mode, flag, class]
+            if command == "validate-proxy"
+                && mode == "--recalibrate"
+                && flag == "--class" =>
+        {
+            recalibrate_proxy(host, class)
+        }
+        _ => Err("usage: cargo xtask pi probe|prepare|remote-build-fallback <host>\n       cargo xtask pi cleanup <host> <run-id>\n       cargo xtask pi run|guest-pmu <host> <golden-case>\n       cargo xtask pi conformance <host>\n       cargo xtask pi stage1-pair <host>\n       cargo xtask pi bench <host> <workload>\n       cargo xtask pi validate-proxy <host> [--recalibrate] --class kernel|frame|sequence".into()),
     }
 }
 
@@ -1538,6 +1545,30 @@ fn validate_proxy(host: &str, class: &str) -> Result<(), String> {
     }
     collect_validation_case(host, holdout_case, class == "sequence")?;
     maybe_write_validation_candidate(host, &calibration, &holdout)?;
+    Ok(())
+}
+
+fn recalibrate_proxy(host: &str, class: &str) -> Result<(), String> {
+    validate_host(host)?;
+    if !matches!(class, "kernel" | "frame" | "sequence") {
+        return Err(format!(
+            "pi validate-proxy --recalibrate: unknown class `{class}`"
+        ));
+    }
+    let root = crate::root();
+    let calibration = crate::proxy_validation::read_manifest(
+        &root.join("bench/proxy-calibration-v1.txt"),
+        "calibration",
+    )?;
+    let corpus = calibration
+        .iter()
+        .find(|case| case.workload_class == class)
+        .ok_or_else(|| format!("pi validate-proxy: calibration lacks class `{class}`"))?;
+    collect_validation_case(host, corpus, class == "sequence")?;
+    maybe_write_envelope_candidate(host, &calibration)?;
+    println!(
+        "pi validate-proxy: refreshed `{class}` calibration evidence; review the envelope candidate after all classes are current"
+    );
     Ok(())
 }
 

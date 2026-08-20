@@ -9,7 +9,8 @@ from core.render import __wrela_pixels_bootstrap_dispatch, __wrela_pixels_bootst
 from core.render import __wrela_pixels_bootstrap_feature, __wrela_pixels_bootstrap_field
 from core.render import __wrela_pixels_bootstrap_fixed_domain, __wrela_pixels_bootstrap_material
 from core.render import __wrela_pixels_bootstrap_object, __wrela_pixels_bootstrap_parameter
-from core.render import __wrela_pixels_bootstrap_scalar
+from core.render import __wrela_pixels_bootstrap_scalar, __wrela_pixels_bootstrap_shading_summary
+from core.render import __wrela_pixels_bootstrap_texture
 
 @test
 fn bootstrap_dispatch_covers_every_p5_record_family_and_fails_closed():
@@ -63,6 +64,21 @@ fn bootstrap_dispatch_covers_every_p5_record_family_and_fails_closed():
             pass
         case .Err(_):
             assert false, "camera/light/post record must dispatch"
+    match __wrela_pixels_bootstrap_texture(1):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "texture record must dispatch"
+    match __wrela_pixels_bootstrap_shading_summary(6):
+        case .Ok(value):
+            assert value == 6, "shading-summary tag ceiling"
+        case .Err(_):
+            assert false, "shading-summary tag ceiling must dispatch"
+    match __wrela_pixels_bootstrap_shading_summary(7):
+        case .Err(.InternalInvariant(_)):
+            pass
+        case _:
+            assert false, "unknown shading-summary tag must fail closed"
     match __wrela_pixels_bootstrap_dispatch(2, 9):
         case .Err(.InternalInvariant(_)):
             pass
@@ -197,7 +213,7 @@ fn material_sample_sanitizes_nonfinite_color_and_clamps_roughness():
     assert color.r == 0.0, "NaN color becomes zero"
     assert color.g < infinity, "positive infinity becomes finite"
     assert color.b > -infinity, "negative infinity becomes finite"
-    assert sanitized.sample_roughness() == 0.0, "NaN roughness becomes zero"
+    assert sanitized.sample_roughness() == 0.02, "NaN roughness clamps to the physical floor"
 
     high = MaterialSample.clay(
         color=Rgb(r=0.0, g=0.0, b=0.0),
@@ -208,7 +224,7 @@ fn material_sample_sanitizes_nonfinite_color_and_clamps_roughness():
         roughness=-1.0,
     )
     assert high.sample_roughness() == 1.0, "roughness clamps high"
-    assert low.sample_roughness() == 0.0, "roughness clamps low"
+    assert low.sample_roughness() == 0.02, "roughness clamps low"
 
 @test
 fn premultiplied_transfer_identity_is_associative_for_opaque_suffix():

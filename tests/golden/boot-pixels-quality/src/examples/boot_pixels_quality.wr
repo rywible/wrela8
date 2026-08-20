@@ -1,26 +1,40 @@
 module examples.boot_pixels_quality
 
+# @wrela-compiler-internal: the permanent quality fixture records the full
+# signed display digest sequence in its immutable guest transcript.
+from core.runtime import __wrela_trace_p7_u64
+
 from core.field import (
     Field,
     Rgb,
     Vec3,
-    box,
     mark,
-    round_box,
-    sinusoidal_displace,
+    plane,
+    sphere,
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
+    Light,
     LightConfig,
+    LightFrame,
+    LightKind,
+    LightRange,
     MaterialSample,
+    NormalDetail,
     ProbeConfig,
     RenderProfile,
+    RenderFrame,
+    Renderer,
     RgbRange,
     ScalarRange,
     SurfaceContext,
+    TextureFilter,
     ToneCurve,
+    UvSource,
 )
+from core.render_light import __wrela_pixels_p9_area_sample_id, __wrela_pixels_p9_area_sample_selftest, __wrela_pixels_p9_signed_moment_selftest
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 35
@@ -28,55 +42,329 @@ const FIXTURE_ID: u32 = 35
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P9.13"
-
 const SEQUENCE_FRAMES: u32 = 8
 
 struct SceneParams:
-    @range(min=-2.0, max=2.0)
+    @range(min=0.0, max=0.25)
     @rate(max_delta=0.25, max_second_delta=0.0625)
     phase: f32
 
+enum ObjectId:
+    Wall
+    GlossySphere
+
 enum MaterialId:
-    Ground
+    Wall
+    Porcelain
 
 @field
 fn world(p: Vec3, read params: SceneParams) -> Field:
-    base = round_box(p, Vec3(x=0.75, y=0.75, z=0.75), radius=0.125)
-    warped = sinusoidal_displace(base, p, amplitude=0.0625, frequency=4.0, phase=params.phase)
-    return mark(warped, object=35, material=MaterialId.Ground)
+    wall = mark(
+        plane(p, Vec3(x=0.0, y=0.0, z=-1.0), offset=-1.0),
+        object=ObjectId.Wall,
+        material=MaterialId.Wall,
+    )
+    glossy = mark(
+        # The sphere remains camera-side of the z=1 backdrop and between the
+        # rectangle emitter and wall, producing both a glossy silhouette and
+        # a genuine source-domain penumbra in the final bytes.
+        sphere(p, Vec3(x=-0.75, y=0.0, z=-1.5), radius=0.4),
+        object=ObjectId.GlossySphere,
+        material=MaterialId.Porcelain,
+    )
+    return wall.union(glossy)
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+    match surface.material:
+        case .Wall:
+            # A bounded continuous notch draws a moving thin blade
+            # through both sides of the one diagonal same-depth material
+            # event. It creates visible thin detail without inventing a
+            # second visibility classification at the crossing.
+            blade_center = params.phase * 2.0 - 0.046875
+            blade_delta = surface.position.x - blade_center
+            blade_squared = blade_delta * blade_delta
+            # A fixed degree-32768 polynomial is the closed, branch-free
+            # blade profile. The declared world/phase ranges prove its base
+            # in [0,1], and its half-contrast width is approximately 0.56.
+            blade_profile = 1.0 - blade_squared * 0.01
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_profile = blade_profile * blade_profile
+            blade_factor = 1.0 - blade_profile
+            # Flatten the branch-free profile at its center. This widens the
+            # exact-dark core at the locked projection without introducing a
+            # second event family at the diagonal crossing.
+            blade_factor = blade_factor * blade_factor
+            blade_factor = blade_factor * blade_factor
+            blade_factor = blade_factor * blade_factor
+            blade_factor = blade_factor * blade_factor
+            if surface.position.x + surface.position.y >= -0.109375:
+                return MaterialSample.standard(
+                    color=Rgb(
+                        # The blade center is exact black; away from it the
+                        # red surface remains a bright chromatic control.
+                        # This pins a visible dark/bright crossing instead of
+                        # relying on tone-map thresholds to manufacture one.
+                        r=blade_factor * 0.75,
+                        g=blade_factor * 0.125,
+                        b=0.0,
+                    ),
+                    roughness=1.0,
+                    emissive=Rgb(
+                        r=blade_factor * 0.125,
+                        g=blade_factor * 0.015625,
+                        b=0.0,
+                    ),
+                    normal_detail=NormalDetail.TextureSlopeUv(
+                        texture_id=23,
+                        width=2,
+                        height=2,
+                        filter=TextureFilter.Anisotropic4,
+                        uv_source=UvSource.Plane,
+                    ),
+                )
+            return MaterialSample.textured(
+                # A low-luma saturated blue side makes the diagonal
+                # same-depth edge independently visible from the bright red
+                # side while retaining texture-filtering stress.
+                color=Rgb(r=0.0, g=0.0, b=0.1875),
+                roughness=0.65,
+                texture_id=19,
+                width=2,
+                height=2,
+                filter=TextureFilter.Anisotropic4,
+            )
+        case .Porcelain:
+            return MaterialSample.standard(
+                # A dark porcelain base keeps the AO/contact body distinct
+                # from the bright wall while the unit specular lobe still
+                # carries the moving glossy highlight.
+                color=Rgb(r=0.28125, g=0.265625, b=0.21875),
+                roughness=0.25,
+                metallic=0.0,
+                specular=1.0,
+            )
 
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 35, "fixture id must remain pinned"
     assert SEQUENCE_FRAMES == 8, "adversarial scene value must remain pinned"
 
+fn quality_frame(frame_index: u32) -> RenderFrame[SceneParams]:
+    phase: f32 = frame_index.to[f32]() * 0.03125
+    exposure: f32 = 0.0.to[f32]() - 0.625 + frame_index.to[f32]() * 0.21875
+    if frame_index >= 2:
+        exposure = exposure - 0.03125
+    if frame_index == 3:
+        exposure = exposure + 0.03125
+    if frame_index >= 5:
+        exposure = exposure + 0.0625
+    moving_point = Light.directional(
+        direction=Vec3(x=0.0, y=0.0, z=-1.0),
+        radiance=Rgb(r=0.125, g=0.09375, b=0.0625),
+    )
+    rectangle = Light.rectangle(
+        center=Vec3(x=-0.39, y=0.0, z=-3.0),
+        axis_u=Vec3(x=0.05, y=0.0, z=0.0),
+        axis_v=Vec3(x=0.0, y=0.05, z=0.0),
+        radiance=Rgb(r=0.0, g=0.0, b=0.00390625),
+    )
+    black_rectangle = Light.rectangle(
+        center=Vec3(x=-0.39, y=0.0, z=-3.0),
+        axis_u=Vec3(x=0.05, y=0.0, z=0.0),
+        axis_v=Vec3(x=0.0, y=0.05, z=0.0),
+        radiance=Rgb(r=0.0, g=0.0, b=0.0),
+    )
+    return RenderFrame[SceneParams](
+        params=SceneParams(phase=phase),
+        camera=Camera.canonical(
+            eye=Vec3(x=phase * 0.5 - 0.0625, y=0.0, z=-4.35),
+        ),
+        lights=LightFrame.fixed(lights=[
+            moving_point,
+            # A zero-radiance area source before the live source pins the
+            # terminal payload to the first contributor, not merely the
+            # first slot whose kind is Rectangle.
+            black_rectangle,
+            rectangle,
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+            Light.zero(),
+        ]),
+        exposure=exposure,
+        environment=Rgb(r=0.015625, g=0.03125, b=0.0625),
+        frame_index=frame_index.to[u64](),
+    )
+
+@test(runtime)
+async fn locked_quality_sequence(renderer: Actor[Renderer[SceneParams]]):
+    assert __wrela_pixels_p9_signed_moment_selftest(0), "signed normal moments preserve negative Q16 operands"
+    assert __wrela_pixels_p9_area_sample_selftest(), "area terminal traversal maps bijectively to row-major visibility cells"
+    frame_index: u32 = 0
+    @budget(bound=8)
+    while frame_index < SEQUENCE_FRAMES:
+        frame = quality_frame(frame_index)
+        result = await renderer.render(frame=take frame)
+        @discard(reason="the digest transcript and assertion own both result branches")
+        match result:
+            case .Ok(rendered):
+                digest_octet: usize = 0
+                @budget(bound=32)
+                while digest_octet < 32:
+                    __wrela_trace_p7_u64(rendered.displayed_digest[digest_octet].to[u64]())
+                    digest_octet = digest_octet + 1
+                # Bind the final sequence frame to the complete deterministic
+                # CertificateTelemetry schema. Earlier frames are already
+                # bound by their display digests and the external sequence
+                # capture; the final counters cover the whole renderer turn
+                # history used by this process.
+                if frame_index + 1 == SEQUENCE_FRAMES:
+                    dump_header = __wrela_pixels_p7_debug_frame_dump_word(0, 0)
+                    if dump_header[0] == 1:
+                        __wrela_trace_p7_u64(7599824371187933777)
+                        dump_index: u64 = 1
+                        @budget(bound=65551)
+                        while dump_index <= dump_header[1]:
+                            dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
+                            assert dump_value[0] == 1, "quality telemetry dump is complete"
+                            __wrela_trace_p7_u64(dump_value[1])
+                            dump_index = dump_index + 1
+            case .Err(call_error):
+                @discard(reason="diagnostic trace owns the failure payload")
+                match call_error:
+                    case .Op(failure):
+                        @discard(reason="diagnostic trace classifies the renderer error")
+                        match failure.error:
+                            case .InternalInvariant(invariant):
+                                __wrela_trace_p7_u64(invariant.kind.to[u64]())
+                            case .CertificateExhausted(tile):
+                                __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+                            case .CapacityExceeded(capacity):
+                                __wrela_trace_p7_u64(17179869184 + capacity.kind.to[u64]())
+                            case _:
+                                __wrela_trace_p7_u64(18446744073709551615)
+                    case _:
+                        __wrela_trace_p7_u64(18446744073709551614)
+                assert false, "locked P9 quality frame renders without unresolved output"
+        frame_index = frame_index + 1
+
+fn rate_violation_frame() -> RenderFrame[SceneParams]:
+    frame = quality_frame(7)
+    frame.frame_index = 8
+    frame.lights = LightFrame.fixed(lights=[
+        Light.directional(
+            direction=Vec3(x=0.6, y=0.0, z=-0.8),
+            radiance=Rgb(r=0.125, g=0.09375, b=0.0625),
+        ),
+        Light.rectangle(
+            center=Vec3(x=-0.39, y=0.0, z=-3.0),
+            axis_u=Vec3(x=0.05, y=0.0, z=0.0),
+            axis_v=Vec3(x=0.0, y=0.05, z=0.0),
+            radiance=Rgb(r=0.0, g=0.0, b=0.0),
+        ),
+        Light.rectangle(
+            center=Vec3(x=-0.39, y=0.0, z=-3.0),
+            axis_u=Vec3(x=0.05, y=0.0, z=0.0),
+            axis_v=Vec3(x=0.0, y=0.05, z=0.0),
+            radiance=Rgb(r=0.0, g=0.015625, b=0.0),
+        ),
+        Light.zero(), Light.zero(), Light.zero(), Light.zero(), Light.zero(),
+    ])
+    return frame
+
+@test(runtime)
+async fn light_motion_outside_declared_rate_is_rejected(renderer: Actor[Renderer[SceneParams]]):
+    frame = rate_violation_frame()
+    result = await renderer.render(frame=take frame)
+    @discard(reason="the rejection assertion owns the renderer result")
+    match result:
+        case .Err(call_error):
+            @discard(reason="the operation error is the rate-regression assertion")
+            match call_error:
+                case .Op(failure):
+                    @discard(reason="the error variant is the rate-regression assertion")
+                    match failure.error:
+                        case .FrameContractMismatch(path):
+                            assert path.component == 5, "light-rate rejection identifies the light input"
+                        case _:
+                            assert false, "light-rate violation uses the frame-contract diagnostic"
+                case _:
+                    assert false, "light-rate violation reaches the renderer operation"
+        case .Ok(_):
+            assert false, "light motion outside the declared rate must be rejected"
+
 @image
 pub fn build() -> Image:
-    img = Image(name="boot-pixels-quality", target=Target.wrela_machine_v1)
+    img = Image(name="boot-pixels-quality", target=Target.wrela_machine_v1, cores=3)
     display_device = img.device[DisplayDevice](transport=0x6000)
-    display = img.driver(Display, device=display_device, width=64, height=32, refresh_hz=60)
+    display = img.driver(Display, device=display_device, width=32, height=16, refresh_hz=60, core=0)
     renderer = img.renderer[SceneParams](
         field=world,
         material=shade,
         display=display,
-        width=64,
-        height=32,
+        width=32,
+        height=16,
         refresh_hz=60,
         shade_hz=60,
         profile=RenderProfile.AaaByteExact,
-        tone_curve=ToneCurve.Linear,
+        tone_curve=ToneCurve.FilmicV1,
         near=0.1,
         far=128.0,
         world_min=Vec3(x=-4.0, y=-4.0, z=-4.0),
         world_max=Vec3(x=4.0, y=4.0, z=4.0),
         camera_bounds=CameraBounds.bounded(max_motion=0.25),
-        light_config=LightConfig.fixed(capacity=1),
+        light_config=LightConfig.declared(
+            capacity=3,
+            kinds=[
+                LightKind.Directional,
+                LightKind.Rectangle,
+                LightKind.Rectangle,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+                LightKind.Disabled,
+            ],
+            ranges=[
+                LightRange.bounded(
+                    position_min=Vec3(x=0.0, y=0.0, z=0.0),
+                    position_max=Vec3(x=0.0, y=0.0, z=0.0),
+                    axis_component_max=1.0,
+                    radiance_max=Rgb(r=0.125, g=0.09375, b=0.0625),
+                    max_delta=0.0,
+                ),
+                LightRange.bounded(
+                    position_min=Vec3(x=-0.39, y=0.0, z=-3.0),
+                    position_max=Vec3(x=-0.39, y=0.0, z=-3.0),
+                    axis_component_max=0.05,
+                    radiance_max=Rgb(r=0.0, g=0.0, b=0.0),
+                    max_delta=0.0,
+                ),
+                LightRange.bounded(
+                    position_min=Vec3(x=-0.39, y=0.0, z=-3.0),
+                    position_max=Vec3(x=-0.39, y=0.0, z=-3.0),
+                    axis_component_max=0.05,
+                    radiance_max=Rgb(r=0.0, g=0.0, b=0.00390625),
+                    max_delta=0.0,
+                ),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+            ],
+        ),
         exposure_range=ScalarRange(min=-1.0, max=1.0),
         environment_range=RgbRange(
             min=Rgb(r=0.0, g=0.0, b=0.0),

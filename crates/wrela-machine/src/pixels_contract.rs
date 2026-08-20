@@ -232,6 +232,9 @@ fn verify_operand_numeric_domains(
 }
 
 fn verify_camera_light_post_numeric_domains(record: &FrameRecordV1) -> Result<(), String> {
+    if record.operands.len() < 44 {
+        return Err("pixels::verify: camera/light/post header is truncated".to_string());
+    }
     let f32_at = |index: usize, label: &str| -> Result<f32, String> {
         let value = record
             .operands
@@ -261,42 +264,25 @@ fn verify_camera_light_post_numeric_domains(record: &FrameRecordV1) -> Result<()
     if exposure_min > exposure_max {
         return Err("pixels::verify: camera/light/post has a reversed exposure range".to_string());
     }
-    if record.operands[22] > 1 || record.operands[23] != 17 || record.operands[41] != 17 {
-        return Err("pixels::verify: camera/light/post has an invalid LUT header".to_string());
-    }
-    let expected_tone = if record.operands[22] == 0 {
-        &super::LINEAR_TONE_LUT_V1
-    } else {
-        &super::FILMIC_TONE_LUT_V1
+    let expected_tone_len = match record.operands[24] {
+        0 => super::LINEAR_TONE_LUT_V1.len(),
+        1 => super::TRANSFER_TABLE_ENTRIES_V1,
+        _ => 0,
     };
-    if record.operands[24..41]
-        .iter()
-        .copied()
-        .ne(expected_tone.iter().copied().map(u64::from))
-        || record.operands[42..59]
-            .iter()
-            .copied()
-            .ne(super::SRGB_TRANSFER_LUT_V1.iter().copied().map(u64::from))
+    if record.operands[25] != expected_tone_len as u64
+        || record.operands[26] != 1
+        || record.operands[27] != super::TRANSFER_TABLE_ENTRIES_V1 as u64
+        || record.operands[28] != (-16_i64) as u64
+        || record.operands[29] != 16
+        || record.operands[30] != 1
+        || record.operands[31] != 1
     {
         return Err(
-            "pixels::verify: camera/light/post LUT bytes do not match the sealed curve IDs"
-                .to_string(),
+            "pixels::verify: camera/light/post has an invalid sealed LUT reference".to_string(),
         );
     }
-    for (label, table) in [
-        ("tone", &record.operands[24..41]),
-        ("transfer", &record.operands[42..59]),
-    ] {
-        if table.iter().any(|value| *value > u64::from(u16::MAX))
-            || table.windows(2).any(|pair| pair[0] > pair[1])
-        {
-            return Err(format!(
-                "pixels::verify: camera/light/post {label} LUT is not canonical monotone u16"
-            ));
-        }
-    }
     let mut values = [0.0_f32; 12];
-    for (target, index) in values.iter_mut().zip(59..71) {
+    for (target, index) in values.iter_mut().zip(32..44) {
         *target = f32_at(index, "world/environment bound")?;
     }
     for (label, lo, hi) in [
@@ -667,6 +653,505 @@ fn verify_composition_shape(operands: &[u64], record: &FrameRecordV1) -> Result<
     cursor.finish()
 }
 
+fn texture_div_round_nearest(value: i64, denominator: i64) -> i64 {
+    let magnitude = value.unsigned_abs();
+    let denominator = denominator as u64;
+    let rounded = (magnitude + denominator / 2) / denominator;
+    if value < 0 {
+        -(rounded as i64)
+    } else {
+        rounded as i64
+    }
+}
+
+fn texture_slope_q16(byte: u8) -> i64 {
+    let value = i64::from(byte as i8);
+    if value <= -127 {
+        -65_536
+    } else {
+        texture_div_round_nearest(value * 65_536, 127)
+    }
+}
+
+fn texture_base_moments(bytes: &[u8]) -> Vec<[i64; 5]> {
+    bytes
+        .chunks_exact(2)
+        .map(|texel| {
+            let sx = texture_slope_q16(texel[0]);
+            let sy = texture_slope_q16(texel[1]);
+            [
+                sx,
+                sy,
+                texture_div_round_nearest(sx * sx, 65_536),
+                texture_div_round_nearest(sx * sy, 65_536),
+                texture_div_round_nearest(sy * sy, 65_536),
+            ]
+        })
+        .collect()
+}
+
+fn texture_downsample_moments(current: &[[i64; 5]], width: u32, height: u32) -> Vec<[i64; 5]> {
+    let next_width = width.div_ceil(2);
+    let next_height = height.div_ceil(2);
+    let mut next = vec![[0_i64; 5]; next_width as usize * next_height as usize];
+    for y in 0..next_height {
+        for x in 0..next_width {
+            let mut sums = [0_i64; 5];
+            let mut count = 0_i64;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let sx = x * 2 + dx;
+                    let sy = y * 2 + dy;
+                    if sx >= width || sy >= height {
+                        continue;
+                    }
+                    let source = current[sy as usize * width as usize + sx as usize];
+                    for moment in 0..5 {
+                        sums[moment] += source[moment];
+                    }
+                    count += 1;
+                }
+            }
+            next[y as usize * next_width as usize + x as usize] =
+                sums.map(|sum| texture_div_round_nearest(sum, count));
+        }
+    }
+    next
+}
+
+fn verify_texture_shape(record: &FrameRecordV1) -> Result<(), String> {
+    let mut cursor = OperandCursor::new(FrameProgramTableKindV1::Texture, record);
+    let stable_id = u32::try_from(cursor.take("texture stable ID")?)
+        .map_err(|_| "pixels::verify: texture stable ID exceeds u32".to_string())?;
+    let format = cursor.take("texture format")?;
+    let channels = match format {
+        1 | 2 => 3_usize,
+        3 => 2,
+        4 => 1,
+        _ => {
+            return Err(format!(
+                "pixels::verify: texture {stable_id} has unknown format {format}"
+            ));
+        }
+    };
+    let width = u32::try_from(cursor.take("texture width")?)
+        .map_err(|_| "pixels::verify: texture width exceeds u32".to_string())?;
+    let height = u32::try_from(cursor.take("texture height")?)
+        .map_err(|_| "pixels::verify: texture height exceeds u32".to_string())?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} has an empty extent"
+        ));
+    }
+    let wrap_u = cursor.take("texture u wrap")?;
+    let wrap_v = cursor.take("texture v wrap")?;
+    if wrap_u > 1 || wrap_v > 1 {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} has invalid wrap tags"
+        ));
+    }
+    let mip_count = cursor.count("texture mip count")?;
+    if mip_count == 0 {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} has no mip levels"
+        ));
+    }
+    let mut sealed_digest = [0_u8; 32];
+    for chunk in sealed_digest.chunks_exact_mut(8) {
+        chunk.copy_from_slice(&cursor.take("texture digest")?.to_le_bytes());
+    }
+    const SEALED_ASSETS: [(u32, u64, u64, u64, [u8; 32]); 5] = [
+        (
+            19,
+            1,
+            1,
+            1,
+            [
+                0xc5, 0x19, 0xfe, 0x04, 0xff, 0xe1, 0xda, 0xdb, 0xa6, 0xfe, 0xc9, 0x6f, 0x5b, 0x3b,
+                0xc1, 0x90, 0xcf, 0x74, 0xe5, 0x2a, 0x4b, 0xe0, 0x71, 0x8a, 0x76, 0x39, 0x8c, 0xed,
+                0x9f, 0x97, 0x23, 0x1b,
+            ],
+        ),
+        (
+            20,
+            2,
+            0,
+            0,
+            [
+                0x0c, 0x72, 0x27, 0x38, 0x18, 0xdc, 0x36, 0x68, 0xc9, 0x04, 0xae, 0xf4, 0x05, 0x95,
+                0x60, 0x6b, 0xb8, 0xa4, 0xa1, 0x78, 0xb7, 0x0f, 0xca, 0x77, 0x57, 0x1f, 0x4f, 0xc8,
+                0x36, 0xf0, 0xf9, 0x8f,
+            ],
+        ),
+        (
+            21,
+            3,
+            1,
+            1,
+            [
+                0x93, 0x52, 0x92, 0x78, 0x3d, 0x93, 0xf9, 0xaa, 0x2c, 0xff, 0x29, 0xca, 0x5d, 0xed,
+                0x6c, 0xf5, 0x9c, 0x24, 0x38, 0x04, 0xd9, 0x1f, 0x92, 0xfc, 0x5a, 0x7e, 0xa0, 0x55,
+                0xee, 0xe7, 0x58, 0x26,
+            ],
+        ),
+        (
+            22,
+            4,
+            0,
+            0,
+            [
+                0xa7, 0xea, 0xae, 0x9a, 0x84, 0x5e, 0x30, 0xa5, 0xe8, 0x7d, 0x27, 0xc5, 0x18, 0x4c,
+                0x13, 0x3d, 0x55, 0xec, 0x05, 0xfa, 0xb2, 0x68, 0xc7, 0xdf, 0xb0, 0x8f, 0xf0, 0x16,
+                0x0f, 0x01, 0xf8, 0xa7,
+            ],
+        ),
+        (
+            23,
+            3,
+            1,
+            1,
+            [
+                0xe1, 0xb8, 0x2b, 0x9e, 0xba, 0x13, 0xc9, 0xaa, 0x5c, 0xd8, 0xf0, 0xf7, 0xdf, 0x75,
+                0xbc, 0x61, 0x2e, 0xf8, 0x76, 0x04, 0xd4, 0x20, 0x51, 0xab, 0xac, 0xfc, 0xd6, 0x30,
+                0xe9, 0x27, 0xf5, 0xdb,
+            ],
+        ),
+    ];
+    let sealed = SEALED_ASSETS.iter().find(|entry| entry.0 == stable_id);
+    if width != 2
+        || height != 2
+        || !sealed.is_some_and(|entry| {
+            (format, wrap_u, wrap_v, sealed_digest) == (entry.1, entry.2, entry.3, entry.4)
+        })
+    {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} is not a sealed compiler-owned v1 asset"
+        ));
+    }
+    let mut identity = Vec::new();
+    identity.extend_from_slice(b"wrela-texture-v1\0");
+    identity.extend_from_slice(&stable_id.to_le_bytes());
+    identity.extend_from_slice(&format.to_le_bytes());
+    identity.extend([wrap_u as u8, wrap_v as u8]);
+    let (mut expected_width, mut expected_height) = (width, height);
+    let mut expected_slope_moments: Option<Vec<[i64; 5]>> = None;
+    for level in 0..mip_count {
+        let mip_width = u32::try_from(cursor.take("mip width")?)
+            .map_err(|_| "pixels::verify: mip width exceeds u32".to_string())?;
+        let mip_height = u32::try_from(cursor.take("mip height")?)
+            .map_err(|_| "pixels::verify: mip height exceeds u32".to_string())?;
+        if mip_width != expected_width || mip_height != expected_height {
+            return Err(format!(
+                "pixels::verify: texture {stable_id} mip {level} has noncanonical dimensions"
+            ));
+        }
+        let byte_count = cursor.count("mip byte count")?;
+        let expected_bytes = usize::try_from(mip_width)
+            .ok()
+            .and_then(|w| {
+                usize::try_from(mip_height)
+                    .ok()
+                    .and_then(|h| w.checked_mul(h))
+            })
+            .and_then(|pixels| pixels.checked_mul(channels))
+            .ok_or_else(|| "pixels::verify: texture mip byte count overflow".to_string())?;
+        if byte_count != expected_bytes {
+            return Err(format!(
+                "pixels::verify: texture {stable_id} mip {level} has {byte_count} bytes, expected {expected_bytes}"
+            ));
+        }
+        identity.extend_from_slice(&mip_width.to_le_bytes());
+        identity.extend_from_slice(&mip_height.to_le_bytes());
+        let mut bytes = Vec::with_capacity(byte_count);
+        for _ in 0..byte_count {
+            let byte = u8::try_from(cursor.take("mip byte")?)
+                .map_err(|_| "pixels::verify: texture mip byte exceeds u8".to_string())?;
+            bytes.push(byte);
+            identity.push(byte);
+        }
+        if cursor.count("mip channel count")? != channels {
+            return Err(format!(
+                "pixels::verify: texture {stable_id} mip {level} has the wrong channel count"
+            ));
+        }
+        let mut minimum = vec![u8::MAX; channels];
+        let mut maximum = vec![u8::MIN; channels];
+        for texel in bytes.chunks_exact(channels) {
+            for channel in 0..channels {
+                if format == 3 {
+                    if (texel[channel] as i8) < (minimum[channel] as i8) {
+                        minimum[channel] = texel[channel];
+                    }
+                    if (texel[channel] as i8) > (maximum[channel] as i8) {
+                        maximum[channel] = texel[channel];
+                    }
+                } else {
+                    minimum[channel] = minimum[channel].min(texel[channel]);
+                    maximum[channel] = maximum[channel].max(texel[channel]);
+                }
+            }
+        }
+        for expected in minimum.into_iter().chain(maximum) {
+            let found = u8::try_from(cursor.take("mip channel bound")?)
+                .map_err(|_| "pixels::verify: texture channel bound exceeds u8".to_string())?;
+            if found != expected {
+                return Err(format!(
+                    "pixels::verify: texture {stable_id} mip {level} has an invalid channel bound"
+                ));
+            }
+            identity.push(found);
+        }
+        let has_moments = cursor.take("mip slope moments")?;
+        if has_moments > 1 || (has_moments == 1) != (format == 3) {
+            return Err(format!(
+                "pixels::verify: texture {stable_id} mip {level} has invalid slope-moment presence"
+            ));
+        }
+        if has_moments == 1 {
+            let expected = expected_slope_moments
+                .take()
+                .unwrap_or_else(|| texture_base_moments(&bytes));
+            if cursor.count("mip slope moment texel count")? != expected.len() {
+                return Err(format!(
+                    "pixels::verify: texture {stable_id} mip {level} has the wrong slope-moment texel count"
+                ));
+            }
+            identity.extend_from_slice(&(expected.len() as u64).to_le_bytes());
+            for texel in &expected {
+                for expected_moment in texel {
+                    let encoded = cursor.take("mip slope moment")?;
+                    if encoded as i64 != *expected_moment {
+                        return Err(format!(
+                            "pixels::verify: texture {stable_id} mip {level} has an invalid slope moment"
+                        ));
+                    }
+                    identity.extend_from_slice(&expected_moment.to_le_bytes());
+                }
+            }
+            expected_slope_moments =
+                Some(texture_downsample_moments(&expected, mip_width, mip_height));
+        }
+        expected_width = expected_width.div_ceil(2);
+        expected_height = expected_height.div_ceil(2);
+    }
+    cursor.finish()?;
+    if expected_width != 1 || expected_height != 1 {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} mip chain is incomplete"
+        ));
+    }
+    if crate::sha256::sha256(&identity) != sealed_digest {
+        return Err(format!(
+            "pixels::verify: texture {stable_id} digest mismatch"
+        ));
+    }
+    Ok(())
+}
+
+fn verify_secondary_bvh_shape(record: &FrameRecordV1) -> Result<(), String> {
+    #[derive(Clone, Copy, PartialEq)]
+    struct Bounds {
+        min: [f64; 3],
+        max: [f64; 3],
+    }
+    impl Bounds {
+        fn valid(self) -> bool {
+            self.min.into_iter().chain(self.max).all(f64::is_finite)
+                && (0..3).all(|axis| self.min[axis] <= self.max[axis])
+        }
+        fn union(self, other: Self) -> Self {
+            Self {
+                min: std::array::from_fn(|axis| self.min[axis].min(other.min[axis])),
+                max: std::array::from_fn(|axis| self.max[axis].max(other.max[axis])),
+            }
+        }
+    }
+    #[derive(Clone, Copy)]
+    struct Node {
+        bounds: Bounds,
+        first: usize,
+        count: usize,
+        left: Option<usize>,
+        right: Option<usize>,
+    }
+    let mut cursor = OperandCursor::new(FrameProgramTableKindV1::ShadingSummary, record);
+    let object_count = cursor.count("secondary object count")?;
+    let node_count = cursor.count("secondary node count")?;
+    let root = cursor.count("secondary root")?;
+    let stack_capacity = cursor.count("secondary stack capacity")?;
+    if object_count == 0 || node_count == 0 || root != 0 || stack_capacity == 0 {
+        return Err("pixels::verify: secondary BVH has an invalid header".to_string());
+    }
+    let read_bounds = |cursor: &mut OperandCursor<'_>| -> Result<Bounds, String> {
+        let mut values = [0.0; 6];
+        for value in &mut values {
+            *value = f64::from_bits(cursor.take("secondary bound")?);
+        }
+        let bounds = Bounds {
+            min: [values[0], values[1], values[2]],
+            max: [values[3], values[4], values[5]],
+        };
+        if !bounds.valid() {
+            return Err("pixels::verify: secondary BVH has an invalid bound".to_string());
+        }
+        Ok(bounds)
+    };
+    let mut objects = Vec::with_capacity(object_count);
+    let mut object_ids = std::collections::BTreeSet::new();
+    for _ in 0..object_count {
+        let object = u32::try_from(cursor.take("secondary object ID")?)
+            .map_err(|_| "pixels::verify: secondary object ID exceeds u32".to_string())?;
+        let feature_first = u32::try_from(cursor.take("secondary feature first")?)
+            .map_err(|_| "pixels::verify: secondary feature ID exceeds u32".to_string())?;
+        let feature_count = u32::try_from(cursor.take("secondary feature count")?)
+            .map_err(|_| "pixels::verify: secondary feature count exceeds u32".to_string())?;
+        if !object_ids.insert(object)
+            || feature_count == 0
+            || feature_first.checked_add(feature_count).is_none()
+        {
+            return Err("pixels::verify: secondary BVH has an invalid object range".to_string());
+        }
+        objects.push(read_bounds(&mut cursor)?);
+    }
+    let decode_child = |value: u64| -> Result<Option<usize>, String> {
+        if value == u64::MAX {
+            Ok(None)
+        } else {
+            usize::try_from(value)
+                .map(Some)
+                .map_err(|_| "pixels::verify: secondary child exceeds usize".to_string())
+        }
+    };
+    let mut nodes = Vec::with_capacity(node_count);
+    for _ in 0..node_count {
+        let bounds = read_bounds(&mut cursor)?;
+        let first = cursor.count("secondary leaf first")?;
+        let count = cursor.count("secondary leaf count")?;
+        let left = decode_child(cursor.take("secondary left child")?)?;
+        let right = decode_child(cursor.take("secondary right child")?)?;
+        nodes.push(Node {
+            bounds,
+            first,
+            count,
+            left,
+            right,
+        });
+    }
+    cursor.finish()?;
+    let mut reached = vec![false; node_count];
+    let mut pending = vec![root];
+    while let Some(index) = pending.pop() {
+        if index >= node_count || std::mem::replace(&mut reached[index], true) {
+            return Err("pixels::verify: secondary BVH is cyclic or aliases a child".to_string());
+        }
+        let node = nodes[index];
+        match (node.left, node.right) {
+            (None, None) => {
+                let end = node
+                    .first
+                    .checked_add(node.count)
+                    .ok_or_else(|| "pixels::verify: secondary leaf range overflows".to_string())?;
+                if node.count == 0 || node.count > 2 || end > objects.len() {
+                    return Err("pixels::verify: secondary BVH has an invalid leaf".to_string());
+                }
+                let exact = objects[node.first..end]
+                    .iter()
+                    .copied()
+                    .reduce(Bounds::union)
+                    .expect("nonempty leaf");
+                if exact != node.bounds {
+                    return Err("pixels::verify: secondary leaf bound is not canonical".to_string());
+                }
+            }
+            (Some(left), Some(right)) => {
+                if left <= index || right <= index || left >= node_count || right >= node_count {
+                    return Err(
+                        "pixels::verify: secondary BVH has an invalid child index".to_string()
+                    );
+                }
+                let left_node = nodes[left];
+                let right_node = nodes[right];
+                if node.count <= 2
+                    || left_node.first != node.first
+                    || left_node.first.checked_add(left_node.count) != Some(right_node.first)
+                    || left_node.count.checked_add(right_node.count) != Some(node.count)
+                    || left_node.bounds.union(right_node.bounds) != node.bounds
+                {
+                    return Err(
+                        "pixels::verify: secondary internal node is not canonical".to_string()
+                    );
+                }
+                pending.extend([right, left]);
+            }
+            _ => return Err("pixels::verify: secondary BVH has only one child".to_string()),
+        }
+    }
+    if reached.into_iter().any(|value| !value) {
+        return Err("pixels::verify: secondary BVH has unreachable nodes".to_string());
+    }
+    Ok(())
+}
+
+fn verify_transfer_table_shape(record: &FrameRecordV1) -> Result<(), String> {
+    const ENTRY_COUNT: usize = 4097;
+    const HEADER_WORDS: usize = 5;
+    let expected_digest = match record.tag {
+        4 => "834b92da2dc0efaa7ffeee438f95a9de53988abcfa0d122f55329ec01e1ebf6f",
+        5 => "28c6391387185672fd824973e342a185f7cc90d487be3d966821412509213201",
+        _ => return Err("pixels::verify: unknown transfer-table tag".to_string()),
+    };
+    let packed_words = ENTRY_COUNT.div_ceil(4);
+    exact_operands(
+        FrameProgramTableKindV1::ShadingSummary,
+        record,
+        HEADER_WORDS + packed_words,
+    )?;
+    if record.operands[0] != ENTRY_COUNT as u64 {
+        return Err("pixels::verify: transfer table has the wrong entry count".to_string());
+    }
+    let mut sealed_digest = [0_u8; 32];
+    for (bytes, word) in sealed_digest
+        .chunks_exact_mut(8)
+        .zip(&record.operands[1..5])
+    {
+        bytes.copy_from_slice(&word.to_le_bytes());
+    }
+    let mut payload = Vec::with_capacity(ENTRY_COUNT * 2);
+    for (word_index, word) in record.operands[HEADER_WORDS..].iter().enumerate() {
+        for lane in 0..4 {
+            let entry = word_index * 4 + lane;
+            let value = ((word >> (lane * 16)) & 0xffff) as u16;
+            if entry < ENTRY_COUNT {
+                payload.extend_from_slice(&value.to_le_bytes());
+            } else if value != 0 {
+                return Err("pixels::verify: transfer table has nonzero tail padding".to_string());
+            }
+        }
+    }
+    if crate::sha256::sha256(&payload) != sealed_digest
+        || crate::sha256::sha256_hex(&payload) != expected_digest
+    {
+        return Err(
+            "pixels::verify: transfer table payload or digest is not canonical".to_string(),
+        );
+    }
+    let mut values = payload
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    let first = values.next().expect("sealed table is nonempty");
+    let mut previous = first;
+    for value in values {
+        if value < previous {
+            return Err("pixels::verify: transfer table is not monotone".to_string());
+        }
+        previous = value;
+    }
+    if first != 0 || previous != u16::MAX {
+        return Err("pixels::verify: transfer table endpoints are not [0,65535]".to_string());
+    }
+    Ok(())
+}
+
 pub fn verify_frame_record_shape_v1(
     kind: FrameProgramTableKindV1,
     record: &FrameRecordV1,
@@ -879,7 +1364,34 @@ pub fn verify_frame_record_shape_v1(
             cursor.finish()?;
         }
         FrameProgramTableKindV1::Material => match record.tag {
-            1 => exact_operands(kind, record, 11)?,
+            1 => {
+                exact_operands(kind, record, 17)?;
+                match record.operands[11] {
+                    0 if record.operands[12..15] == [u64::MAX; 3] => {}
+                    1 if record.operands[12] != u64::MAX
+                        && record.operands[13] != u64::MAX
+                        && record.operands[14] == u64::MAX => {}
+                    2 if record.operands[12] == u64::MAX
+                        && record.operands[13] == u64::MAX
+                        && matches!(record.operands[14], 21 | 23) => {}
+                    _ => {
+                        return Err(
+                            "pixels::verify: material has invalid normal-detail operands"
+                                .to_string(),
+                        );
+                    }
+                }
+                match (record.operands[15], record.operands[16]) {
+                    (u64::MAX, u64::MAX) => {}
+                    (19..=23, 0..=3) => {}
+                    _ => {
+                        return Err(
+                            "pixels::verify: material has invalid texture/filter operands"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
             2 => exact_operands(kind, record, 3)?,
             3 => {
                 let count = record.operands.first().copied().ok_or_else(|| {
@@ -896,6 +1408,123 @@ pub fn verify_frame_record_shape_v1(
                             "pixels::verify: material identity count overflow".to_string()
                         })?,
                 )?;
+            }
+            _ => {}
+        },
+        FrameProgramTableKindV1::Texture => verify_texture_shape(record)?,
+        FrameProgramTableKindV1::ShadingSummary => match record.tag {
+            1 => {
+                let scalar_count = record.operands.get(6).copied().ok_or_else(|| {
+                    "pixels::verify: shading summary scalar count is truncated".to_string()
+                })?;
+                let expected = usize::try_from(scalar_count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(3))
+                    .and_then(|count| count.checked_add(15))
+                    .ok_or_else(|| {
+                        "pixels::verify: shading summary operand count overflow".to_string()
+                    })?;
+                exact_operands(kind, record, expected)?;
+                let basis = record.operands[3];
+                let rank = record.operands[4];
+                let basis_rank_valid = match basis {
+                    1..=3 | 5 => rank == 0,
+                    4 => (1..=4).contains(&rank),
+                    _ => false,
+                };
+                if record.operands[2] & !0x7f != 0 || !basis_rank_valid || record.operands[5] > 25 {
+                    return Err(format!(
+                        "pixels::verify: shading summary {} has invalid inputs/basis/rank/anchors",
+                        record.stable_id
+                    ));
+                }
+                let scalar_end = 7 + usize::try_from(scalar_count).expect("count checked") * 3;
+                for triple in record.operands[7..scalar_end].chunks_exact(3) {
+                    let lo = f64::from_bits(triple[1]);
+                    let hi = f64::from_bits(triple[2]);
+                    if !lo.is_finite() || !hi.is_finite() || lo > hi {
+                        return Err(format!(
+                            "pixels::verify: shading summary {} has an invalid scalar range",
+                            record.stable_id
+                        ));
+                    }
+                }
+                for texture in &record.operands[scalar_end..scalar_end + 2] {
+                    if *texture != u64::MAX && !(19..=23).contains(texture) {
+                        return Err(format!(
+                            "pixels::verify: shading summary {} references an unsealed texture",
+                            record.stable_id
+                        ));
+                    }
+                }
+                if record.operands[scalar_end + 2..scalar_end + 4]
+                    .iter()
+                    .any(|source| !(1..=8).contains(source))
+                    || record.operands[scalar_end + 4] != 0
+                    || record.operands[scalar_end + 5..scalar_end + 8]
+                        .iter()
+                        .any(|bits| f64::from_bits(*bits) != 0.0)
+                {
+                    return Err(format!(
+                        "pixels::verify: exact shading summary {} has nonzero coefficients/residual",
+                        record.stable_id
+                    ));
+                }
+            }
+            2 => {
+                exact_operands(kind, record, 7)?;
+                if record.operands[0] > 8
+                    || record.operands[1] > 1
+                    || record.operands[4] != 5
+                    || record.operands[5] != 4
+                    || record.operands[6] != 25
+                {
+                    return Err("pixels::verify: shading summary config is invalid".to_string());
+                }
+                let radius = f32::from_bits(u32::try_from(record.operands[2]).map_err(|_| {
+                    "pixels::verify: shading summary AO radius exceeds f32 bits".to_string()
+                })?);
+                let strength = f32::from_bits(u32::try_from(record.operands[3]).map_err(|_| {
+                    "pixels::verify: shading summary AO strength exceeds f32 bits".to_string()
+                })?);
+                if !radius.is_finite()
+                    || radius <= 0.0
+                    || !strength.is_finite()
+                    || !(0.0..=1.0).contains(&strength)
+                {
+                    return Err("pixels::verify: shading summary AO values are invalid".to_string());
+                }
+            }
+            3 => verify_secondary_bvh_shape(record)?,
+            4 | 5 => verify_transfer_table_shape(record)?,
+            6 => {
+                exact_operands(kind, record, 21)?;
+                if record.operands[0] >= 8 {
+                    return Err("pixels::verify: light range slot exceeds v1 capacity".to_string());
+                }
+                let mut values = [0.0_f32; 20];
+                for (index, value) in values.iter_mut().enumerate() {
+                    *value = f32::from_bits(u32::try_from(record.operands[index + 1]).map_err(
+                        |_| "pixels::verify: light range component exceeds f32 bits".to_string(),
+                    )?);
+                }
+                if values.into_iter().any(|value| !value.is_finite())
+                    || values[0] > values[3]
+                    || values[1] > values[4]
+                    || values[2] > values[5]
+                    || values[6] <= 0.0
+                    || values[7..10].iter().any(|value| *value < 0.0)
+                    || values[10] < 0.0
+                    || values[11] > values[14]
+                    || values[12] > values[15]
+                    || values[13] > values[16]
+                    || values[17..20].iter().any(|value| *value < 0.0)
+                {
+                    return Err(
+                        "pixels::verify: light range/influence contract is not finite and ordered"
+                            .to_string(),
+                    );
+                }
             }
             _ => {}
         },
@@ -949,9 +1578,9 @@ pub fn verify_frame_record_shape_v1(
             cursor.finish()?;
         }
         FrameProgramTableKindV1::CameraLightPost => {
-            exact_operands(kind, record, 71)?;
+            exact_operands(kind, record, 44)?;
             verify_camera_light_post_numeric_domains(record)?;
-            let booleans = [record.operands[18], record.operands[19]];
+            let booleans = [record.operands[18], record.operands[21]];
             if booleans.iter().any(|value| *value > 1)
                 || record.operands[0] == 0
                 || record.operands[1] == 0
@@ -961,6 +1590,21 @@ pub fn verify_frame_record_shape_v1(
             {
                 return Err(
                     "pixels::verify: camera/light/post record has invalid capacities".to_string(),
+                );
+            }
+            let ao_radius = f32::from_bits(u32::try_from(record.operands[19]).map_err(|_| {
+                "pixels::verify: camera/light/post AO radius exceeds 32 bits".to_string()
+            })?);
+            let ao_strength = f32::from_bits(u32::try_from(record.operands[20]).map_err(|_| {
+                "pixels::verify: camera/light/post AO strength exceeds 32 bits".to_string()
+            })?);
+            if !ao_radius.is_finite()
+                || ao_radius <= 0.0
+                || !ao_strength.is_finite()
+                || !(0.0..=1.0).contains(&ao_strength)
+            {
+                return Err(
+                    "pixels::verify: camera/light/post has invalid AO parameters".to_string(),
                 );
             }
             for (slot, kind) in record.operands[8..16].iter().copied().enumerate() {
@@ -1379,6 +2023,163 @@ fn verify_sealed_numeric_policy(program: &FrameProgramModelV1) -> Result<(), Str
     Ok(())
 }
 
+fn verify_sealed_light_contracts(program: &FrameProgramModelV1) -> Result<(), String> {
+    let camera = program
+        .table(FrameProgramTableKindV1::CameraLightPost)
+        .and_then(|table| table.records.first())
+        .ok_or_else(|| "pixels::verify: missing camera/light/post contract".to_string())?;
+    let summaries = program
+        .table(FrameProgramTableKindV1::ShadingSummary)
+        .expect("canonical namespace checked");
+    for record in summaries.records.iter().filter(|record| record.tag == 6) {
+        let slot = usize::try_from(record.operands[0])
+            .map_err(|_| "pixels::verify: light contract slot exceeds usize".to_string())?;
+        if record.operands[12..18] != camera.operands[32..38] {
+            return Err(format!(
+                "pixels::verify: light contract slot {slot} influence bounds differ from the sealed world"
+            ));
+        }
+        let kind = camera.operands[8 + slot];
+        for channel in 0..3 {
+            let radiance = f32::from_bits(
+                u32::try_from(record.operands[8 + channel])
+                    .expect("light range shape checked before linked contract"),
+            );
+            let maximum = match kind {
+                0 => 0.0,
+                1 => radiance * 16_777_216.0,
+                2..=4 => radiance,
+                _ => unreachable!("camera light kind checked before linked contract"),
+            };
+            if !maximum.is_finite() || record.operands[18 + channel] != u64::from(maximum.to_bits())
+            {
+                return Err(format!(
+                    "pixels::verify: light contract slot {slot} channel {channel} has a noncanonical maximum incident-radiance bound"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_p9_shading_links(program: &FrameProgramModelV1) -> Result<(), String> {
+    let summaries = program
+        .table(FrameProgramTableKindV1::ShadingSummary)
+        .expect("canonical namespace checked");
+    for (tag, label) in [
+        (2, "configuration"),
+        (3, "secondary BVH"),
+        (4, "filmic table"),
+        (5, "sRGB table"),
+    ] {
+        let count = summaries
+            .records
+            .iter()
+            .filter(|record| record.tag == tag)
+            .count();
+        if count != 1 {
+            return Err(format!(
+                "pixels::verify: shading-summary table has {count} {label} records, expected exactly one"
+            ));
+        }
+    }
+
+    let textures = program
+        .table(FrameProgramTableKindV1::Texture)
+        .expect("canonical namespace checked");
+    let mut texture_ids = std::collections::BTreeSet::new();
+    for record in &textures.records {
+        let asset = record
+            .operands
+            .first()
+            .copied()
+            .ok_or_else(|| "pixels::verify: texture record is truncated".to_string())?;
+        if !texture_ids.insert(asset) {
+            return Err(format!(
+                "pixels::verify: compiler-owned texture asset {asset} is duplicated"
+            ));
+        }
+    }
+
+    let materials = program
+        .table(FrameProgramTableKindV1::Material)
+        .expect("canonical namespace checked");
+    for record in materials.records.iter().filter(|record| record.tag == 1) {
+        for &asset in [record.operands[14], record.operands[15]]
+            .iter()
+            .filter(|asset| **asset != u64::MAX)
+        {
+            if !texture_ids.contains(&asset) {
+                return Err(format!(
+                    "pixels::verify: material {} references missing texture asset {asset}",
+                    record.stable_id
+                ));
+            }
+        }
+    }
+
+    let scalar_count = program.record_count(FrameProgramTableKindV1::Scalar) as u64;
+    let identity_ids = program
+        .table(FrameProgramTableKindV1::FixedDomain)
+        .expect("canonical namespace checked")
+        .records
+        .iter()
+        .filter(|record| record.tag == 33)
+        .map(|record| record.operands[0])
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut descriptors = std::collections::BTreeSet::new();
+    for record in summaries.records.iter().filter(|record| record.tag == 1) {
+        let identity = record.operands[0];
+        let material = usize::try_from(record.operands[1])
+            .map_err(|_| "pixels::verify: shading-summary material exceeds usize".to_string())?;
+        if !identity_ids.contains(&identity) {
+            return Err(format!(
+                "pixels::verify: shading summary {} names unknown identity set {identity}",
+                record.stable_id
+            ));
+        }
+        if materials
+            .records
+            .get(material)
+            .is_none_or(|material| material.tag != 1)
+        {
+            return Err(format!(
+                "pixels::verify: shading summary {} names non-sample material {material}",
+                record.stable_id
+            ));
+        }
+        if !descriptors.insert((identity, material)) {
+            return Err(format!(
+                "pixels::verify: shading summary {} duplicates identity/material ({identity},{material})",
+                record.stable_id
+            ));
+        }
+        let summary_scalar_count = usize::try_from(record.operands[6])
+            .map_err(|_| "pixels::verify: shading-summary scalar count exceeds usize".to_string())?;
+        for triple in record.operands[7..7 + summary_scalar_count * 3].chunks_exact(3) {
+            if triple[0] >= scalar_count {
+                return Err(format!(
+                    "pixels::verify: shading summary {} names scalar {} outside {scalar_count}",
+                    record.stable_id, triple[0]
+                ));
+            }
+        }
+        let tail = 7 + summary_scalar_count * 3;
+        for &asset in record.operands[tail..tail + 2]
+            .iter()
+            .filter(|asset| **asset != u64::MAX)
+        {
+            if !texture_ids.contains(&asset) {
+                return Err(format!(
+                    "pixels::verify: shading summary {} references missing texture asset {asset}",
+                    record.stable_id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<(), String> {
     if program.numeric_revision != super::FRAME_PROGRAM_NUMERIC_REVISION_V1
         || program.formal_revision != super::FRAME_PROGRAM_FORMAL_REVISION_V1
@@ -1417,9 +2218,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
         }
         if matches!(
             table.kind,
-            FrameProgramTableKindV1::Texture
-                | FrameProgramTableKindV1::ShadingSummary
-                | FrameProgramTableKindV1::Transparency
+            FrameProgramTableKindV1::Transparency
                 | FrameProgramTableKindV1::Probe
                 | FrameProgramTableKindV1::Kinetic
                 | FrameProgramTableKindV1::DebugName
@@ -1447,6 +2246,8 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
                 FrameProgramTableKindV1::Object => record.tag == 1,
                 FrameProgramTableKindV1::Feature => (1..=3).contains(&record.tag),
                 FrameProgramTableKindV1::Material => (1..=3).contains(&record.tag),
+                FrameProgramTableKindV1::Texture => record.tag == 1,
+                FrameProgramTableKindV1::ShadingSummary => (1..=6).contains(&record.tag),
                 FrameProgramTableKindV1::Parameter => record.tag == 1,
                 FrameProgramTableKindV1::Event => (1..=14).contains(&record.tag),
                 FrameProgramTableKindV1::Csg => (1..=6).contains(&record.tag),
@@ -1487,8 +2288,28 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
             }
             verify_frame_record_shape_v1(table.kind, record)?;
         }
+        if table.kind == FrameProgramTableKindV1::ShadingSummary {
+            let light_ranges = table
+                .records
+                .iter()
+                .filter(|record| record.tag == 6)
+                .collect::<Vec<_>>();
+            if light_ranges.len() != 8
+                || light_ranges
+                    .iter()
+                    .enumerate()
+                    .any(|(slot, record)| record.operands[0] != slot as u64)
+            {
+                return Err(
+                    "pixels::verify: shading summary must seal exactly eight ordered light ranges"
+                        .to_string(),
+                );
+            }
+        }
     }
     verify_sealed_numeric_policy(program)?;
+    verify_sealed_light_contracts(program)?;
+    verify_p9_shading_links(program)?;
     verify_local_index_chunks(program)?;
     let object_count = program.record_count(FrameProgramTableKindV1::Object);
     let field_count = program.record_count(FrameProgramTableKindV1::Field);
@@ -1653,12 +2474,22 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
     for record in &material_table.records {
         match record.tag {
             1 => {
-                for &scalar in &record.operands {
+                for &scalar in &record.operands[..11] {
                     if scalar >= scalar_count as u64 {
                         return Err(format!(
                             "pixels::verify: material {} names scalar {scalar} outside {scalar_count}",
                             record.stable_id
                         ));
+                    }
+                }
+                if record.operands[11] == 1 {
+                    for &scalar in &record.operands[12..14] {
+                        if scalar >= scalar_count as u64 {
+                            return Err(format!(
+                                "pixels::verify: material {} names normal scalar {scalar} outside {scalar_count}",
+                                record.stable_id
+                            ));
+                        }
                     }
                 }
             }
@@ -2186,6 +3017,31 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
 mod tests {
     use super::*;
 
+    fn shading_summary_descriptor(basis: u64, rank: u64, anchors: u64) -> FrameRecordV1 {
+        FrameRecordV1 {
+            stable_id: 0,
+            tag: 1,
+            flags: 0,
+            operands: vec![
+                0,
+                0,
+                0,
+                basis,
+                rank,
+                anchors,
+                0,
+                u64::MAX,
+                u64::MAX,
+                8,
+                8,
+                0,
+                0.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+        }
+    }
+
     fn nested_transform(depth: usize) -> Vec<u64> {
         let mut transform = vec![1, 0, 0, 0];
         for _ in 0..depth {
@@ -2237,6 +3093,35 @@ mod tests {
                 verify_frame_record_shape_v1(FrameProgramTableKindV1::FixedDomain, &invalid)
                     .expect_err("out-of-range fixed-q record");
             assert!(error.contains("outside v1 bounds"), "{error}");
+        }
+    }
+
+    #[test]
+    fn shading_summary_basis_rank_and_anchor_shape_is_canonical() {
+        for (basis, rank) in [(1, 0), (2, 0), (3, 0), (4, 1), (4, 4), (5, 0)] {
+            verify_frame_record_shape_v1(
+                FrameProgramTableKindV1::ShadingSummary,
+                &shading_summary_descriptor(basis, rank, 25),
+            )
+            .expect("canonical shading-summary descriptor");
+        }
+
+        for (basis, rank, anchors) in [
+            (0, 0, 0),
+            (6, 0, 0),
+            (1, 1, 0),
+            (2, 4, 0),
+            (4, 0, 0),
+            (4, 5, 0),
+            (5, 1, 0),
+            (5, 0, 26),
+        ] {
+            let error = verify_frame_record_shape_v1(
+                FrameProgramTableKindV1::ShadingSummary,
+                &shading_summary_descriptor(basis, rank, anchors),
+            )
+            .expect_err("noncanonical shading-summary descriptor");
+            assert!(error.contains("inputs/basis/rank/anchors"), "{error}");
         }
     }
 }

@@ -17,7 +17,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedExprKind, TypedProgram, TypedSt
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--image-digest-only|--emit-image-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela test --run-image-dir <dir> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--renderer=<index>] [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--pixels-telemetry] [--pixels-debug-visibility] [--image-digest-only|--emit-image-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela test --run-image-dir <dir> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -2147,6 +2147,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut omit_dmb = false;
     let mut block_count = false;
     let mut pixels_telemetry = false;
+    let mut pixels_debug_visibility = false;
     let mut image_digest_only = false;
     let mut emit_image_dir: Option<String> = None;
     let mut run_image_dir: Option<String> = None;
@@ -2169,6 +2170,8 @@ fn test_cmd(args: &[String]) -> ExitCode {
             block_count = true;
         } else if args[i] == "--pixels-telemetry" {
             pixels_telemetry = true;
+        } else if args[i] == "--pixels-debug-visibility" {
+            pixels_debug_visibility = true;
         } else if args[i] == "--image-digest-only" {
             image_digest_only = true;
         } else if args[i] == "--emit-image-dir" {
@@ -2224,6 +2227,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             || omit_dmb
             || block_count
             || pixels_telemetry
+            || pixels_debug_visibility
         {
             eprintln!("{USAGE}");
             return ExitCode::FAILURE;
@@ -2236,6 +2240,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     };
     wrela_compiler::codegen::set_omit_dmb(omit_dmb);
     wrela_compiler::codegen::set_block_count(block_count);
+    wrela_compiler::pixels::glue::set_debug_visibility(pixels_debug_visibility);
     wrela_compiler::opts::apply_mode(mode);
 
     let source = match std::fs::read_to_string(&path) {

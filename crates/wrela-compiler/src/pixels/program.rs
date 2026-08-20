@@ -8,6 +8,26 @@ use std::collections::BTreeMap;
 use super::ids::{CoeffId, ParamId, PolyProgramId, PredicateProgramId, ScalarId};
 use super::polynomial::PolyProgram;
 
+fn secondary_lower_f32_bits(value: f64) -> u64 {
+    let rounded = value as f32;
+    let outward = if f64::from(rounded) > value {
+        super::reference::interval::next_down_f32(rounded)
+    } else {
+        rounded
+    };
+    f64::from(outward).to_bits()
+}
+
+fn secondary_upper_f32_bits(value: f64) -> u64 {
+    let rounded = value as f32;
+    let outward = if f64::from(rounded) < value {
+        super::reference::interval::next_up_f32(rounded)
+    } else {
+        rounded
+    };
+    f64::from(outward).to_bits()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CameraCoeff {
     Eye(u8),
@@ -537,6 +557,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serialized_secondary_bounds_round_outward_to_guest_f32() {
+        for value in [
+            -1.0e20,
+            -1.000_000_059_604_644_8,
+            -f64::from(f32::MIN_POSITIVE),
+            0.0,
+            f64::from(f32::MIN_POSITIVE),
+            1.000_000_059_604_644_8,
+            1.0e20,
+        ] {
+            let lower = f64::from_bits(secondary_lower_f32_bits(value));
+            let upper = f64::from_bits(secondary_upper_f32_bits(value));
+            assert!(lower <= value, "lower={lower:?} value={value:?}");
+            assert!(upper >= value, "upper={upper:?} value={value:?}");
+            assert_eq!(f64::from(lower as f32), lower);
+            assert_eq!(f64::from(upper as f32), upper);
+        }
+    }
+
+    #[test]
     fn coefficient_cse_is_commutative_and_bit_exact() {
         let mut builder = CoeffBuilder::new();
         let scalar = builder.scalar(ScalarId(4)).unwrap();
@@ -615,7 +655,40 @@ mod tests {
         camera.records[0].operands[25] += 1;
         let error = super::super::verify::check_program(changed_lut)
             .expect_err("monotone but noncanonical LUT");
-        assert!(error.contains("sealed curve IDs"), "{error}");
+        assert!(error.contains("sealed LUT reference"), "{error}");
+
+        let mut changed_influence = base.clone();
+        let summaries = changed_influence
+            .tables
+            .iter_mut()
+            .find(|table| table.kind == FrameProgramTableKindV1::ShadingSummary)
+            .unwrap();
+        let light = summaries
+            .records
+            .iter_mut()
+            .find(|record| record.tag == 6)
+            .unwrap();
+        light.operands[12] = u64::from(1.0_f32.to_bits());
+        light.operands[15] = u64::from(1.0_f32.to_bits());
+        let error = super::super::verify::check_program(changed_influence)
+            .expect_err("light influence outside the sealed world");
+        assert!(error.contains("influence bounds differ"), "{error}");
+
+        let mut changed_incident = base.clone();
+        let summaries = changed_incident
+            .tables
+            .iter_mut()
+            .find(|table| table.kind == FrameProgramTableKindV1::ShadingSummary)
+            .unwrap();
+        summaries
+            .records
+            .iter_mut()
+            .find(|record| record.tag == 6)
+            .unwrap()
+            .operands[18] = u64::from(1.0_f32.to_bits());
+        let error = super::super::verify::check_program(changed_incident)
+            .expect_err("noncanonical maximum incident radiance");
+        assert!(error.contains("maximum incident-radiance"), "{error}");
 
         let mut weakened_radius = base.clone();
         let fixed = weakened_radius
@@ -1755,6 +1828,27 @@ fn verify_clip_q_omissions(
     Ok(())
 }
 
+fn maximum_incident_radiance_v1(kind: &str, radiance_max: [f32; 3]) -> Result<[f32; 3], String> {
+    if kind == "Disabled" {
+        return Ok([0.0; 3]);
+    }
+    let scale = match kind {
+        "Point" => {
+            let radius = super::reference::light::POINT_RADIUS_MIN_V1 as f32;
+            1.0 / (radius * radius)
+        }
+        "Directional" | "Rectangle" | "Disk" => 1.0,
+        other => return Err(format!("P015: unknown sealed light kind `{other}`")),
+    };
+    let result = radiance_max.map(|component| component * scale);
+    if result.into_iter().any(|component| !component.is_finite()) {
+        return Err(format!(
+            "P007: maximum incident radiance for {kind} light is not representable as f32"
+        ));
+    }
+    Ok(result)
+}
+
 pub fn finish_frame_program(
     renderer_index: usize,
     graph: &super::symbolic::SymbolicGraph,
@@ -1997,6 +2091,38 @@ pub fn finish_frame_program(
                     id(sample.specular_level),
                     id(sample.ior),
                 ]);
+                let (normal_tag, normal_x, normal_y, normal_texture) = match &sample.normal {
+                    super::material_graph::NormalModel::Geometric => {
+                        (0, u64::MAX, u64::MAX, u64::MAX)
+                    }
+                    super::material_graph::NormalModel::AnalyticSlope { x, y } => {
+                        (1, u64::from(x.0), u64::from(y.0), u64::MAX)
+                    }
+                    super::material_graph::NormalModel::TextureSlope { texture } => {
+                        (2, u64::MAX, u64::MAX, u64::from(texture.stable_id))
+                    }
+                };
+                let (pattern_texture, pattern_filter) =
+                    sample
+                        .pattern
+                        .as_ref()
+                        .map_or((u64::MAX, u64::MAX), |texture| {
+                            let filter = match texture.filter {
+                                super::material_graph::TextureFilterV1::Nearest => 0,
+                                super::material_graph::TextureFilterV1::Bilinear => 1,
+                                super::material_graph::TextureFilterV1::Trilinear => 2,
+                                super::material_graph::TextureFilterV1::Anisotropic4 => 3,
+                            };
+                            (u64::from(texture.stable_id), filter)
+                        });
+                operands.extend([
+                    normal_tag,
+                    normal_x,
+                    normal_y,
+                    normal_texture,
+                    pattern_texture,
+                    pattern_filter,
+                ]);
                 push_record(materials, 1, 0, operands);
             }
             MaterialKind::Select { predicate, a, b } => push_record(
@@ -2010,6 +2136,347 @@ pub fn finish_frame_program(
                 operands.extend(cases.iter().map(|(_, material)| u64::from(material.0)));
                 push_record(materials, 3, 0, operands);
             }
+        }
+    }
+
+    // P9 immutable texture records own the complete mip/minmax/moment bytes.
+    // Stable asset IDs, not material traversal order, decide record order.
+    let mut texture_ids = std::collections::BTreeSet::new();
+    for (_, node) in graph.materials.iter() {
+        if let super::material_graph::MaterialKind::Sample(sample) = &node.kind {
+            if let Some(texture) = &sample.pattern {
+                texture_ids.insert(texture.stable_id);
+            }
+            if let super::material_graph::NormalModel::TextureSlope { texture } = &sample.normal {
+                texture_ids.insert(texture.stable_id);
+            }
+        }
+    }
+    let textures = by_kind
+        .get_mut(&FrameProgramTableKindV1::Texture)
+        .expect("namespace seeded");
+    for stable_id in texture_ids {
+        let asset = super::texture::compiler_asset(stable_id)?;
+        let digest = asset.digest_bytes();
+        let mut operands = vec![
+            u64::from(asset.stable_id),
+            asset.format.tag(),
+            u64::from(asset.width),
+            u64::from(asset.height),
+            match asset.wrap_u {
+                super::texture::WrapMode::Clamp => 0,
+                super::texture::WrapMode::Repeat => 1,
+            },
+            match asset.wrap_v {
+                super::texture::WrapMode::Clamp => 0,
+                super::texture::WrapMode::Repeat => 1,
+            },
+            asset.mips.len() as u64,
+        ];
+        operands.extend(
+            digest
+                .chunks_exact(8)
+                .map(|word| u64::from_le_bytes(word.try_into().expect("eight-byte digest word"))),
+        );
+        for mip in asset.mips {
+            operands.extend([
+                u64::from(mip.width),
+                u64::from(mip.height),
+                mip.bytes.len() as u64,
+            ]);
+            operands.extend(mip.bytes.into_iter().map(u64::from));
+            operands.push(mip.channel_min.len() as u64);
+            operands.extend(mip.channel_min.into_iter().map(u64::from));
+            operands.extend(mip.channel_max.into_iter().map(u64::from));
+            match mip.slope_moments {
+                Some(moments) => {
+                    operands.push(1);
+                    operands.push(moments.len() as u64);
+                    operands.extend(moments.into_iter().flatten().map(|value| value as u64));
+                }
+                None => operands.push(0),
+            }
+        }
+        push_record(textures, 1, 0, operands);
+    }
+
+    // One auditable summary-program record per identity/material leaf. The
+    // runtime may choose any ladder rung no stronger than `basis`; every
+    // output range remains an explicit compiler-derived premise.
+    let summaries = by_kind
+        .get_mut(&FrameProgramTableKindV1::ShadingSummary)
+        .expect("namespace seeded");
+    for material_index in &projective.indexes.material_programs {
+        let mut stack = vec![material_index.material];
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(material_id) = stack.pop() {
+            if !seen.insert(material_id) {
+                continue;
+            }
+            match &graph.materials.get(material_id)?.kind {
+                super::material_graph::MaterialKind::Sample(sample) => {
+                    let scalar_ids = sample
+                        .base_color
+                        .iter()
+                        .chain(&sample.emissive)
+                        .copied()
+                        .chain([
+                            sample.opacity,
+                            sample.roughness,
+                            sample.metallic,
+                            sample.specular_level,
+                            sample.ior,
+                        ])
+                        .collect::<Vec<_>>();
+                    let mut input_bits = 0_u64;
+                    let mut coordinate_dependent = false;
+                    let mut parameter_dependent = false;
+                    for scalar in &scalar_ids {
+                        match graph.scalar.get(*scalar)?.dependency {
+                            super::scalar::Dependency::Constant => {}
+                            super::scalar::Dependency::Coordinate => coordinate_dependent = true,
+                            super::scalar::Dependency::Parameter => parameter_dependent = true,
+                            super::scalar::Dependency::Surface => input_bits |= 1 | 2,
+                            super::scalar::Dependency::CoordinateAndParameter => {
+                                coordinate_dependent = true;
+                                parameter_dependent = true;
+                            }
+                            super::scalar::Dependency::CoordinateAndSurface => {
+                                coordinate_dependent = true;
+                                input_bits |= 1 | 2;
+                            }
+                            super::scalar::Dependency::ParameterAndSurface => {
+                                parameter_dependent = true;
+                                input_bits |= 1 | 2;
+                            }
+                            super::scalar::Dependency::CoordinateParameterAndSurface => {
+                                coordinate_dependent = true;
+                                parameter_dependent = true;
+                                input_bits |= 1 | 2;
+                            }
+                        }
+                    }
+                    if coordinate_dependent {
+                        input_bits |= 1 | 2 | 4;
+                    }
+                    if parameter_dependent {
+                        input_bits |= 8;
+                    }
+                    if sample.pattern.is_some() {
+                        input_bits |= 16 | 32;
+                    }
+                    if !matches!(sample.normal, super::material_graph::NormalModel::Geometric) {
+                        input_bits |= 64;
+                    }
+                    let basis = if coordinate_dependent || sample.pattern.is_some() {
+                        5_u64 // exact per-pixel fallback is the only unconditional premise
+                    } else {
+                        1_u64 // constant summary
+                    };
+                    let mut operands = vec![
+                        u64::from(material_index.identity_set),
+                        u64::from(material_id.0),
+                        input_bits,
+                        basis,
+                        0, // rank
+                        0, // anchor count; proposer anchors are runtime scratch
+                        scalar_ids.len() as u64,
+                    ];
+                    for scalar in scalar_ids {
+                        let range = structural.values.get(scalar)?;
+                        operands.extend([
+                            u64::from(scalar.0),
+                            range.lo.to_bits(),
+                            range.hi.to_bits(),
+                        ]);
+                    }
+                    operands.extend([
+                        sample
+                            .pattern
+                            .as_ref()
+                            .map_or(u64::MAX, |texture| u64::from(texture.stable_id)),
+                        match &sample.normal {
+                            super::material_graph::NormalModel::TextureSlope { texture } => {
+                                u64::from(texture.stable_id)
+                            }
+                            _ => u64::MAX,
+                        },
+                        sample
+                            .pattern
+                            .as_ref()
+                            .map_or(8, |texture| texture.uv_source.tag()),
+                        match &sample.normal {
+                            super::material_graph::NormalModel::TextureSlope { texture } => {
+                                texture.uv_source.tag()
+                            }
+                            _ => 8,
+                        },
+                        // Exact-per-pixel rung: no proposer coefficient is
+                        // consumed, and the arithmetic residual is the sealed
+                        // zero interval in every HDR channel. Runtime shading
+                        // still carries these point intervals through the
+                        // common singleton-byte gate.
+                        0,
+                        0.0_f64.to_bits(),
+                        0.0_f64.to_bits(),
+                        0.0_f64.to_bits(),
+                    ]);
+                    push_record(summaries, 1, 0, operands);
+                }
+                super::material_graph::MaterialKind::Select { a, b, .. } => stack.extend([*a, *b]),
+                super::material_graph::MaterialKind::IdentityTable { cases, .. } => {
+                    stack.extend(cases.iter().map(|(_, material)| *material));
+                }
+            }
+        }
+    }
+    push_record(
+        summaries,
+        2,
+        0,
+        vec![
+            u64::from(config.light_capacity),
+            u64::from(config.ao_enabled),
+            u64::from(config.ao_radius.to_bits()),
+            u64::from(config.ao_strength.to_bits()),
+            5,  // AO tap count
+            4,  // maximum separable rank
+            25, // fixed cross-pivot grid entries
+        ],
+    );
+    for (slot, range) in config.light_ranges.iter().enumerate() {
+        let kind = config
+            .light_kinds
+            .get(slot)
+            .map(String::as_str)
+            .unwrap_or("Disabled");
+        let maximum_incident = maximum_incident_radiance_v1(kind, range.radiance_max)?;
+        push_record(
+            summaries,
+            6,
+            0,
+            vec![
+                slot as u64,
+                u64::from(range.position_min.x.to_bits()),
+                u64::from(range.position_min.y.to_bits()),
+                u64::from(range.position_min.z.to_bits()),
+                u64::from(range.position_max.x.to_bits()),
+                u64::from(range.position_max.y.to_bits()),
+                u64::from(range.position_max.z.to_bits()),
+                u64::from(range.axis_component_max.to_bits()),
+                u64::from(range.radiance_max[0].to_bits()),
+                u64::from(range.radiance_max[1].to_bits()),
+                u64::from(range.radiance_max[2].to_bits()),
+                u64::from(range.max_delta.to_bits()),
+                // No supported v1 light has a finite receiver cutoff. These
+                // are conservative receiver-influence bounds, not emitter
+                // geometry bounds, so every slot seals the whole world.
+                u64::from(config.world_min.x.to_bits()),
+                u64::from(config.world_min.y.to_bits()),
+                u64::from(config.world_min.z.to_bits()),
+                u64::from(config.world_max.x.to_bits()),
+                u64::from(config.world_max.y.to_bits()),
+                u64::from(config.world_max.z.to_bits()),
+                u64::from(maximum_incident[0].to_bits()),
+                u64::from(maximum_incident[1].to_bits()),
+                u64::from(maximum_incident[2].to_bits()),
+            ],
+        );
+    }
+
+    // Compiler-emitted surface-object BVH used only by secondary segments.
+    // It indexes complete object/feature bounds and never substitutes a
+    // volumetric approximation for the field evaluator.
+    let mut secondary_objects = Vec::new();
+    for object in &structural.objects.objects {
+        let range = projective
+            .indexes
+            .object_features
+            .iter()
+            .find(|range| range.object == object.id)
+            .ok_or_else(|| format!("P027: object {} has no feature range", object.id))?;
+        secondary_objects.push(super::reference::secondary::SurfaceObject {
+            object_id: object.id.0,
+            feature_first: range.first.0,
+            feature_count: range.count,
+            bounds: super::reference::secondary::Aabb {
+                min: super::reference::light::Vec3 {
+                    x: object.bounds.min[0],
+                    y: object.bounds.min[1],
+                    z: object.bounds.min[2],
+                },
+                max: super::reference::light::Vec3 {
+                    x: object.bounds.max[0],
+                    y: object.bounds.max[1],
+                    z: object.bounds.max[2],
+                },
+            },
+        });
+    }
+    if !secondary_objects.is_empty() {
+        let bvh = super::reference::secondary::SurfaceBvh::build(secondary_objects)?;
+        let (objects, nodes, root) = bvh.wire_parts();
+        let mut operands = vec![
+            objects.len() as u64,
+            nodes.len() as u64,
+            root as u64,
+            bvh.stack_capacity as u64,
+        ];
+        for object in objects {
+            operands.extend([
+                u64::from(object.object_id),
+                u64::from(object.feature_first),
+                u64::from(object.feature_count),
+                secondary_lower_f32_bits(object.bounds.min.x),
+                secondary_lower_f32_bits(object.bounds.min.y),
+                secondary_lower_f32_bits(object.bounds.min.z),
+                secondary_upper_f32_bits(object.bounds.max.x),
+                secondary_upper_f32_bits(object.bounds.max.y),
+                secondary_upper_f32_bits(object.bounds.max.z),
+            ]);
+        }
+        for node in nodes {
+            operands.extend([
+                secondary_lower_f32_bits(node.bounds.min.x),
+                secondary_lower_f32_bits(node.bounds.min.y),
+                secondary_lower_f32_bits(node.bounds.min.z),
+                secondary_upper_f32_bits(node.bounds.max.x),
+                secondary_upper_f32_bits(node.bounds.max.y),
+                secondary_upper_f32_bits(node.bounds.max.z),
+                node.first as u64,
+                node.count as u64,
+                node.left.map_or(u64::MAX, |value| value as u64),
+                node.right.map_or(u64::MAX, |value| value as u64),
+            ]);
+        }
+        push_record(summaries, 3, 0, operands);
+    }
+
+    // The canonical P9 transfer tables are shared image data. Only renderer
+    // zero owns their packed records; generated accessors for every renderer
+    // deliberately reference that one verified copy. Four little-endian u16
+    // entries per operand keep the FrameProgram representation bounded.
+    if renderer_index == 0 {
+        for (tag, kind) in [
+            (4, super::tables::TableKind::FilmicV1),
+            (5, super::tables::TableKind::SrgbV1),
+        ] {
+            let values = super::tables::values(kind)?;
+            let digest = wrela_machine::sha256::sha256(kind.bytes());
+            let mut operands = vec![values.len() as u64];
+            operands.extend(
+                digest
+                    .chunks_exact(8)
+                    .map(|word| u64::from_le_bytes(word.try_into().expect("digest word"))),
+            );
+            for entries in values.chunks(4) {
+                let mut word = 0_u64;
+                for (index, value) in entries.iter().enumerate() {
+                    word |= u64::from(*value) << (index * 16);
+                }
+                operands.push(word);
+            }
+            push_record(summaries, tag, 0, operands);
         }
     }
 
@@ -2620,6 +3087,8 @@ pub fn finish_frame_program(
         config.exposure.min.to_bits().into(),
         config.exposure.max.to_bits().into(),
         u64::from(config.ao_enabled),
+        u64::from(config.ao_radius.to_bits()),
+        u64::from(config.ao_strength.to_bits()),
         u64::from(config.probes_enabled),
         config.probe_initialization_worst_case_ms.into(),
         config.initialization_deadline_ms.into(),
@@ -2632,9 +3101,10 @@ pub fn finish_frame_program(
             )
         })?;
     super::reference::display::validate_monotone_lut(tone_lut)
-        .map_err(|_| "P022: tone LUT is not monotone".to_string())?;
-    super::reference::display::validate_monotone_lut(&super::reference::display::SRGB_TRANSFER_LUT)
-        .map_err(|_| "P022: transfer LUT is not monotone".to_string())?;
+        .map_err(|_| "P018: tone or transfer table is not monotone: tone LUT".to_string())?;
+    super::tables::verify_all()?;
+    super::reference::display::validate_monotone_lut(super::reference::display::srgb_transfer_lut())
+        .map_err(|_| "P018: tone or transfer table is not monotone: sRGB transfer LUT".to_string())?;
     operands.extend([
         match config.tone_curve.as_str() {
             "Linear" => 0,
@@ -2642,15 +3112,13 @@ pub fn finish_frame_program(
             _ => unreachable!("sealed tone curve checked above"),
         },
         tone_lut.len() as u64,
+        1,
+        super::reference::display::srgb_transfer_lut().len() as u64,
+        (-16_i64) as u64,
+        16,
+        1,
+        1,
     ]);
-    operands.extend(tone_lut.iter().copied().map(u64::from));
-    operands.push(super::reference::display::SRGB_TRANSFER_LUT.len() as u64);
-    operands.extend(
-        super::reference::display::SRGB_TRANSFER_LUT
-            .iter()
-            .copied()
-            .map(u64::from),
-    );
     for value in [
         config.world_min.x,
         config.world_min.y,
@@ -2824,25 +3292,20 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         u64::from(0.0_f32.to_bits()),
         u64::from(0.0_f32.to_bits()),
         0,
+        u64::from(1.0_f32.to_bits()),
+        u64::from(1.0_f32.to_bits()),
         0,
         0,
         1,
         0,
         17,
+        1,
+        super::tables::TRANSFER_TABLE_ENTRIES_V1 as u64,
+        (-16_i64) as u64,
+        16,
+        1,
+        1,
     ]);
-    camera.extend(
-        super::reference::display::LINEAR_TONE_LUT
-            .iter()
-            .copied()
-            .map(u64::from),
-    );
-    camera.push(17);
-    camera.extend(
-        super::reference::display::SRGB_TRANSFER_LUT
-            .iter()
-            .copied()
-            .map(u64::from),
-    );
     camera.extend(
         [0.0_f32; 6]
             .into_iter()
@@ -2855,6 +3318,37 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         flags: 0,
         operands: camera,
     });
+    for slot in 0..8_u64 {
+        let summaries = records(&mut tables, FrameProgramTableKindV1::ShadingSummary);
+        summaries.push(FrameRecord {
+            stable_id: summaries.len() as u32,
+            tag: 6,
+            flags: 0,
+            operands: vec![
+                slot,
+                u64::from((-65504.0_f32).to_bits()),
+                u64::from((-65504.0_f32).to_bits()),
+                u64::from((-65504.0_f32).to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                u64::from(65504.0_f32.to_bits()),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ],
+        });
+    }
     super::verify::check_program(FrameProgram {
         renderer_index: 0,
         flags: 0,

@@ -1,0 +1,10 @@
+PixelsQuality version=2 frames=8 width=32 height=16 oracle=production-scene properties=diagonal-pan,glossy-sphere,slope-recede,rectangle-penumbra,thin-blade,material-edge,ao-contact,filmic-shoulder status=pass
+frame=0 digest=c64adaa71ab028a2c741650a1b8dd9039811186cdc4b9d858a9bdc2f4bbd3041 host_components=pass opaque=pass motion=pass status=pass
+frame=1 digest=72e66362f1e9dd16408c400b37f08b0aa72885aad9eea77624e6f83df5da5577 host_components=pass opaque=pass motion=pass status=pass
+frame=2 digest=5b84e6a6ce922abf7f03096fdc5939560aef927a0fb8d903e9cfcd05e8426588 host_components=pass opaque=pass motion=pass status=pass
+frame=3 digest=72b79ea3e30295a5f98ac160314808d546dbf561acd887b8b99553832c3ef974 host_components=pass opaque=pass motion=pass status=pass
+frame=4 digest=bd8d5f11bbcc976cddc2eb505b61f99928afa5a55eabe5baf76badb0efef8b9a host_components=pass opaque=pass motion=pass status=pass
+frame=5 digest=0ea9c86849cc9f15fda5bc38baee6ab547294ddfd9db5860c983a102688322fe host_components=pass opaque=pass motion=pass status=pass
+frame=6 digest=5659137e7446a61880faa9d9b63a153429e11517da0b4b32e1854aa35dbc8d29 host_components=pass opaque=pass motion=pass status=pass
+frame=7 digest=8a88789222106ece40f80fb651df7751ba340e0c4e7346e6d74f0e54c8da414f host_components=pass opaque=pass motion=pass status=pass
+summary visibility_controls=pass lighting_controls=pass material_controls=pass spatial_property_controls=pass glossy_motion=pass interval_components=pass stochastic=none status=pass

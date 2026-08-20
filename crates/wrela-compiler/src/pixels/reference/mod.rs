@@ -1,5 +1,7 @@
 //! Independent reference helpers used by compiler analyses and tests.
 
+pub mod ao;
+pub mod area_light;
 pub mod certificate;
 pub mod conformance;
 pub mod coverage;
@@ -11,15 +13,21 @@ pub mod frame;
 pub mod interval;
 pub mod iv32;
 pub mod kinetic;
+pub mod light;
 pub mod material;
+pub mod moments;
 pub mod normal;
 pub mod oracle;
 pub mod order;
 pub mod poly;
 pub mod polynomial;
+pub mod quality;
 pub mod raster;
 pub mod rebuild;
 pub mod root;
+pub mod scheduler;
+pub mod secondary;
+pub mod shade;
 pub mod snapshot;
 pub mod sweep;
 pub mod telemetry;

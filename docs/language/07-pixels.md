@@ -177,9 +177,11 @@ Polynomial or tensor shading summaries are accepted only by residual bounds;
 low-rank compression is optional and never assumed.
 
 The deterministic refinement scheduler orders candidates by exact
-cross-multiplied display-error reduction over estimated cost and recomputes
-after every accepted refinement. No independent approximation ratio is part
-of the contract.
+cross-multiplied guaranteed display-error reduction lower bound over estimated
+cost and recomputes after every accepted refinement. A lower bound may be zero
+when the certificate guarantees only discrete-depth progress; such ties use
+the stable source/payload order and may never claim a positive byte reduction.
+No independent approximation ratio is part of the contract.
 
 Lean proves generic mathematics. Build-time Rust constructs concrete facts,
 stable dumps expose them, and generated guest verifiers consume the encoded
@@ -989,6 +991,201 @@ probe contribution requires a transfer-sensitive encoded-error proof.
 The compiler proves tone and transfer tables monotone. Refinement selects the
 largest remaining contributor under the deterministic exact error/cost
 ordering.
+
+#### 5.4.1 Working color and output transfer
+
+Scene radiance, material RGB, and light RGB use linear Rec.709/sRGB primaries
+with a D65 white point. Authored material and light channels are finite and
+nonnegative. Material base color is in `[0,1]`; a signed procedural
+intermediate is legal only when its certified final range is nonnegative.
+Radiance bounds retain negative roundoff conservatively and clamp to zero only
+at the input of tone mapping.
+
+`FilmicV1` is the sealed 4097-entry u16 table over log2 radiance `[-16,+16]`.
+Its canonical source formula is
+
+```text
+A=.15 B=.50 C=.10 D=.20 E=.02 F=.30 W=11.2
+h(x)=((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F
+f(x)=clamp(h(x)/h(W),0,1)
+```
+
+The runtime does not evaluate that formula. Zero selects code zero directly;
+positive values clamp to the log2 domain, then use fixed-point piecewise
+linear interpolation. `srgb_v1_u16.bin` is likewise a sealed 4097-entry u16
+table over `[0,1]`. Its output is quantized to u8 with the specified integer
+ties rule. The canonical SHA-256 values are
+`834b92da2dc0efaa7ffeee438f95a9de53988abcfa0d122f55329ec01e1ebf6f`
+and `28c6391387185672fd824973e342a185f7cc90d487be3d966821412509213201`
+respectively. Length, endpoints, monotonicity, domains, interpolation tag,
+and digests are verified as one numeric-revision contract.
+
+Frame exposure is expressed in stops and must lie exactly on the sealed
+`1/256`-stop lattice. Validation rejects an in-range value between lattice
+points; runtime multiplication rechecks the lattice before using the fixed
+binary-root product.
+
+#### 5.4.2 Standard material
+
+`MaterialSample.standard` contains base color, metallic, roughness, dielectric
+specular scale, emissive radiance, opacity, and closed normal detail. Metallic,
+specular, and opacity are in `[0,1]`; roughness is in `[0.02,1]`; emissive is
+finite, nonnegative, and profile-bounded. No unlisted lobe exists in v1.
+For unit normal `n`, view `v`, light `l`, and half vector `h`:
+
+```text
+alpha = max(roughness^2, 0.0004)
+D_GGX = alpha^2 / (pi * (NoH^2*(alpha^2-1)+1)^2)
+lambda(x) = (sqrt(1 + alpha^2*(1-NoX^2)/max(NoX^2,1e-12))-1)/2
+G2 = 1 / (1 + lambda(v) + lambda(l))
+F0 = mix(0.08*specular, base_color, metallic)
+F = F0 + (1-F0)*(1-VoH)^5
+Fd90 = 0.5 + 2*roughness*VoH^2
+Fd = (1+(Fd90-1)*(1-NoL)^5) * (1+(Fd90-1)*(1-NoV)^5)
+BRDF = base_color*(1-metallic)*(1-F)*Fd/pi
+     + D_GGX*G2*F/max(4*NoV*NoL,1e-12)
+```
+
+The `1e-12` floors are domain guards for grazing-direction division and the
+GGX rational denominator. They do not hide a failed interval: a normal cone
+crossing the domain boundary is split or conservatively bounded. Reflected
+radiance multiplies `BRDF*NoL`; emissive is added afterward. Opacity belongs
+to ordered transfer and never scales geometry coverage.
+
+#### 5.4.3 Textures and normal moments
+
+V1 compiler-owned textures are immutable `Rgb8Srgb`, `Rgb8Linear`,
+`Rg8Snorm`, or `R8Linear` assets. Their canonical record contains every mip to
+1x1, per-mip signed-aware channel extrema, a per-texel Q16.16 pyramid of slope
+first/second moments when applicable, wrap tags, and a SHA-256 identity. Each
+parent moment texel is the deterministic average of its actual children; a
+whole-level average is not a legal substitute. Filtering is bilinear within a
+mip, trilinear between adjacent mips, and four equal taps at
+`[-3/8,-1/8,1/8,3/8]` along the major footprint when anisotropy exceeds two;
+the major footprint is capped to anisotropy four. Mip choice derives from the
+certified UV derivative footprint. V1 selects the octave by exact
+powers-of-two comparisons and uses the sealed linear coordinate within that
+octave; its interval enclosure includes adjacent levels for outward rounding.
+Clamp and repeat are the only wraps. A repeat
+integer crossing is an explicit seam event.
+
+UV mappings are closed: analytic plane/sphere/cylinder/torus, feature-local
+box/round-box, and object/world triplanar mappings. There is no runtime UV
+callback. The closed `MaterialSample.textured` and `TextureSlope` constructors
+use world triplanar projection unless a compiler-known primitive mapping is
+sealed; the dominant geometric-normal axis uses x/y/z tie order, and the same
+projection carries the certified world-space footprint. Screen coordinates
+are never substituted for UV. Slope filtering carries `E[sx]`, `E[sy]`, `E[sx^2]`, `E[sx sy]`,
+and `E[sy^2]`; the covariance must be positive semidefinite. It produces a
+mean normal, variance roughness adjustment, and BRDF curvature residual. An
+over-budget residual subdivides or uses a bounded deterministic tap set. The
+v1 terminal set for the sealed 2x2 slope assets evaluates all four signed
+base-level slopes in row-major order and averages their BRDF/source bounds
+with exact quarter weights. This terminal never substitutes the mean normal
+or drops the curvature remainder while continuing to use the moment proposal.
+
+Feature-local mappings receive the exact originating feature ID from the
+certified visibility result. The generated evaluator replays that feature's
+authoritative source-order translation, rigid rotation, and fixed repeat
+instance onto the point, geometric normal, and both footprint derivatives
+before analytic, feature-local, or object-triplanar coordinates are evaluated.
+Uniform distance scaling does not move coordinates. World triplanar
+deliberately retains the world point and derivatives. A missing/malformed
+feature or transform record is a render failure, never a fall back to screen
+or world coordinates.
+
+#### 5.4.4 Lighting, secondary visibility, AO, and summaries
+
+Directional lights carry a normalized direction and radiance. Point lights
+use `1/max(r^2,radius^2)` and require `radius >= 2^-12`, so the squared clamp
+cannot underflow to a singular denominator. Rectangle lights carry a center
+and two orthogonal half-axis vectors whose lengths are the half extents. Disk
+lights carry a center, normal, and radius; the constructor deterministically
+normalizes the normal and lowers it to two orthogonal, equal-radius half axes
+in the sealed runtime record. Every sealed
+light has a kind and an explicit per-slot `LightRange`: ordered position
+minimum/maximum, maximum absolute source-axis component, per-channel maximum
+radiance, and maximum frame delta. The frame range/rate contract, world and
+influence bounds, and maximum incident-radiance bound are serialized in the
+verified program. Range and slot-kind checks run before snapshot publication.
+After the first frame, all
+15 scalar lanes of each light are compared with the preceding renderer
+snapshot using the submitted frame-index distance; a non-increasing index or
+an absolute lane delta above `max_delta * frame_steps` is rejected. Values
+outside that contract reject the frame; the rate is
+only a reuse premise, so an otherwise valid out-of-rate frame is evaluated
+from scratch.
+
+Secondary queries traverse a compiler-emitted, median-split surface-object
+BVH. Splits use greatest centroid extent (ties x, y, z) and stable object ID.
+Leaves retain object and feature ranges. Complete feature root isolation,
+validity, q ordering, and CSG occupancy determine clear or the first blocker;
+any capacity, ordering, or numeric ambiguity is unresolved. Only the exact
+originating feature inside the certified normal-offset corridor is excluded.
+BVH endpoints are converted to f32 outward by the compiler, so guest slab
+tests require no guessed padding. The origin epsilon is derived from eight
+f32 ulps at the reconstructed point scale plus four sealed fixed-q quanta;
+the runtime uses that same value for its offset and exclusion corridor.
+
+Rectangle/disk integration uses dyadic Morton-order source cells. The disk
+uses the concentric map with Jacobian `pi/4`. Whole-cell secondary visibility
+first produces a complete 8x8 mask and a canonical 32x32 terminal mask. The
+lighting certificate retains the lowest-index live area-light slot for the
+global queue's sealed density terminal. Only that slot's unresolved 32x32
+parents subdivide to an 8x8 grid each, giving exact clear and possible counts
+on the canonical 256x256 source grid. At most 62 unresolved parents fit the
+fixed 31-word payload; exceeding that count or any work bound reports
+`CertificateExhausted`.
+
+For a selected parent, shading evaluates four canonical 64x64 contribution
+children and retains their minimum and maximum source density. Multiplying
+those bounds by the recorded clear/possible fractions encloses every spatial
+allocation of visibility within the parent. The midpoint visibility is only
+the deterministic candidate; it has no proof authority. A cell is accepted
+only when the resulting whole-cell contribution interval fits its dyadic
+share of the encoded budget. Other area lights retain their complete coarse
+bounds and are never silently promoted by the selected source's payload.
+
+AO uses distances `[1/16,1/8,1/4,1/2,1]*ao_radius`, weights
+`[.40,.25,.16,.11,.08]`, and
+`occ_i=clamp((s_i-max(distance_lower,0))/s_i,0,1)`. Its complete result is
+`clamp(1-ao_strength*sum(weight_i*occ_i),0,1)` with reversed interval
+endpoints because occlusion decreases with distance. Each tap first queries
+the surface-object BVH over its complete radius cube; an empty candidate set
+proves zero occlusion, while a nonempty set runs the active semantic distance
+program. The same evaluation carries its exact source-language f32 candidate.
+If the real-interpretation enclosure still spans output codes, the `Ao`
+terminal rung consumes that deterministic five-tap candidate and removes only
+the enclosing evaluator-rounding residual.
+
+Material and shading summaries form the fixed ladder constant, affine-x,
+quadratic-x, separable rank at most four, and exact pixel. A summary is usable
+only with an a-posteriori HDR residual. Cross pivots use the fixed 5x5 grid,
+greatest residual upper bound, then y/x ties. Packet candidates use the same
+coefficients as scalar evaluation and retain HDR intervals until encoded
+endpoints agree.
+
+#### 5.4.5 Display refinement and opaque storage
+
+Every unresolved output unit reports an error source, a conservative integer
+lower bound on code-span reduction, static operation count, remaining discrete
+depth/current code span, and stable payload ID. Zero is the only permitted
+lower bound when a rung proves depth progress but not an immediate encoded-span
+decrease. The queue compares reduction/cost by integer cross multiplication;
+ties use source enum then payload ID. Applying an option must strictly decrease
+`(remaining_depth, interval_width)` lexicographically or terminate. If endpoint
+codes differ after the queue is exhausted, rendering fails with
+`CertificateExhausted`; the candidate is never rounded to a nearby byte. Opaque
+storage writes exact B, G, R singleton codes and alpha 255.
+Coverage events composite HDR front/back intervals before tone mapping. The
+old visibility colors remain available only to compiler-internal conformance
+mode and cannot be selected by source code.
+
+The exact per-pixel rung may call the encoder directly only when every active
+contributor has already been evaluated deterministically and the HDR lower,
+candidate, and upper values are bit-identical. This is the zero-width terminal
+case of the same verifier, not an unchecked nearest-byte fallback. Any nonzero
+span must enter the refinement queue or fail `CertificateExhausted`.
 
 ### 5.5 Temporal reuse
 

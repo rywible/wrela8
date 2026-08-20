@@ -35,6 +35,9 @@ const FIXTURE_ID: u32 = 17
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
+fn telemetry_words_from_dump_counts(packed: u64) -> u64:
+    return packed >> 32
+
 const TILE_WIDTH: u32 = 64
 const EDGE_X: u32 = 64
 
@@ -104,9 +107,17 @@ async fn s(renderer: Actor[Renderer[SceneParams]]):
                     __wrela_trace_p7_u64(dump_value[1])
                     dump_index = dump_index + 1
                 # Full visible bytes and fixed-q evidence come from VMM binary
-                # captures. Trace only the complete telemetry tail here.
-                dump_index = dump_header[1] - 600
-                @budget(bound=601)
+                # captures. Trace only the complete telemetry tail here. Read
+                # its sealed length from word 15 instead of duplicating the
+                # schema count in the start offset.
+                dump_counts = __wrela_pixels_p7_debug_frame_dump_word(0, 15)
+                assert dump_counts[0] == 1, "instrumented dump counts are complete"
+                telemetry_words = telemetry_words_from_dump_counts(dump_counts[1])
+                assert telemetry_words > 0, "instrumented telemetry tail is nonempty"
+                assert telemetry_words <= 649, "instrumented telemetry tail fits its sealed trace budget"
+                assert dump_header[1] >= telemetry_words, "instrumented dump contains its telemetry tail"
+                dump_index = dump_header[1] - telemetry_words + 1
+                @budget(bound=649)
                 while dump_index <= dump_header[1]:
                     dump_value = __wrela_pixels_p7_debug_frame_dump_word(0, dump_index)
                     assert dump_value[0] == 1, "instrumented telemetry dump is complete"

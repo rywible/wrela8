@@ -2078,14 +2078,13 @@ impl<'a> FnCtx<'a> {
     /// Word count above which an aggregate copy becomes a counted loop rather
     /// than an unrolled load/store pair per word.
     ///
-    /// The renderer moves multi-kilobyte certificate records between frame
-    /// slots, and unrolling every one of those words dominated the emitted
-    /// text: a single 5 KiB record copy is over a thousand instructions, and
-    /// the Pixels sweep functions perform dozens of them. The threshold is set
-    /// well above the small aggregates (vectors, intervals, samples) that
-    /// genuinely benefit from straight-line copies, so ordinary code keeps its
-    /// existing shape and only the large records pay for a loop.
-    const COPY_LOOP_MIN_WORDS: usize = 16;
+    /// The renderer moves certificate records between frame slots, and
+    /// unrolling every word dominates emitted text well before those records
+    /// reach a kilobyte. P9's smallest cross-stage records are eight words;
+    /// keeping them straight-line would push the largest sealed image beyond
+    /// the fixed branch region. Vectors and interval samples remain below this
+    /// boundary, while certificate-shaped copies use one auditable loop.
+    const COPY_LOOP_MIN_WORDS: usize = 8;
 
     fn copy_slot_to_slot(&mut self, dst_off: usize, src_off: usize, size: usize) {
         if self.try_copy_slots_with_loop(dst_off, src_off, size) {
@@ -2320,11 +2319,14 @@ impl<'a> FnCtx<'a> {
         // Keep diagnostic instrumentation out of call analysis and frame
         // planning. Save x0 and the intra-procedure-call scratch x17 as one
         // pair. Reserved platform register x18 carries the VMM-installed
-        // per-core census offset, avoiding both races and a system-register
-        // read at every block. The dump function itself is excluded from
-        // instrumentation, so setting `LANE2.enabled = 2` freezes the census
-        // before it reads the counters. None of these words writes NZCV, so
-        // the probe preserves source state, SP, call depth, and tail edges.
+        // per-core census-bank base; the scaled block id is therefore the
+        // only address materialized at each leader. This avoids races and a
+        // system-register read without making large instrumented Pixels
+        // images exceed the sealed branch region. The dump function itself
+        // is excluded from instrumentation, so setting `LANE2.enabled = 2`
+        // freezes the census before it reads the counters. None of these
+        // words writes NZCV, so the probe preserves source state, SP, call
+        // depth, and tail edges.
         let address =
             wrela_machine::lane2::BASE + wrela_machine::lane2::HITS_OFFSET + u64::from(id) * 8;
         self.push_mem(
@@ -2335,10 +2337,10 @@ impl<'a> FnCtx<'a> {
             &[0, 17, 31],
             Some(MemRef::stack(0)),
         );
-        self.load_imm(17, address as i64);
+        self.load_imm(17, i64::from(id));
         self.push_mem(
-            encode::enc_ldr_x_reg(0, 17, 18),
-            "ldr x0, [x17, x18]  ; block-hit per-core count".to_string(),
+            encode::enc_ldr_x_reg_scaled(0, 18, 17),
+            "ldr x0, [x18, x17, lsl #3]  ; block-hit per-core count".to_string(),
             CostRule::Load,
             Some(0),
             &[17, 18],
@@ -2352,8 +2354,8 @@ impl<'a> FnCtx<'a> {
             &[0],
         );
         self.push_mem(
-            encode::enc_str_x_reg(0, 17, 18),
-            "str x0, [x17, x18]  ; block-hit per-core count".to_string(),
+            encode::enc_str_x_reg_scaled(0, 18, 17),
+            "str x0, [x18, x17, lsl #3]  ; block-hit per-core count".to_string(),
             CostRule::Store,
             None,
             &[0, 17, 18],
@@ -11006,6 +11008,32 @@ mod tests {
         assert_eq!(frame.ret_ptr_off, None);
         assert_eq!(frame.lr_off, 24);
         assert_eq!(frame.size, 32);
+    }
+
+    #[test]
+    fn certificate_sized_copies_use_the_counted_loop_boundary() {
+        let (mwir_program, layout) = compile(concat!(
+            "module examples.codegen_certificate_copy\n\n",
+            "pub fn copy_eight(read value: [u64; 8]) -> [u64; 8]:\n",
+            "    copied = value\n",
+            "    return copied\n\n",
+            "pub fn copy_seven(read value: [u64; 7]) -> [u64; 7]:\n",
+            "    copied = value\n",
+            "    return copied\n",
+        ));
+        let program = codegen_program(&mwir_program, &layout).expect("aggregate copy codegen");
+        let counted = &program.fns["copy_eight"].code;
+        assert!(
+            counted.iter().any(|word| word.text.starts_with("cbnz ")),
+            "the eight-word P9 certificate boundary must stay compact: {counted:?}"
+        );
+        let straight_line = &program.fns["copy_seven"].code;
+        assert!(
+            straight_line
+                .iter()
+                .all(|word| !word.text.starts_with("cbnz ")),
+            "smaller vector copies remain straight-line: {straight_line:?}"
+        );
     }
 
     #[test]

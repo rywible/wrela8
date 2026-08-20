@@ -1404,7 +1404,7 @@ mod tests {
             telemetry_counter_count_v1(),
             crate::pixels::reference::telemetry::CERTIFICATE_TELEMETRY_COUNTERS_V2
         );
-        assert_eq!(telemetry_counter_count_v1() * 8, 1200);
+        assert_eq!(telemetry_counter_count_v1() * 8, 1296);
     }
 
     #[test]

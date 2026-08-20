@@ -647,7 +647,7 @@ pub fn __wrela_pixels_p7_row_candidates(
 ) -> P7RowCandidates:
     result = P7RowCandidates(ok=true, error=5, ids=[0; 256], count=0)
     config = __wrela_pixels_p7_numeric_config(renderer)
-    if config[0] != 1 or config[1] <= 0 or config[2] <= 0 or snapshot.param_count.to[i64]() != config[6]:
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
         result.ok = false
         return result
     width = config[1].to[u32]()
@@ -1440,7 +1440,7 @@ pub fn __wrela_pixels_p7_collect_roots_box(
         return result
     width = config[1].to[u32]()
     height = config[2].to[u32]()
-    if width == 0 or height == 0 or x0 >= x1 or x1 > width or y >= height or snapshot.param_count.to[i64]() != config[6]:
+    if width == 0 or height == 0 or x0 >= x1 or x1 > width or y >= height:
         result.ok = false
         result.error = 8
         return result

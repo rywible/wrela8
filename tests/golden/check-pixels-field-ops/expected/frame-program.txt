@@ -1,7 +1,7 @@
-FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693d36f206364865dc86d
-  Header bytes=80 flags=0x1 total_bytes=4434704 profile_revision=1 numeric_revision=1 formal_revision=1 formal_name=pixels-v1
+FrameProgram v1 renderer=0 digest=2390a1da59fa14cd5d236467691e949999f97c01c9c5a2df0395f94ca6c4c6a8
+  Header bytes=80 flags=0x1 total_bytes=4495328 profile_revision=1 numeric_revision=4 formal_revision=1 formal_name=pixels-v1
   Directory count=17 offset=80
-  Table kind=scalar code=1 record_bytes=16 count=187 offset=384 byte_len=2992
+  Table kind=scalar code=1 record_bytes=16 count=185 offset=384 byte_len=2960
   Table kind=field code=2 record_bytes=16 count=57 offset=3392 byte_len=912
   Table kind=object code=3 record_bytes=16 count=10 offset=4352 byte_len=160
   Table kind=feature code=4 record_bytes=16 count=49 offset=4544 byte_len=784
@@ -10,16 +10,24 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
   Table kind=event code=7 record_bytes=16 count=1479 offset=5568 byte_len=23664
   Table kind=csg code=8 record_bytes=16 count=20 offset=29248 byte_len=320
   Table kind=fixed-domain code=9 record_bytes=16 count=11299 offset=29568 byte_len=180784
-  Table kind=immediate code=10 record_bytes=24 count=176013 offset=210368 byte_len=4224312
-  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=4434688 byte_len=16
+  Table kind=immediate code=10 record_bytes=24 count=178526 offset=210368 byte_len=4284624
+  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=4495040 byte_len=16
   Table kind=texture code=12 record_bytes=16 count=0 offset=0 byte_len=0
-  Table kind=shading-summary code=13 record_bytes=16 count=0 offset=0 byte_len=0
+  Table kind=shading-summary code=13 record_bytes=16 count=14 offset=4495104 byte_len=224
   Table kind=transparency code=14 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=probe code=15 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=kinetic code=16 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=debug-name code=17 record_bytes=16 count=0 offset=0 byte_len=0
   Capacity objects=10 features=49 candidate_features_per_tile=49 row_start_roots=271 active_sheets_per_row=271 event_intervals_per_row=19569 root_stack_nodes=1084 event_stack_nodes=3200 runs_per_row=19570 corridors_per_row=19569 transparent_layers=1 state_bytes=5962290
   FixedQDomain exponent=-17 maximum_raw=1342439424 reset_width=32 error_radius=1341783554
+  LightContract slot=0 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=1 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=2 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=3 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=4 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=5 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=6 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
+  LightContract slot=7 source_position=[-65504,-65504,-65504]-[65504,65504,65504] axis_component_max=65504 radiance_max=[65504,65504,65504] max_delta=65504 influence=[-4,-4,-4]-[4,4,4] maximum_incident=[0,0,0]
   Event id=e0 kind=projected-bound-enter repr=projected-boundary:horizontal=false:coordinate=22 roots=1 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
   Event id=e1 kind=projected-bound-exit repr=projected-boundary:horizontal=false:coordinate=47 roots=1 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
   Event id=e2 kind=silhouette repr=quadratic-discriminant:predicate=poly500:root=poly0 roots=2 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
@@ -274,55 +282,55 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
   Event id=e251 kind=smooth-center-tie repr=smooth-tie:left=s163:right=s158:negated=true,false:derivatives=sources=[s158,s163]:first=[2.060660188894094,2.060660188894094,2.000000034228544]:second=568.0421358926849:third=192244.0034620321:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.6575170029141635:remainder=9454496.479613833 roots=70 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
   Event id=e252 kind=smooth-band-enter repr=smooth-band:left=s163:right=s158:negated=true,false:radius=s53:derivatives=sources=[s53,s158,s163]:first=[2.060660188894094,2.060660188894094,2.000000034228544]:second=568.0421358926849:third=192244.0034620321:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.474300139617993:remainder=5256387.405688849 roots=800 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
   Event id=e253 kind=smooth-center-tie repr=smooth-tie:left=s163:right=s158:negated=true,false:derivatives=sources=[s158,s163]:first=[2.060660188894094,2.060660188894094,2.000000034228544]:second=568.0421358926849:third=192244.0034620321:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.474300139617993:remainder=5256387.405688849 roots=400 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e254 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=0.34662159865903597:remainder=0 roots=1 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
-  Event id=e255 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=13.856406460551026:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e256 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e257 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e258 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e259 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e260 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e261 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e262 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e263 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e264 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e265 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e266 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e267 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e268 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e269 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e270 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e271 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e272 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e273 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e274 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e275 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e276 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e277 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e278 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e279 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e280 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e281 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e282 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e283 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e284 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e285 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e286 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e287 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e288 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e289 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=13.856406460551026:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e290 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=1.2992759666579263:remainder=0 roots=1 subdivision_depth=2 pixels=[16,48;0,32] tiles=[1,3;0,2]
-  Event id=e291 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e292 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e293 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e294 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e295 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e296 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e297 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.657517002914166:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e298 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.657517002914166:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e299 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.604162556301345:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e300 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.6575170029141635:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e301 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.6575170029141635:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
-  Event id=e302 kind=material-boundary repr=material-difference:left=s185:right=s0:compare=lt:derivatives=sources=[s0,s185]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.474300139617993:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e254 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=0.34662159865903597:remainder=0 roots=1 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
+  Event id=e255 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=13.856406460551026:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e256 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e257 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e258 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e259 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e260 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e261 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e262 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.472490520359089:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e263 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e264 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e265 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e266 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e267 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e268 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e269 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e270 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e271 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e272 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e273 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e274 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e275 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e276 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e277 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e278 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e279 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e280 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e281 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e282 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e283 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e284 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e285 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e286 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e287 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e288 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=4.919707823271759:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e289 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=13.856406460551026:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e290 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=1.2992759666579263:remainder=0 roots=1 subdivision_depth=2 pixels=[16,48;0,32] tiles=[1,3;0,2]
+  Event id=e291 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e292 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e293 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=7.218348033451093:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e294 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e295 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e296 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.324922482437885:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e297 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.657517002914166:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e298 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.657517002914166:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e299 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.604162556301345:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e300 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.6575170029141635:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e301 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=6.6575170029141635:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
+  Event id=e302 kind=material-boundary repr=material-difference:left=s183:right=s0:compare=lt:derivatives=sources=[s0,s183]:first=[1,0,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=5.474300139617993:remainder=0 roots=1 subdivision_depth=2 pixels=[0,64;0,32] tiles=[0,4;0,2]
   Event id=e303 kind=depth-swap repr=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:b_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:x_domain=[-1.5625000000000002,1.5625000000000002]:q_domain=[0.17776413878443523,0.33913437467649066]:fallback_difference=[-9.82223586121557,0.3313218746764907]:fallback_remainder=9.822235861215571:strict_gq=true:discard_taylor_on_fallback=true roots=4 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
   Event id=e304 kind=depth-swap repr=taylor-depth:a=d0:b=d2:order=2:next_order=3:a_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:b_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:x_domain=[-1.5625000000000002,1.5625000000000002]:q_domain=[0.17776413878443523,0.33913437467649066]:fallback_difference=[-0.9490566708019514,0.19702732722520416]:fallback_remainder=0.9490566708019516:strict_gq=true:discard_taylor_on_fallback=true roots=8 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
   Event id=e305 kind=depth-swap repr=taylor-depth:a=d0:b=d3:order=2:next_order=3:a_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:b_third=[poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226,poly226]:x_domain=[-1.5625000000000002,1.5625000000000002]:q_domain=[0.17776413878443523,0.33913437467649066]:fallback_difference=[-0.9490566708019514,0.19702732722520416]:fallback_remainder=0.9490566708019516:strict_gq=true:discard_taylor_on_fallback=true roots=4 subdivision_depth=2 pixels=[22,47;1,26] tiles=[1,3;0,2]
@@ -1903,7 +1911,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
   ExclusionProof id=proof199 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1326092503103174,2.4480381480839664] separation=0.08573425031031737]
   ExclusionProof id=proof200 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.1326092503103174,2.4480381480839664] separation=0.08573425031031737]
   ExclusionProof id=proof201 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.13668426531181485,1.5790021432659145] separation=0.08980926531181482]
-  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a70000 frameprog_bytes=4434704 state_base=0x40eb0000 state_bytes=5962290
+  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a70000 frameprog_bytes=4495328 state_base=0x40ec0000 state_bytes=5962290
   GeneratedModule begin
     module __image_pixels
 
@@ -1977,6 +1985,9 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         ordinal: u32
         reserved1: u32
         value: u64
+
+    pub fn __wrela_pixels_p9_debug_visibility() -> bool:
+        return false
 
     # These generated-only helpers are lowered as representation-preserving
     # copies. Their source bodies keep ordinary checking deterministic.
@@ -2065,8 +2076,8 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     pub const N_RENDER_WORKERS: usize = 1
 
     const R0_FRAMEPROG_BASE: usize = 1084686336
-    const R0_FRAMEPROG_BYTES: usize = 4434704
-    const R0_STATE_BASE: usize = 1089142784
+    const R0_FRAMEPROG_BYTES: usize = 4495328
+    const R0_STATE_BASE: usize = 1089208320
     const R0_STATE_BYTES: usize = 5962290
     const R0_WIDTH: usize = 64
     const R0_HEIGHT: usize = 32
@@ -2084,8 +2095,8 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     const R0_FEATURE_TEMPLATES: usize = 49
     const R0_FEATURES: usize = 49
     const R0_REPEATED_INSTANCES: usize = 6
-    const R0_SCALAR_PROGRAM_SLOTS: usize = 187
-    const R0_DERIVATIVE_PROGRAM_SLOTS: usize = 187
+    const R0_SCALAR_PROGRAM_SLOTS: usize = 185
+    const R0_DERIVATIVE_PROGRAM_SLOTS: usize = 185
     const R0_PARAMETER_SLOTS: usize = 7
     const R0_CSG_STACK: usize = 4
     const R0_MAX_PROJECTED_FEATURES_ROW: usize = 49
@@ -2111,7 +2122,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     const R0_STRUCTURAL_PER_WORKER_SCRATCH_BYTES: usize = 3133136
     const R0_STRUCTURAL_ALL_WORKER_SCRATCH_BYTES: usize = 3133136
     const R0_TELEMETRY_PRODUCTION_BYTES: usize = 0
-    const R0_TELEMETRY_INSTRUMENTED_BYTES: usize = 50352
+    const R0_TELEMETRY_INSTRUMENTED_BYTES: usize = 50448
     const R0_OUTPUT_TILE_BYTES: usize = 8192
     const R0_OUTPUT_DOUBLE_BUFFER_BYTES: usize = 16384
     const R0_PROBE_STATE_BYTES: usize = 0
@@ -2124,7 +2135,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     const R0_TILE_OWNERSHIP_CAPACITY_BYTES: usize = 2
     const R0_FAILURE_RECORD_CAPACITY_BYTES: usize = 64
     const R0_PRODUCTION_STATE_BYTES: usize = 5962290
-    const R0_INSTRUMENTED_STATE_BYTES: usize = 6012648
+    const R0_INSTRUMENTED_STATE_BYTES: usize = 6012744
     const R0_CANDIDATE_FEATURES_TILE: usize = 49
     const R0_ROW_START_ROOTS: usize = 271
     const R0_ACTIVE_SHEETS_ROW: usize = 271
@@ -2174,188 +2185,188 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     const R0_WORKSPACE_SHADING_BYTES: usize = 593984
     const R0_WORKSPACE_TRANSPARENCY_OFFSET: usize = 5507272
     const R0_WORKSPACE_TRANSPARENCY_BYTES: usize = 296992
-    const R0_STATE_HEADER_BASE: usize = 1089142784
+    const R0_STATE_HEADER_BASE: usize = 1089208320
     const R0_STATE_HEADER_BYTES: usize = 256
-    const R0_COEFFICIENT_SNAPSHOTS_BASE: usize = 1089143040
+    const R0_COEFFICIENT_SNAPSHOTS_BASE: usize = 1089208576
     const R0_COEFFICIENT_SNAPSHOTS_BYTES: usize = 56
-    const R0_FRAME_SNAPSHOTS_BASE: usize = 1089143096
+    const R0_FRAME_SNAPSHOTS_BASE: usize = 1089208632
     const R0_FRAME_SNAPSHOTS_BYTES: usize = 1376
-    const R0_FRAME_COMPLEXES_BASE: usize = 1089144472
+    const R0_FRAME_COMPLEXES_BASE: usize = 1089210008
     const R0_FRAME_COMPLEXES_BYTES: usize = 131072
-    const R0_WORKER_SCRATCH_BASE: usize = 1089275544
+    const R0_WORKER_SCRATCH_BASE: usize = 1089341080
     const R0_WORKER_SCRATCH_BYTES: usize = 5804264
-    const R0_FRAMEBUFFERS_BASE: usize = 1095081984
+    const R0_FRAMEBUFFERS_BASE: usize = 1095147520
     const R0_FRAMEBUFFERS_BYTES: usize = 16384
-    const R0_PROBES_BASE: usize = 1095098368
+    const R0_PROBES_BASE: usize = 1095163904
     const R0_PROBES_BYTES: usize = 0
-    const R0_KINETIC_STATE_BASE: usize = 1095098368
+    const R0_KINETIC_STATE_BASE: usize = 1095163904
     const R0_KINETIC_STATE_BYTES: usize = 6272
-    const R0_TILE_DESCRIPTORS_BASE: usize = 1095104640
+    const R0_TILE_DESCRIPTORS_BASE: usize = 1095170176
     const R0_TILE_DESCRIPTORS_BYTES: usize = 368
-    const R0_TILE_OWNERSHIP_BASE: usize = 1095105008
+    const R0_TILE_OWNERSHIP_BASE: usize = 1095170544
     const R0_TILE_OWNERSHIP_BYTES: usize = 2
-    const R0_FAILURE_BASE: usize = 1095105010
+    const R0_FAILURE_BASE: usize = 1095170546
     const R0_FAILURE_BYTES: usize = 64
-    const R0_TELEMETRY_BASE: usize = 1095105080
+    const R0_TELEMETRY_BASE: usize = 1095170616
     const R0_TELEMETRY_BYTES: usize = 0
-    const R0_FRAMEBUFFER_BASE: usize = 1095081984
+    const R0_FRAMEBUFFER_BASE: usize = 1095147520
     const R0_FRAMEBUFFER_BYTES: usize = 16384
-    const R0_PROBE_RESERVATION_BASE: usize = 1095098368
+    const R0_PROBE_RESERVATION_BASE: usize = 1095163904
     const R0_PROBE_RESERVATION_BYTES: usize = 0
     @layout(runtime, endian=little)
     struct R0DebugFramebufferChunk0View:
         words: [u64; 2048]
-    @placed(0x4145a000)
+    @placed(0x4146a000)
     static R0_DEBUG_FRAMEBUFFER_CHUNK_0: R0DebugFramebufferChunk0View
     @layout(runtime, endian=little)
     struct R0ScanoutStateView:
         words: [u64; 32]
-    @placed(0x40eb0000)
+    @placed(0x40ec0000)
     static R0_SCANOUT_STATE: R0ScanoutStateView
     @layout(runtime, endian=little)
     struct R0DisplayListChunk0View:
         words: [u64; 46]
-    @placed(0x4145f880)
+    @placed(0x4146f880)
     static R0_DISPLAY_LIST_CHUNK_0: R0DisplayListChunk0View
     @layout(runtime, endian=little)
     struct R0FrameSnapshotView:
         bits: [u32; 152]
         meta: [u64; 10]
-    @placed(0x40eb0138)
+    @placed(0x40ec0138)
     static R0_FRAME_SNAPSHOT: R0FrameSnapshotView
     const R0_WORKER_0_CORE: usize = 0
     const R0_WORKER_0_TILES_START: usize = 0
     const R0_WORKER_0_TILES_END: usize = 1
-    const R0_WORKER_0_WORKSPACE_BASE: usize = 1089275544
+    const R0_WORKER_0_WORKSPACE_BASE: usize = 1089341080
     const R0_WORKER_0_WORKSPACE_BYTES: usize = 5804264
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceHeaderView:
         words: [u64; 8]
-    @placed(0x40ed0698)
+    @placed(0x40ee0698)
     static R0_WORKER_0_WORKSPACE_HEADER: R0Worker0WorkspaceHeaderView
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceACTIVE_FEATURESChunk0View:
         words: [u64; 392]
-    @placed(0x40ed06d8)
+    @placed(0x40ee06d8)
     static R0_WORKER_0_WORKSPACE_ACTIVE_FEATURES_CHUNK_0: R0Worker0WorkspaceACTIVE_FEATURESChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOTSChunk0View:
         words: [u64; 4336]
-    @placed(0x40ed1318)
+    @placed(0x40ee1318)
     static R0_WORKER_0_WORKSPACE_ROOTS_CHUNK_0: R0Worker0WorkspaceROOTSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOTS_TMPChunk0View:
         words: [u64; 4336]
-    @placed(0x40ed9a98)
+    @placed(0x40ee9a98)
     static R0_WORKER_0_WORKSPACE_ROOTS_TMP_CHUNK_0: R0Worker0WorkspaceROOTS_TMPChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceROOT_STACKChunk0View:
         words: [u64; 2168]
-    @placed(0x40ee2218)
+    @placed(0x40ef2218)
     static R0_WORKER_0_WORKSPACE_ROOT_STACK_CHUNK_0: R0Worker0WorkspaceROOT_STACKChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceACTIVE_SHEETSChunk0View:
         words: [u64; 2168]
-    @placed(0x40ee65d8)
+    @placed(0x40ef65d8)
     static R0_WORKER_0_WORKSPACE_ACTIVE_SHEETS_CHUNK_0: R0Worker0WorkspaceACTIVE_SHEETSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceEVENTSChunk0View:
         words: [u64; 49152]
-    @placed(0x40eea998)
+    @placed(0x40efa998)
     static R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_0: R0Worker0WorkspaceEVENTSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceEVENTSChunk1View:
         words: [u64; 29124]
-    @placed(0x40f4a998)
+    @placed(0x40f5a998)
     static R0_WORKER_0_WORKSPACE_EVENTS_CHUNK_1: R0Worker0WorkspaceEVENTSChunk1View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceEVENT_STACKChunk0View:
         words: [u64; 6400]
-    @placed(0x40f837b8)
+    @placed(0x40f937b8)
     static R0_WORKER_0_WORKSPACE_EVENT_STACK_CHUNK_0: R0Worker0WorkspaceEVENT_STACKChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk0View:
         words: [u64; 49152]
-    @placed(0x40f8ffb8)
+    @placed(0x40f9ffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_0: R0Worker0WorkspaceRUNSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk1View:
         words: [u64; 49152]
-    @placed(0x40feffb8)
+    @placed(0x40ffffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_1: R0Worker0WorkspaceRUNSChunk1View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk2View:
         words: [u64; 49152]
-    @placed(0x4104ffb8)
+    @placed(0x4105ffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_2: R0Worker0WorkspaceRUNSChunk2View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk3View:
         words: [u64; 49152]
-    @placed(0x410affb8)
+    @placed(0x410bffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_3: R0Worker0WorkspaceRUNSChunk3View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk4View:
         words: [u64; 49152]
-    @placed(0x4110ffb8)
+    @placed(0x4111ffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_4: R0Worker0WorkspaceRUNSChunk4View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk5View:
         words: [u64; 49152]
-    @placed(0x4116ffb8)
+    @placed(0x4117ffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_5: R0Worker0WorkspaceRUNSChunk5View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceRUNSChunk6View:
         words: [u64; 18208]
-    @placed(0x411cffb8)
+    @placed(0x411dffb8)
     static R0_WORKER_0_WORKSPACE_RUNS_CHUNK_6: R0Worker0WorkspaceRUNSChunk6View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceREBUILDChunk0View:
         words: [u64; 27843]
-    @placed(0x411f38b8)
+    @placed(0x412038b8)
     static R0_WORKER_0_WORKSPACE_REBUILD_CHUNK_0: R0Worker0WorkspaceREBUILDChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceCORRIDORSChunk0View:
         words: [u64; 49152]
-    @placed(0x41229ed0)
+    @placed(0x41239ed0)
     static R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_0: R0Worker0WorkspaceCORRIDORSChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceCORRIDORSChunk1View:
         words: [u64; 49152]
-    @placed(0x41289ed0)
+    @placed(0x41299ed0)
     static R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_1: R0Worker0WorkspaceCORRIDORSChunk1View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceCORRIDORSChunk2View:
         words: [u64; 49152]
-    @placed(0x412e9ed0)
+    @placed(0x412f9ed0)
     static R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_2: R0Worker0WorkspaceCORRIDORSChunk2View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceCORRIDORSChunk3View:
         words: [u64; 9096]
-    @placed(0x41349ed0)
+    @placed(0x41359ed0)
     static R0_WORKER_0_WORKSPACE_CORRIDORS_CHUNK_3: R0Worker0WorkspaceCORRIDORSChunk3View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceFIXED_QChunk0View:
         words: [u64; 18562]
-    @placed(0x4135bb10)
+    @placed(0x4136bb10)
     static R0_WORKER_0_WORKSPACE_FIXED_Q_CHUNK_0: R0Worker0WorkspaceFIXED_QChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceSHADINGChunk0View:
         words: [u64; 49152]
-    @placed(0x4137ff20)
+    @placed(0x4138ff20)
     static R0_WORKER_0_WORKSPACE_SHADING_CHUNK_0: R0Worker0WorkspaceSHADINGChunk0View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceSHADINGChunk1View:
         words: [u64; 25096]
-    @placed(0x413dff20)
+    @placed(0x413eff20)
     static R0_WORKER_0_WORKSPACE_SHADING_CHUNK_1: R0Worker0WorkspaceSHADINGChunk1View
     @layout(runtime, endian=little)
     struct R0Worker0WorkspaceTRANSPARENCYChunk0View:
         words: [u64; 37124]
-    @placed(0x41410f60)
+    @placed(0x41420f60)
     static R0_WORKER_0_WORKSPACE_TRANSPARENCY_CHUNK_0: R0Worker0WorkspaceTRANSPARENCYChunk0View
     const R0_SCALAR_BASE: usize = 0x40a70180
-    const R0_SCALAR_COUNT: usize = 187
-    const R0_SCALAR_BYTES: usize = 2992
+    const R0_SCALAR_COUNT: usize = 185
+    const R0_SCALAR_BYTES: usize = 2960
     @layout(runtime, endian=little)
     struct R0ScalarTableView:
         records: [FrameProgramRecordV1; R0_SCALAR_COUNT]
@@ -2426,27 +2437,32 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     @placed(0x40a77380)
     static R0_FIXED_DOMAIN_TABLE: R0FixedDomainTableView
     const R0_IMMEDIATE_BASE: usize = 0x40aa35c0
-    const R0_IMMEDIATE_COUNT: usize = 176013
-    const R0_IMMEDIATE_BYTES: usize = 4224312
+    const R0_IMMEDIATE_COUNT: usize = 178526
+    const R0_IMMEDIATE_BYTES: usize = 4284624
     @layout(runtime, endian=little)
     struct R0ImmediateTableView:
         records: [FrameProgramImmediateV1; R0_IMMEDIATE_COUNT]
     @placed(0x40aa35c0)
     static R0_IMMEDIATE_TABLE: R0ImmediateTableView
-    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40eaab00
+    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40eb96c0
     const R0_CAMERA_LIGHT_POST_COUNT: usize = 1
     const R0_CAMERA_LIGHT_POST_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0CameraLightPostTableView:
         records: [FrameProgramRecordV1; R0_CAMERA_LIGHT_POST_COUNT]
-    @placed(0x40eaab00)
+    @placed(0x40eb96c0)
     static R0_CAMERA_LIGHT_POST_TABLE: R0CameraLightPostTableView
     const R0_TEXTURE_BASE: usize = 0x0
     const R0_TEXTURE_COUNT: usize = 0
     const R0_TEXTURE_BYTES: usize = 0
-    const R0_SHADING_SUMMARY_BASE: usize = 0x0
-    const R0_SHADING_SUMMARY_COUNT: usize = 0
-    const R0_SHADING_SUMMARY_BYTES: usize = 0
+    const R0_SHADING_SUMMARY_BASE: usize = 0x40eb9700
+    const R0_SHADING_SUMMARY_COUNT: usize = 14
+    const R0_SHADING_SUMMARY_BYTES: usize = 224
+    @layout(runtime, endian=little)
+    struct R0ShadingSummaryTableView:
+        records: [FrameProgramRecordV1; R0_SHADING_SUMMARY_COUNT]
+    @placed(0x40eb9700)
+    static R0_SHADING_SUMMARY_TABLE: R0ShadingSummaryTableView
     const R0_TRANSPARENCY_BASE: usize = 0x0
     const R0_TRANSPARENCY_COUNT: usize = 0
     const R0_TRANSPARENCY_BYTES: usize = 0
@@ -2469,9 +2485,9 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     static R0_FRAME_PROGRAM_DIRECTORY: R0FrameProgramDirectoryView
     const R0_DIRECTORY_COUNT: usize = 17
 
-    const R0_EXPECTED_DIGEST: [u8; 32] = [6, 229, 240, 131, 88, 191, 154, 36, 206, 234, 224, 1, 41, 201, 122, 101, 21, 250, 71, 236, 217, 6, 147, 211, 111, 32, 99, 100, 134, 93, 200, 109, ]
+    const R0_EXPECTED_DIGEST: [u8; 32] = [35, 144, 161, 218, 89, 250, 20, 205, 93, 35, 100, 103, 105, 30, 148, 153, 153, 249, 124, 1, 201, 197, 162, 223, 3, 149, 249, 76, 166, 196, 198, 168, ]
     const R0_EXPECTED_DIRECTORY: [[u64; 5]; 17] = [
-        [1, 16, 187, 384, 2992],
+        [1, 16, 185, 384, 2960],
         [2, 16, 57, 3392, 912],
         [3, 16, 10, 4352, 160],
         [4, 16, 49, 4544, 784],
@@ -2480,10 +2496,10 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         [7, 16, 1479, 5568, 23664],
         [8, 16, 20, 29248, 320],
         [9, 16, 11299, 29568, 180784],
-        [10, 24, 176013, 210368, 4224312],
-        [11, 16, 1, 4434688, 16],
+        [10, 24, 178526, 210368, 4284624],
+        [11, 16, 1, 4495040, 16],
         [12, 16, 0, 0, 0],
-        [13, 16, 0, 0, 0],
+        [13, 16, 14, 4495104, 224],
         [14, 16, 0, 0, 0],
         [15, 16, 0, 0, 0],
         [16, 16, 0, 0, 0],
@@ -2492,7 +2508,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
 
     pub fn __wrela_pixels_program_validate(renderer: usize) -> bool:
         if renderer == 0:
-            header_ok = R0_FRAME_PROGRAM_HEADER.magic[0] == 87 and R0_FRAME_PROGRAM_HEADER.magic[1] == 82 and R0_FRAME_PROGRAM_HEADER.magic[2] == 69 and R0_FRAME_PROGRAM_HEADER.magic[3] == 76 and R0_FRAME_PROGRAM_HEADER.magic[4] == 65 and R0_FRAME_PROGRAM_HEADER.magic[5] == 80 and R0_FRAME_PROGRAM_HEADER.magic[6] == 88 and R0_FRAME_PROGRAM_HEADER.magic[7] == 0 and R0_FRAME_PROGRAM_HEADER.version == 1 and R0_FRAME_PROGRAM_HEADER.header_bytes == 80 and R0_FRAME_PROGRAM_HEADER.flags == 1 and R0_FRAME_PROGRAM_HEADER.total_bytes == 4434704 and R0_FRAME_PROGRAM_HEADER.renderer_index == 0 and R0_FRAME_PROGRAM_HEADER.reserved0 == 0 and R0_FRAME_PROGRAM_HEADER.numeric_revision == 1 and R0_FRAME_PROGRAM_HEADER.formal_revision == 1 and R0_FRAME_PROGRAM_HEADER.table_count == 17
+            header_ok = R0_FRAME_PROGRAM_HEADER.magic[0] == 87 and R0_FRAME_PROGRAM_HEADER.magic[1] == 82 and R0_FRAME_PROGRAM_HEADER.magic[2] == 69 and R0_FRAME_PROGRAM_HEADER.magic[3] == 76 and R0_FRAME_PROGRAM_HEADER.magic[4] == 65 and R0_FRAME_PROGRAM_HEADER.magic[5] == 80 and R0_FRAME_PROGRAM_HEADER.magic[6] == 88 and R0_FRAME_PROGRAM_HEADER.magic[7] == 0 and R0_FRAME_PROGRAM_HEADER.version == 1 and R0_FRAME_PROGRAM_HEADER.header_bytes == 80 and R0_FRAME_PROGRAM_HEADER.flags == 1 and R0_FRAME_PROGRAM_HEADER.total_bytes == 4495328 and R0_FRAME_PROGRAM_HEADER.renderer_index == 0 and R0_FRAME_PROGRAM_HEADER.reserved0 == 0 and R0_FRAME_PROGRAM_HEADER.numeric_revision == 4 and R0_FRAME_PROGRAM_HEADER.formal_revision == 1 and R0_FRAME_PROGRAM_HEADER.table_count == 17
             if not header_ok:
                 return false
             reserved: usize = 0
@@ -2531,74 +2547,74 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
 
     pub fn __wrela_pixels_program_digest_byte(renderer: usize, byte: usize) -> u8:
         if renderer == 0 and byte == 0:
-            return 6
+            return 35
         if renderer == 0 and byte == 1:
-            return 229
+            return 144
         if renderer == 0 and byte == 2:
-            return 240
+            return 161
         if renderer == 0 and byte == 3:
-            return 131
+            return 218
         if renderer == 0 and byte == 4:
-            return 88
+            return 89
         if renderer == 0 and byte == 5:
-            return 191
-        if renderer == 0 and byte == 6:
-            return 154
-        if renderer == 0 and byte == 7:
-            return 36
-        if renderer == 0 and byte == 8:
-            return 206
-        if renderer == 0 and byte == 9:
-            return 234
-        if renderer == 0 and byte == 10:
-            return 224
-        if renderer == 0 and byte == 11:
-            return 1
-        if renderer == 0 and byte == 12:
-            return 41
-        if renderer == 0 and byte == 13:
-            return 201
-        if renderer == 0 and byte == 14:
-            return 122
-        if renderer == 0 and byte == 15:
-            return 101
-        if renderer == 0 and byte == 16:
-            return 21
-        if renderer == 0 and byte == 17:
             return 250
-        if renderer == 0 and byte == 18:
-            return 71
-        if renderer == 0 and byte == 19:
-            return 236
-        if renderer == 0 and byte == 20:
-            return 217
-        if renderer == 0 and byte == 21:
-            return 6
-        if renderer == 0 and byte == 22:
-            return 147
-        if renderer == 0 and byte == 23:
-            return 211
-        if renderer == 0 and byte == 24:
-            return 111
-        if renderer == 0 and byte == 25:
-            return 32
-        if renderer == 0 and byte == 26:
-            return 99
-        if renderer == 0 and byte == 27:
-            return 100
-        if renderer == 0 and byte == 28:
-            return 134
-        if renderer == 0 and byte == 29:
+        if renderer == 0 and byte == 6:
+            return 20
+        if renderer == 0 and byte == 7:
+            return 205
+        if renderer == 0 and byte == 8:
             return 93
+        if renderer == 0 and byte == 9:
+            return 35
+        if renderer == 0 and byte == 10:
+            return 100
+        if renderer == 0 and byte == 11:
+            return 103
+        if renderer == 0 and byte == 12:
+            return 105
+        if renderer == 0 and byte == 13:
+            return 30
+        if renderer == 0 and byte == 14:
+            return 148
+        if renderer == 0 and byte == 15:
+            return 153
+        if renderer == 0 and byte == 16:
+            return 153
+        if renderer == 0 and byte == 17:
+            return 249
+        if renderer == 0 and byte == 18:
+            return 124
+        if renderer == 0 and byte == 19:
+            return 1
+        if renderer == 0 and byte == 20:
+            return 201
+        if renderer == 0 and byte == 21:
+            return 197
+        if renderer == 0 and byte == 22:
+            return 162
+        if renderer == 0 and byte == 23:
+            return 223
+        if renderer == 0 and byte == 24:
+            return 3
+        if renderer == 0 and byte == 25:
+            return 149
+        if renderer == 0 and byte == 26:
+            return 249
+        if renderer == 0 and byte == 27:
+            return 76
+        if renderer == 0 and byte == 28:
+            return 166
+        if renderer == 0 and byte == 29:
+            return 196
         if renderer == 0 and byte == 30:
-            return 200
+            return 198
         if renderer == 0 and byte == 31:
-            return 109
+            return 168
         return 0
 
     pub fn __wrela_pixels_program_table_count(renderer: usize, table: u16) -> u32:
         if renderer == 0 and table == 1:
-            return 187
+            return 185
         if renderer == 0 and table == 2:
             return 57
         if renderer == 0 and table == 3:
@@ -2620,7 +2636,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         if renderer == 0 and table == 12:
             return 0
         if renderer == 0 and table == 13:
-            return 0
+            return 14
         if renderer == 0 and table == 14:
             return 0
         if renderer == 0 and table == 15:
@@ -2652,6 +2668,8 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
             return [1, R0_FIXED_DOMAIN_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_FIXED_DOMAIN_TABLE.records[id.to[usize]()].tag.to[u64](), R0_FIXED_DOMAIN_TABLE.records[id.to[usize]()].flags.to[u64](), R0_FIXED_DOMAIN_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
         if renderer == 0 and table == 11 and id < R0_CAMERA_LIGHT_POST_COUNT.to[u32]():
             return [1, R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].tag.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].flags.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
+        if renderer == 0 and table == 13 and id < R0_SHADING_SUMMARY_COUNT.to[u32]():
+            return [1, R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].tag.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].flags.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
         return [0; 5]
 
     pub fn __wrela_pixels_program_operand(renderer: usize, table: u16, id: u32, ordinal: u16) -> [u64; 2]:
@@ -2740,6 +2758,15 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
             if ordinal >= R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].operand_count:
                 return [0; 2]
             immediate_index = R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].operand_offset.to[usize]() + ordinal.to[usize]()
+            if immediate_index >= R0_IMMEDIATE_COUNT:
+                return [0; 2]
+            if R0_IMMEDIATE_TABLE.records[immediate_index].owner_kind != table or R0_IMMEDIATE_TABLE.records[immediate_index].owner_id != id or R0_IMMEDIATE_TABLE.records[immediate_index].ordinal != ordinal.to[u32]() or R0_IMMEDIATE_TABLE.records[immediate_index].reserved0 != 0 or R0_IMMEDIATE_TABLE.records[immediate_index].reserved1 != 0:
+                return [0; 2]
+            return [1, R0_IMMEDIATE_TABLE.records[immediate_index].value]
+        if renderer == 0 and table == 13 and id < R0_SHADING_SUMMARY_COUNT.to[u32]():
+            if ordinal >= R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_count:
+                return [0; 2]
+            immediate_index = R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_offset.to[usize]() + ordinal.to[usize]()
             if immediate_index >= R0_IMMEDIATE_COUNT:
                 return [0; 2]
             if R0_IMMEDIATE_TABLE.records[immediate_index].owner_kind != table or R0_IMMEDIATE_TABLE.records[immediate_index].owner_id != id or R0_IMMEDIATE_TABLE.records[immediate_index].ordinal != ordinal.to[u32]() or R0_IMMEDIATE_TABLE.records[immediate_index].reserved0 != 0 or R0_IMMEDIATE_TABLE.records[immediate_index].reserved1 != 0:
@@ -3489,6 +3516,561 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
                 # exhaustion cannot justify omission, so retain the
                 # feature for complete local root isolation.
                 return [1, 0]
+
+    const __WRELA_PIXELS_P9_FILMIC_RECORD: u32 = 12
+    const __WRELA_PIXELS_P9_SRGB_RECORD: u32 = 13
+
+    pub fn __wrela_pixels_p9_round_ratio(numerator: u64, denominator: u64) -> u64:
+        quotient = numerator / denominator
+        remainder = numerator % denominator
+        twice = remainder * 2
+        if twice > denominator or (twice == denominator and quotient % 2 == 1):
+            return quotient + 1
+        return quotient
+
+    pub fn __wrela_pixels_p9_table_value(index: u64, filmic: bool) -> [u64; 2]:
+        if index > 4096:
+            return [0, 0]
+        record = __WRELA_PIXELS_P9_SRGB_RECORD
+        if filmic:
+            record = __WRELA_PIXELS_P9_FILMIC_RECORD
+        packed = __wrela_pixels_program_operand(0, 13, record, (5 + index / 4).to[u16]())
+        if packed[0] != 1:
+            return [0, 0]
+        shift = (index % 4) * 16
+        return [1, (packed[1] >> shift) & 65535]
+
+    pub fn __wrela_pixels_p9_lut_interpolate(coordinate: u64, fraction_bits: u32, filmic: bool) -> [u64; 2]:
+        index = coordinate >> fraction_bits.to[u64]()
+        table_last: u64 = 4095
+        table_last = table_last + 1
+        if index >= table_last:
+            return __wrela_pixels_p9_table_value(table_last, filmic)
+        mask = (1.to[u64]() << fraction_bits.to[u64]()) - 1
+        fraction = coordinate & mask
+        scale = 1.to[u64]() << fraction_bits.to[u64]()
+        low = __wrela_pixels_p9_table_value(index, filmic)
+        high = __wrela_pixels_p9_table_value(index + 1, filmic)
+        if low[0] != 1 or high[0] != 1:
+            return [0, 0]
+        value = __wrela_pixels_p9_round_ratio(low[1] * scale + (high[1] - low[1]) * fraction, scale)
+        return [1, value]
+
+    pub fn __wrela_pixels_p9_filmic_tone(value: f32) -> [u64; 2]:
+        bits = __wrela_pixels_f32_to_bits(value)
+        if bits & 2147483648 != 0 or bits & 2139095040 == 2139095040:
+            if bits & 2139095040 == 2139095040:
+                return [0, 0]
+            return [1, 0]
+        exponent_bits = (bits >> 23) & 255
+        mantissa = (bits & 8388607).to[u64]()
+        if exponent_bits == 0 and mantissa == 0:
+            return [1, 0]
+        exponent: i64 = exponent_bits.to[i64]() - 127
+        if exponent_bits == 0:
+            exponent = -126
+            @budget(bound=23)
+            while mantissa < 8388608:
+                mantissa = mantissa << 1
+                exponent = exponent - 1
+        else:
+            mantissa = mantissa | 8388608
+        fraction: u64 = 0
+        step: u32 = 0
+        @budget(bound=15)
+        while step < 15:
+            squared = (mantissa * mantissa) >> 23
+            if squared >= 16777216:
+                mantissa = squared >> 1
+                fraction = fraction | (1.to[u64]() << (14 - step).to[u64]())
+            else:
+                mantissa = squared
+            step = step + 1
+        log_q15 = exponent * 32768 + fraction.to[i64]()
+        coordinate_q8: u64 = 0
+        if log_q15 >= 524288:
+            coordinate_q8 = 1048576
+        elif log_q15 > -524288:
+            coordinate_q8 = (log_q15 + 524288).to[u64]()
+        return __wrela_pixels_p9_lut_interpolate(coordinate_q8, 8, true)
+
+    pub fn __wrela_pixels_p9_encode_common(value: f32, filmic: bool) -> [u64; 2]:
+        tone: u16 = 0
+        if filmic:
+            result = __wrela_pixels_p9_filmic_tone(value)
+            if result[0] != 1:
+                return [0, 0]
+            tone = result[1].to[u16]()
+        else:
+            if value != value or value > 3.4028234663852886e38 or value < -3.4028234663852886e38:
+                return [0, 0]
+            clamped = value
+            if clamped < 0.0:
+                clamped = 0.0
+            if clamped > 1.0:
+                clamped = 1.0
+            tone = (clamped * 65535.0 + 0.5).to[u16]()
+        table_steps: u64 = 4095
+        table_steps = table_steps + 1
+        srgb_coordinate_q16 = __wrela_pixels_p9_round_ratio(tone.to[u64]() * table_steps * 65536, 65535)
+        encoded = __wrela_pixels_p9_lut_interpolate(srgb_coordinate_q16, 16, false)
+        if encoded[0] != 1:
+            return [0, 0]
+        byte = __wrela_pixels_p9_round_ratio(encoded[1] * 255, 65535)
+        return [1, byte]
+
+    pub fn __wrela_pixels_p9_encode(renderer: usize, value: f32) -> [u64; 2]:
+        if renderer == 0:
+            return __wrela_pixels_p9_encode_common(value, false)
+        return [0, 0]
+
+    pub fn __wrela_pixels_p9_material_r0(identity: u32, read surface: [f32; 6], read params: [f32; 16], read camera: [f32; 12]) -> [f32; 21]:
+        u = surface[0]
+        v = surface[1]
+        q = surface[2]
+        n_x = surface[3]
+        n_y = surface[4]
+        n_z = surface[5]
+        if not q > 0.0:
+            return [0.0; 21]
+        p_x = camera[0] + (camera[3] + u * camera[6] + v * camera[9]) / q
+        p_y = camera[1] + (camera[4] + u * camera[7] + v * camera[10]) / q
+        p_z = camera[2] + (camera[5] + u * camera[8] + v * camera[11]) / q
+        __p7_scalar_0: f32 = 0.0
+        __p7_scalar_1: f32 = 0.0
+        __p7_scalar_2: f32 = 0.0
+        __p7_scalar_57: f32 = 0.0
+        __p7_scalar_66: f32 = 0.0
+        __p7_scalar_80: f32 = 0.0
+        __p7_scalar_178: f32 = 0.0
+        __p7_scalar_179: f32 = 0.0
+        __p7_scalar_180: f32 = 0.0
+        __p7_scalar_181: f32 = 0.0
+        __p7_scalar_182: f32 = 0.0
+        __p7_scalar_183: f32 = 0.0
+        __p7_scalar_184: f32 = 0.0
+        __p7_scalar_0 = 0.0
+        __p7_scalar_1 = 1.0
+        __p7_scalar_2 = params[0]
+        __p7_scalar_57 = 0.5
+        __p7_scalar_66 = 0.25
+        __p7_scalar_80 = 0.125
+        __p7_scalar_178 = n_x
+        __p7_scalar_179 = __p7_scalar_2 * __p7_scalar_178
+        __p7_scalar_180 = __p7_scalar_57 + __p7_scalar_179
+        __p7_scalar_181 = 1.5
+        __p7_scalar_182 = 0.75
+        __p7_scalar_183 = p_x
+        __p7_scalar_184 = 0.0
+        if __p7_scalar_183 < __p7_scalar_0:
+            __p7_scalar_184 = 1.0
+        if identity == 0:
+            if __p7_scalar_184 != 0.0:
+                return [1.0, __p7_scalar_80, __p7_scalar_66, __p7_scalar_57, __p7_scalar_0, __p7_scalar_180, __p7_scalar_57, __p7_scalar_0, __p7_scalar_0, __p7_scalar_0, __p7_scalar_1, -1.0, 0.0, __p7_scalar_181, 0.0, 0.0, -1.0, -1.0, 8.0, -1.0, 8.0]
+            return [1.0, __p7_scalar_182, __p7_scalar_57, __p7_scalar_66, __p7_scalar_0, __p7_scalar_180, __p7_scalar_57, __p7_scalar_0, __p7_scalar_0, __p7_scalar_0, __p7_scalar_1, -1.0, 0.0, __p7_scalar_181, 0.0, 0.0, -1.0, -1.0, 8.0, -1.0, 8.0]
+        return [0.0; 21]
+
+    pub fn __wrela_pixels_p9_material(renderer: usize, identity: u32, read surface: [f32; 6], read params: [f32; 16], read camera: [f32; 12]) -> [f32; 21]:
+        if renderer == 0:
+            return __wrela_pixels_p9_material_r0(identity, surface, params, camera)
+        return [0.0; 21]
+
+    pub fn __wrela_pixels_p9_scene_distance_r0(read point: [f32; 3], read params: [f32; 16]) -> [f32; 4]:
+        p_x = point[0]
+        p_y = point[1]
+        p_z = point[2]
+        u: f32 = 0.0
+        v: f32 = 0.0
+        q: f32 = 1.0
+        n_x: f32 = 0.0
+        n_y: f32 = 0.0
+        n_z: f32 = 1.0
+        camera: [f32; 12] = [0.0; 12]
+        __p7_scalar_0: f32 = 0.0
+        __p7_scalar_1: f32 = 0.0
+        __p7_scalar_2: f32 = 0.0
+        __p7_scalar_3: f32 = 0.0
+        __p7_scalar_4: f32 = 0.0
+        __p7_scalar_5: f32 = 0.0
+        __p7_scalar_6: f32 = 0.0
+        __p7_scalar_7: f32 = 0.0
+        __p7_scalar_8: f32 = 0.0
+        __p7_scalar_9: f32 = 0.0
+        __p7_scalar_10: f32 = 0.0
+        __p7_scalar_11: f32 = 0.0
+        __p7_scalar_12: f32 = 0.0
+        __p7_scalar_13: f32 = 0.0
+        __p7_scalar_14: f32 = 0.0
+        __p7_scalar_15: f32 = 0.0
+        __p7_scalar_16: f32 = 0.0
+        __p7_scalar_17: f32 = 0.0
+        __p7_scalar_18: f32 = 0.0
+        __p7_scalar_19: f32 = 0.0
+        __p7_scalar_20: f32 = 0.0
+        __p7_scalar_21: f32 = 0.0
+        __p7_scalar_22: f32 = 0.0
+        __p7_scalar_23: f32 = 0.0
+        __p7_scalar_24: f32 = 0.0
+        __p7_scalar_25: f32 = 0.0
+        __p7_scalar_26: f32 = 0.0
+        __p7_scalar_27: f32 = 0.0
+        __p7_scalar_29: f32 = 0.0
+        __p7_scalar_30: f32 = 0.0
+        __p7_scalar_31: f32 = 0.0
+        __p7_scalar_32: f32 = 0.0
+        __p7_scalar_33: f32 = 0.0
+        __p7_scalar_34: f32 = 0.0
+        __p7_scalar_35: f32 = 0.0
+        __p7_scalar_36: f32 = 0.0
+        __p7_scalar_37: f32 = 0.0
+        __p7_scalar_38: f32 = 0.0
+        __p7_scalar_39: f32 = 0.0
+        __p7_scalar_40: f32 = 0.0
+        __p7_scalar_41: f32 = 0.0
+        __p7_scalar_42: f32 = 0.0
+        __p7_scalar_43: f32 = 0.0
+        __p7_scalar_44: f32 = 0.0
+        __p7_scalar_45: f32 = 0.0
+        __p7_scalar_46: f32 = 0.0
+        __p7_scalar_47: f32 = 0.0
+        __p7_scalar_48: f32 = 0.0
+        __p7_scalar_49: f32 = 0.0
+        __p7_scalar_50: f32 = 0.0
+        __p7_scalar_51: f32 = 0.0
+        __p7_scalar_52: f32 = 0.0
+        __p7_scalar_53: f32 = 0.0
+        __p7_scalar_54: f32 = 0.0
+        __p7_scalar_55: f32 = 0.0
+        __p7_scalar_56: f32 = 0.0
+        __p7_scalar_57: f32 = 0.0
+        __p7_scalar_58: f32 = 0.0
+        __p7_scalar_59: f32 = 0.0
+        __p7_scalar_60: f32 = 0.0
+        __p7_scalar_61: f32 = 0.0
+        __p7_scalar_62: f32 = 0.0
+        __p7_scalar_63: f32 = 0.0
+        __p7_scalar_64: f32 = 0.0
+        __p7_scalar_65: f32 = 0.0
+        __p7_scalar_66: f32 = 0.0
+        __p7_scalar_67: f32 = 0.0
+        __p7_scalar_68: f32 = 0.0
+        __p7_scalar_69: f32 = 0.0
+        __p7_scalar_70: f32 = 0.0
+        __p7_scalar_71: f32 = 0.0
+        __p7_scalar_72: f32 = 0.0
+        __p7_scalar_73: f32 = 0.0
+        __p7_scalar_74: f32 = 0.0
+        __p7_scalar_75: f32 = 0.0
+        __p7_scalar_76: f32 = 0.0
+        __p7_scalar_77: f32 = 0.0
+        __p7_scalar_78: f32 = 0.0
+        __p7_scalar_79: f32 = 0.0
+        __p7_scalar_80: f32 = 0.0
+        __p7_scalar_81: f32 = 0.0
+        __p7_scalar_82: f32 = 0.0
+        __p7_scalar_83: f32 = 0.0
+        __p7_scalar_84: f32 = 0.0
+        __p7_scalar_85: f32 = 0.0
+        __p7_scalar_86: f32 = 0.0
+        __p7_scalar_87: f32 = 0.0
+        __p7_scalar_88: f32 = 0.0
+        __p7_scalar_89: f32 = 0.0
+        __p7_scalar_90: f32 = 0.0
+        __p7_scalar_91: f32 = 0.0
+        __p7_scalar_92: f32 = 0.0
+        __p7_scalar_93: f32 = 0.0
+        __p7_scalar_96: f32 = 0.0
+        __p7_scalar_97: f32 = 0.0
+        __p7_scalar_98: f32 = 0.0
+        __p7_scalar_99: f32 = 0.0
+        __p7_scalar_100: f32 = 0.0
+        __p7_scalar_101: f32 = 0.0
+        __p7_scalar_102: f32 = 0.0
+        __p7_scalar_103: f32 = 0.0
+        __p7_scalar_104: f32 = 0.0
+        __p7_scalar_105: f32 = 0.0
+        __p7_scalar_106: f32 = 0.0
+        __p7_scalar_107: f32 = 0.0
+        __p7_scalar_108: f32 = 0.0
+        __p7_scalar_109: f32 = 0.0
+        __p7_scalar_110: f32 = 0.0
+        __p7_scalar_111: f32 = 0.0
+        __p7_scalar_112: f32 = 0.0
+        __p7_scalar_113: f32 = 0.0
+        __p7_scalar_114: f32 = 0.0
+        __p7_scalar_115: f32 = 0.0
+        __p7_scalar_116: f32 = 0.0
+        __p7_scalar_117: f32 = 0.0
+        __p7_scalar_118: f32 = 0.0
+        __p7_scalar_119: f32 = 0.0
+        __p7_scalar_120: f32 = 0.0
+        __p7_scalar_121: f32 = 0.0
+        __p7_scalar_122: f32 = 0.0
+        __p7_scalar_123: f32 = 0.0
+        __p7_scalar_124: f32 = 0.0
+        __p7_scalar_125: f32 = 0.0
+        __p7_scalar_126: f32 = 0.0
+        __p7_scalar_127: f32 = 0.0
+        __p7_scalar_128: f32 = 0.0
+        __p7_scalar_129: f32 = 0.0
+        __p7_scalar_130: f32 = 0.0
+        __p7_scalar_131: f32 = 0.0
+        __p7_scalar_132: f32 = 0.0
+        __p7_scalar_133: f32 = 0.0
+        __p7_scalar_134: f32 = 0.0
+        __p7_scalar_135: f32 = 0.0
+        __p7_scalar_136: f32 = 0.0
+        __p7_scalar_137: f32 = 0.0
+        __p7_scalar_138: f32 = 0.0
+        __p7_scalar_139: f32 = 0.0
+        __p7_scalar_140: f32 = 0.0
+        __p7_scalar_141: f32 = 0.0
+        __p7_scalar_142: f32 = 0.0
+        __p7_scalar_143: f32 = 0.0
+        __p7_scalar_144: f32 = 0.0
+        __p7_scalar_145: f32 = 0.0
+        __p7_scalar_146: f32 = 0.0
+        __p7_scalar_147: f32 = 0.0
+        __p7_scalar_148: f32 = 0.0
+        __p7_scalar_149: f32 = 0.0
+        __p7_scalar_150: f32 = 0.0
+        __p7_scalar_151: f32 = 0.0
+        __p7_scalar_152: f32 = 0.0
+        __p7_scalar_153: f32 = 0.0
+        __p7_scalar_154: f32 = 0.0
+        __p7_scalar_155: f32 = 0.0
+        __p7_scalar_156: f32 = 0.0
+        __p7_scalar_157: f32 = 0.0
+        __p7_scalar_158: f32 = 0.0
+        __p7_scalar_159: f32 = 0.0
+        __p7_scalar_160: f32 = 0.0
+        __p7_scalar_161: f32 = 0.0
+        __p7_scalar_162: f32 = 0.0
+        __p7_scalar_163: f32 = 0.0
+        __p7_scalar_164: f32 = 0.0
+        __p7_scalar_165: f32 = 0.0
+        __p7_scalar_166: f32 = 0.0
+        __p7_scalar_167: f32 = 0.0
+        __p7_scalar_168: f32 = 0.0
+        __p7_scalar_169: f32 = 0.0
+        __p7_scalar_170: f32 = 0.0
+        __p7_scalar_171: f32 = 0.0
+        __p7_scalar_176: f32 = 0.0
+        __p7_scalar_177: f32 = 0.0
+        __p7_scalar_0 = 0.0
+        __p7_scalar_1 = 1.0
+        __p7_scalar_2 = params[0]
+        __p7_scalar_3 = __p7_scalar_0 * __p7_scalar_0 - __p7_scalar_1 * __p7_scalar_1
+        __p7_scalar_4 = __p7_scalar_1 * __p7_scalar_2 - __p7_scalar_0 * __p7_scalar_0
+        __p7_scalar_5 = __p7_scalar_0 * __p7_scalar_1 - __p7_scalar_0 * __p7_scalar_2
+        __p7_scalar_6 = __wrela_pixels_p7_normalize_component(__p7_scalar_3, __p7_scalar_4, __p7_scalar_5, 0)
+        __p7_scalar_7 = __wrela_pixels_p7_normalize_component(__p7_scalar_3, __p7_scalar_4, __p7_scalar_5, 1)
+        __p7_scalar_8 = __wrela_pixels_p7_normalize_component(__p7_scalar_3, __p7_scalar_4, __p7_scalar_5, 2)
+        __p7_scalar_9 = 0.70710677
+        __p7_scalar_10 = -0.70710677
+        __p7_scalar_11 = p_x
+        __p7_scalar_12 = __p7_scalar_11 - __p7_scalar_1
+        __p7_scalar_13 = p_y
+        __p7_scalar_14 = __p7_scalar_13 - __p7_scalar_0
+        __p7_scalar_15 = p_z
+        __p7_scalar_16 = __p7_scalar_15 - __p7_scalar_0
+        __p7_scalar_17 = __p7_scalar_9 * __p7_scalar_12 + __p7_scalar_10 * __p7_scalar_14 + __p7_scalar_0 * __p7_scalar_16
+        __p7_scalar_18 = __p7_scalar_17 - __p7_scalar_0
+        __p7_scalar_19 = __p7_scalar_9 * __p7_scalar_12 + __p7_scalar_9 * __p7_scalar_14 + __p7_scalar_0 * __p7_scalar_16
+        __p7_scalar_20 = __p7_scalar_19 - __p7_scalar_1
+        __p7_scalar_21 = __p7_scalar_0 * __p7_scalar_12 + __p7_scalar_0 * __p7_scalar_14 + __p7_scalar_1 * __p7_scalar_16
+        __p7_scalar_22 = __p7_scalar_21 - __p7_scalar_0
+        __p7_scalar_23 = __p7_scalar_1 * __p7_scalar_18 + __p7_scalar_0 * __p7_scalar_20 + __p7_scalar_0 * __p7_scalar_22
+        __p7_scalar_24 = __p7_scalar_0 * __p7_scalar_18 + __p7_scalar_1 * __p7_scalar_20 + __p7_scalar_0 * __p7_scalar_22
+        __p7_scalar_25 = __p7_scalar_0 * __p7_scalar_18 + __p7_scalar_0 * __p7_scalar_20 + __p7_scalar_1 * __p7_scalar_22
+        __p7_scalar_26 = __p7_scalar_23 * __p7_scalar_6 + __p7_scalar_24 * __p7_scalar_7 + __p7_scalar_25 * __p7_scalar_8
+        __p7_scalar_27 = __p7_scalar_26 + __p7_scalar_0
+        __p7_scalar_29 = __p7_scalar_23 - __p7_scalar_0
+        __p7_scalar_30 = __p7_scalar_29 - __p7_scalar_0
+        __p7_scalar_31 = __p7_scalar_24 - __p7_scalar_0
+        __p7_scalar_32 = __p7_scalar_31 - __p7_scalar_0
+        __p7_scalar_33 = __p7_scalar_25 - __p7_scalar_0
+        __p7_scalar_34 = __p7_scalar_33 - __p7_scalar_0
+        __p7_scalar_35 = sqrt_scalar(__p7_scalar_30 * __p7_scalar_30 + __p7_scalar_32 * __p7_scalar_32 + __p7_scalar_34 * __p7_scalar_34)
+        __p7_scalar_36 = __p7_scalar_35 - __p7_scalar_1
+        __p7_scalar_37 = 2.0
+        __p7_scalar_38 = __wrela_pixels_p7_min(__p7_scalar_27, __p7_scalar_36)
+        __p7_scalar_39 = __wrela_pixels_p7_abs(__p7_scalar_29)
+        __p7_scalar_40 = __p7_scalar_39 - __p7_scalar_1
+        __p7_scalar_41 = __wrela_pixels_p7_max(__p7_scalar_40, __p7_scalar_0)
+        __p7_scalar_42 = __wrela_pixels_p7_abs(__p7_scalar_31)
+        __p7_scalar_43 = __p7_scalar_42 - __p7_scalar_1
+        __p7_scalar_44 = __wrela_pixels_p7_max(__p7_scalar_43, __p7_scalar_0)
+        __p7_scalar_45 = __wrela_pixels_p7_abs(__p7_scalar_33)
+        __p7_scalar_46 = __p7_scalar_45 - __p7_scalar_1
+        __p7_scalar_47 = __wrela_pixels_p7_max(__p7_scalar_46, __p7_scalar_0)
+        __p7_scalar_48 = sqrt_scalar(__p7_scalar_41 * __p7_scalar_41 + __p7_scalar_44 * __p7_scalar_44 + __p7_scalar_47 * __p7_scalar_47)
+        __p7_scalar_49 = __wrela_pixels_p7_max(__p7_scalar_43, __p7_scalar_46)
+        __p7_scalar_50 = __wrela_pixels_p7_max(__p7_scalar_40, __p7_scalar_49)
+        __p7_scalar_51 = __wrela_pixels_p7_min(__p7_scalar_50, __p7_scalar_0)
+        __p7_scalar_52 = __p7_scalar_48 + __p7_scalar_51
+        __p7_scalar_53 = 0.1
+        __p7_scalar_54 = __p7_scalar_52 - __p7_scalar_53
+        __p7_scalar_55 = __wrela_pixels_p7_min(__p7_scalar_52, __p7_scalar_54)
+        __p7_scalar_56 = __wrela_pixels_p7_max(__p7_scalar_38, __p7_scalar_55)
+        __p7_scalar_57 = 0.5
+        __p7_scalar_58 = __p7_scalar_11 - __p7_scalar_57
+        __p7_scalar_59 = __p7_scalar_58 - __p7_scalar_0
+        __p7_scalar_60 = __p7_scalar_13 - __p7_scalar_57
+        __p7_scalar_61 = __p7_scalar_60 - __p7_scalar_0
+        __p7_scalar_62 = __p7_scalar_15 - __p7_scalar_57
+        __p7_scalar_63 = __p7_scalar_62 - __p7_scalar_0
+        __p7_scalar_64 = sqrt_scalar(__p7_scalar_59 * __p7_scalar_59 + __p7_scalar_61 * __p7_scalar_61 + __p7_scalar_63 * __p7_scalar_63)
+        __p7_scalar_65 = __p7_scalar_64 - __p7_scalar_53
+        __p7_scalar_66 = 0.25
+        __p7_scalar_67 = __p7_scalar_2 * __p7_scalar_2
+        __p7_scalar_68 = 0.015625
+        __p7_scalar_69 = __p7_scalar_67 + __p7_scalar_68
+        __p7_scalar_70 = sqrt_scalar(__p7_scalar_69)
+        __p7_scalar_71 = __p7_scalar_67 + __p7_scalar_1
+        __p7_scalar_72 = rsqrt_scalar(__p7_scalar_71)
+        __p7_scalar_73 = __p7_scalar_70 + __p7_scalar_72
+        __p7_scalar_74 = sin_scalar(__p7_scalar_2)
+        __p7_scalar_75 = __p7_scalar_73 + __p7_scalar_74
+        __p7_scalar_76 = cos_scalar(__p7_scalar_2)
+        __p7_scalar_77 = __p7_scalar_75 + __p7_scalar_76
+        __p7_scalar_78 = __p7_scalar_1 * __p7_scalar_2 + __p7_scalar_0 * __p7_scalar_1 + __p7_scalar_0 * __p7_scalar_0
+        __p7_scalar_79 = __p7_scalar_77 + __p7_scalar_78
+        __p7_scalar_80 = 0.125
+        __p7_scalar_81 = sqrt_scalar(__p7_scalar_2 * __p7_scalar_2 + __p7_scalar_80 * __p7_scalar_80)
+        __p7_scalar_82 = __p7_scalar_79 + __p7_scalar_81
+        __p7_scalar_83 = sqrt_scalar(__p7_scalar_2 * __p7_scalar_2 + __p7_scalar_1 * __p7_scalar_1 + __p7_scalar_0 * __p7_scalar_0)
+        __p7_scalar_84 = __p7_scalar_82 + __p7_scalar_83
+        __p7_scalar_85 = __p7_scalar_66 + __p7_scalar_84
+        __p7_scalar_86 = __p7_scalar_11 + __p7_scalar_66
+        __p7_scalar_87 = __p7_scalar_86 - __p7_scalar_0
+        __p7_scalar_88 = __p7_scalar_13 + __p7_scalar_0
+        __p7_scalar_89 = __p7_scalar_88 - __p7_scalar_0
+        __p7_scalar_90 = __p7_scalar_15 + __p7_scalar_0
+        __p7_scalar_91 = __p7_scalar_90 - __p7_scalar_0
+        __p7_scalar_92 = sqrt_scalar(__p7_scalar_87 * __p7_scalar_87 + __p7_scalar_89 * __p7_scalar_89 + __p7_scalar_91 * __p7_scalar_91)
+        __p7_scalar_93 = __p7_scalar_92 - __p7_scalar_85
+        __p7_scalar_96 = __wrela_pixels_p7_min(__p7_scalar_93, __p7_scalar_65)
+        __p7_scalar_97 = 0.375
+        __p7_scalar_98 = -1.0
+        __p7_scalar_99 = __p7_scalar_0 * __p7_scalar_11 + __p7_scalar_98 * __p7_scalar_13 + __p7_scalar_0 * __p7_scalar_15
+        __p7_scalar_100 = __p7_scalar_99 - __p7_scalar_0
+        __p7_scalar_101 = __p7_scalar_1 * __p7_scalar_11 + __p7_scalar_0 * __p7_scalar_13 + __p7_scalar_0 * __p7_scalar_15
+        __p7_scalar_102 = __p7_scalar_101 - __p7_scalar_0
+        __p7_scalar_103 = __p7_scalar_0 * __p7_scalar_11 + __p7_scalar_0 * __p7_scalar_13 + __p7_scalar_1 * __p7_scalar_15
+        __p7_scalar_104 = __p7_scalar_103 - __p7_scalar_0
+        __p7_scalar_105 = sqrt_scalar(__p7_scalar_100 * __p7_scalar_100 + __p7_scalar_102 * __p7_scalar_102 + __p7_scalar_104 * __p7_scalar_104)
+        __p7_scalar_106 = __p7_scalar_105 - __p7_scalar_97
+        __p7_scalar_107 = __wrela_pixels_p7_min(__p7_scalar_96, __p7_scalar_106)
+        __p7_scalar_108 = params[1]
+        __p7_scalar_109 = params[2]
+        __p7_scalar_110 = params[3]
+        __p7_scalar_111 = params[4]
+        __p7_scalar_112 = 3.0
+        __p7_scalar_113 = __p7_scalar_111 + __p7_scalar_112
+        __p7_scalar_114 = params[5]
+        __p7_scalar_115 = __p7_scalar_114 + __p7_scalar_0
+        __p7_scalar_116 = params[6]
+        __p7_scalar_117 = __p7_scalar_116 + __p7_scalar_0
+        __p7_scalar_118 = 0.2
+        __p7_scalar_119 = __p7_scalar_29 - __p7_scalar_108
+        __p7_scalar_120 = __p7_scalar_113 - __p7_scalar_108
+        __p7_scalar_121 = __p7_scalar_115 - __p7_scalar_109
+        __p7_scalar_122 = __p7_scalar_117 - __p7_scalar_110
+        __p7_scalar_123 = __p7_scalar_120 * __p7_scalar_120 + __p7_scalar_121 * __p7_scalar_121 + __p7_scalar_122 * __p7_scalar_122
+        __p7_scalar_124 = 0.0
+        if __p7_scalar_123 > __p7_scalar_0:
+            __p7_scalar_124 = 1.0
+        __p7_scalar_125 = __p7_scalar_31 - __p7_scalar_109
+        __p7_scalar_126 = __p7_scalar_33 - __p7_scalar_110
+        __p7_scalar_127 = __p7_scalar_119 * __p7_scalar_120 + __p7_scalar_125 * __p7_scalar_121 + __p7_scalar_126 * __p7_scalar_122
+        __p7_scalar_128 = __p7_scalar_127 / __p7_scalar_123
+        __p7_scalar_129 = __wrela_pixels_p7_clamp(__p7_scalar_128, __p7_scalar_0, __p7_scalar_1)
+        __p7_scalar_130 = __p7_scalar_0
+        if __p7_scalar_124 != 0.0:
+            __p7_scalar_130 = __p7_scalar_129
+        __p7_scalar_131 = __p7_scalar_120 * __p7_scalar_130
+        __p7_scalar_132 = __p7_scalar_119 - __p7_scalar_131
+        __p7_scalar_133 = __p7_scalar_121 * __p7_scalar_130
+        __p7_scalar_134 = __p7_scalar_125 - __p7_scalar_133
+        __p7_scalar_135 = __p7_scalar_122 * __p7_scalar_130
+        __p7_scalar_136 = __p7_scalar_126 - __p7_scalar_135
+        __p7_scalar_137 = sqrt_scalar(__p7_scalar_132 * __p7_scalar_132 + __p7_scalar_134 * __p7_scalar_134 + __p7_scalar_136 * __p7_scalar_136)
+        __p7_scalar_138 = __p7_scalar_137 - __p7_scalar_118
+        __p7_scalar_139 = sqrt_scalar(__p7_scalar_29 * __p7_scalar_29 + __p7_scalar_33 * __p7_scalar_33)
+        __p7_scalar_140 = __p7_scalar_139 - __p7_scalar_1
+        __p7_scalar_141 = __wrela_pixels_p7_max(__p7_scalar_140, __p7_scalar_0)
+        __p7_scalar_142 = sqrt_scalar(__p7_scalar_141 * __p7_scalar_141 + __p7_scalar_44 * __p7_scalar_44)
+        __p7_scalar_143 = __wrela_pixels_p7_max(__p7_scalar_140, __p7_scalar_43)
+        __p7_scalar_144 = __wrela_pixels_p7_min(__p7_scalar_143, __p7_scalar_0)
+        __p7_scalar_145 = __p7_scalar_142 + __p7_scalar_144
+        __p7_scalar_146 = __wrela_pixels_p7_min(__p7_scalar_138, __p7_scalar_145)
+        __p7_scalar_147 = __wrela_pixels_p7_min(__p7_scalar_146, __p7_scalar_107)
+        __p7_scalar_148 = -__p7_scalar_147
+        __p7_scalar_149 = __wrela_pixels_p7_max(__p7_scalar_56, __p7_scalar_148)
+        __p7_scalar_150 = __p7_scalar_31 + __p7_scalar_1
+        __p7_scalar_151 = __wrela_pixels_p7_clamp(__p7_scalar_150, __p7_scalar_0, __p7_scalar_37)
+        __p7_scalar_152 = __p7_scalar_151 / __p7_scalar_37
+        __p7_scalar_153 = __p7_scalar_1 - __p7_scalar_152
+        __p7_scalar_154 = __p7_scalar_1 * __p7_scalar_153
+        __p7_scalar_155 = __p7_scalar_139 - __p7_scalar_154
+        __p7_scalar_156 = __wrela_pixels_p7_max(__p7_scalar_155, __p7_scalar_43)
+        __p7_scalar_157 = sqrt_scalar(__p7_scalar_140 * __p7_scalar_140 + __p7_scalar_31 * __p7_scalar_31)
+        __p7_scalar_158 = __p7_scalar_157 - __p7_scalar_118
+        __p7_scalar_159 = __wrela_pixels_p7_smooth_min(__p7_scalar_156, __p7_scalar_158, __p7_scalar_53)
+        __p7_scalar_160 = -__p7_scalar_159
+        __p7_scalar_161 = -__p7_scalar_156
+        __p7_scalar_162 = __wrela_pixels_p7_smooth_min(__p7_scalar_160, __p7_scalar_161, __p7_scalar_53)
+        __p7_scalar_163 = -__p7_scalar_162
+        __p7_scalar_164 = -__p7_scalar_163
+        __p7_scalar_165 = __wrela_pixels_p7_smooth_min(__p7_scalar_164, __p7_scalar_158, __p7_scalar_53)
+        __p7_scalar_166 = -__p7_scalar_165
+        __p7_scalar_167 = __p7_scalar_166 * __p7_scalar_37
+        __p7_scalar_168 = __p7_scalar_66 * __p7_scalar_23
+        __p7_scalar_169 = __p7_scalar_168 + __p7_scalar_0
+        __p7_scalar_170 = sin_scalar(__p7_scalar_169)
+        __p7_scalar_171 = __p7_scalar_53 * __p7_scalar_170
+        __p7_scalar_176 = __p7_scalar_167 + __p7_scalar_171
+        __p7_scalar_177 = __wrela_pixels_p7_min(__p7_scalar_149, __p7_scalar_176)
+        distance = __p7_scalar_177
+        if distance != distance or distance > 3.4028234663852886e38 or distance < -3.4028234663852886e38:
+            return [0.0; 4]
+        error: f32 = 649037070000000000000000000000000.0
+        return [1.0, distance - error, distance + error, distance]
+
+    pub fn __wrela_pixels_p9_scene_distance(renderer: usize, read point: [f32; 3], read params: [f32; 16]) -> [f32; 4]:
+        if renderer == 0:
+            return __wrela_pixels_p9_scene_distance_r0(point, params)
+        return [0.0; 4]
+
+    pub fn __wrela_pixels_p9_material_inputs(renderer: usize, identity: u32) -> [u64; 2]:
+        if renderer == 0 and identity == 0:
+            return [1, 11]
+        return [0, 0]
+
+    pub fn __wrela_pixels_p9_light_range(renderer: usize, slot: usize) -> [f32; 12]:
+        if renderer == 0 and slot == 0:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 1:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 2:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 3:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 4:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 5:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 6:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        if renderer == 0 and slot == 7:
+            return [1.0, -65504.0, -65504.0, -65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0, 65504.0]
+        return [0.0; 12]
+
+    pub fn __wrela_pixels_p9_ao_config(renderer: usize) -> [f32; 3]:
+        if renderer == 0:
+            return [0.0, 1.0, 1.0]
+        return [0.0; 3]
 
     pub fn __wrela_pixels_p7_feature_polynomial(renderer: usize, feature: u32, u: f32, v: f32, read params: [f32; 16], read camera: [f32; 12]) -> [f32; 11]:
         record = __wrela_pixels_program_record(renderer, 4, feature)
@@ -4488,11 +5070,11 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         p_y = camera[1] + ray_y / q
         p_z = camera[2] + ray_z / q
         __p7_scalar_0: f32 = 0.0
-        __p7_scalar_185: f32 = 0.0
+        __p7_scalar_183: f32 = 0.0
         __p7_scalar_0 = 0.0
-        __p7_scalar_185 = p_x
+        __p7_scalar_183 = p_x
         if event >= 254 and event < 303:
-            return [1.0, __p7_scalar_185 - __p7_scalar_0]
+            return [1.0, __p7_scalar_183 - __p7_scalar_0]
         return [0.0, 0.0]
 
     pub fn __wrela_pixels_p7_feature_support_q_span_r0(feature: u32, object: u32, read uv: [f32; 2], read q_domain: [i64; 3]) -> [i64; 3]:
@@ -4692,6 +5274,14 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
                 result[bound + 1] = __wrela_pixels_p7_outward_high(value)
             bound = bound + 1
         return result
+
+    pub fn __wrela_pixels_p9_feature_local_frame_r0(feature: u32, read point: [f32; 3], read normal: [f32; 3], read d_p_dx: [f32; 3], read d_p_dy: [f32; 3], read params: [f32; 16]) -> [f32; 13]:
+        return [0.0; 13]
+
+    pub fn __wrela_pixels_p9_feature_local_frame(renderer: usize, feature: u32, read point: [f32; 3], read normal: [f32; 3], read d_p_dx: [f32; 3], read d_p_dy: [f32; 3], read params: [f32; 16]) -> [f32; 13]:
+        if renderer == 0:
+            return __wrela_pixels_p9_feature_local_frame_r0(feature, point, normal, d_p_dx, d_p_dy, params)
+        return [0.0; 13]
 
     pub fn __wrela_pixels_p7_object_scalar_r0(object: u32, u: f32, v: f32, q: f32, read params: [f32; 16], read camera: [f32; 12]) -> [f32; 2]:
         if q == 0.0:
@@ -5229,6 +5819,12 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         if error == 77:
             # silhouette-area-order: analytic silhouette coverage: area bounds out of order
             return 3
+        if error == 90:
+            # shading-byte-certificate: material, light, post, or output-byte evaluation did not produce a certified final code
+            return 3
+        if error == 91:
+            # event-output-byte-not-unique: event shading/refinement did not prove a singleton output byte
+            return 3
         if error == 100:
             # analytic-coverage-indefinite: no analytic integrator produced a definite byte for the pixel
             return 3
@@ -5381,7 +5977,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
 
     pub fn __wrela_pixels_p7_worker_assignment(renderer: usize, worker: u32) -> [u64; 7]:
         if renderer == 0 and worker == 0:
-            return [1, 1084686336, 1089275544, 5804264, 0, 1, 0]
+            return [1, 1084686336, 1089341080, 5804264, 0, 1, 0]
         return [0; 7]
 
     pub fn __wrela_pixels_p7_framebuffer_store_byte(renderer: usize, byte: usize, value: u8) -> bool:
@@ -5661,12 +6257,12 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         return false
 
     pub fn __wrela_pixels_p7_telemetry_charge(renderer: usize, worker: u32, counter: usize, amount: u64) -> bool:
-        if counter >= 150:
+        if counter >= 162:
             return false
         return false
 
     pub fn __wrela_pixels_p7_telemetry_counter(renderer: usize, worker: u32, counter: usize) -> [u64; 2]:
-        if counter >= 150:
+        if counter >= 162:
             return [0; 2]
         return [0; 2]
 
@@ -5847,9 +6443,9 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     pub fn __wrela_pixels_p8_descriptor_digest_r0() -> [u64; 5]:
         active = R0_SCANOUT_STATE.words[3]
         if active == 1:
-            return [1, 1509189431858426447, 3124277330231796327, 13568705194865421958, 4917043568363607483]
+            return [1, 17533510144041404628, 14346383500692135560, 1775828320739278999, 8714128380668029415]
         if active == 2:
-            return [1, 15662711931513823599, 6082206319045604423, 3467281268009962854, 11893903022663499259]
+            return [1, 17993515634530166388, 15949607059150610408, 10121148467593371511, 15643212170531185191]
         return [0; 5]
 
     pub fn __wrela_pixels_p8_present_r0(frame_index: u64) -> [u64; 3]:
@@ -5859,7 +6455,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         generation = active - 1
         sequence = R0_SCANOUT_STATE.words[2]
         list_offset = generation.to[usize]() * 184
-        tiles_addr = 1095104640 + generation * 184 + 160
+        tiles_addr = 1095170176 + generation * 184 + 160
         if (
             not __wrela_pixels_p8_list_store_word_r0(list_offset, 2.to[u64]() | (1.to[u64]() << 32) | (generation << 40) | (0.to[u64]() << 48))
             or not __wrela_pixels_p8_list_store_word_r0(list_offset + 8, 64.to[u64]() | (32.to[u64]() << 32))
@@ -5883,7 +6479,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
             if y + visible_height > 32:
                 visible_height = 32 - y
             descriptor = list_offset + 160 + tile.to[usize]() * 24
-            pixels_addr = 1095081984 + generation * 8192 + tile * 8192
+            pixels_addr = 1095147520 + generation * 8192 + tile * 8192
             if (
                 not __wrela_pixels_p8_list_store_word_r0(descriptor, pixels_addr)
                 or not __wrela_pixels_p8_list_store_word_r0(descriptor + 8, x | (y << 16) | (visible_width << 32) | (visible_height << 48))
@@ -5912,7 +6508,7 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
         if not __wrela_pixels_p8_list_store_word_r0(list_offset + 152, 0):
             R0_SCANOUT_STATE.words[3] = 0
             return [0, 3, sequence]
-        return [2, 1095104640 + generation * 184, sequence]
+        return [2, 1095170176 + generation * 184, sequence]
 
     pub fn __wrela_pixels_p8_complete_r0() -> [u64; 3]:
         active = R0_SCANOUT_STATE.words[3]
@@ -5988,5 +6584,5 @@ FrameProgram v1 renderer=0 digest=06e5f08358bf9a24ceeae00129c97a6515fa47ecd90693
     pub fn __wrela_pixels_p8_submit(doorbell_addr: u64, control_addr: u64) -> unit:
         return unit
   GeneratedModule end
-  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,parameter,scalar]
+  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,parameter,scalar,shading-summary]
   Execution from_scratch_sweep=true raster=scalar+i32x4-asimd coverage=analytic-exact presentation=machine-v1-bgra8-srgb bounded_local_rebuild=true dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true

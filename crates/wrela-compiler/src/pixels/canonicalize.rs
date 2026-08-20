@@ -1480,11 +1480,15 @@ fn remap_material(
                 metallic: s(sample.metallic)?,
                 specular_level: s(sample.specular_level)?,
                 ior: s(sample.ior)?,
-                normal: match sample.normal {
+                normal: match &sample.normal {
                     NormalModel::Geometric => NormalModel::Geometric,
-                    NormalModel::AnalyticSlope { x, y } => {
-                        NormalModel::AnalyticSlope { x: s(x)?, y: s(y)? }
-                    }
+                    NormalModel::AnalyticSlope { x, y } => NormalModel::AnalyticSlope {
+                        x: s(*x)?,
+                        y: s(*y)?,
+                    },
+                    NormalModel::TextureSlope { texture } => NormalModel::TextureSlope {
+                        texture: texture.clone(),
+                    },
                 },
                 pattern: sample.pattern.clone(),
             })

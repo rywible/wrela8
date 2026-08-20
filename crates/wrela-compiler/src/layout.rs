@@ -1344,8 +1344,16 @@ fn verify_section_sizes(
             "internal error: the emitted blob is {blob_len} bytes but the section table implies {want_len}"
         )));
     }
-    verify_branch_region(sections)?;
     Ok(())
+}
+
+fn verify_final_section_sizes(
+    sections: &[Section],
+    image_base: u64,
+    blob_len: u64,
+) -> Result<(), LayoutError> {
+    verify_section_sizes(sections, image_base, blob_len)?;
+    verify_branch_region(sections)
 }
 
 pub const REGION_BYTES: u64 = 2 * 1024 * 1024;
@@ -1368,12 +1376,18 @@ fn verify_branch_region(sections: &[Section]) -> Result<(), LayoutError> {
     let lo = first.base;
     let hi = last.base + last.size;
     if !same_region_holds(lo, hi) {
+        let span = hi - lo;
+        let correction = if span > REGION_BYTES {
+            "branchable text must shrink below one region or the compiler must partition it into region-local branch islands"
+        } else {
+            "the text placement must move wholly inside one aligned region"
+        };
         return Err(LayoutError::new(format!(
             "branchable text spans {lo:#x}..{hi:#x} ({} bytes), which straddles a \
              {region}-byte region boundary — SOG §4.8 requires every branch and its target to \
-             share one 2 MiB region, so the text base must move to a region boundary \
+             share one 2 MiB region; {correction} \
              (plans/codegen-pareto.md decision 1754)",
-            hi - lo,
+            span,
             region = REGION_BYTES
         )));
     }
@@ -2784,7 +2798,10 @@ fn layout_program_inner(
                 .sum();
         }
     }
-    verify_section_sizes(&sections, image_base, linked_blob.len() as u64)?;
+    // The linked serializer is allowed to compact the conservative working
+    // layout above. Branch-region compliance is a property of these final
+    // machine addresses, not of the discarded pre-serialization span.
+    verify_final_section_sizes(&sections, image_base, linked_blob.len() as u64)?;
 
     let mut image = ImageLayout {
         blob: linked_blob,
@@ -4217,9 +4234,12 @@ fn recheck_with_live_rtconfig(
         &internal_sources,
     )
     .map_err(|e| {
+        let pixels_line = pixels_config_text
+            .and_then(|text| text.lines().nth(e.line.saturating_sub(1) as usize))
+            .unwrap_or("<not generated Pixels source>");
         format!(
-            "error[{}]: live rtconfig re-check: {}",
-            e.category, e.message
+            "error[{}]: live rtconfig re-check at {}:{}: {}; generated Pixels line: {}",
+            e.category, e.line, e.col, e.message, pixels_line
         )
     })?;
     timing("sema");
@@ -6490,6 +6510,48 @@ fn two():
             },
         ];
         assert!(verify_branch_region(&real).is_ok());
+    }
+
+    #[test]
+    fn branch_region_is_checked_on_final_linked_sections_only() {
+        let preliminary = vec![
+            Section {
+                name: "entry",
+                base: machine_layout::IMAGE_BASE,
+                size: 80,
+            },
+            Section {
+                name: "code",
+                base: machine_layout::IMAGE_BASE + 80,
+                size: REGION_BYTES,
+            },
+        ];
+        let blob_len = REGION_BYTES + 80;
+
+        assert!(
+            verify_section_sizes(&preliminary, machine_layout::IMAGE_BASE, blob_len).is_ok(),
+            "the conservative pre-serialization table is structurally valid"
+        );
+        let error = verify_final_section_sizes(&preliminary, machine_layout::IMAGE_BASE, blob_len)
+            .expect_err("the same span cannot be accepted as final machine text");
+        assert!(error.message.contains("must shrink"), "{}", error.message);
+
+        let linked = vec![
+            Section {
+                name: "entry",
+                base: machine_layout::IMAGE_BASE,
+                size: 80,
+            },
+            Section {
+                name: "code",
+                base: machine_layout::IMAGE_BASE + 80,
+                size: REGION_BYTES - 80,
+            },
+        ];
+        assert!(
+            verify_final_section_sizes(&linked, machine_layout::IMAGE_BASE, REGION_BYTES,).is_ok(),
+            "the compacted final table fits exactly in one region"
+        );
     }
 
     #[test]

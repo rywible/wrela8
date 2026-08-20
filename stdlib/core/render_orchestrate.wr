@@ -1,12 +1,13 @@
 module render_orchestrate
 
-from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_write, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
+from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_write, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_encode, __wrela_pixels_p9_material_inputs, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
 from core.field import Rgb
-from core.render import FrameInputSnapshot, LightFrame, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P8RasterContext, RendererWorkerJob, __wrela_pixels_p8_charge_raster_run, __wrela_pixels_p8_derivative_bounds, __wrela_pixels_p8_raster_regular, __wrela_pixels_p8_raster_setup
+from core.render import FrameInputSnapshot, LightFrame, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P7VisibilitySample, P8RasterContext, P9LightingCertificate, RendererWorkerJob, __wrela_pixels_p8_charge_raster_run, __wrela_pixels_p8_derivative_bounds, __wrela_pixels_p8_raster_regular, __wrela_pixels_p8_raster_setup, __wrela_pixels_p9_lighting_certificate, __wrela_pixels_p9_secondary_candidates, __wrela_pixels_p9_segment_intersects_aabb, __wrela_pixels_p9_segment_visibility
 from core.render_arrangement import __wrela_pixels_p7_event_pixel_span, __wrela_pixels_p7_pixel_visibility_from_candidates
 from core.render_certify import __wrela_pixels_p7_certify_row, __wrela_pixels_p7_charge_run_telemetry, __wrela_pixels_p7_density_bin, __wrela_pixels_p7_revalidated_proposal_count, __wrela_pixels_p7_row_candidates_with_proposal
 from core.render_interval import Iv32
 from core.render_isolation import __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates
+from core.render_light import P9ShadingMeta, __wrela_pixels_p9_encode_certified, __wrela_pixels_p9_encode_hdr, __wrela_pixels_p9_hdr_pixel, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_select_refinement, __wrela_pixels_p9_texture_mip_bounds
 from core.render_raster import EventId, EventPixel, IdSlice, RunId
 
 fn __wrela_pixels_p7_worker_error(error: u8, tile: u32) -> u64:
@@ -33,6 +34,350 @@ pub fn __wrela_pixels_p7_worker_error_tile(value: u64) -> u32:
         return (value & 4294967295).to[u32]()
     return 0
 
+fn __wrela_pixels_p9_event_composite(
+    renderer: usize,
+    front_identity: u64,
+    back_identity: u64,
+    flags: u64,
+    read surface: [f32; 15],
+    read snapshot: FrameInputSnapshot,
+    read lighting: P9LightingCertificate,
+    factor: f32,
+) -> [f32; 10]:
+    light_kinds = __wrela_pixels_p7_frame_snapshot_light_kinds(renderer)
+    light_values = __wrela_pixels_p7_frame_snapshot_light_scalars(renderer)
+    post = __wrela_pixels_p7_frame_snapshot_post(renderer)
+    front_meta = P9ShadingMeta(
+        identity=front_identity,
+        flags=flags,
+        visibility=lighting.visibility,
+        visibility_uncertain=lighting.visibility_uncertain,
+        visibility_refined=lighting.visibility_refined,
+        visibility_refined_uncertain=lighting.visibility_refined_uncertain,
+        visibility_terminal_light=lighting.visibility_terminal_light,
+    )
+    front = __wrela_pixels_p9_hdr_pixel(
+        renderer,
+        front_meta,
+        surface, snapshot.params, snapshot.camera, light_kinds, light_values, post,
+    )
+    if front[0] != 1.0:
+        return [0.0; 10]
+    background_surface: [f32; 15] = [0.0; 15]
+    background_surface[2] = 1.0
+    background_surface[5] = 1.0
+    background_surface[12] = 1.0
+    background_surface[13] = 1.0
+    background_surface[14] = 1.0
+    # Visibility payloads are ignored when `flags` says background. Reuse the
+    # already initialized record and change only the semantic header instead
+    # of materializing another 73-word aggregate in executable text.
+    back_meta = front_meta
+    back_meta.identity = 0
+    back_meta.flags = 0
+    back_surface = background_surface
+    if back_identity != 18446744073709551615:
+        back_meta.identity = back_identity
+        back_meta.flags = flags
+        back_surface = surface
+    back = __wrela_pixels_p9_hdr_pixel(
+        renderer, back_meta, back_surface, snapshot.params, snapshot.camera,
+        light_kinds, light_values, post,
+    )
+    if back[0] != 1.0:
+        return [0.0; 10]
+    inverse = 1.0 - factor
+    result: [f32; 10] = [1.0; 10]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        result[channel + 1] = front[channel + 1] * factor + back[channel + 1] * inverse
+        result[channel + 4] = front[channel + 4] * factor + back[channel + 4] * inverse
+        result[channel + 7] = front[channel + 7] * factor + back[channel + 7] * inverse
+        channel = channel + 1
+    return result
+
+pub fn __wrela_pixels_p9_event_color(
+    renderer: usize,
+    worker: u32,
+    tile: u32,
+    read geometry: [u32; 4],
+    read candidates: P7RowCandidates,
+    read snapshot: FrameInputSnapshot,
+    read sample: P7VisibilitySample,
+) -> [u64; 2]:
+    x = geometry[0]
+    y = geometry[1]
+    width = geometry[2]
+    height = geometry[3]
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or width == 0 or height == 0:
+        return [0, 0]
+    light_kinds = __wrela_pixels_p7_frame_snapshot_light_kinds(renderer)
+    light_values = __wrela_pixels_p7_frame_snapshot_light_scalars(renderer)
+    event_u = (((x.to[f32]() + 0.5) / width.to[f32]()) * 2.0 - 1.0) * width.to[f32]() / height.to[f32]()
+    event_v = 1.0 - ((y.to[f32]() + 0.5) / height.to[f32]()) * 2.0
+    event_visibility = __wrela_pixels_p7_pixel_visibility_from_candidates(
+        renderer=renderer,
+        worker=worker,
+        tile=tile,
+        span=x | ((x + 1) << 16),
+        y=y,
+        filter=[event_u, event_v, 0.0, 0.0],
+        candidates=candidates,
+        snapshot=snapshot,
+    )
+    event_identity = sample.identity
+    event_feature: u32 = 4294967295
+    event_proof_method = sample.proof_method
+    event_root_count = sample.root_count
+    event_q_raw = sample.q_hi.to[i64]()
+    featureless_fallback = false
+    if event_visibility.ok and event_visibility.hit:
+        event_identity = event_visibility.identity
+        event_feature = event_visibility.root_count >> 16
+        event_proof_method = event_visibility.proof_method
+        event_root_count = event_visibility.root_count
+        event_q_raw = (
+            event_visibility.q_lo.to[i64]()
+            + (event_visibility.q_hi.to[i64]() - event_visibility.q_lo.to[i64]()) / 2
+        )
+    else:
+        fallback_ok = true
+        fallback_light: usize = 0
+        @budget(bound=8)
+        while fallback_light < 8:
+            if light_kinds[fallback_light] != 0:
+                fallback_ok = false
+            fallback_light = fallback_light + 1
+        if __wrela_pixels_p9_ao_config(renderer)[0] != 0.0:
+            fallback_ok = false
+        material_inputs = __wrela_pixels_p9_material_inputs(renderer, sample.identity)
+        event_q_raw = config[4]
+        if (
+            not fallback_ok
+            or material_inputs[0] != 1
+            # Parameter dependence is safe at one sealed frame snapshot.
+            # Position, surface, texture, or normal dependence is not.
+            or material_inputs[1] & 119 != 0
+            or event_q_raw <= 0
+            or event_q_raw > 2147483647
+        ):
+            return [0, 0]
+        featureless_fallback = true
+    event_q = __wrela_pixels_p7_raw_to_f32(
+        event_q_raw.to[i32](), config[3].to[i32](),
+    )
+    event_normal = __wrela_pixels_p7_feature_normal(
+        renderer,
+        event_feature,
+        event_u,
+        event_v,
+        event_q,
+        snapshot.params,
+        snapshot.camera,
+    )
+    shade_normal: [f32; 3] = [
+        0.0 - snapshot.camera[3],
+        0.0 - snapshot.camera[4],
+        0.0 - snapshot.camera[5],
+    ]
+    if event_normal[0] == 1.0:
+        shade_normal = [event_normal[1], event_normal[2], event_normal[3]]
+    ray_x = snapshot.camera[3] + event_u * snapshot.camera[6] + event_v * snapshot.camera[9]
+    ray_y = snapshot.camera[4] + event_u * snapshot.camera[7] + event_v * snapshot.camera[10]
+    ray_z = snapshot.camera[5] + event_u * snapshot.camera[8] + event_v * snapshot.camera[11]
+    event_point = [
+        snapshot.camera[0] + ray_x / event_q,
+        snapshot.camera[1] + ray_y / event_q,
+        snapshot.camera[2] + ray_z / event_q,
+    ]
+    lighting = __wrela_pixels_p9_lighting_certificate(
+        renderer,
+        worker,
+        event_point,
+        shade_normal,
+        event_feature,
+        snapshot.params,
+        light_kinds,
+        light_values,
+    )
+    if not lighting.ok:
+        return [0, 0]
+    event_surface: [f32; 15] = [0.0; 15]
+    event_surface[0] = event_u
+    event_surface[1] = event_v
+    event_surface[2] = event_q
+    event_surface[3] = shade_normal[0]
+    event_surface[4] = shade_normal[1]
+    event_surface[5] = shade_normal[2]
+    pixel_step = 2.0 / height.to[f32]()
+    event_surface[6] = snapshot.camera[6] * pixel_step / event_q
+    event_surface[7] = snapshot.camera[7] * pixel_step / event_q
+    event_surface[8] = snapshot.camera[8] * pixel_step / event_q
+    event_surface[9] = snapshot.camera[9] * pixel_step / event_q
+    event_surface[10] = snapshot.camera[10] * pixel_step / event_q
+    event_surface[11] = snapshot.camera[11] * pixel_step / event_q
+    event_surface[12] = lighting.ao
+    event_surface[13] = lighting.ao_lower
+    event_surface[14] = lighting.ao_upper
+    back_identity: u64 = 18446744073709551615
+    if event_proof_method & 128 != 0:
+        back_identity = (event_root_count >> 16).to[u64]()
+    if featureless_fallback and back_identity != 18446744073709551615:
+        back_inputs = __wrela_pixels_p9_material_inputs(renderer, back_identity.to[u32]())
+        if back_inputs[0] != 1 or back_inputs[1] & 119 != 0:
+            return [0, 0]
+    event_factor = sample.coverage.to[f32]() / 255.0
+    flags: u64 = 1
+    if event_feature >= 16777215 and not featureless_fallback:
+        return [0, 0]
+    if not featureless_fallback:
+        flags = flags | ((event_feature.to[u64]() + 1) << 8)
+    front_inputs = __wrela_pixels_p9_material_inputs(renderer, event_identity)
+    back_inputs: [u64; 2] = [1, 0]
+    if back_identity != 18446744073709551615:
+        back_inputs = __wrela_pixels_p9_material_inputs(renderer, back_identity.to[u32]())
+    if front_inputs[0] != 1 or back_inputs[0] != 1:
+        return [0, 0]
+    step: u32 = 0
+    @budget(bound=6)
+    while step < 6:
+        composited = __wrela_pixels_p9_event_composite(
+            renderer, event_identity.to[u64](), back_identity, flags,
+            event_surface, snapshot, lighting, event_factor,
+        )
+        if composited[0] != 1.0:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        encoded = __wrela_pixels_p9_encode_certified(
+            renderer,
+            [composited[7], composited[8], composited[9]],
+            [composited[1], composited[2], composited[3]],
+            [composited[4], composited[5], composited[6]],
+        )
+        normal_terminal_required = flags & 4 == 0 and (front_inputs[1] | back_inputs[1]) & 64 != 0
+        if encoded[0] == 1 and not normal_terminal_required:
+            return encoded
+        options: [u64; 48] = [0; 48]
+        option_count: u32 = 0
+        if flags & 2 == 0 and front_inputs[0] == 1 and back_inputs[0] == 1 and (front_inputs[1] | back_inputs[1]) & 48 != 0:
+            options[0] = 4
+            options[1] = 0
+            options[2] = 64
+            options[3] = 1
+            options[4] = 255
+            options[5] = event_identity.to[u64]()
+            option_count = 1
+        if flags & 4 == 0 and front_inputs[0] == 1 and back_inputs[0] == 1 and (front_inputs[1] | back_inputs[1]) & 64 != 0:
+            base = option_count.to[usize]() * 6
+            options[base] = 2
+            options[base + 1] = 0
+            options[base + 2] = 256
+            options[base + 3] = 1
+            options[base + 4] = 255
+            options[base + 5] = event_identity.to[u64]()
+            option_count = option_count + 1
+        area_payload: u64 = 0
+        if lighting.visibility_terminal_light < 8:
+            area_payload = lighting.visibility_terminal_light + 1
+        if flags & 8 == 0 and area_payload != 0:
+            base = option_count.to[usize]() * 6
+            options[base] = 6
+            options[base + 1] = 0
+            # Worst case: 62 unresolved parents times 64 density cells,
+            # plus 1024 terminal contribution cells and fixed bookkeeping.
+            options[base + 2] = 4992
+            options[base + 3] = 1
+            options[base + 4] = 255
+            options[base + 5] = area_payload - 1
+            option_count = option_count + 1
+        has_direct = false
+        direct_light: usize = 0
+        @budget(bound=8)
+        while direct_light < 8:
+            if light_kinds[direct_light] == 1 or light_kinds[direct_light] == 2:
+                has_direct = true
+            direct_light = direct_light + 1
+        if flags & 16 == 0 and has_direct:
+            base = option_count.to[usize]() * 6
+            options[base] = 5
+            options[base + 1] = 0
+            options[base + 2] = 128
+            options[base + 3] = 1
+            options[base + 4] = 255
+            options[base + 5] = event_identity.to[u64]()
+            option_count = option_count + 1
+        if flags & 32 == 0 and __wrela_pixels_p9_ao_config(renderer)[0] == 1.0:
+            base = option_count.to[usize]() * 6
+            options[base] = 7
+            options[base + 1] = 0
+            options[base + 2] = 320
+            options[base + 3] = 1
+            options[base + 4] = 255
+            options[base + 5] = 0
+            option_count = option_count + 1
+        selected = __wrela_pixels_p9_select_refinement(options, option_count)
+        if selected[0] != 1:
+            debug_channel: usize = 0
+            @budget(bound=3)
+            while debug_channel < 3:
+                debug_low = __wrela_pixels_p9_encode(renderer, composited[debug_channel + 1])
+                debug_high = __wrela_pixels_p9_encode(renderer, composited[debug_channel + 4])
+                debug_candidate = __wrela_pixels_p9_encode(renderer, composited[debug_channel + 7])
+                if debug_low[0] == 1 and debug_high[0] == 1 and debug_candidate[0] == 1 and debug_low[1] != debug_high[1] and debug_low[1] < 16 and debug_high[1] < 16 and debug_candidate[1] < 16:
+                    return [
+                        0,
+                        debug_low[1]
+                        | (debug_high[1] << 4)
+                        | (debug_candidate[1] << 8)
+                        | (debug_channel.to[u64]() << 12)
+                        | ((flags & 64) << 9),
+                    ]
+                debug_channel = debug_channel + 1
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        source = options[selected[1].to[usize]() * 6]
+        if source == 2:
+            flags = flags | 4
+        elif source == 4:
+            flags = flags | 2
+        elif source == 5:
+            flags = flags | 16
+        elif source == 6:
+            if area_payload == 0 or event_feature >= 16777215:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+                return [0, 0]
+            density_light = area_payload - 1
+            lighting = __wrela_pixels_p9_lighting_certificate(
+                renderer,
+                worker,
+                event_point,
+                shade_normal,
+                event_feature | 2147483648 | (density_light.to[u32]() << 28),
+                snapshot.params,
+                light_kinds,
+                light_values,
+            )
+            if not lighting.ok or lighting.visibility_terminal_light != density_light:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+                return [0, 0]
+            event_surface[12] = lighting.ao
+            event_surface[13] = lighting.ao_lower
+            event_surface[14] = lighting.ao_upper
+            # The density terminal subdivides only unresolved depth-five
+            # visibility cells and retains complete clear/possible fractions.
+            flags = flags | 8 | 64
+        elif source == 7:
+            flags = flags | 32
+        else:
+            _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+            return [0, 0]
+        _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 158, 1)
+        step = step + 1
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 161, 1)
+    return [0, 0]
+
 pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool) -> u64:
     if job.tiles_start > job.tiles_end:
         return __wrela_pixels_p7_worker_error(5, 0)
@@ -43,15 +388,7 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
     post = __wrela_pixels_p7_frame_snapshot_post(job.renderer_index)
     snapshot = FrameInputSnapshot(
         params=__wrela_pixels_p7_frame_snapshot_params(job.renderer_index),
-        param_count=meta[2].to[u16](),
         camera=__wrela_pixels_p7_frame_snapshot_camera(job.renderer_index),
-        lights=LightFrame.from_snapshot(
-            __wrela_pixels_p7_frame_snapshot_light_kinds(job.renderer_index),
-            __wrela_pixels_p7_frame_snapshot_light_scalars(job.renderer_index),
-        ),
-        exposure=post[0],
-        environment=Rgb(r=post[1], g=post[2], b=post[3]),
-        frame_index=meta[1],
     )
     width = config[1].to[u32]()
     height = config[2].to[u32]()
@@ -70,7 +407,7 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
     if not __wrela_pixels_p7_workspace_reset(
         job.renderer_index,
         job.worker_index,
-        snapshot.frame_index +% 1,
+        meta[1] +% 1,
     ):
         return __wrela_pixels_p7_worker_error(11, 0)
     telemetry_enabled = __wrela_pixels_p7_telemetry_reset(
@@ -456,40 +793,77 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                     run_record = run_record + 1
                 if sample.hit and sample.q_hi.to[i64]() < sample.q_lo.to[i64]():
                     return __wrela_pixels_p7_worker_error(13, tile)
-                r: u8 = 0
-                g: u8 = 0
-                b: u8 = 0
-                a: u8 = 255
-                back: u32 = 0
+                debug_r: u8 = 0
+                debug_g: u8 = 0
+                debug_b: u8 = 0
+                debug_back: u32 = 0
                 if sample.hit:
-                    r = ((sample.identity >> 8) & 255).to[u8]()
-                    g = (sample.identity & 255).to[u8]()
+                    debug_r = ((sample.identity >> 8) & 255).to[u8]()
+                    debug_g = (sample.identity & 255).to[u8]()
                     width_class = sample.q_hi.to[i64]() - sample.q_lo.to[i64]()
                     if width_class < 0:
                         return __wrela_pixels_p7_worker_error(13, tile)
                     if width_class > 126:
                         width_class = 126
-                    b = (129 + width_class).to[u8]()
+                    debug_b = (129 + width_class).to[u8]()
                     if sample.event:
-                        # P8 event coverage uses a high-contrast debug
-                        # channel: after premultiplication the displayed blue
-                        # byte is exactly the certified coverage code. This
-                        # gives the independent conformance oracle a direct
-                        # guest-output byte rather than an inferred point
-                        # witness. Regular pixels retain the q-width code.
-                        b = 255
-                        a = sample.coverage
+                        debug_b = 255
                         if sample.proof_method & 128 != 0:
                             secondary = sample.root_count >> 16
-                            back = (
+                            debug_back = (
                                 ((secondary >> 8) & 255)
                                 | ((secondary & 255) << 8)
-                                | (b.to[u32]() << 16)
+                                | (debug_b.to[u32]() << 16)
                             )
+                debug_front = (
+                    debug_r.to[u32]()
+                    | (debug_g.to[u32]() << 8)
+                    | (debug_b.to[u32]() << 16)
+                )
+                light_kinds = __wrela_pixels_p7_frame_snapshot_light_kinds(job.renderer_index)
+                light_values = __wrela_pixels_p7_frame_snapshot_light_scalars(job.renderer_index)
+                a: u8 = 255
+                shade_normal: [f32; 3] = [
+                    0.0 - snapshot.camera[3],
+                    0.0 - snapshot.camera[4],
+                    0.0 - snapshot.camera[5],
+                ]
+                if sample.hit:
+                    shade_x = x.to[f32]() + (end - x).to[f32]() * 0.5
+                    shade_u = (((shade_x / width.to[f32]()) * 2.0 - 1.0) * width.to[f32]() / height.to[f32]())
+                    shade_v = 1.0 - ((y.to[f32]() + 0.5) / height.to[f32]()) * 2.0
+                    shade_q_raw = (
+                        sample.q_lo.to[i64]()
+                        + (sample.q_hi.to[i64]() - sample.q_lo.to[i64]()) / 2
+                    )
+                    shade_q = __wrela_pixels_p7_raw_to_f32(
+                        shade_q_raw.to[i32](), config[3].to[i32](),
+                    )
+                    if normal[0] == 1.0:
+                        shade_normal = [normal[1], normal[2], normal[3]]
+                    if sample.event:
+                        a = sample.coverage
                 if sample.event:
                     event_start = x
                     @budget(bound=16)
                     while x < end:
+                        event_color: u32 = 0
+                        if not __wrela_pixels_p9_debug_visibility():
+                            certified = __wrela_pixels_p9_event_color(
+                                job.renderer_index,
+                                job.worker_index,
+                                tile,
+                                [x, y, width, height],
+                                candidates,
+                                snapshot,
+                                sample,
+                            )
+                            if certified[0] != 1:
+                                diagnostic_tile = tile
+                                if certified[1] != 0:
+                                    diagnostic_tile = certified[1].to[u32]()
+                                return __wrela_pixels_p7_worker_error(91, diagnostic_tile)
+                            event_color = certified[1].to[u32]()
                         # Materialize the compact event record against real,
                         # per-pixel side-run and sealed-event arenas. Run IDs
                         # 0 and 1 name the selected front and certified
@@ -497,10 +871,12 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                         # contains every sealed event whose conservative span
                         # owns this pixel. Rasterization below consumes these
                         # references instead of the pre-lowering temporaries.
-                        event_side_runs: [u32; 2] = [
-                            r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
-                            back,
-                        ]
+                        # Coverage is applied in linear HDR above, before the
+                        # filmic and sRGB tables. The device write therefore
+                        # receives an already-certified opaque color.
+                        event_side_runs: [u32; 2] = [event_color, 0]
+                        if __wrela_pixels_p9_debug_visibility():
+                            event_side_runs = [debug_front, debug_back]
                         # The sealed tile-event table is capped at 256 records.
                         # The filtered view can legitimately retain more than
                         # the analytic arrangement's crossing-curve limit: its
@@ -578,6 +954,9 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                         event_coverage = (
                             (event.coverage.lower().to[u32]() * 255 + 128) / 256
                         ).to[u8]()
+                        event_alpha: u8 = 255
+                        if __wrela_pixels_p9_debug_visibility():
+                            event_alpha = event_coverage
                         event_references = event.front_run.value.to[u64]() | (
                             event.back_run.value.to[u64]() << 16
                         ) | (event.event_ids.count.to[u64]() << 32)
@@ -609,7 +988,7 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                                 job.worker_index,
                                 y * width + event.x.to[u32](),
                                 event_front,
-                                event_coverage,
+                                event_alpha,
                                 event_back,
                             )
                             or not __wrela_pixels_p7_workspace_charge(
@@ -654,12 +1033,23 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                             height=height,
                             camera=snapshot.camera,
                             scale=__wrela_pixels_p7_raw_to_f32(1, config[3].to[i32]()),
-                            color=r.to[u32]() | (g.to[u32]() << 8) | (b.to[u32]() << 16),
+                            identity=sample.identity,
+                            feature=sample.root_count >> 16,
+                            hit=sample.hit,
+                            normal=[shade_normal[0], shade_normal[1], shade_normal[2]],
+                            params=snapshot.params,
+                            light_kinds=light_kinds,
+                            light_values=light_values,
+                            exposure=post[0],
+                            environment=[
+                                post[1], post[2], post[3],
+                            ],
+                            debug_color=debug_front,
                         ),
                         raster,
                     )
                     if raster_written == 18446744073709551615:
-                        return __wrela_pixels_p7_worker_error(13, tile)
+                        return __wrela_pixels_p7_worker_error(90, tile)
                     __wrela_pixels_p8_charge_raster_run(
                         job.renderer_index,
                         job.worker_index,

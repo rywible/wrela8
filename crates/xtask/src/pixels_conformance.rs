@@ -5,6 +5,8 @@ use crate::pixels_cache::{Cache, file_digest, is_sha256_hex, key_of, tree_digest
 use crate::root;
 
 const EXPECTED: &str = "tests/pixels_truth/p8-visibility.txt";
+const QUALITY_EXPECTED: &str = "tests/pixels_truth/quality/p9-production-v1.txt";
+const QUALITY_GUEST_EXPECTED: &str = "tests/pixels_truth/quality/p9-guest-v1.txt";
 const OUTPUT_DIR_ENV: &str = "WRELA_P8_CONFORMANCE_OUTPUT_DIR";
 
 /// Version of the recorded truth schema and the numeric contract the scorer
@@ -17,7 +19,8 @@ const CONFORMANCE_FIXTURE_VERSION: u32 = 2;
 /// The compiler options both cached stages hold fixed. Naming them in the key
 /// means a future flag cannot silently reuse a value derived under different
 /// options.
-const INSTRUMENTED_COMPILER_OPTIONS: &str = "--pixels-telemetry --image-digest-only";
+const INSTRUMENTED_COMPILER_OPTIONS: &str =
+    "--pixels-telemetry --pixels-debug-visibility --image-digest-only";
 
 fn compile_cache_key(sources: &str, compiler: &str, options: &str) -> String {
     key_of(&[
@@ -777,6 +780,7 @@ pub fn pixels_conformance(
                     .arg("test")
                     .arg(&target)
                     .arg("--pixels-telemetry")
+                    .arg("--pixels-debug-visibility")
                     .arg("--image-digest-only")
                     .arg("--vmm")
                     .arg(&vmm)
@@ -842,6 +846,7 @@ pub fn pixels_conformance(
                 .arg("test")
                 .arg(&target)
                 .arg("--pixels-telemetry")
+                .arg("--pixels-debug-visibility")
                 .arg("--vmm")
                 .arg(&vmm);
             command.env("WRELA_P8_FRAME_DUMP", &frame_dump_path);
@@ -923,7 +928,7 @@ pub fn pixels_conformance(
             })?
             .try_into()
             .map_err(|_| "pixels conformance: telemetry digest width changed".to_string())?;
-        let frame_digest = values
+        let guest_frame_digest: Option<[u64; 4]> = values
             .iter()
             .rposition(|value| *value == GUEST_FRAME_DIGEST_MARKER)
             .map(|marker| {
@@ -936,11 +941,18 @@ pub fn pixels_conformance(
                     .map_err(|_| "pixels conformance: frame digest width changed".to_string())
             })
             .transpose()?;
-        if frame_digest.is_none() {
+        let guest_frame_digest = guest_frame_digest.ok_or_else(|| {
+            format!("pixels conformance: instrumented `{case}` omitted its frame digest")
+        })?;
+        let captured_frame_digest =
+            wrela_compiler::pixels::reference::conformance::debug_frame_digest(&raw_frame_bytes);
+        if guest_frame_digest != captured_frame_digest {
             return Err(format!(
-                "pixels conformance: instrumented `{case}` omitted its frame digest"
+                "pixels conformance: instrumented `{case}` guest display digest {:016x?} differs from captured final bytes {:016x?}",
+                guest_frame_digest, captured_frame_digest,
             ));
         }
+        let frame_digest = Some(guest_frame_digest);
         let evidence = values
             .iter()
             .position(|value| *value == GUEST_CERTIFIED_RUN_MARKER)
@@ -990,6 +1002,323 @@ pub fn pixels_conformance(
             state,
         })
     };
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct QualityGuestRun {
+        digests: Vec<[u8; 32]>,
+        frames: Vec<Vec<u8>>,
+        telemetry_counters: Vec<u64>,
+    }
+    let run_quality_guest = |target: &std::path::Path| -> Result<QualityGuestRun, String> {
+        let frame_dump = std::env::temp_dir().join(format!(
+            "wrela-p9-quality-frame-{}-{}.bgra",
+            std::process::id(),
+            FRAME_DUMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let sequence_dump = frame_dump.with_extension("sequence.bgra");
+        let _ = std::fs::remove_file(&frame_dump);
+        let _ = std::fs::remove_file(&sequence_dump);
+        let output = Command::new(root().join("target/debug/wrela"))
+            .current_dir(root())
+            .arg("test")
+            .arg(target)
+            .arg("--pixels-telemetry")
+            .arg("--vmm")
+            .arg(&vmm)
+            .env("WRELA_P8_FRAME_DUMP", &frame_dump)
+            .env("WRELA_P9_FRAME_SEQUENCE_DUMP", &sequence_dump)
+            .output()
+            .map_err(|error| {
+                format!("pixels conformance: run production quality guest: {error}")
+            })?;
+        if !output.status.success() {
+            return Err(format!(
+                "pixels conformance: production quality guest failed:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            ));
+        }
+        let values = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("p7 "))
+            .map(|value| {
+                u64::from_str_radix(value, 16)
+                    .map_err(|error| format!("pixels conformance: quality trace: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let digest_octets = wrela_compiler::pixels::reference::quality::FRAME_COUNT * 32;
+        if values.len() < digest_octets || values[..digest_octets].iter().any(|value| *value > 255)
+        {
+            return Err(format!(
+                "pixels conformance: production quality trace has {} values, expected at least 256 digest octets",
+                values.len(),
+            ));
+        }
+        let digests = values[..digest_octets]
+            .chunks_exact(32)
+            .map(|chunk| std::array::from_fn(|index| chunk[index] as u8))
+            .collect::<Vec<_>>();
+        let final_bytes = std::fs::read(&frame_dump).map_err(|error| {
+            format!(
+                "pixels conformance: read production quality frame {}: {error}",
+                frame_dump.display()
+            )
+        })?;
+        let sequence_bytes = std::fs::read(&sequence_dump).map_err(|error| {
+            format!(
+                "pixels conformance: read production quality sequence {}: {error}",
+                sequence_dump.display()
+            )
+        })?;
+        let _ = std::fs::remove_file(&frame_dump);
+        let _ = std::fs::remove_file(&sequence_dump);
+        let mut frames =
+            Vec::with_capacity(wrela_compiler::pixels::reference::quality::FRAME_COUNT);
+        let mut cursor = 0_usize;
+        let mut previous_sequence = None;
+        while cursor < sequence_bytes.len() {
+            let header = sequence_bytes.get(cursor..cursor + 24).ok_or_else(|| {
+                "pixels conformance: truncated P9 frame-sequence header".to_string()
+            })?;
+            if &header[..8] != b"WRELAP9F" {
+                return Err("pixels conformance: invalid P9 frame-sequence marker".to_string());
+            }
+            let sequence = u64::from_le_bytes(header[8..16].try_into().expect("sequence word"));
+            let length = usize::try_from(u64::from_le_bytes(
+                header[16..24].try_into().expect("length word"),
+            ))
+            .map_err(|_| "pixels conformance: P9 frame-sequence length overflow".to_string())?;
+            if previous_sequence.is_some_and(|previous| sequence != previous + 1) {
+                return Err("pixels conformance: P9 frame sequence is not contiguous".to_string());
+            }
+            previous_sequence = Some(sequence);
+            cursor += 24;
+            let end = cursor
+                .checked_add(length)
+                .filter(|end| *end <= sequence_bytes.len())
+                .ok_or_else(|| {
+                    "pixels conformance: truncated P9 frame-sequence payload".to_string()
+                })?;
+            frames.push(sequence_bytes[cursor..end].to_vec());
+            cursor = end;
+        }
+        let quality_frame_count = wrela_compiler::pixels::reference::quality::FRAME_COUNT;
+        let quality_width = wrela_compiler::pixels::reference::quality::FRAME_WIDTH;
+        let quality_height = wrela_compiler::pixels::reference::quality::FRAME_HEIGHT;
+        if frames.len() != quality_frame_count
+            || frames
+                .iter()
+                .any(|frame| frame.len() != quality_width * quality_height * 4)
+        {
+            return Err(format!(
+                "pixels conformance: P9 quality capture has {} complete {}x{} frames, expected {}",
+                frames.len(),
+                quality_width,
+                quality_height,
+                quality_frame_count,
+            ));
+        }
+        if frames.last() != Some(&final_bytes) {
+            return Err(
+                "pixels conformance: final frame dump differs from sequence tail".to_string(),
+            );
+        }
+        for (frame_index, (digest, frame)) in digests.iter().zip(&frames).enumerate() {
+            let captured: [u8; 32] = wrela_machine::pixels::guest_bounded_digest(frame)
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "pixels conformance: quality digest width mismatch".to_string())?;
+            if *digest != captured {
+                return Err(format!(
+                    "pixels conformance: quality frame {frame_index} guest digest is not bound to its captured final bytes"
+                ));
+            }
+        }
+        let dump_marker = values
+            .iter()
+            .rposition(|value| *value == GUEST_FRAME_DUMP_MARKER)
+            .ok_or_else(|| {
+                "pixels conformance: instrumented quality guest omitted telemetry dump".to_string()
+            })?;
+        let (_, telemetry_counters) =
+            decode_frame_dump(&values[dump_marker + 1..], frames.last().map(Vec::as_slice))?;
+        Ok(QualityGuestRun {
+            digests,
+            frames,
+            telemetry_counters,
+        })
+    };
+    let quality_root = root().join("tests/golden/boot-pixels-quality/root");
+    let quality_relative = std::fs::read_to_string(&quality_root).map_err(|error| {
+        format!(
+            "pixels conformance: read {}: {error}",
+            quality_root.display()
+        )
+    })?;
+    let quality_target = root()
+        .join("tests/golden/boot-pixels-quality")
+        .join(quality_relative.trim());
+    let quality_three = run_quality_guest(&quality_target)?;
+    let quality_repeat = run_quality_guest(&quality_target)?;
+    if quality_three != quality_repeat {
+        return Err(
+            "pixels conformance: repeated production quality sequence is stochastic".to_string(),
+        );
+    }
+    let quality_actual =
+        wrela_compiler::pixels::reference::quality::production_truth_text(&quality_three.frames)?;
+    let quality_path = root().join(QUALITY_EXPECTED);
+    let quality_expected = std::fs::read_to_string(&quality_path).map_err(|error| {
+        format!(
+            "pixels conformance: read {}: {error}",
+            quality_path.display()
+        )
+    })?;
+    if quality_actual != quality_expected {
+        if update {
+            std::fs::write(&quality_path, &quality_actual).map_err(|error| {
+                format!(
+                    "pixels conformance: write {}: {error}",
+                    quality_path.display()
+                )
+            })?;
+            println!("pixels-conformance: updated {QUALITY_EXPECTED}");
+        } else {
+            return Err(format!(
+                "pixels conformance: production P9 quality truth differs from {QUALITY_EXPECTED}\n--- expected\n{quality_expected}--- actual\n{quality_actual}"
+            ));
+        }
+    }
+    let quality_source = std::fs::read_to_string(&quality_target).map_err(|error| {
+        format!(
+            "pixels conformance: read quality source {}: {error}",
+            quality_target.display()
+        )
+    })?;
+    for (property, witness) in [
+        ("diagonal-pan", "surface.position.x + surface.position.y"),
+        ("glossy-sphere", "roughness=0.25"),
+        ("slope-recede", "NormalDetail.TextureSlope"),
+        ("rectangle-penumbra", "Light.rectangle"),
+        ("thin-blade", "blade_profile"),
+        ("material-edge", "case .Wall:"),
+        ("ao-contact", "ao=AoConfig.fixed(enabled=true)"),
+        ("filmic-shoulder", "tone_curve=ToneCurve.FilmicV1"),
+    ] {
+        if !quality_source.contains(witness) {
+            return Err(format!(
+                "pixels conformance: production quality source lost `{property}` witness `{witness}`"
+            ));
+        }
+    }
+    const QUALITY_THREE_CORES: &str = "target=Target.wrela_machine_v1, cores=3)";
+    if quality_source.matches(QUALITY_THREE_CORES).count() != 1 {
+        return Err(
+            "pixels conformance: quality fixture no longer declares exactly three guest vCPUs"
+                .to_string(),
+        );
+    }
+    let quality_one_source = quality_source.replace(
+        QUALITY_THREE_CORES,
+        "target=Target.wrela_machine_v1, cores=1)",
+    );
+    // Reserved conformance trace intrinsics are authenticated only beneath a
+    // repository-owned fixture root. Use a private, process-unique sibling
+    // under tests/golden and remove it immediately after the run.
+    let quality_one_case_dir = root()
+        .join("tests/golden")
+        .join(format!(".p9-quality-one-{}", std::process::id()));
+    let quality_one_dir = quality_one_case_dir.join("src");
+    let quality_one_examples = quality_one_dir.join("examples");
+    std::fs::create_dir_all(&quality_one_examples).map_err(|error| {
+        format!(
+            "pixels conformance: create one-vCPU quality directory {}: {error}",
+            quality_one_examples.display()
+        )
+    })?;
+    // Wrela module identity is path-checked. Keep the canonical basename in
+    // the private temporary directory while changing only the sealed core
+    // count in the source contents.
+    let quality_one_target = quality_one_examples.join("boot_pixels_quality.wr");
+    std::fs::write(&quality_one_target, quality_one_source).map_err(|error| {
+        format!(
+            "pixels conformance: write one-vCPU quality source {}: {error}",
+            quality_one_target.display()
+        )
+    })?;
+    let quality_one = run_quality_guest(&quality_one_target);
+    let _ = std::fs::remove_dir_all(&quality_one_case_dir);
+    let quality_one = quality_one?;
+    if quality_three != quality_one {
+        return Err(
+            "pixels conformance: production quality one/three-vCPU digests differ".to_string(),
+        );
+    }
+    let mut quality_guest_actual = format!(
+        "PixelsGuestQuality version=1 frames=8 topology=one-three repeat=identical framebuffer=bound properties={} status=pass\n",
+        wrela_compiler::pixels::reference::quality::LOCKED_PROPERTIES,
+    );
+    use std::fmt::Write as _;
+    for (frame, digest) in quality_three.digests.iter().enumerate() {
+        writeln!(
+            quality_guest_actual,
+            "frame={frame} digest={} repeat=identical one_three=identical status=pass",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        )
+        .expect("String write cannot fail");
+    }
+    let counters = &quality_three.telemetry_counters;
+    if counters.len() != 162 || counters[149] != 0 || counters[160] != 0 || counters[161] != 0 {
+        return Err(format!(
+            "pixels conformance: quality raster validation telemetry is malformed: count={} failures={}",
+            counters.len(),
+            counters.get(149).copied().unwrap_or(u64::MAX),
+        ));
+    }
+    writeln!(
+        quality_guest_actual,
+        "summary regular_pixels={} event_pixels={} packet_groups={} scalar_pixels={} raster_validation_failures={} constant_runs={} affine_runs={} quadratic_runs={} rank_runs={},{},{},{} exact_pixels={} refinement_steps={} area_cells={} area_exhaustions={} unresolved=0 byte_certificate_failures={} stochastic=none status=pass",
+        counters[137], counters[138], counters[142], counters[143], counters[149],
+        counters[150], counters[151], counters[152], counters[153], counters[154], counters[155], counters[156],
+        counters[157], counters[158], counters[159], counters[160], counters[161],
+    )
+    .expect("String write cannot fail");
+    if counters[150]
+        .checked_add(counters[157])
+        .is_none_or(|shaded| shaded == 0)
+        || counters[159] == 0
+    {
+        return Err(format!(
+            "pixels conformance: P9 production telemetry omitted shading/area evidence: constant_runs={} exact_pixels={} area_cells={}",
+            counters[150], counters[157], counters[159],
+        ));
+    }
+    let quality_guest_path = root().join(QUALITY_GUEST_EXPECTED);
+    let quality_guest_expected = std::fs::read_to_string(&quality_guest_path).map_err(|error| {
+        format!(
+            "pixels conformance: read {}: {error}",
+            quality_guest_path.display()
+        )
+    })?;
+    if quality_guest_actual != quality_guest_expected {
+        if update {
+            std::fs::write(&quality_guest_path, &quality_guest_actual).map_err(|error| {
+                format!(
+                    "pixels conformance: write {}: {error}",
+                    quality_guest_path.display()
+                )
+            })?;
+            println!("pixels-conformance: updated {QUALITY_GUEST_EXPECTED}");
+        } else {
+            return Err(format!(
+                "pixels conformance: production quality sequence differs from {QUALITY_GUEST_EXPECTED}\n--- expected\n{quality_guest_expected}--- actual\n{quality_guest_actual}"
+            ));
+        }
+    }
     // The raster evidence lives in the instrumented state dump; pull it into
     // the frame dump so scoring and the class checks below can read it.
     // Idempotent so the eager scoring worker and the strict serial pass can
@@ -1332,9 +1661,9 @@ pub fn pixels_conformance(
     for renderer in semantic_results {
         semantic_renderers.push(renderer?);
     }
-    let mut instrumented_four = None;
+    let mut instrumented_three = None;
     let mut instrumented_one = None;
-    let mut evidence_four = None;
+    let mut evidence_three = None;
     let mut evidence_one = None;
     let mut telemetry_sections = Vec::with_capacity(guest_cases.len());
     let mut worker_baselines = std::collections::BTreeMap::new();
@@ -1383,23 +1712,17 @@ pub fn pixels_conformance(
             ));
         }
         worker_baselines.insert(case.to_string(), run.clone());
-        // Telemetry decision-inertness (P7.3): the instrumented layout must
-        // display exactly the bytes the production layout displayed; the
-        // golden transcript pins the production digest.
-        if run
-            .frame_digest
-            .is_some_and(|digest| digest != observations[index].frame_digest)
-        {
-            return Err(format!(
-                "pixels conformance: instrumented `{case}` changed displayed bytes: \
-                 production digest {:016x?}, instrumented digest {:016x?}",
-                observations[index].frame_digest, run.frame_digest
-            ));
-        }
+        // P9.12 deliberately retains P8's independently scored identity
+        // framebuffer behind the compiler-internal instrumentation flag. The
+        // production digest is pinned by the ordinary golden boot; this dump
+        // is the separate debug-conformance artifact required by P9.12.
+        observations[index].frame_digest = run.frame_digest.ok_or_else(|| {
+            format!("pixels conformance: instrumented `{case}` lacks captured digest")
+        })?;
         observations[index].run_evidence = run.evidence;
         if case == "boot-pixels-plane" {
-            instrumented_four = Some(run.telemetry);
-            evidence_four = run.evidence;
+            instrumented_three = Some(run.telemetry);
+            evidence_three = run.evidence;
         } else if case == "boot-pixels-plane-one-core" {
             instrumented_one = Some(run.telemetry);
             evidence_one = run.evidence;
@@ -1503,53 +1826,53 @@ pub fn pixels_conformance(
     // oracle assertion, but it cannot state them, so they are skipped rather
     // than failed.
     let whole_corpus = only.is_none();
-    let instrumented_four = match instrumented_four {
+    let instrumented_three = match instrumented_three {
         Some(value) => value,
         None if !whole_corpus => [0; 4],
-        None => return Err("pixels conformance: four-core evidence missing".to_string()),
+        None => return Err("pixels conformance: three-core evidence missing".to_string()),
     };
     let instrumented_one = match instrumented_one {
         Some(value) => value,
         None if !whole_corpus => [0; 4],
         None => return Err("pixels conformance: one-core evidence missing".to_string()),
     };
-    let evidence_four = match evidence_four {
+    let evidence_three = match evidence_three {
         Some(value) => value,
         None if !whole_corpus => [0; 16],
-        None => return Err("pixels conformance: four-core run missing".to_string()),
+        None => return Err("pixels conformance: three-core run missing".to_string()),
     };
     let evidence_one = match evidence_one {
         Some(value) => value,
         None if !whole_corpus => [0; 16],
         None => return Err("pixels conformance: one-core run missing".to_string()),
     };
-    if whole_corpus && (instrumented_four == [0; 4] || instrumented_four != instrumented_one) {
+    if whole_corpus && (instrumented_three == [0; 4] || instrumented_three != instrumented_one) {
         return Err(format!(
-            "pixels conformance: instrumented one/four-worker telemetry differs or is absent: \
-             one={instrumented_one:?} four={instrumented_four:?}"
+            "pixels conformance: instrumented one/three-worker telemetry differs or is absent: \
+             one={instrumented_one:?} three={instrumented_three:?}"
         ));
     }
-    if evidence_four != evidence_one {
-        let word = evidence_four
+    if evidence_three != evidence_one {
+        let word = evidence_three
             .iter()
             .zip(evidence_one)
             .position(|(four, one)| *four != one)
             .unwrap_or(0);
         return Err(format!(
-            "pixels conformance: instrumented one/four-worker proof evidence differs at word \
-             {word}: one={:016x} four={:016x}",
-            evidence_one[word], evidence_four[word],
+            "pixels conformance: instrumented one/three-worker proof evidence differs at word \
+             {word}: one={:016x} three={:016x}",
+            evidence_one[word], evidence_three[word],
         ));
     }
     if whole_corpus && telemetry_sections[0] != telemetry_sections[1] {
         let counter = telemetry_sections[0]
             .iter()
             .zip(&telemetry_sections[1])
-            .position(|(four, one)| four != one)
+            .position(|(three, one)| three != one)
             .unwrap_or(0);
         return Err(format!(
-            "pixels conformance: one/four-worker CertificateTelemetry sections differ at \
-             counter {counter}: four={} one={}",
+            "pixels conformance: one/three-worker CertificateTelemetry sections differ at \
+             counter {counter}: three={} one={}",
             telemetry_sections[0][counter], telemetry_sections[1][counter]
         ));
     }
@@ -1673,7 +1996,7 @@ pub fn pixels_conformance(
         )
         .expect("String writes cannot fail");
     }
-    // Every adversarial density class is executed again with four workers.
+    // Every adversarial density class is executed again with three workers.
     // The ordinary fixtures use the one-worker Image default. Building temporary
     // variants under `tests/golden` preserves the compiler-internal fixture
     // trust boundary while avoiding a second maintained copy of each scene.
@@ -1687,7 +2010,7 @@ pub fn pixels_conformance(
     // earlier run left behind. `golden_case_dirs` enumerates every directory
     // under `tests/golden` without filtering dotfiles, so a leaked tree is one
     // stray `expected/` away from being collected as a real golden case.
-    const VARIANT_PREFIX: &str = ".p8-four-core-";
+    const VARIANT_PREFIX: &str = ".p9-three-core-";
     for stale in std::fs::read_dir(root().join("tests/golden"))
         .map_err(|error| format!("pixels conformance: scan tests/golden: {error}"))?
         .flatten()
@@ -1702,7 +2025,7 @@ pub fn pixels_conformance(
     {
         std::fs::remove_dir_all(&stale).map_err(|error| {
             format!(
-                "pixels conformance: remove stale four-core variant tree {}: {error}",
+                "pixels conformance: remove stale three-core variant tree {}: {error}",
                 stale.display()
             )
         })?;
@@ -1712,23 +2035,23 @@ pub fn pixels_conformance(
         .join(format!("{VARIANT_PREFIX}{}", std::process::id()));
     std::fs::create_dir_all(&variant_root).map_err(|error| {
         format!(
-            "pixels conformance: create four-core variant tree {}: {error}",
+            "pixels conformance: create three-core variant tree {}: {error}",
             variant_root.display()
         )
     })?;
     let _variant_tree = VariantTree(variant_root.clone());
-    // One/four-worker invariance is a P8.11 criterion, but each class re-boots a
+    // One/three-worker invariance is the fixed product-topology criterion, but each class re-boots a
     // scene that has already been rendered and scored purely to compare it
     // against itself, and those boots are minutes apiece. The property splits
     // into two halves that are covered separately:
     //
     //   * Tile partitioning across workers is covered permanently and cheaply by
     //     the boot goldens. `boot-pixels-partial-mode` (cores=1) and
-    //     `boot-pixels-partial-mode-four-core` (cores=4) render a 65x33 mode —
+    //     `boot-pixels-partial-mode-three-core` (cores=3) renders a 65x33 mode —
     //     four scanout tiles — to the same visible digest in under a second.
     //     That is strictly better partition coverage than any scene here: at
     //     64x32 a frame is a single tile, so only worker zero receives work and
-    //     a four-core variant of those scenes proves almost nothing about
+    //     a three-core variant of those scenes proves almost nothing about
     //     partitioning.
     //   * Telemetry invariance is what these variants uniquely add, and one
     //     scene demonstrates it. The fast lane therefore keeps the cheapest
@@ -1779,62 +2102,62 @@ pub fn pixels_conformance(
         // instrumented render test so its aggregate-reply await remains on
         // core 0; the permanent one-core golden already verifies the removed
         // compile-time pin assertions verbatim.
-        let mut four_core = text.clone();
+        let mut three_core = text.clone();
         if case != "check-pixels-tile-boundary" {
-            let pinned_start = four_core
+            let pinned_start = three_core
                 .find("@test(runtime)\nfn pinned_scene_contract():")
                 .ok_or_else(|| {
                     format!("pixels conformance: `{case}` omitted its pinned scene contract")
                 })?;
-            let pinned_end = four_core[pinned_start..]
+            let pinned_end = three_core[pinned_start..]
                 .find("\n\n@")
                 .map(|offset| pinned_start + offset + 2)
                 .ok_or_else(|| {
                     format!("pixels conformance: `{case}` pin test has no following declaration")
                 })?;
-            four_core.replace_range(pinned_start..pinned_end, "");
+            three_core.replace_range(pinned_start..pinned_end, "");
         }
-        let four_core = four_core.replace(
+        let three_core = three_core.replace(
             DEFAULT_WORKER_IMAGE,
-            "target=Target.wrela_machine_v1, cores=4)",
+            "target=Target.wrela_machine_v1, cores=3)",
         );
         const DEFAULT_DISPLAY: &str = "refresh_hz=60)";
-        if four_core.matches(DEFAULT_DISPLAY).count() != 1 {
+        if three_core.matches(DEFAULT_DISPLAY).count() != 1 {
             return Err(format!(
                 "pixels conformance: `{case}` no longer has one default Display driver declaration"
             ));
         }
-        let four_core = four_core.replace(DEFAULT_DISPLAY, "refresh_hz=60, core=0)");
-        let four_core = if four_core.contains("img.actor(") {
-            if four_core.matches("mailbox=1)").count() != 1 {
+        let three_core = three_core.replace(DEFAULT_DISPLAY, "refresh_hz=60, core=0)");
+        let three_core = if three_core.contains("img.actor(") {
+            if three_core.matches("mailbox=1)").count() != 1 {
                 return Err(format!(
                     "pixels conformance: `{case}` probe actor declaration changed"
                 ));
             }
-            four_core.replace("mailbox=1)", "mailbox=1, core=0)")
+            three_core.replace("mailbox=1)", "mailbox=1, core=0)")
         } else {
-            four_core
+            three_core
         };
         let destination = variant_root.join(case).join(relative.trim());
         let parent = destination.parent().ok_or_else(|| {
             format!(
-                "pixels conformance: four-core destination {} has no parent",
+                "pixels conformance: three-core destination {} has no parent",
                 destination.display()
             )
         })?;
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("pixels conformance: create {}: {error}", parent.display()))?;
-        std::fs::write(&destination, four_core).map_err(|error| {
+        std::fs::write(&destination, three_core).map_err(|error| {
             format!(
-                "pixels conformance: write four-core variant {}: {error}",
+                "pixels conformance: write three-core variant {}: {error}",
                 destination.display()
             )
         })?;
         variant_runs.push((class, case, destination));
     }
-    // The four-core variant boots are independent per case; two concurrent
+    // The three-core variant boots are independent per case; two concurrent
     // guests match the HVF throttle.
-    let four_runs: Vec<Result<InstrumentedRun, String>> = {
+    let three_runs: Vec<Result<InstrumentedRun, String>> = {
         let slots: Vec<std::sync::Mutex<Option<Result<InstrumentedRun, String>>>> = variant_runs
             .iter()
             .map(|_| std::sync::Mutex::new(None))
@@ -1863,37 +2186,37 @@ pub fn pixels_conformance(
             .map(|slot| {
                 slot.into_inner()
                     .unwrap_or_else(|e| e.into_inner())
-                    .unwrap_or_else(|| Err("pixels conformance: four-core run missing".into()))
+                    .unwrap_or_else(|| Err("pixels conformance: three-core run missing".into()))
             })
             .collect()
     };
-    for ((class, case, _), four) in variant_runs.iter().zip(four_runs) {
+    for ((class, case, _), three) in variant_runs.iter().zip(three_runs) {
         let (class, case) = (*class, *case);
-        let four = four?;
+        let three = three?;
         let one = worker_baselines.get(case).ok_or_else(|| {
             format!("pixels conformance: one-worker baseline for `{case}` is absent")
         })?;
-        if one.frame_digest != four.frame_digest
-            || one.frame_dump.bytes != four.frame_dump.bytes
-            || one.telemetry != four.telemetry
-            || one.telemetry_counters != four.telemetry_counters
+        if one.frame_digest != three.frame_digest
+            || one.frame_dump.bytes != three.frame_dump.bytes
+            || one.telemetry != three.telemetry
+            || one.telemetry_counters != three.telemetry_counters
         {
             let byte = one
                 .frame_dump
                 .bytes
                 .iter()
-                .zip(&four.frame_dump.bytes)
-                .position(|(one, four)| one != four);
+                .zip(&three.frame_dump.bytes)
+                .position(|(one, three)| one != three);
             let counter = one
                 .telemetry_counters
                 .iter()
-                .zip(&four.telemetry_counters)
-                .position(|(one, four)| one != four);
+                .zip(&three.telemetry_counters)
+                .position(|(one, three)| one != three);
             return Err(format!(
-                "pixels conformance: `{class}` one/four-worker output or telemetry differs: \
+                "pixels conformance: `{class}` one/three-worker output or telemetry differs: \
                  frame_digest={} byte={byte:?} telemetry={} counter={counter:?}",
-                one.frame_digest != four.frame_digest,
-                one.telemetry != four.telemetry,
+                one.frame_digest != three.frame_digest,
+                one.telemetry != three.telemetry,
             ));
         }
         use std::fmt::Write as _;
@@ -1938,10 +2261,10 @@ pub fn pixels_conformance(
     let actual = format!(
         "GuestVisibilityExecution version=2 cases={} kinetic=false telemetry={:016x}{:016x}{:016x}{:016x} status=pass\n{telemetry_archive}{scored}",
         guest_cases.len(),
-        instrumented_four[0],
-        instrumented_four[1],
-        instrumented_four[2],
-        instrumented_four[3],
+        instrumented_three[0],
+        instrumented_three[1],
+        instrumented_three[2],
+        instrumented_three[3],
     );
     write_actual_report(&actual)?;
     let path = root().join(EXPECTED);

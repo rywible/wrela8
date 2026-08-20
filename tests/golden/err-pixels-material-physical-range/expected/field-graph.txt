@@ -1,0 +1,1 @@
+error[pixels P007]: range for material m0 roughness is not representable by MaterialSample.standard: [0.009999999776482582, 0.009999999776482582] is outside [0.02, 1] at 46:41

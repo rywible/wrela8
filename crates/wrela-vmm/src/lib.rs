@@ -453,9 +453,7 @@ fn validate_frame_program_v1(bytes: &[u8]) -> Result<(), String> {
         }
         if matches!(
             kind,
-            format::FrameProgramTableKindV1::Texture
-                | format::FrameProgramTableKindV1::ShadingSummary
-                | format::FrameProgramTableKindV1::Transparency
+            format::FrameProgramTableKindV1::Transparency
                 | format::FrameProgramTableKindV1::Probe
                 | format::FrameProgramTableKindV1::Kinetic
                 | format::FrameProgramTableKindV1::DebugName
@@ -3845,7 +3843,7 @@ pub fn build() -> Image:
         );
         let transcript = String::from_utf8_lossy(&outcome.transcript);
         // The guest dump runs on the primary and therefore reads the primary's
-        // x18-relative counter bank. Lane 3 also exposes the aggregate for
+        // x18-based counter bank. Lane 3 also exposes the aggregate for
         // profiling, but comparing that sum to a core-0 transcript would count
         // secondary execution only on the host side.
         let host_core0_hits = outcome

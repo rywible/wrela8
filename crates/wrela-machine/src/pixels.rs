@@ -70,7 +70,14 @@ pub const FRAME_PROGRAM_DIGEST_BYTES_V1: usize = 32;
 pub const FRAME_PROGRAM_TABLE_ALIGNMENT_V1: u64 = 16;
 pub const FRAME_PROGRAM_HOT_ALIGNMENT_V1: u64 = 64;
 pub const FRAME_PROGRAM_MAX_BYTES_V1: u64 = 64 * 1024 * 1024;
-pub const FRAME_PROGRAM_NUMERIC_REVISION_V1: u32 = 1;
+// Revision 2 sealed the P9 4097-entry filmic/sRGB tables and their fixed-point
+// interpolation domains. Revision 3 seals per-texel Q16.16 slope-moment mip
+// pyramids and the expanded material UV/filter metadata. Revision 4 seals the
+// depth-three area-source cells, source-bundle visibility proof, concave
+// base-color BRDF enclosure, and fixed f32 shading-roundoff radius. Changing
+// any table, moment, mapping, integration, or interpolation rule must advance
+// this revision again.
+pub const FRAME_PROGRAM_NUMERIC_REVISION_V1: u32 = 4;
 pub const FRAME_PROGRAM_FORMAL_REVISION_V1: u32 = 1;
 pub const FRAME_PROGRAM_PROFILE_REVISION_V1: u32 = 1;
 pub const FRAME_PROGRAM_FORMAL_REVISION_STR_V1: &str = "pixels-v1";
@@ -82,14 +89,11 @@ pub const LINEAR_TONE_LUT_V1: [u16; 17] = [
     0, 4096, 8192, 12288, 16384, 20480, 24576, 28672, 32768, 36863, 40959, 45055, 49151, 53247,
     57343, 61439, 65535,
 ];
-pub const FILMIC_TONE_LUT_V1: [u16; 17] = [
-    0, 6975, 12799, 17731, 21958, 25620, 28827, 31656, 34170, 36420, 38444, 40272, 41929, 43437,
-    44812, 46070, 47222,
-];
-pub const SRGB_TRANSFER_LUT_V1: [u16; 17] = [
-    0, 18173, 25465, 30815, 35199, 38980, 42341, 45388, 48192, 50797, 53238, 55541, 57725, 59805,
-    61793, 63701, 65535,
-];
+pub const TRANSFER_TABLE_ENTRIES_V1: usize = 4097;
+pub const FILMIC_TONE_LUT_BYTES_V1: &[u8; TRANSFER_TABLE_ENTRIES_V1 * 2] =
+    include_bytes!("../../../stdlib/data/pixels/filmic_v1_u16.bin");
+pub const SRGB_TRANSFER_LUT_BYTES_V1: &[u8; TRANSFER_TABLE_ENTRIES_V1 * 2] =
+    include_bytes!("../../../stdlib/data/pixels/srgb_v1_u16.bin");
 
 #[repr(C)]
 pub struct FrameProgramHeaderV1 {

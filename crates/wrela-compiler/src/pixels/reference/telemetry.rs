@@ -1,6 +1,6 @@
 //! Versioned, decision-inert certificate telemetry.
 
-pub const CERTIFICATE_TELEMETRY_VERSION: u16 = 2;
+pub const CERTIFICATE_TELEMETRY_VERSION: u16 = 3;
 pub const RUN_LENGTH_BINS: usize = 8;
 pub const ROOT_METHOD_COUNT: usize = 3;
 pub const COMPOSITION_SHAPE_COUNT: usize = 4;
@@ -11,6 +11,7 @@ pub const SUBDIVISION_BINS: usize = 16;
 pub const REBUILD_REASON_COUNT: usize = 9;
 pub const FAILURE_CAUSE_COUNT: usize = 8;
 pub const RASTER_CONFORMANCE_COUNTERS: usize = 8;
+pub const P9_SHADING_COUNTERS: usize = 12;
 pub const CERTIFICATE_TELEMETRY_COUNTERS_V2: u64 = (RUN_LENGTH_BINS
     + ROOT_METHOD_COUNT
     + COMPOSITION_SHAPE_COUNT
@@ -21,7 +22,8 @@ pub const CERTIFICATE_TELEMETRY_COUNTERS_V2: u64 = (RUN_LENGTH_BINS
     + 2 * REBUILD_REASON_COUNT
     + FAILURE_CAUSE_COUNT
     + 5
-    + RASTER_CONFORMANCE_COUNTERS) as u64;
+    + RASTER_CONFORMANCE_COUNTERS
+    + P9_SHADING_COUNTERS) as u64;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,15 @@ pub struct CertificateTelemetry {
     pub raster_background_pixels: u64,
     pub raster_event_pixels: u64,
     pub raster_validation_failures: u64,
+    pub shading_constant_runs: u64,
+    pub shading_affine_runs: u64,
+    pub shading_quadratic_runs: u64,
+    pub shading_rank_runs: [u64; 4],
+    pub shading_exact_pixels: u64,
+    pub refinement_steps: u64,
+    pub area_cells: u64,
+    pub area_exhaustions: u64,
+    pub byte_certificate_failures: u64,
 }
 
 impl Default for CertificateTelemetry {
@@ -147,6 +158,15 @@ impl Default for CertificateTelemetry {
             raster_background_pixels: 0,
             raster_event_pixels: 0,
             raster_validation_failures: 0,
+            shading_constant_runs: 0,
+            shading_affine_runs: 0,
+            shading_quadratic_runs: 0,
+            shading_rank_runs: [0; 4],
+            shading_exact_pixels: 0,
+            refinement_steps: 0,
+            area_cells: 0,
+            area_exhaustions: 0,
+            byte_certificate_failures: 0,
         }
     }
 }
@@ -220,6 +240,7 @@ impl CertificateTelemetry {
         merge!(rebuild_entries);
         merge!(rebuild_terminals);
         merge!(numeric_failures);
+        merge!(shading_rank_runs);
         for (target, source) in [
             (&mut self.regular_pixels, tile.regular_pixels),
             (&mut self.corridor_pixels, tile.corridor_pixels),
@@ -242,6 +263,20 @@ impl CertificateTelemetry {
             (
                 &mut self.raster_validation_failures,
                 tile.raster_validation_failures,
+            ),
+            (&mut self.shading_constant_runs, tile.shading_constant_runs),
+            (&mut self.shading_affine_runs, tile.shading_affine_runs),
+            (
+                &mut self.shading_quadratic_runs,
+                tile.shading_quadratic_runs,
+            ),
+            (&mut self.shading_exact_pixels, tile.shading_exact_pixels),
+            (&mut self.refinement_steps, tile.refinement_steps),
+            (&mut self.area_cells, tile.area_cells),
+            (&mut self.area_exhaustions, tile.area_exhaustions),
+            (
+                &mut self.byte_certificate_failures,
+                tile.byte_certificate_failures,
             ),
         ] {
             *target = target
@@ -319,8 +354,9 @@ mod tests {
             + 2 * REBUILD_REASON_COUNT
             + FAILURE_CAUSE_COUNT
             + 5
-            + RASTER_CONFORMANCE_COUNTERS;
+            + RASTER_CONFORMANCE_COUNTERS
+            + P9_SHADING_COUNTERS;
         assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V2, counted as u64);
-        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V2, 150);
+        assert_eq!(CERTIFICATE_TELEMETRY_COUNTERS_V2, 162);
     }
 }

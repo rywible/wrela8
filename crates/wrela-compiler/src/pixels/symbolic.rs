@@ -20,6 +20,7 @@ use super::graph::{
 use super::ids::{FieldId, MaterialId, ParamId, ScalarId};
 use super::material_graph::{
     MaterialArena, MaterialKind, MaterialNode, MaterialSampleNode, NormalModel, TextureFilterV1,
+    UvSourceV1,
 };
 use super::material_intrinsics::MaterialIntrinsic;
 use super::quota::SymbolicQuota;
@@ -1688,14 +1689,7 @@ impl<'a> Compiler<'a> {
                     format!("material constructor `{member}` lacks a symbolic classifier"),
                 )
             })?;
-            return self.eval_material_constructor(
-                intrinsic,
-                required_args(args, || {
-                    self.error("P004", "material constructor has a defaulted argument")
-                })?,
-                module,
-                span,
-            );
+            return self.eval_material_constructor(intrinsic, args, module, span);
         }
         let base = call_base(spelling);
         if resolved
@@ -3670,7 +3664,7 @@ impl<'a> Compiler<'a> {
     fn eval_material_constructor(
         &mut self,
         intrinsic: MaterialIntrinsic,
-        args: Vec<SymValue>,
+        args: Vec<Option<SymValue>>,
         module: &str,
         span: Span,
     ) -> Result<SymValue, String> {
@@ -3686,6 +3680,7 @@ impl<'a> Compiler<'a> {
         let color = self.as_rgb(
             args.first()
                 .cloned()
+                .flatten()
                 .ok_or_else(|| self.error("P004", "MaterialSample lacks color"))?,
             module,
             span,
@@ -3693,82 +3688,48 @@ impl<'a> Compiler<'a> {
         let roughness = self.as_scalar(
             args.get(1)
                 .cloned()
+                .flatten()
                 .ok_or_else(|| self.error("P004", "MaterialSample lacks roughness"))?,
             module,
             span,
         )?;
         let zero = self.const_f32(0.0, module, span)?;
         let one = self.const_f32(1.0, module, span)?;
-        let max = self.const_f32(f32::MAX, module, span)?;
-        let min = self.const_f32(-f32::MAX, module, span)?;
-        let mut safe_color = [ScalarId(0); 3];
-        for component in 0..3 {
-            let finite = self.scalar_node(
-                ScalarOp::FiniteOr {
-                    value: color[component],
-                    fallback: zero,
-                    semantic: SemanticOpId::FiniteColorF32V1,
-                },
-                self.scalar_dependency(color[component])?,
-                module,
-                span,
-            )?;
-            safe_color[component] = self.scalar_node(
-                ScalarOp::Clamp {
-                    value: finite,
-                    lo: min,
-                    hi: max,
-                },
-                self.scalar_dependency(finite)?,
-                module,
-                span,
-            )?;
-        }
-        let safe_roughness = self.scalar_node(
-            ScalarOp::FiniteOr {
-                value: roughness,
-                fallback: zero,
-                semantic: SemanticOpId::FiniteColorF32V1,
-            },
-            self.scalar_dependency(roughness)?,
-            module,
-            span,
-        )?;
-        let roughness = self.scalar_node(
-            ScalarOp::MaterialRoughness {
-                value: safe_roughness,
-                semantic: SemanticOpId::MaterialRoughnessF32V1,
-            },
-            self.scalar_dependency(safe_roughness)?,
-            module,
-            span,
-        )?;
         let half = self.const_f32(0.5, module, span)?;
         let ior = self.const_f32(1.5, module, span)?;
         let pattern = if intrinsic == MaterialIntrinsic::Textured {
-            let stable_id =
-                u32::try_from(expect_const_int(args.get(2).cloned().ok_or_else(
-                    || self.error("P004", "textured material lacks texture id"),
-                )?)?)
-                .map_err(|_| self.error("P004", "texture id must fit u32"))?;
-            let authored_width =
-                u32::try_from(expect_const_int(args.get(3).cloned().ok_or_else(
-                    || self.error("P004", "textured material lacks width"),
-                )?)?)
-                .map_err(|_| self.error("P004", "texture width must fit u32"))?;
-            let authored_height =
-                u32::try_from(expect_const_int(args.get(4).cloned().ok_or_else(
-                    || self.error("P004", "textured material lacks height"),
-                )?)?)
-                .map_err(|_| self.error("P004", "texture height must fit u32"))?;
+            let stable_id = u32::try_from(expect_const_int(
+                args.get(2)
+                    .cloned()
+                    .flatten()
+                    .ok_or_else(|| self.error("P004", "textured material lacks texture id"))?,
+            )?)
+            .map_err(|_| self.error("P004", "texture id must fit u32"))?;
+            let authored_width = u32::try_from(expect_const_int(
+                args.get(3)
+                    .cloned()
+                    .flatten()
+                    .ok_or_else(|| self.error("P004", "textured material lacks width"))?,
+            )?)
+            .map_err(|_| self.error("P004", "texture width must fit u32"))?;
+            let authored_height = u32::try_from(expect_const_int(
+                args.get(4)
+                    .cloned()
+                    .flatten()
+                    .ok_or_else(|| self.error("P004", "textured material lacks height"))?,
+            )?)
+            .map_err(|_| self.error("P004", "texture height must fit u32"))?;
             let filter = expect_identity(
                 args.get(5)
                     .cloned()
+                    .flatten()
                     .ok_or_else(|| self.error("P004", "textured material lacks filter"))?,
             )?;
             let filter = match filter.variant.as_str() {
                 "Nearest" => TextureFilterV1::Nearest,
                 "Bilinear" => TextureFilterV1::Bilinear,
+                "Trilinear" => TextureFilterV1::Trilinear,
+                "Anisotropic4" => TextureFilterV1::Anisotropic4,
                 other => {
                     return Err(self.error(
                         "P004",
@@ -3776,7 +3737,26 @@ impl<'a> Compiler<'a> {
                     ));
                 }
             };
-            let texture = super::material_graph::compiler_texture(stable_id, filter)
+            let uv_source = match args.get(6).cloned().flatten() {
+                Some(value) => match expect_identity(value)?.variant.as_str() {
+                    "Plane" => UvSourceV1::Plane,
+                    "Sphere" => UvSourceV1::Sphere,
+                    "Cylinder" => UvSourceV1::Cylinder,
+                    "Torus" => UvSourceV1::Torus,
+                    "BoxFeature" => UvSourceV1::BoxFeature,
+                    "RoundBoxFeature" => UvSourceV1::RoundBoxFeature,
+                    "ObjectTriplanar" => UvSourceV1::ObjectTriplanar,
+                    "WorldTriplanar" => UvSourceV1::WorldTriplanar,
+                    other => {
+                        return Err(self.error(
+                            "P004",
+                            format!("unsupported immutable texture UV source `{other}`"),
+                        ));
+                    }
+                },
+                None => UvSourceV1::WorldTriplanar,
+            };
+            let texture = super::material_graph::compiler_texture(stable_id, filter, uv_source)
                 .map_err(|message| self.error("P004", message))?;
             if (authored_width, authored_height) != (texture.width, texture.height) {
                 return Err(self.error(
@@ -3792,15 +3772,116 @@ impl<'a> Compiler<'a> {
         } else {
             None
         };
+        let (metallic, specular_level, emissive, opacity, normal) = if intrinsic
+            == MaterialIntrinsic::Standard
+        {
+            let metallic = match args.get(2).cloned().flatten() {
+                Some(value) => self.as_scalar(value, module, span)?,
+                None => zero,
+            };
+            let specular = match args.get(3).cloned().flatten() {
+                Some(value) => self.as_scalar(value, module, span)?,
+                None => half,
+            };
+            let emissive = match args.get(4).cloned().flatten() {
+                Some(value) => self.as_rgb(value, module, span)?,
+                None => [zero; 3],
+            };
+            let opacity = match args.get(5).cloned().flatten() {
+                Some(value) => self.as_scalar(value, module, span)?,
+                None => one,
+            };
+            let normal = match args.get(6).cloned().flatten() {
+                None => NormalModel::Geometric,
+                Some(SymValue::Enum(identity, payload))
+                    if identity.variant == "Geometric" && payload.is_empty() =>
+                {
+                    NormalModel::Geometric
+                }
+                Some(SymValue::Enum(identity, payload))
+                    if matches!(identity.variant.as_str(), "AnalyticSlope" | "ObjectSlope")
+                        && payload.len() == 2 =>
+                {
+                    NormalModel::AnalyticSlope {
+                        x: self.as_scalar(payload[0].clone(), module, span)?,
+                        y: self.as_scalar(payload[1].clone(), module, span)?,
+                    }
+                }
+                Some(SymValue::Enum(identity, payload))
+                    if matches!(identity.variant.as_str(), "TextureSlope" | "TextureSlopeUv")
+                        && (payload.len() == 4 || payload.len() == 5) =>
+                {
+                    let stable_id = u32::try_from(expect_const_int(payload[0].clone())?)
+                        .map_err(|_| self.error("P004", "normal texture id must fit u32"))?;
+                    let width = u32::try_from(expect_const_int(payload[1].clone())?)
+                        .map_err(|_| self.error("P004", "normal texture width must fit u32"))?;
+                    let height = u32::try_from(expect_const_int(payload[2].clone())?)
+                        .map_err(|_| self.error("P004", "normal texture height must fit u32"))?;
+                    let filter = expect_identity(payload[3].clone())?;
+                    let filter = match filter.variant.as_str() {
+                        "Nearest" => TextureFilterV1::Nearest,
+                        "Bilinear" => TextureFilterV1::Bilinear,
+                        "Trilinear" => TextureFilterV1::Trilinear,
+                        "Anisotropic4" => TextureFilterV1::Anisotropic4,
+                        other => {
+                            return Err(self.error(
+                                "P004",
+                                format!("unsupported normal texture filter `{other}`"),
+                            ));
+                        }
+                    };
+                    let uv_source = if payload.len() == 5 {
+                        match expect_identity(payload[4].clone())?.variant.as_str() {
+                            "Plane" => UvSourceV1::Plane,
+                            "Sphere" => UvSourceV1::Sphere,
+                            "Cylinder" => UvSourceV1::Cylinder,
+                            "Torus" => UvSourceV1::Torus,
+                            "BoxFeature" => UvSourceV1::BoxFeature,
+                            "RoundBoxFeature" => UvSourceV1::RoundBoxFeature,
+                            "ObjectTriplanar" => UvSourceV1::ObjectTriplanar,
+                            "WorldTriplanar" => UvSourceV1::WorldTriplanar,
+                            other => {
+                                return Err(self.error(
+                                    "P004",
+                                    format!("unsupported normal texture UV source `{other}`"),
+                                ));
+                            }
+                        }
+                    } else {
+                        UvSourceV1::WorldTriplanar
+                    };
+                    let texture =
+                        super::material_graph::compiler_texture(stable_id, filter, uv_source)
+                            .map_err(|message| self.error("P004", message))?;
+                    if texture.format_tag != 3 || (width, height) != (texture.width, texture.height)
+                    {
+                        return Err(self.error(
+                                "P004",
+                                "normal detail texture must be a sealed Rg8Snorm asset with exact dimensions",
+                            ));
+                    }
+                    NormalModel::TextureSlope { texture }
+                }
+                Some(_) => {
+                    return Err(self.error(
+                        "P004",
+                        "normal detail is not a closed v1 geometric/analytic/object slope",
+                    ));
+                }
+            };
+            (metallic, specular, emissive, opacity, normal)
+        } else {
+            (zero, half, [zero; 3], one, NormalModel::Geometric)
+        };
         let sample = MaterialSampleNode {
-            base_color: safe_color,
-            opacity: one,
-            emissive: [zero; 3],
+            base_color: color,
+            opacity,
+            emissive,
             roughness,
-            metallic: zero,
-            specular_level: half,
+            metallic,
+            specular_level,
             ior,
-            normal: NormalModel::Geometric,
+            normal,
             pattern,
         };
         Ok(SymValue::Material(self.material_node(
@@ -5046,12 +5127,15 @@ mod tests {
             camera_max_motion: 0.0,
             light_capacity: 0,
             light_kinds: Vec::new(),
+            light_ranges: super::super::config::default_light_ranges(),
             exposure: ScalarRangeConfig { min: 0.0, max: 1.0 },
             environment: RgbRangeConfig {
                 min: [0.0; 3],
                 max: [1.0; 3],
             },
             ao_enabled: false,
+            ao_radius: 1.0,
+            ao_strength: 1.0,
             probes_enabled: false,
             probe_initialization_worst_case_ms: 0,
             initialization_deadline_ms: 1,
@@ -5551,7 +5635,10 @@ mod tests {
         let SymValue::Material(material) = compiler
             .eval_material_constructor(
                 MaterialIntrinsic::Standard,
-                vec![SymValue::Rgb([zero; 3]), SymValue::F32(negative_zero)],
+                vec![
+                    Some(SymValue::Rgb([zero; 3])),
+                    Some(SymValue::F32(negative_zero)),
+                ],
                 "scene",
                 Span::default(),
             )

@@ -5,12 +5,12 @@ p7 0000000000000078
 p7 503753414d504c45
 p7 0000000000ffffff
 p7 444f41c7e764c854
-p7 184ecc4110e5a183
-p7 f5e4e03d0126fd33
-p7 c08a2e763f5e0882
-p7 25de96762f6680f9
+p7 39198498b0cf0843
+p7 6dd2559f708d0ef3
+p7 1b5c85597165a5b2
+p7 95c7031dd0098f19
 test material_edge_uses_event_coverage: ok
 2 passed, 0 failed
 lane1 turns=2 run_one=4 messages=2
 lane1 hits=0:2,1:1
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 raw=5d01d25a64c699c05eeb7a903d9874512ec216090d29f054e93a1070e49f1766 vsync=9 checkpoint=9
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2ea4b45b683ba8e9df2f75309f2194bc96cdee46ba3fa009530fe7f4cfbeaea7 visible=20808b77b8b05627aed786ec5c2db520359f35c878d402bc0254a2c2cf24abb1 raw=20808b77b8b05627aed786ec5c2db520359f35c878d402bc0254a2c2cf24abb1 vsync=9 checkpoint=9

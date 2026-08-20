@@ -1,1 +1,768 @@
-error[comptime]: comptime assert failed: production Pixels stage is not implemented; implemented in task P9.13 at 32:5
+FieldGraph v1
+Renderers count=1
+  Renderer index=0 field=examples.boot_pixels_quality::world material=examples.boot_pixels_quality::shade params=SceneParams material_type=MaterialId
+    Config display=driver#0 mode=32x16@60 shade_hz=60 profile=AaaByteExact tone_curve=FilmicV1 depth=[0.1,128]
+      World min=[-4,-4,-4] max=[4,4,4]
+      RuntimeBounds camera_max_motion=0.25 light_capacity=3 light_kinds=[Directional,Rectangle,Rectangle] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
+      Initialization ao=true ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=10
+    Param id=p0 path=SceneParams.phase indexes=[0] component=scalar ty=f32 range=[0,0.25]
+      Rate max_delta=0.25 max_second_delta=0.0625
+    Scalar id=s0 dependency=constant kind=ConstF32 value=-0.75 bits=0xbf400000
+    Scalar id=s1 dependency=constant kind=ConstF32 value=0 bits=0x00000000
+    Scalar id=s2 dependency=constant kind=ConstF32 value=-1.5 bits=0xbfc00000
+    Scalar id=s3 dependency=constant kind=ConstF32 value=0.4 bits=0x3ecccccd
+    Scalar id=s4 dependency=coordinate kind=Coord axis=x
+    Scalar id=s5 dependency=coordinate kind=Sub a=s4 b=s0
+    Scalar id=s6 dependency=coordinate kind=Coord axis=y
+    Scalar id=s7 dependency=coordinate kind=Sub a=s6 b=s1
+    Scalar id=s8 dependency=coordinate kind=Coord axis=z
+    Scalar id=s9 dependency=coordinate kind=Sub a=s8 b=s2
+    Scalar id=s10 dependency=coordinate kind=Length3 value=[s5,s7,s9]
+    Scalar id=s11 dependency=coordinate kind=Sub a=s10 b=s3
+    Scalar id=s12 dependency=constant kind=ConstF32 value=-1 bits=0xbf800000
+    Scalar id=s13 dependency=coordinate kind=Dot3 a=[s4,s6,s8] b=[s1,s1,s12]
+    Scalar id=s14 dependency=coordinate kind=Add a=s13 b=s12
+    Scalar id=s15 dependency=coordinate kind=Min a=s14 b=s11
+    Scalar id=s16 dependency=constant kind=ConstF32 value=0.28125 bits=0x3e900000
+    Scalar id=s17 dependency=constant kind=ConstF32 value=0.265625 bits=0x3e880000
+    Scalar id=s18 dependency=constant kind=ConstF32 value=0.21875 bits=0x3e600000
+    Scalar id=s19 dependency=constant kind=ConstF32 value=1 bits=0x3f800000
+    Scalar id=s20 dependency=constant kind=ConstF32 value=0.25 bits=0x3e800000
+    Scalar id=s21 dependency=constant kind=ConstF32 value=1.5 bits=0x3fc00000
+    Scalar id=s22 dependency=surface kind=SurfacePosition component=0
+    Scalar id=s23 dependency=parameter kind=Param param=p0
+    Scalar id=s24 dependency=constant kind=ConstF32 value=2 bits=0x40000000
+    Scalar id=s25 dependency=parameter kind=Mul a=s23 b=s24
+    Scalar id=s26 dependency=constant kind=ConstF32 value=0.046875 bits=0x3d400000
+    Scalar id=s27 dependency=parameter kind=Sub a=s25 b=s26
+    Scalar id=s28 dependency=parameter+surface kind=Sub a=s22 b=s27
+    Scalar id=s29 dependency=parameter+surface kind=Mul a=s28 b=s28
+    Scalar id=s30 dependency=constant kind=ConstF32 value=0.01 bits=0x3c23d70a
+    Scalar id=s31 dependency=parameter+surface kind=Mul a=s29 b=s30
+    Scalar id=s32 dependency=parameter+surface kind=Sub a=s19 b=s31
+    Scalar id=s33 dependency=parameter+surface kind=Mul a=s32 b=s32
+    Scalar id=s34 dependency=parameter+surface kind=Mul a=s33 b=s33
+    Scalar id=s35 dependency=parameter+surface kind=Mul a=s34 b=s34
+    Scalar id=s36 dependency=parameter+surface kind=Mul a=s35 b=s35
+    Scalar id=s37 dependency=parameter+surface kind=Mul a=s36 b=s36
+    Scalar id=s38 dependency=parameter+surface kind=Mul a=s37 b=s37
+    Scalar id=s39 dependency=parameter+surface kind=Mul a=s38 b=s38
+    Scalar id=s40 dependency=parameter+surface kind=Mul a=s39 b=s39
+    Scalar id=s41 dependency=parameter+surface kind=Mul a=s40 b=s40
+    Scalar id=s42 dependency=parameter+surface kind=Mul a=s41 b=s41
+    Scalar id=s43 dependency=parameter+surface kind=Sub a=s19 b=s42
+    Scalar id=s44 dependency=parameter+surface kind=Mul a=s43 b=s43
+    Scalar id=s45 dependency=parameter+surface kind=Mul a=s44 b=s44
+    Scalar id=s46 dependency=parameter+surface kind=Mul a=s45 b=s45
+    Scalar id=s47 dependency=parameter+surface kind=Mul a=s46 b=s46
+    Scalar id=s48 dependency=constant kind=ConstF32 value=0.75 bits=0x3f400000
+    Scalar id=s49 dependency=parameter+surface kind=Mul a=s47 b=s48
+    Scalar id=s50 dependency=constant kind=ConstF32 value=0.125 bits=0x3e000000
+    Scalar id=s51 dependency=parameter+surface kind=Mul a=s47 b=s50
+    Scalar id=s52 dependency=constant kind=ConstF32 value=0.015625 bits=0x3c800000
+    Scalar id=s53 dependency=parameter+surface kind=Mul a=s47 b=s52
+    Scalar id=s54 dependency=constant kind=ConstF32 value=0.5 bits=0x3f000000
+    Scalar id=s55 dependency=constant kind=ConstF32 value=0.1875 bits=0x3e400000
+    Scalar id=s56 dependency=constant kind=ConstF32 value=0.65 bits=0x3f266666
+    Scalar id=s57 dependency=surface kind=SurfacePosition component=1
+    Scalar id=s58 dependency=surface kind=Add a=s22 b=s57
+    Scalar id=s59 dependency=constant kind=ConstF32 value=-0.109375 bits=0xbde00000
+    Scalar id=s60 dependency=surface kind=Compare op=Ge a=s58 b=s59
+    Field id=f0 scalar=s11 kind=Sphere center=[s0,s1,s2] radius=s3
+    Field id=f1 scalar=s11 kind=Mark child=f0 object=examples.boot_pixels_quality::ObjectId::GlossySphere material=examples.boot_pixels_quality::MaterialId::Porcelain
+    Field id=f2 scalar=s14 kind=Plane normal=[s1,s1,s12] offset=s12
+    Field id=f3 scalar=s14 kind=Mark child=f2 object=examples.boot_pixels_quality::ObjectId::Wall material=examples.boot_pixels_quality::MaterialId::Wall
+    Field id=f4 scalar=s15 kind=HardUnion a=f1 b=f3
+    Material id=m0 kind=Sample base_color=[s16,s17,s18] opacity=s19 emissive=[s1,s1,s1] roughness=s20 metallic=s1 specular=s19 ior=s21 normal=geometric pattern=none
+    Material id=m1 kind=Sample base_color=[s49,s51,s1] opacity=s19 emissive=[s51,s53,s1] roughness=s19 metallic=s1 specular=s54 ior=s21 normal=texture-slope(id=23,digest=e1b82b9eba13c9aa5cd8f0f7df75bc612ef87604d42051abacfcd630e927f5db) pattern=none
+    Material id=m2 kind=Sample base_color=[s1,s1,s55] opacity=s19 emissive=[s1,s1,s1] roughness=s56 metallic=s1 specular=s54 ior=s21 normal=geometric pattern=immutable(asset=Checker2x2V1,id=19,2x2,filter=Anisotropic4,digest=c519fe04ffe1dadba6fec96f5b3bc190cf74e52a4be0718a76398ced9f97231b,filter_error=[0,1])
+    Material id=m3 kind=MaterialSelect predicate=s60 a=m1 b=m2
+    Material id=m4 kind=IdentityTable enum=examples.boot_pixels_quality::MaterialId cases=[Porcelain=m0,Wall=m3]
+    Identity kind=material enum=examples.boot_pixels_quality::MaterialId variant=Porcelain
+    Identity kind=material enum=examples.boot_pixels_quality::MaterialId variant=Wall
+    Identity kind=object enum=examples.boot_pixels_quality::ObjectId variant=GlossySphere
+    Identity kind=object enum=examples.boot_pixels_quality::ObjectId variant=Wall
+    DischargedObligation kind=material-event predicate=s60
+    Origin kind=scalar id=s0 primary=examples.boot_pixels_quality:71:26@bytes=1640..1641 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s1 primary=examples.boot_pixels_quality:63:25@bytes=1274..1277 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:63:14@bytes=1263..1264,examples.boot_pixels_quality:63:32@bytes=1281..1284,examples.boot_pixels_quality:71:15@bytes=1629..1630,examples.boot_pixels_quality:71:35@bytes=1649..1652,examples.boot_pixels_quality:111:47@bytes=3841..3842,examples.boot_pixels_quality:119:27@bytes=4300..4303,examples.boot_pixels_quality:125:27@bytes=4522..4525,examples.boot_pixels_quality:135:43@bytes=4911..4912,examples.boot_pixels_quality:139:29@bytes=5150..5153,examples.boot_pixels_quality:139:36@bytes=5157..5160,examples.boot_pixels_quality:147:43@bytes=5419..5420,examples.boot_pixels_quality:153:26@bytes=5743..5746]
+    Origin kind=scalar id=s2 primary=examples.boot_pixels_quality:71:42@bytes=1656..1657 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s3 primary=examples.boot_pixels_quality:71:56@bytes=1670..1673 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s4 primary=examples.boot_pixels_quality:0:0@bytes=0..0
+    Origin kind=scalar id=s5 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s6 primary=examples.boot_pixels_quality:0:0@bytes=0..0
+    Origin kind=scalar id=s7 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s8 primary=examples.boot_pixels_quality:0:0@bytes=0..0
+    Origin kind=scalar id=s9 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s10 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s11 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s12 primary=examples.boot_pixels_quality:63:39@bytes=1288..1289 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:63:53@bytes=1302..1303]
+    Origin kind=scalar id=s13 primary=examples.boot_pixels_quality:63:14@bytes=1263..1264 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s14 primary=examples.boot_pixels_quality:63:14@bytes=1263..1264 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s15 primary=examples.boot_pixels_quality:75:22@bytes=1780..1781 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s16 primary=examples.boot_pixels_quality:151:29@bytes=5653..5660 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s17 primary=examples.boot_pixels_quality:151:40@bytes=5664..5672 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s18 primary=examples.boot_pixels_quality:151:52@bytes=5676..5683 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s19 primary=examples.boot_pixels_quality:63:40@bytes=1289..1292 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:63:14@bytes=1263..1264,examples.boot_pixels_quality:63:54@bytes=1303..1306,examples.boot_pixels_quality:71:15@bytes=1629..1630,examples.boot_pixels_quality:91:29@bytes=2638..2641,examples.boot_pixels_quality:102:28@bytes=3272..3275,examples.boot_pixels_quality:111:47@bytes=3841..3842,examples.boot_pixels_quality:121:31@bytes=4358..4361,examples.boot_pixels_quality:135:43@bytes=4911..4912,examples.boot_pixels_quality:147:43@bytes=5419..5420,examples.boot_pixels_quality:154:26@bytes=5773..5776]
+    Origin kind=scalar id=s20 primary=examples.boot_pixels_quality:152:27@bytes=5712..5716 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s21 primary=examples.boot_pixels_quality:71:43@bytes=1657..1660 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:111:47@bytes=3841..3842,examples.boot_pixels_quality:135:43@bytes=4911..4912,examples.boot_pixels_quality:147:43@bytes=5419..5420]
+    Origin kind=scalar id=s22 primary=examples.boot_pixels_quality:0:0@bytes=0..0
+    Origin kind=scalar id=s23 primary=examples.boot_pixels_quality:85:41@bytes=2255..2256 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s24 primary=examples.boot_pixels_quality:85:43@bytes=2257..2260 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s25 primary=examples.boot_pixels_quality:85:41@bytes=2255..2256 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s26 primary=examples.boot_pixels_quality:85:49@bytes=2263..2271 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s27 primary=examples.boot_pixels_quality:85:47@bytes=2261..2262 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s28 primary=examples.boot_pixels_quality:86:46@bytes=2317..2318 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s29 primary=examples.boot_pixels_quality:87:41@bytes=2372..2373 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s30 primary=examples.boot_pixels_quality:91:51@bytes=2660..2664 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s31 primary=examples.boot_pixels_quality:91:49@bytes=2658..2659 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s32 primary=examples.boot_pixels_quality:91:33@bytes=2642..2643 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s33 primary=examples.boot_pixels_quality:92:43@bytes=2707..2708 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s34 primary=examples.boot_pixels_quality:93:43@bytes=2765..2766 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s35 primary=examples.boot_pixels_quality:94:43@bytes=2823..2824 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s36 primary=examples.boot_pixels_quality:95:43@bytes=2881..2882 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s37 primary=examples.boot_pixels_quality:96:43@bytes=2939..2940 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s38 primary=examples.boot_pixels_quality:97:43@bytes=2997..2998 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s39 primary=examples.boot_pixels_quality:98:43@bytes=3055..3056 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s40 primary=examples.boot_pixels_quality:99:43@bytes=3113..3114 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s41 primary=examples.boot_pixels_quality:100:43@bytes=3171..3172 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s42 primary=examples.boot_pixels_quality:101:43@bytes=3229..3230 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s43 primary=examples.boot_pixels_quality:102:32@bytes=3276..3277 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s44 primary=examples.boot_pixels_quality:106:41@bytes=3546..3547 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s45 primary=examples.boot_pixels_quality:107:41@bytes=3601..3602 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s46 primary=examples.boot_pixels_quality:108:41@bytes=3656..3657 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s47 primary=examples.boot_pixels_quality:109:41@bytes=3711..3712 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s48 primary=examples.boot_pixels_quality:71:27@bytes=1641..1645 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:117:42@bytes=4220..4224]
+    Origin kind=scalar id=s49 primary=examples.boot_pixels_quality:117:40@bytes=4218..4219 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s50 primary=examples.boot_pixels_quality:118:42@bytes=4267..4272 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:123:42@bytes=4438..4443]
+    Origin kind=scalar id=s51 primary=examples.boot_pixels_quality:118:40@bytes=4265..4266 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:123:40@bytes=4436..4437]
+    Origin kind=scalar id=s52 primary=examples.boot_pixels_quality:124:42@bytes=4486..4494 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s53 primary=examples.boot_pixels_quality:124:40@bytes=4484..4485 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s54 primary=examples.boot_pixels_quality:111:47@bytes=3841..3842 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0] merged=[examples.boot_pixels_quality:135:43@bytes=4911..4912,examples.boot_pixels_quality:147:43@bytes=5419..5420]
+    Origin kind=scalar id=s55 primary=examples.boot_pixels_quality:139:43@bytes=5164..5170 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s56 primary=examples.boot_pixels_quality:140:27@bytes=5199..5203 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s57 primary=examples.boot_pixels_quality:0:0@bytes=0..0
+    Origin kind=scalar id=s58 primary=examples.boot_pixels_quality:110:35@bytes=3760..3761 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s59 primary=examples.boot_pixels_quality:110:59@bytes=3784..3785 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=scalar id=s60 primary=examples.boot_pixels_quality:110:56@bytes=3781..3783 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=field id=f0 primary=examples.boot_pixels_quality:71:15@bytes=1629..1630 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=field id=f1 primary=examples.boot_pixels_quality:67:18@bytes=1396..1397 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=field id=f2 primary=examples.boot_pixels_quality:63:14@bytes=1263..1264 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=field id=f3 primary=examples.boot_pixels_quality:62:16@bytes=1248..1249 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=field id=f4 primary=examples.boot_pixels_quality:75:22@bytes=1780..1781 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=material id=m0 primary=examples.boot_pixels_quality:147:43@bytes=5419..5420 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=material id=m1 primary=examples.boot_pixels_quality:111:47@bytes=3841..3842 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=material id=m2 primary=examples.boot_pixels_quality:135:43@bytes=4911..4912 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=material id=m3 primary=examples.boot_pixels_quality:110:13@bytes=3738..3740 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Origin kind=material id=m4 primary=examples.boot_pixels_quality:79:5@bytes=1895..1900 expansion=[examples.boot_pixels_quality:0:0@bytes=0..0]
+    Roots field=f4 material=m4
+    SymbolicQuota steps=172/1000000 nodes=76/250000 unrolled_statements=0/250000 aggregate_elements=18/250000 call_depth=1/128
+  StructuralRenderer index=0 field_key=examples.boot_pixels_quality::world material_key=examples.boot_pixels_quality::shade
+    ParameterLayout slots=1 packed_bytes=4 dependency_schema=1d289fe239f5a9816091de75ea8b0f4732188625597f8c4786fa2e1c06330fd0
+      FrameDependencies runtime_bytes=256 camera_contract=[0.1, 128.0, -4.0, -4.0, -4.0, 4.0, 4.0, 4.0, 0.25] lights=3:[Directional,Rectangle,Rectangle] environment=[0.0, 0.0, 0.0]:[1.0, 1.0, 1.0] exposure=[-1.0, 1.0] post=FilmicV1 ao_version=1 probe_version=0 output=AaaByteExact:32x16:display0 phase=60:60
+        FrameInput path=frame.camera.eye use=Camera type=F32 count=3 offset=0 runtime=true
+        FrameInput path=frame.camera.forward use=Camera type=F32 count=3 offset=12 runtime=true
+        FrameInput path=frame.camera.right use=Camera type=F32 count=3 offset=24 runtime=true
+        FrameInput path=frame.camera.up use=Camera type=F32 count=3 offset=36 runtime=true
+        FrameInput path=frame.lights[*].coefficients use=Light type=F32 count=45 offset=48 runtime=true
+        FrameInput path=frame.exposure use=Exposure type=F32 count=1 offset=228 runtime=true
+        FrameInput path=frame.environment use=Light type=F32 count=3 offset=232 runtime=true
+        FrameInput path=frame.frame_index use=Probe type=U64 count=1 offset=248 runtime=true
+        FrameInput path=sealed.tone_curve_id use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.ao_version use=Post type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.probe_version use=Probe type=U32 count=1 offset=0 runtime=false
+        FrameInput path=sealed.output_mode use=Post type=U64 count=1 offset=0 runtime=false
+        FrameInput path=sealed.frame_phase use=Post type=U64 count=1 offset=0 runtime=false
+      Slot id=p0 path=[0] component=scalar type=F32 range=[0,0.25] rate=0.25,0.0625 immutable=false uses=[Material] offset=0
+    ScalarProof id=s0 value=[-0.75,-0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s1 value=[0,0] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s2 value=[-1.5,-1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s3 value=[0.4000000059604645,0.4000000059604645] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s4 value=[-4,4] value_rule=world-x world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s5 value=[-3.25,4.75] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s6 value=[-4,4] value_rule=world-y world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s7 value=[-4,4] value_rule=sub-f32 world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s8 value=[-4,4] value_rule=world-z world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=world-coordinate
+    ScalarProof id=s9 value=[-2.5,5.5] value_rule=sub-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s10 value=[0,8.295330047607422] value_rule=length3 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=length-fused
+    ScalarProof id=s11 value=[-0.4000000059604645,7.89532995223999] value_rule=sub-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s12 value=[-1,-1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s13 value=[-4,4] value_rule=dot3-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=dot3-fused
+    ScalarProof id=s14 value=[-5,3] value_rule=add-f32 world_derivative=[0,0,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=fused-field-occurrence-max
+    ScalarProof id=s15 value=[-5,3] value_rule=min-f32 world_derivative=[1,1,1] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=fused-hard-branch-max
+    ScalarProof id=s16 value=[0.28125,0.28125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s17 value=[0.265625,0.265625] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s18 value=[0.21875,0.21875] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s19 value=[1,1] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s20 value=[0.25,0.25] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s21 value=[1.5,1.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s22 value=[-4,4] value_rule=surface-position world_derivative=[1,0,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
+    ScalarProof id=s23 value=[0,0.25] value_rule=parameter-range world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.25 frame_second_delta=0.0625 hessian_norm=0 third_norm=0 smooth=true derivative_rule=parameter
+      ParameterDerivative param=p0 upper=1
+    ScalarProof id=s24 value=[2,2] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s25 value=[0,0.5] value_rule=mul-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.5 frame_second_delta=0.125 hessian_norm=0 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s26 value=[0.046875,0.046875] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s27 value=[-0.046875,0.453125] value_rule=sub-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0.5 frame_second_delta=0.125 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s28 value=[-4.453125,4.046875] value_rule=sub-f32 world_derivative=[1,0,0] gradient_norm=1 frame_delta=0.5 frame_second_delta=0.125 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=2
+    ScalarProof id=s29 value=[0,19.830322265625] value_rule=square-f32 world_derivative=[8.90625,0,0] gradient_norm=8.90625 frame_delta=4.453125 frame_second_delta=1.61328125 hessian_norm=2 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=17.8125
+    ScalarProof id=s30 value=[0.009999999776482582,0.009999999776482582] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s31 value=[0,0.19830322265625] value_rule=mul-f32 world_derivative=[0.089062498009298,0,0] gradient_norm=0.089062498009298 frame_delta=0.044531249004649 frame_second_delta=0.01613281213940354 hessian_norm=0.019999999552965164 third_norm=0 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=0.178124996018596
+    ScalarProof id=s32 value=[0.80169677734375,1] value_rule=sub-f32 world_derivative=[0.089062498009298,0,0] gradient_norm=0.089062498009298 frame_delta=0.044531249004649 frame_second_delta=0.01613281213940354 hessian_norm=0.019999999552965164 third_norm=0 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=0.178124996018596
+    ScalarProof id=s33 value=[0.642717719078064,1] value_rule=square-f32 world_derivative=[0.178124996018596,0,0] gradient_norm=0.178124996018596 frame_delta=0.089062498009298 frame_second_delta=0.03623168855463518 hessian_norm=0.05586425620924275 third_norm=0.010687499522231525 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=0.356249992037192
+    ScalarProof id=s34 value=[0.41308605670928955,1] value_rule=square-f32 world_derivative=[0.356249992037192,0,0] gradient_norm=0.356249992037192 frame_delta=0.178124996018596 frame_second_delta=0.08832763421258279 hessian_norm=0.17518554083173518 third_norm=0.08107992153358219 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=0.712499984074384
+    ScalarProof id=s35 value=[0.17064009606838226,1] value_rule=square-f32 world_derivative=[0.712499984074384,0,0] gradient_norm=0.712499984074384 frame_delta=0.356249992037192 frame_second_delta=0.24011229683841526 hessian_norm=0.6041991953164692 third_norm=0.5366189282251854 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=1.424999968148768
+    ScalarProof id=s36 value=[0.029118042439222336,1] value_rule=square-f32 world_derivative=[1.424999968148768,0,0] gradient_norm=1.424999968148768 frame_delta=0.712499984074384 frame_second_delta=0.7340527073298293 hessian_norm=2.2237108452449332 third_norm=3.65618935869481 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=2.849999936297536
+    ScalarProof id=s37 value=[0.0008478604140691459,1] value_rule=square-f32 world_derivative=[2.849999936297536,0,0] gradient_norm=2.849999936297536 frame_delta=1.424999968148768 frame_second_delta=2.4834178692716535 hessian_norm=8.508671508937846 third_norm=26.32510601926622 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=5.699999872595072
+    ScalarProof id=s38 value=[0.0000007188672839220089,1] value_rule=square-f32 world_derivative=[5.699999872595072,0,0] gradient_norm=5.699999872595072 frame_delta=2.849999936297536 frame_second_delta=9.028085556991286 hessian_norm=33.26234229166761 third_norm=198.14849158922956 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=11.399999745190144
+    ScalarProof id=s39 value=[5.16770166155561261e-13,1] value_rule=square-f32 world_derivative=[11.399999745190144,0,0] gradient_norm=11.399999745190144 frame_delta=5.699999872595072 frame_second_delta=34.30117038777449 hessian_norm=131.5046816785029 third_norm=1533.8690641267733 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=22.799999490380287
+    ScalarProof id=s40 value=[2.67051405915045532e-25,1] value_rule=square-f32 world_derivative=[22.799999490380287,0,0] gradient_norm=22.799999490380287 frame_delta=11.399999745190144 frame_second_delta=133.58233787071666 hessian_norm=522.9293517376765 third_norm=12062.65815401101 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=45.599998980760574
+    ScalarProof id=s41 value=[0,1] value_rule=square-f32 world_derivative=[45.599998980760574,0,0] gradient_norm=45.599998980760574 frame_delta=22.799999490380287 frame_second_delta=527.084664122104 hessian_norm=2085.5386569980355 third_norm=95662.05002676553 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=91.19999796152115
+    ScalarProof id=s42 value=[0,1] value_rule=square-f32 world_derivative=[91.19999796152115,0,0] gradient_norm=91.19999796152115 frame_delta=45.599998980760574 frame_second_delta=2093.8492817668907 hessian_norm=8329.797128086802 third_norm=761927.4638542142 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=182.3999959230423
+    ScalarProof id=s43 value=[0,1] value_rule=sub-f32 world_derivative=[91.19999796152115,0,0] gradient_norm=91.19999796152115 frame_delta=45.599998980760574 frame_second_delta=2093.8492817668907 hessian_norm=8329.797128086802 third_norm=761927.4638542142 smooth=true derivative_rule=additive-chain
+      ParameterDerivative param=p0 upper=182.3999959230423
+    ScalarProof id=s44 value=[0,1] value_rule=square-f32 world_derivative=[182.3999959230423,0,0] gradient_norm=182.3999959230423 frame_delta=91.19999796152115 frame_second_delta=8346.418377624512 hessian_norm=33294.473512536526 third_norm=6081919.814316834 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=364.7999918460846
+    ScalarProof id=s45 value=[0,1] value_rule=square-f32 world_derivative=[364.7999918460846,0,0] gradient_norm=364.7999918460846 frame_delta=182.3999959230423 frame_second_delta=33327.71601161195 hessian_norm=133128.46405052475 third_norm=48601310.62631268 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=729.5999836921692
+    ScalarProof id=s46 value=[0,1] value_rule=square-f32 world_derivative=[729.5999836921692,0,0] gradient_norm=729.5999836921692 frame_delta=364.7999918460846 frame_second_delta=133194.9490486756 hessian_norm=532414.9962028563 third_norm=388594196.8533045 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=1459.1999673843384
+    ScalarProof id=s47 value=[0,1] value_rule=square-f32 world_derivative=[1459.1999673843384,0,0] gradient_norm=1459.1999673843384 frame_delta=729.5999836921692 frame_second_delta=532547.966199158 hessian_norm=2129462.26481294 third_norm=3107888228.989031 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=2918.3999347686768
+    ScalarProof id=s48 value=[0.75,0.75] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s49 value=[0,0.75] value_rule=mul-f32 world_derivative=[1094.3999755382538,0,0] gradient_norm=1094.3999755382538 frame_delta=547.1999877691269 frame_second_delta=399410.9746493685 hessian_norm=1597096.6986097049 third_norm=2330916171.741773 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=2188.7999510765076
+    ScalarProof id=s50 value=[0.125,0.125] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s51 value=[0,0.125] value_rule=mul-f32 world_derivative=[182.3999959230423,0,0] gradient_norm=182.3999959230423 frame_delta=91.19999796152115 frame_second_delta=66568.49577489475 hessian_norm=266182.7831016175 third_norm=388486028.62362885 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=364.7999918460846
+    ScalarProof id=s52 value=[0.015625,0.015625] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s53 value=[0,0.015625] value_rule=mul-f32 world_derivative=[22.799999490380287,0,0] gradient_norm=22.799999490380287 frame_delta=11.399999745190144 frame_second_delta=8321.061971861844 hessian_norm=33272.847887702184 third_norm=48560753.57795361 smooth=true derivative_rule=product-chain
+      ParameterDerivative param=p0 upper=45.599998980760574
+    ScalarProof id=s54 value=[0.5,0.5] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s55 value=[0.1875,0.1875] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s56 value=[0.6499999761581421,0.6499999761581421] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s57 value=[-4,4] value_rule=surface-position world_derivative=[0,1,0] gradient_norm=1 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=surface-position
+    ScalarProof id=s58 value=[-8,8] value_rule=add-f32 world_derivative=[1,1,0] gradient_norm=2 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=additive-chain
+    ScalarProof id=s59 value=[-0.109375,-0.109375] value_rule=const-f32 world_derivative=[0,0,0] gradient_norm=0 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=true derivative_rule=constant
+    ScalarProof id=s60 value=[0,1] value_rule=compare world_derivative=[1,1,0] gradient_norm=2 frame_delta=0 frame_second_delta=0 hessian_norm=0 third_norm=0 smooth=false derivative_rule=comparison-predicate
+    WorldBound field=f0 bounds=[-1.150061041116715,-0.4000610411167146,-1.9000610411167151]-[-0.3499389588832853,0.4000610411167146,-1.0999389588832849] rule=primitive-analytic contributors=[] pruned=none
+    WorldBound field=f1 bounds=[-1.150061041116715,-0.4000610411167146,-1.9000610411167151]-[-0.3499389588832853,0.4000610411167146,-1.0999389588832849] rule=identity-mark contributors=[f0] pruned=none
+    WorldBound field=f2 bounds=[-4,-4,-4]-[4,4,4] rule=plane-world-clip contributors=[] pruned=none
+    WorldBound field=f3 bounds=[-4,-4,-4]-[4,4,4] rule=identity-mark contributors=[f2] pruned=none
+    WorldBound field=f4 bounds=[-4,-4,-4]-[4,4,4] rule=hard-union contributors=[left=Some(Aabb64 { min: [-1.150061041116715, -0.4000610411167146, -1.9000610411167151], max: [-0.3499389588832853, 0.4000610411167146, -1.0999389588832849] }),right=Some(Aabb64 { min: [-4.0, -4.0, -4.0], max: [4.0, 4.0, 4.0] })] pruned=none
+    Support field=f0 max=[0,0] leaves=f0@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f1 max=[0,0] leaves=f0@0>f1@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    Support field=f2 max=[0,0] leaves=f2@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f2]
+    Support field=f3 max=[0,0] leaves=f2@0>f3@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f2]
+    Support field=f4 max=[0,0] leaves=f0@0>f1@0>f4@0:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1],f2@0>f3@0>f4@1:smooth=[0,0]:deform=[0,0]:value_to_distance=[1,1] path=[f0]
+    IdentitySet id=0 pairs=[examples.boot_pixels_quality::ObjectId::GlossySphere=>examples.boot_pixels_quality::MaterialId::Porcelain]
+    IdentitySet id=1 pairs=[examples.boot_pixels_quality::ObjectId::Wall=>examples.boot_pixels_quality::MaterialId::Wall]
+    SmoothObject id=o0 root=f2 scalar=s14 bounds=[-4,-4,-4]-[4,4,4] leaves=[f2@0] support=[0,0] identity_set=1 repeats=[]
+    SmoothObject id=o1 root=f0 scalar=s11 bounds=[-1.150061041116715,-0.4000610411167146,-1.9000610411167151]-[-0.3499389588832853,0.4000610411167146,-1.0999389588832849] leaves=[f0@0] support=[0,0] identity_set=0 repeats=[]
+    Csg constant=none instructions=[Push(ObjectId(1)),Push(ObjectId(0)),Or] max_stack=2
+      Influence object=o0 false=constant:None:stack:1:instructions:[Push(ObjectId(1))]:digest:b5cebe34bc8aed3a286358306b0ad3fb6604b5c624f8cce4ab4b2c42d58f558d true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+      Influence object=o1 false=constant:None:stack:1:instructions:[Push(ObjectId(0))]:digest:b5fb4bff2a27e2c561771901ff137437ea672f295c31113740033f5a1008b2a7 true=constant:Some(true):stack:0:instructions:[]:digest:dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986
+    Feature id=g0 template=0 object=o0 primitive=f2 path=[f2@0] kind=Plane bounds=[-4,-4,-4]-[4,4,4] support=0 validity=[[Always]:shared=true] orientation=Outward identity_set=1 semantic_root=f2
+    Feature id=g1 template=1 object=o1 primitive=f0 path=[f0@0] kind=Quadric bounds=[-1.150061041116715,-0.4000610411167146,-1.9000610411167151]-[-0.3499389588832853,0.4000610411167146,-1.0999389588832849] support=0 validity=[[Sphere { center: [ScalarId(0), ScalarId(1), ScalarId(2)], radius: ScalarId(3) }]:shared=true] orientation=Outward identity_set=0 semantic_root=f0
+    MaterialEvent predicate=s60 kind=ScalarThreshold crossings=2 owners=[o0] features=[g0] source=examples.boot_pixels_quality:110:56
+    Capacities workers=3 objects=2 feature_templates=2 feature_slots=2 repeated_instances=0 scalar_slots=61 derivative_slots=61 parameter_slots=1 csg_stack=2 projected_row=2 projected_tile=2 row_start_roots=3 active_sheets=3 event_generators=4 event_subdivisions=8 event_records=32 tile_row_runs=33 csg_events=3 transparent_layers=1 rebuild_queue=33 candidate_bytes=128 root_bytes=96 sheet_bytes=192 event_bytes=1024 run_bytes=4224 corridor_bytes=2112 fixed_q_bytes=528 shading_bytes=2112 transparency_bytes=1056 per_worker_scratch_bytes=11472 all_worker_scratch_bytes=34416 telemetry_production_bytes=0 telemetry_instrumented_bytes=16176 output_tile_bytes=8192 output_double_buffer_bytes=16384 probe_bytes=0 kinetic_bytes=256 state_header_bytes=256 coefficient_snapshot_bytes=8 frame_snapshot_bytes=1376 frame_complex_double_buffer_bytes=32768 tile_descriptor_bytes=368 tile_ownership_bytes=2 failure_record_bytes=64 production_state_bytes=86706 instrumented_state_bytes=102888
+      CapacityDerivation field=feature_count value=2 why=[2 maximal smooth objects; 2 immutable fused primitive feature templates; 2 total feature slots after instantiating those templates across 2 objects; 0 repeat template records]
+      CapacityDerivation field=max_projected_features_per_row value=2 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
+      CapacityDerivation field=max_run_records_per_tile_row value=33 why=[4 generators; 2 primitive equation generators; 0 feature-validity boundary generators; 2 material event/owner generators; 0 repeat wrap generators; 8 subdivisions each (2 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
+      CapacityDerivation field=renderer_state_bytes value=86706 why=[header=256; coefficient_snapshots=8; frame_snapshots=1376; frame_complexes=32768; scratch=34416 (11472 * 3 workers); output=16384; probes=0; page_alignment_padding=808; kinetic=256; tile_descriptors=368; tile_ownership=2; failure=64]
+      CapacityDerivation field=instrumented_renderer_state_bytes value=102888 why=[production=86706; telemetry=16176]
+    StructuralReport coefficient_bytes=4 objects=2 features=2 production_state_bytes=86706 instrumented_state_bytes=102888 dependency_schema=1d289fe239f5a9816091de75ea8b0f4732188625597f8c4786fa2e1c06330fd0
+    ProjectiveContract width=32 height=16 aspect=2 tan_half_fov_y=1 q=[0.007812499999999999,10.000000000000002] max_motion=0.25
+    CameraRateBounds eye=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] forward=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] right=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]] up=[[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006],[-0.25000000000000006,0.25000000000000006]]
+    Coefficient id=c0 op=const:2
+    Coefficient id=c1 op=const:4
+    Coefficient id=c2 op=scalar:s0
+    Coefficient id=c3 op=scalar:s1
+    Coefficient id=c4 op=scalar:s2
+    Coefficient id=c5 op=scalar:s3
+    Coefficient id=c6 op=scalar:s12
+    Coefficient id=c7 op=camera:eye:0
+    Coefficient id=c8 op=camera:eye:1
+    Coefficient id=c9 op=camera:eye:2
+    Coefficient id=c10 op=camera:forward:0
+    Coefficient id=c11 op=camera:forward:1
+    Coefficient id=c12 op=camera:forward:2
+    Coefficient id=c13 op=camera:right:0
+    Coefficient id=c14 op=camera:right:1
+    Coefficient id=c15 op=camera:right:2
+    Coefficient id=c16 op=camera:up:0
+    Coefficient id=c17 op=camera:up:1
+    Coefficient id=c18 op=camera:up:2
+    Coefficient id=c19 op=camera:eye_rate:0
+    Coefficient id=c20 op=camera:eye_rate:1
+    Coefficient id=c21 op=camera:eye_rate:2
+    Coefficient id=c22 op=camera:forward_rate:0
+    Coefficient id=c23 op=camera:forward_rate:1
+    Coefficient id=c24 op=camera:forward_rate:2
+    Coefficient id=c25 op=camera:right_rate:0
+    Coefficient id=c26 op=camera:right_rate:1
+    Coefficient id=c27 op=camera:right_rate:2
+    Coefficient id=c28 op=camera:up_rate:0
+    Coefficient id=c29 op=camera:up_rate:1
+    Coefficient id=c30 op=camera:up_rate:2
+    Coefficient id=c31 op=mul:c3:c7
+    Coefficient id=c32 op=mul:c3:c8
+    Coefficient id=c33 op=mul:c3:c10
+    Coefficient id=c34 op=mul:c3:c11
+    Coefficient id=c35 op=mul:c3:c13
+    Coefficient id=c36 op=mul:c3:c14
+    Coefficient id=c37 op=mul:c3:c16
+    Coefficient id=c38 op=mul:c3:c17
+    Coefficient id=c39 op=mul:c3:c19
+    Coefficient id=c40 op=mul:c3:c20
+    Coefficient id=c41 op=mul:c3:c22
+    Coefficient id=c42 op=mul:c3:c23
+    Coefficient id=c43 op=mul:c3:c25
+    Coefficient id=c44 op=mul:c3:c26
+    Coefficient id=c45 op=mul:c3:c28
+    Coefficient id=c46 op=mul:c3:c29
+    Coefficient id=c47 op=mul:c5:c5
+    Coefficient id=c48 op=mul:c6:c9
+    Coefficient id=c49 op=mul:c6:c12
+    Coefficient id=c50 op=mul:c6:c15
+    Coefficient id=c51 op=mul:c6:c18
+    Coefficient id=c52 op=mul:c6:c21
+    Coefficient id=c53 op=mul:c6:c24
+    Coefficient id=c54 op=mul:c6:c27
+    Coefficient id=c55 op=mul:c6:c30
+    Coefficient id=c56 op=mul:c10:c10
+    Coefficient id=c57 op=mul:c10:c13
+    Coefficient id=c58 op=mul:c10:c16
+    Coefficient id=c59 op=mul:c10:c19
+    Coefficient id=c60 op=mul:c10:c22
+    Coefficient id=c61 op=mul:c10:c25
+    Coefficient id=c62 op=mul:c10:c28
+    Coefficient id=c63 op=mul:c11:c11
+    Coefficient id=c64 op=mul:c11:c14
+    Coefficient id=c65 op=mul:c11:c17
+    Coefficient id=c66 op=mul:c11:c20
+    Coefficient id=c67 op=mul:c11:c23
+    Coefficient id=c68 op=mul:c11:c26
+    Coefficient id=c69 op=mul:c11:c29
+    Coefficient id=c70 op=mul:c12:c12
+    Coefficient id=c71 op=mul:c12:c15
+    Coefficient id=c72 op=mul:c12:c18
+    Coefficient id=c73 op=mul:c12:c21
+    Coefficient id=c74 op=mul:c12:c24
+    Coefficient id=c75 op=mul:c12:c27
+    Coefficient id=c76 op=mul:c12:c30
+    Coefficient id=c77 op=mul:c13:c13
+    Coefficient id=c78 op=mul:c13:c16
+    Coefficient id=c79 op=mul:c13:c19
+    Coefficient id=c80 op=mul:c13:c22
+    Coefficient id=c81 op=mul:c13:c25
+    Coefficient id=c82 op=mul:c13:c28
+    Coefficient id=c83 op=mul:c14:c14
+    Coefficient id=c84 op=mul:c14:c17
+    Coefficient id=c85 op=mul:c14:c20
+    Coefficient id=c86 op=mul:c14:c23
+    Coefficient id=c87 op=mul:c14:c26
+    Coefficient id=c88 op=mul:c14:c29
+    Coefficient id=c89 op=mul:c15:c15
+    Coefficient id=c90 op=mul:c15:c18
+    Coefficient id=c91 op=mul:c15:c21
+    Coefficient id=c92 op=mul:c15:c24
+    Coefficient id=c93 op=mul:c15:c27
+    Coefficient id=c94 op=mul:c15:c30
+    Coefficient id=c95 op=mul:c16:c16
+    Coefficient id=c96 op=mul:c16:c19
+    Coefficient id=c97 op=mul:c16:c22
+    Coefficient id=c98 op=mul:c16:c25
+    Coefficient id=c99 op=mul:c16:c28
+    Coefficient id=c100 op=mul:c17:c17
+    Coefficient id=c101 op=mul:c17:c20
+    Coefficient id=c102 op=mul:c17:c23
+    Coefficient id=c103 op=mul:c17:c26
+    Coefficient id=c104 op=mul:c17:c29
+    Coefficient id=c105 op=mul:c18:c18
+    Coefficient id=c106 op=mul:c18:c21
+    Coefficient id=c107 op=mul:c18:c24
+    Coefficient id=c108 op=mul:c18:c27
+    Coefficient id=c109 op=mul:c18:c30
+    Coefficient id=c110 op=neg:c2
+    Coefficient id=c111 op=neg:c3
+    Coefficient id=c112 op=neg:c4
+    Coefficient id=c113 op=add:c6:c31
+    Coefficient id=c114 op=add:c7:c110
+    Coefficient id=c115 op=add:c8:c111
+    Coefficient id=c116 op=add:c9:c112
+    Coefficient id=c117 op=add:c33:c34
+    Coefficient id=c118 op=add:c35:c36
+    Coefficient id=c119 op=add:c37:c38
+    Coefficient id=c120 op=add:c39:c40
+    Coefficient id=c121 op=add:c41:c42
+    Coefficient id=c122 op=add:c43:c44
+    Coefficient id=c123 op=add:c45:c46
+    Coefficient id=c124 op=add:c56:c63
+    Coefficient id=c125 op=add:c57:c57
+    Coefficient id=c126 op=add:c58:c58
+    Coefficient id=c127 op=add:c59:c59
+    Coefficient id=c128 op=add:c60:c60
+    Coefficient id=c129 op=add:c61:c61
+    Coefficient id=c130 op=add:c62:c62
+    Coefficient id=c131 op=add:c77:c83
+    Coefficient id=c132 op=add:c78:c78
+    Coefficient id=c133 op=add:c79:c79
+    Coefficient id=c134 op=add:c81:c81
+    Coefficient id=c135 op=add:c82:c82
+    Coefficient id=c136 op=add:c95:c100
+    Coefficient id=c137 op=add:c96:c96
+    Coefficient id=c138 op=add:c99:c99
+    Coefficient id=c139 op=neg:c47
+    Coefficient id=c140 op=add:c32:c113
+    Coefficient id=c141 op=add:c49:c117
+    Coefficient id=c142 op=add:c50:c118
+    Coefficient id=c143 op=add:c51:c119
+    Coefficient id=c144 op=add:c52:c120
+    Coefficient id=c145 op=add:c53:c121
+    Coefficient id=c146 op=add:c54:c122
+    Coefficient id=c147 op=add:c55:c123
+    Coefficient id=c148 op=add:c64:c125
+    Coefficient id=c149 op=add:c65:c126
+    Coefficient id=c150 op=add:c66:c127
+    Coefficient id=c151 op=add:c67:c128
+    Coefficient id=c152 op=add:c68:c129
+    Coefficient id=c153 op=add:c69:c130
+    Coefficient id=c154 op=add:c70:c124
+    Coefficient id=c155 op=add:c84:c132
+    Coefficient id=c156 op=add:c85:c133
+    Coefficient id=c157 op=add:c87:c134
+    Coefficient id=c158 op=add:c88:c135
+    Coefficient id=c159 op=add:c89:c131
+    Coefficient id=c160 op=add:c101:c137
+    Coefficient id=c161 op=add:c104:c138
+    Coefficient id=c162 op=add:c105:c136
+    Coefficient id=c163 op=mul:c10:c114
+    Coefficient id=c164 op=mul:c11:c115
+    Coefficient id=c165 op=mul:c12:c116
+    Coefficient id=c166 op=mul:c13:c114
+    Coefficient id=c167 op=mul:c14:c115
+    Coefficient id=c168 op=mul:c15:c116
+    Coefficient id=c169 op=mul:c16:c114
+    Coefficient id=c170 op=mul:c17:c115
+    Coefficient id=c171 op=mul:c18:c116
+    Coefficient id=c172 op=mul:c19:c114
+    Coefficient id=c173 op=mul:c20:c115
+    Coefficient id=c174 op=mul:c21:c116
+    Coefficient id=c175 op=mul:c22:c114
+    Coefficient id=c176 op=mul:c23:c115
+    Coefficient id=c177 op=mul:c24:c116
+    Coefficient id=c178 op=mul:c25:c114
+    Coefficient id=c179 op=mul:c26:c115
+    Coefficient id=c180 op=mul:c27:c116
+    Coefficient id=c181 op=mul:c28:c114
+    Coefficient id=c182 op=mul:c29:c115
+    Coefficient id=c183 op=mul:c30:c116
+    Coefficient id=c184 op=mul:c114:c114
+    Coefficient id=c185 op=mul:c115:c115
+    Coefficient id=c186 op=mul:c116:c116
+    Coefficient id=c187 op=add:c48:c140
+    Coefficient id=c188 op=add:c64:c148
+    Coefficient id=c189 op=add:c65:c149
+    Coefficient id=c190 op=add:c66:c150
+    Coefficient id=c191 op=add:c67:c151
+    Coefficient id=c192 op=add:c68:c152
+    Coefficient id=c193 op=add:c69:c153
+    Coefficient id=c194 op=add:c84:c155
+    Coefficient id=c195 op=add:c85:c156
+    Coefficient id=c196 op=add:c87:c157
+    Coefficient id=c197 op=add:c88:c158
+    Coefficient id=c198 op=add:c101:c160
+    Coefficient id=c199 op=add:c104:c161
+    Coefficient id=c200 op=add:c163:c163
+    Coefficient id=c201 op=add:c166:c166
+    Coefficient id=c202 op=add:c169:c169
+    Coefficient id=c203 op=add:c172:c172
+    Coefficient id=c204 op=add:c184:c185
+    Coefficient id=c205 op=mul:c0:c159
+    Coefficient id=c206 op=mul:c0:c162
+    Coefficient id=c207 op=neg:c141
+    Coefficient id=c208 op=neg:c142
+    Coefficient id=c209 op=neg:c143
+    Coefficient id=c210 op=add:c71:c188
+    Coefficient id=c211 op=add:c72:c189
+    Coefficient id=c212 op=add:c73:c190
+    Coefficient id=c213 op=add:c74:c191
+    Coefficient id=c214 op=add:c75:c192
+    Coefficient id=c215 op=add:c76:c193
+    Coefficient id=c216 op=add:c90:c194
+    Coefficient id=c217 op=add:c91:c195
+    Coefficient id=c218 op=add:c93:c196
+    Coefficient id=c219 op=add:c94:c197
+    Coefficient id=c220 op=add:c106:c198
+    Coefficient id=c221 op=add:c109:c199
+    Coefficient id=c222 op=add:c164:c200
+    Coefficient id=c223 op=add:c167:c201
+    Coefficient id=c224 op=add:c170:c202
+    Coefficient id=c225 op=add:c173:c203
+    Coefficient id=c226 op=add:c186:c204
+    Coefficient id=c227 op=add:c71:c210
+    Coefficient id=c228 op=add:c72:c211
+    Coefficient id=c229 op=add:c73:c212
+    Coefficient id=c230 op=add:c74:c213
+    Coefficient id=c231 op=add:c75:c214
+    Coefficient id=c232 op=add:c76:c215
+    Coefficient id=c233 op=add:c90:c216
+    Coefficient id=c234 op=add:c91:c217
+    Coefficient id=c235 op=add:c93:c218
+    Coefficient id=c236 op=add:c94:c219
+    Coefficient id=c237 op=add:c106:c220
+    Coefficient id=c238 op=add:c109:c221
+    Coefficient id=c239 op=add:c139:c226
+    Coefficient id=c240 op=add:c164:c222
+    Coefficient id=c241 op=add:c167:c223
+    Coefficient id=c242 op=add:c170:c224
+    Coefficient id=c243 op=add:c173:c225
+    Coefficient id=c244 op=add:c80:c231
+    Coefficient id=c245 op=add:c97:c232
+    Coefficient id=c246 op=add:c98:c236
+    Coefficient id=c247 op=add:c165:c240
+    Coefficient id=c248 op=add:c168:c241
+    Coefficient id=c249 op=add:c171:c242
+    Coefficient id=c250 op=add:c174:c243
+    Coefficient id=c251 op=add:c175:c229
+    Coefficient id=c252 op=add:c178:c234
+    Coefficient id=c253 op=add:c181:c237
+    Coefficient id=c254 op=mul:c0:c239
+    Coefficient id=c255 op=mul:c154:c239
+    Coefficient id=c256 op=mul:c159:c239
+    Coefficient id=c257 op=mul:c162:c239
+    Coefficient id=c258 op=mul:c227:c239
+    Coefficient id=c259 op=mul:c228:c239
+    Coefficient id=c260 op=mul:c233:c239
+    Coefficient id=c261 op=add:c80:c244
+    Coefficient id=c262 op=add:c97:c245
+    Coefficient id=c263 op=add:c98:c246
+    Coefficient id=c264 op=add:c165:c247
+    Coefficient id=c265 op=add:c168:c248
+    Coefficient id=c266 op=add:c171:c249
+    Coefficient id=c267 op=add:c174:c250
+    Coefficient id=c268 op=add:c175:c251
+    Coefficient id=c269 op=add:c178:c252
+    Coefficient id=c270 op=add:c181:c253
+    Coefficient id=c271 op=mul:c1:c255
+    Coefficient id=c272 op=mul:c1:c256
+    Coefficient id=c273 op=mul:c1:c257
+    Coefficient id=c274 op=mul:c1:c258
+    Coefficient id=c275 op=mul:c1:c259
+    Coefficient id=c276 op=mul:c1:c260
+    Coefficient id=c277 op=add:c86:c261
+    Coefficient id=c278 op=add:c102:c262
+    Coefficient id=c279 op=add:c103:c263
+    Coefficient id=c280 op=add:c176:c268
+    Coefficient id=c281 op=add:c179:c269
+    Coefficient id=c282 op=add:c182:c270
+    Coefficient id=c283 op=mul:c264:c264
+    Coefficient id=c284 op=mul:c264:c265
+    Coefficient id=c285 op=mul:c264:c266
+    Coefficient id=c286 op=mul:c265:c265
+    Coefficient id=c287 op=mul:c265:c266
+    Coefficient id=c288 op=mul:c266:c266
+    Coefficient id=c289 op=neg:c271
+    Coefficient id=c290 op=neg:c272
+    Coefficient id=c291 op=neg:c273
+    Coefficient id=c292 op=neg:c274
+    Coefficient id=c293 op=neg:c275
+    Coefficient id=c294 op=neg:c276
+    Coefficient id=c295 op=add:c86:c277
+    Coefficient id=c296 op=add:c102:c278
+    Coefficient id=c297 op=add:c103:c279
+    Coefficient id=c298 op=add:c176:c280
+    Coefficient id=c299 op=add:c179:c281
+    Coefficient id=c300 op=add:c182:c282
+    Coefficient id=c301 op=add:c283:c289
+    Coefficient id=c302 op=add:c284:c284
+    Coefficient id=c303 op=add:c285:c285
+    Coefficient id=c304 op=add:c286:c290
+    Coefficient id=c305 op=add:c287:c287
+    Coefficient id=c306 op=add:c288:c291
+    Coefficient id=c307 op=add:c92:c295
+    Coefficient id=c308 op=add:c107:c296
+    Coefficient id=c309 op=add:c108:c297
+    Coefficient id=c310 op=add:c177:c298
+    Coefficient id=c311 op=add:c180:c299
+    Coefficient id=c312 op=add:c183:c300
+    Coefficient id=c313 op=add:c292:c302
+    Coefficient id=c314 op=add:c293:c303
+    Coefficient id=c315 op=add:c294:c305
+    Coefficient id=c316 op=add:c92:c307
+    Coefficient id=c317 op=add:c107:c308
+    Coefficient id=c318 op=add:c108:c309
+    Coefficient id=c319 op=add:c177:c310
+    Coefficient id=c320 op=add:c180:c311
+    Coefficient id=c321 op=add:c183:c312
+    Polynomial id=poly0 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c187
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c142
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c143
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c141
+    Polynomial id=poly1 degrees=u1v1q0x0t0 terms=3 detail=exact
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c208
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c209
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c207
+    Polynomial id=poly2 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+    Polynomial id=poly3 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c239
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c265
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c266
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c264
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c159
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c233
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c227
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c162
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c228
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c154
+    Polynomial id=poly4 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c142
+    Polynomial id=poly5 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c143
+    Polynomial id=poly6 degrees=u0v0q0x0t0 terms=0 detail=exact
+    Polynomial id=poly7 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c144
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c146
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c147
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c145
+    Polynomial id=poly8 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c265
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c205
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c233
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c227
+    Polynomial id=poly9 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c266
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c233
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c206
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c228
+    Polynomial id=poly10 degrees=u1v1q1x0t0 terms=4 detail=exact
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c254
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c265
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c266
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c264
+    Polynomial id=poly11 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c205
+    Polynomial id=poly12 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c233
+    Polynomial id=poly13 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c265
+    Polynomial id=poly14 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c206
+    Polynomial id=poly15 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c266
+    Polynomial id=poly16 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c254
+    Polynomial id=poly17 degrees=u2v2q2x0t0 terms=10 detail=exact
+      Term u=0 v=0 q=2 x=0 t=0 params=[] coefficient=c267
+      Term u=1 v=0 q=1 x=0 t=0 params=[] coefficient=c320
+      Term u=0 v=1 q=1 x=0 t=0 params=[] coefficient=c321
+      Term u=0 v=0 q=1 x=0 t=0 params=[] coefficient=c319
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c235
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c318
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c316
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c238
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c317
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c230
+    Polynomial id=poly18 degrees=u0v0q0x0t0 terms=1 detail=exact
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c187
+    Polynomial id=poly19 degrees=u2v2q0x0t0 terms=6 detail=exact
+      Term u=2 v=0 q=0 x=0 t=0 params=[] coefficient=c304
+      Term u=1 v=1 q=0 x=0 t=0 params=[] coefficient=c315
+      Term u=1 v=0 q=0 x=0 t=0 params=[] coefficient=c313
+      Term u=0 v=2 q=0 x=0 t=0 params=[] coefficient=c306
+      Term u=0 v=1 q=0 x=0 t=0 params=[] coefficient=c314
+      Term u=0 v=0 q=0 x=0 t=0 params=[] coefficient=c301
+    Rational id=rat0 numerator=poly1 denominator=poly2 domain=domain0 proof=coefficient:c187:enclosure=[3.099999999999997,3.600000000000002]:sign=positive
+    CompositionPlan id=cp0 kind=specialized source_degree_u=1 source_degree_q=1 source_degree_x=0 q_hat_degree=2 composed_degree=2 source_terms=4 temporaries=8 coefficient_order=[0,1,2,3]
+      CompositionStep source_term=0 u_power=0 q_power=1 lifted_power_offset=2 coefficient_order=0
+      CompositionStep source_term=1 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=1
+      CompositionStep source_term=2 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=2
+      CompositionStep source_term=3 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=3
+      CorrectionFace id=0 sign=-1 output_order=[0,1,2] steps=composition-steps:4
+      CorrectionFace id=1 sign=1 output_order=[0,1,2] steps=composition-steps:4
+    CompositionPlan id=cp1 kind=specialized source_degree_u=2 source_degree_q=2 source_degree_x=0 q_hat_degree=2 composed_degree=4 source_terms=10 temporaries=19 coefficient_order=[0,1,2,3,4,5,6,7,8,9]
+      CompositionStep source_term=0 u_power=0 q_power=2 lifted_power_offset=6 coefficient_order=0
+      CompositionStep source_term=1 u_power=1 q_power=1 lifted_power_offset=4 coefficient_order=1
+      CompositionStep source_term=2 u_power=0 q_power=1 lifted_power_offset=3 coefficient_order=2
+      CompositionStep source_term=3 u_power=0 q_power=1 lifted_power_offset=3 coefficient_order=3
+      CompositionStep source_term=4 u_power=2 q_power=0 lifted_power_offset=2 coefficient_order=4
+      CompositionStep source_term=5 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=5
+      CompositionStep source_term=6 u_power=1 q_power=0 lifted_power_offset=1 coefficient_order=6
+      CompositionStep source_term=7 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=7
+      CompositionStep source_term=8 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=8
+      CompositionStep source_term=9 u_power=0 q_power=0 lifted_power_offset=0 coefficient_order=9
+      CorrectionFace id=0 sign=-1 output_order=[0,1,2,3,4] steps=composition-steps:10
+      CorrectionFace id=1 sign=1 output_order=[0,1,2,3,4] steps=composition-steps:10
+    ProjectiveFeature id=g0 root=poly0 rational=rat0 q_degree=1 seed=affine:coefficient:c187:enclosure=[3.099999999999997,3.600000000000002]:sign=positive isolation=affine composition=cp0 roots=1 validity=[] orientation=outward deformed=false params=[]
+    ProjectiveFeature id=g1 root=poly3 rational=- q_degree=2 seed=stable-quadratic:leading=c239:enclosure=[6.787499995231617,10.512499995231643]:sign=positive:linear_fallback=false:generic_fallback=true isolation=stable-quadratic:linear_fallback=false:generic_fallback=true composition=cp1 roots=2 validity=[] orientation=outward deformed=false params=[]
+    DerivativeBundle id=d0 feature=g0 g=poly0 first=[poly4,poly5,poly2] second=[poly6,poly6,poly6,poly6,poly6,poly6] third=[poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6] g_t=poly7 g_tt=none params=[]
+    DerivativeBundle id=d1 feature=g1 g=poly3 first=[poly8,poly9,poly10] second=[poly11,poly12,poly13,poly14,poly15,poly16] third=[poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6] g_t=poly17 g_tt=none params=[]
+    DerivativeCluster object=o0 leaf_signature=[f2@0] bundles=[d0] smooth_root=s14 scalar_derivative_sources=[s14] value_domain=[-5,3] first_world=[0,0,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=13.856406460551026 remainder=0 predictor_roots=1 object_roots=1 requires_boundary_events=false
+    DerivativeCluster object=o1 leaf_signature=[f0@0] bundles=[d1] smooth_root=s11 scalar_derivative_sources=[s11] value_domain=[-0.4000000059604645,7.89532995223999] first_world=[1,1,1] second_world=0 third_world=0 params=[] frame_delta=0 frame_second_delta=0 order=2 subdivision=2 world_delta=1.3858520986861043 remainder=0 predictor_roots=2 object_roots=2 requires_boundary_events=false
+    ProjectedSpan feature=g0 normalized=[-1,1]x[-1,1] pixels=[0,32]x[0,16] tiles=[0,2]x[0,1] q=[0.007812499999999999,10.000000000000002] rule=unbounded-plane-full-screen outside_margin=- halos=event:1:filter:1
+    ProjectedSpan feature=g1 normalized=[-1,0.4238292356825454]x[-1,1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] q=[0.24919003358131075,0.8798373673167105] rule=interval-projective-division outside_margin=- halos=event:1:filter:1
+    Event id=e0 kind=near-clip participants=[feature:g0] pixels=[0,32]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=clip-q:10.000000000000002 sides=negative=inside-clip:zero=ambiguous:positive=outside-clip
+    Event id=e1 kind=far-clip participants=[feature:g0] pixels=[0,32]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=clip-q:0.007812499999999999 sides=negative=outside-clip:zero=ambiguous:positive=inside-clip
+    Event id=e2 kind=fixed-point-reset-only participants=[feature:g0] pixels=[0,32]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e3 kind=projected-bound-enter participants=[feature:g1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=0 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e4 kind=projected-bound-exit participants=[feature:g1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=projected-boundary:horizontal=false:coordinate=25 sides=negative=active:zero=ambiguous:positive=inactive
+    Event id=e5 kind=silhouette participants=[feature:g1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] params=[] roots=2 subdivision=2 representation=quadratic-discriminant:predicate=poly19:root=poly3 sides=negative=inactive:zero=ambiguous:positive=active
+    Event id=e6 kind=fixed-point-reset-only participants=[feature:g1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] params=[] roots=1 subdivision=2 representation=fixed-point-reset sides=negative=reset-only:zero=reset-only:positive=reset-only
+    Event id=e7 kind=material-boundary participants=[feature:g0,material-event:0] pixels=[0,32]x[0,16] tiles=[0,2]x[0,1] params=[] roots=2 subdivision=2 representation=material-difference:left=s58:right=s59:compare=ge:derivatives=sources=[s58,s59]:first=[1,1,0]:second=0:third=0:params=[]:frame_delta=0:frame_second=0:order=2:world_delta=13.856406460551026:remainder=0 sides=negative=material-right:zero=material-left:positive=material-left
+    Event id=e8 kind=depth-swap participants=[feature:g0,feature:g1] pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] params=[] roots=4 subdivision=2 representation=taylor-depth:a=d0:b=d1:order=2:next_order=3:a_third=[poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6]:b_third=[poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6,poly6]:x_domain=[-3.1250000000000004,3.1250000000000004]:q_domain=[0.24919003358131075,0.8798373673167105]:fallback_difference=[-0.8720248673167106,9.750809966418693]:fallback_remainder=9.750809966418695:strict_gq=true:discard_taylor_on_fallback=true sides=negative=depth-b-front:zero=ambiguous:positive=depth-a-front
+    CompetitionPair id=pair0 a=g0 b=g1 event=e8 pixels=[0,25]x[0,16] tiles=[0,2]x[0,1] q_overlap=[0.24919003358131075,0.8798373673167105]
+    CompetitionSummary considered=1 emitted=1 pruned_projected=0 pruned_q=0 pruned_csg_global=0 pruned_csg_pair=0 pruned_strict_order=0 suppressed_same_feature=2 suppressed_material_only=1
+    ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,32]x[0,16] output=32x16 nearest-center-gap=0.5]
+    ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,32]x[0,16] output=32x16 nearest-center-gap=0.5]
+    ExclusionProof id=proof2 payload=bernstein:box=[]:polynomial=poly0:coefficient_root=c187:degrees=[]:coefficient_order=[]:conversion_radius=1.11022302462516763e-16:tree=[0:0:-:positive:3.099999999999997]:sign=positive:minimum_margin=3.099999999999997
+    ExclusionProof id=proof3 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=10.000000000000002 feature q=[0.24919003358131075,0.8798373673167105] separation=9.08110013268329]
+    ExclusionProof id=proof4 payload=positive-margin:rule=positive-q-range-gap:facts=[clip q=0.007812499999999999 feature q=[0.24919003358131075,0.8798373673167105] separation=0.20231503358131073]
+    X x0 event:projected-bound-enter:g0:-:0 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof0 []
+    X x1 event:projected-bound-exit:g0:-:1 domain0 full-domain-projection [0.49999999999999994,0.5000000000000001] proof1 []
+    X x2 event:silhouette:g0:-:0 domain0 global-parameter-box-strict-sign [3.0999999999999965,3.0999999999999974] proof2 []
+    X x3 event:near-clip:g1:-:0 domain0 q-ranges-disjoint [9.081100132683288,9.081100132683291] proof3 []
+    X x4 event:far-clip:g1:-:0 domain0 q-ranges-disjoint [0.2023150335813107,0.20231503358131075] proof4 []
+    Index name=tile_features cells=2 ids=4
+      Cell id=0 offset=0 count=2 values=[0,1]
+      Cell id=1 offset=2 count=2 values=[0,1]
+    Index name=tile_events cells=2 ids=18
+      Cell id=0 offset=0 count=9 values=[0,1,2,3,4,5,6,7,8]
+      Cell id=1 offset=9 count=9 values=[0,1,2,3,4,5,6,7,8]
+    Index name=tile_competitions cells=2 ids=2
+      Cell id=0 offset=0 count=1 values=[0]
+      Cell id=1 offset=1 count=1 values=[0]
+    Index name=row_block_repeats cells=1 ids=0
+      Cell id=0 offset=0 count=0 values=[]
+    Index name=tile_lights cells=2 ids=6
+      Cell id=0 offset=0 count=3 values=[0,1,2]
+      Cell id=1 offset=3 count=3 values=[0,1,2]
+    Index name=tile_probes cells=2 ids=0
+      Cell id=0 offset=0 count=0 values=[]
+      Cell id=1 offset=0 count=0 values=[]
+    ObjectFeatureIndex object=o0 first=g0 count=1
+    ObjectFeatureIndex object=o1 first=g1 count=1
+    DirectIndexes feature_derivatives=[d0,d1] material_programs=[0:m4,1:m4] bytes=256
+    ProjectiveCapacities candidate_features_per_tile=2 row_start_roots=3 active_sheets_per_row=3 event_generators=9 competition_pairs_per_tile=1 row_event_intervals=14 root_stack_nodes=12 event_stack_nodes=16 runs_per_row=16 corridors_per_row=16 max_index_slice=9 polynomial_programs=20 rational_programs=1 polynomial_terms_per_program=10 coefficient_nodes=322 derivative_bundles=2 derivative_clusters=2 index_bytes=256 refined_per_worker_scratch_bytes=5912 refined_all_worker_scratch_bytes=17736 final_per_worker_scratch_bytes=9608 final_all_worker_scratch_bytes=28824 final_state_bytes=82610 final_instrumented_state_bytes=98792
+      ProjectiveCapacityDerivation field=p4_candidate_features_per_tile value=2 why=[exact endpoint/cell sweep gives row overlap 2 within P3 ceiling 2 and tile overlap 2 within P3 ceiling 2]
+      ProjectiveCapacityDerivation field=p4_final_renderer_state_bytes value=82610 why=[P4-refined six-class scratch=5912 per worker; retained fixed-q/shading/transparency scratch=3696 per worker; workers=3]
+      ProjectiveCapacityDerivation field=p4_row_start_roots value=3 why=[exact tile overlap over composed-object root clusters; smooth clusters retain up to 2^2 root/corridor leaves per predictor slab]
+      ProjectiveCapacityDerivation field=p4_row_event_intervals value=14 why=[9 completed local generators; 1 competition pairs survive; 2^2 leaves per isolated root]
+      ProjectiveCapacityDerivation field=p4_index_bytes value=256 why=[completed offset/count cells plus sorted contiguous ID tables]
+Analysis status=verified-projective

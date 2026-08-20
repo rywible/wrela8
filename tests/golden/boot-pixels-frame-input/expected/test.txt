@@ -1,10 +1,10 @@
 test pinned_scene_contract: ok
-p7 c8f04696c6dc1d83
-p7 c8f04696c6dc1d83
+p7 46d2505958464383
+p7 46d2505958464383
 p7 0000000000895440
 test frame_input_validation_is_exact: ok
 2 passed, 0 failed
 lane1 turns=13 run_one=27 messages=13
 lane1 hits=0:6,1:4,2:6,3:7,4:2
-display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=6c407988cdd5c2639f582d1735593e19b1f48f2f0798bf897da1fb96944e101a visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=4 checkpoint=4
-display v1 renderer=0 frame=1 generation=1 released=0 mode=64x32@60 format=1 descriptor=08baeecf2631f441909c40dcdebfc7d94250c684ad7c75f563ac825c118a64c4 visible=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be raw=74cb7bfb7ef9804ff11c4f4f582b7316a54401e1706159c7d74b66e054c8f9be vsync=5 checkpoint=5
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2ea4b45b683ba8e9df2f75309f2194bc96cdee46ba3fa009530fe7f4cfbeaea7 visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=4 checkpoint=4
+display v1 renderer=0 frame=1 generation=1 released=0 mode=64x32@60 format=1 descriptor=db416b54f01b8041630d7230679b8a7be469a9dc13fdd530140a4ea0a52bf0f3 visible=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 raw=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2 vsync=5 checkpoint=5

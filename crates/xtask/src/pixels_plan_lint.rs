@@ -209,7 +209,41 @@ fn lint_text(text: &str, repo: &Path) -> Result<(), String> {
     lint_display_contract(repo)?;
     lint_normative_docs(repo)?;
     lint_formal_readme(repo)?;
+    lint_p9_normal_terminal(repo)?;
     lint_permanent_fixtures(text, repo, &headings)?;
+    Ok(())
+}
+
+fn lint_p9_normal_terminal(repo: &Path) -> Result<(), String> {
+    let light_path = repo.join("stdlib/core/render_light.wr");
+    let light = std::fs::read_to_string(&light_path)
+        .map_err(|error| format!("read {}: {error}", light_path.display()))?;
+    let event_path = repo.join("stdlib/core/render_orchestrate.wr");
+    let event = std::fs::read_to_string(&event_path)
+        .map_err(|error| format!("read {}: {error}", event_path.display()))?;
+    for (owner, source, needle) in [
+        (
+            "regular shading",
+            light.as_str(),
+            "if encoded[0] == 1 and not normal_terminal_required:",
+        ),
+        (
+            "event shading",
+            event.as_str(),
+            "if encoded[0] == 1 and not normal_terminal_required:",
+        ),
+        (
+            "normal curvature",
+            light.as_str(),
+            "material[13] = 400000000000000000000000.0",
+        ),
+    ] {
+        if source.matches(needle).count() != 1 {
+            return Err(format!(
+                "pixels plan lint: P9 {owner} must contain exactly one `{needle}` guard"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1150,7 +1184,12 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "check-pixels-enclosed-feature" => &["subtract(", "radius=0.00390625"],
         "check-pixels-material-edge" => &["MaterialId.Accent", "LEFT_MATERIAL_ID"],
         "check-pixels-transparent-tail" => &["LAYER_COUNT", "z=1.5", "radius=0.25"],
-        "check-pixels-area-light" => &["LightConfig.fixed(capacity=1)", "EMITTER_HALF_WIDTH_RAW"],
+        "check-pixels-area-light" => &[
+            "LightConfig.declared(",
+            "capacity=1",
+            "LightKind.Rectangle",
+            "EMITTER_HALF_WIDTH_RAW",
+        ],
         "check-pixels-kinetic" => &["@rate(", "params.phase", "FRAME_COUNT"],
         "check-pixels-camera-inside" => &["radius=2.0", "CAMERA_X_RAW"],
         "check-pixels-torus-roots" => &["torus(", "major_radius=2.0"],
@@ -1194,9 +1233,10 @@ fn fixture_source_requirements(name: &str) -> &'static [&'static str] {
         "boot-pixels-plane" => &["plane(", "WIDTH", "HEIGHT"],
         "boot-pixels-plane-one-core" => &["plane(", "WIDTH", "HEIGHT", "cores=1"],
         "boot-pixels-quality" => &[
-            "round_box(",
-            "sinusoidal_displace(",
+            "plane(",
+            "NormalDetail.TextureSlopeUv(",
             "AoConfig.fixed(enabled=true)",
+            "cores=3",
         ],
         "boot-pixels-transparent" => &["TRANSPARENT_LAYERS", "z=1.5", "radius=0.25"],
         "boot-pixels-gi" => &["ProbeConfig.fixed(enabled=true)", "PROBE_LEVELS"],
@@ -1383,6 +1423,19 @@ fn lint_permanent_fixtures(plan: &str, repo: &Path, task_ids: &[String]) -> Resu
                 ));
             }
             search_from = offset + dump_hook.len();
+        }
+        if directory_name == "check-pixels-tile-boundary" {
+            for required in [
+                "telemetry_words = telemetry_words_from_dump_counts(dump_counts[1])",
+                "dump_header[1] - telemetry_words + 1",
+                "@budget(bound=649)",
+            ] {
+                if !fixture_source.contains(required) {
+                    return Err(format!(
+                        "pixels plan lint: check-pixels-tile-boundary must derive its complete telemetry tail from the authenticated dump header (`{required}`)"
+                    ));
+                }
+            }
         }
         let expected = std::fs::read_to_string(&expected_path)
             .map_err(|error| format!("read {}: {error}", expected_path.display()))?;

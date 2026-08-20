@@ -2125,7 +2125,7 @@ pub fn run_scored(
             .checked_add(1)
             .ok_or_else(|| "conformance case count overflow".to_string())?;
     }
-    let four_core = guest_observations
+    let three_core = guest_observations
         .iter()
         .find(|observation| observation.case == "boot-pixels-plane")
         .ok_or_else(|| "guest plane observation is missing".to_string())?;
@@ -2133,14 +2133,14 @@ pub fn run_scored(
         .iter()
         .find(|observation| observation.case == "boot-pixels-plane-one-core")
         .ok_or_else(|| "guest one-core plane observation is missing".to_string())?;
-    let worker_invariant = four_core.certificate_runs == one_core.certificate_runs
-        && four_core.event_corridors == one_core.event_corridors
-        && four_core.revalidated_proposals == one_core.revalidated_proposals
-        && four_core.alpha_samples == one_core.alpha_samples
-        && four_core.frame_digest == one_core.frame_digest
-        // Full frame-byte equality between the one- and four-worker builds
+    let worker_invariant = three_core.certificate_runs == one_core.certificate_runs
+        && three_core.event_corridors == one_core.event_corridors
+        && three_core.revalidated_proposals == one_core.revalidated_proposals
+        && three_core.alpha_samples == one_core.alpha_samples
+        && three_core.frame_digest == one_core.frame_digest
+        // Full frame-byte equality between the one- and three-worker builds
         // is the strongest worker-count invariance witness available.
-        && four_core.frame_dump.as_ref().map(|dump| &dump.bytes)
+        && three_core.frame_dump.as_ref().map(|dump| &dump.bytes)
             == one_core.frame_dump.as_ref().map(|dump| &dump.bytes);
     failures += u32::from(!worker_invariant);
     writeln!(
@@ -2152,7 +2152,7 @@ pub fn run_scored(
     cases += 1;
 
     let oracle_plane = oracle_debug_plane_digest()?;
-    let plane_digest = four_core.frame_digest;
+    let plane_digest = three_core.frame_digest;
     let plane_digest_pass = plane_digest == oracle_plane;
     failures += u32::from(!plane_digest_pass);
     writeln!(
@@ -2167,7 +2167,7 @@ pub fn run_scored(
     .map_err(|_| "conformance report formatting failed".to_string())?;
     cases += 1;
 
-    let plane_probe = four_core
+    let plane_probe = three_core
         .visibility_probe
         .ok_or_else(|| "guest plane visibility probe is missing".to_string())?;
     let plane_oracle = oracle_linear(1.0 / 4.35, 0)?;

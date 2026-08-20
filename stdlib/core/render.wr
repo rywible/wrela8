@@ -1,14 +1,44 @@
 module render
 
-from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p8_begin, __wrela_pixels_p8_cancel, __wrela_pixels_p8_complete, __wrela_pixels_p8_descriptor_digest, __wrela_pixels_p8_digest, __wrela_pixels_p8_display_doorbell, __wrela_pixels_p8_initialize, __wrela_pixels_p8_present, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_raster_evidence_word, __wrela_pixels_p8_raw_digest, __wrela_pixels_p8_submit, __wrela_pixels_p8_visible_byte, __wrela_pixels_p8_write, __wrela_pixels_p8_write4, __wrela_pixels_program_digest_byte, __wrela_pixels_program_validate
+from core.__image_pixels import __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p9_light_range, __wrela_pixels_p9_material_inputs
+from core.__image_pixels import __wrela_pixels_f64_bits_to_f32, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p8_begin, __wrela_pixels_p8_cancel, __wrela_pixels_p8_complete, __wrela_pixels_p8_descriptor_digest, __wrela_pixels_p8_digest, __wrela_pixels_p8_display_doorbell, __wrela_pixels_p8_initialize, __wrela_pixels_p8_present, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_raster_evidence_word, __wrela_pixels_p8_raw_digest, __wrela_pixels_p8_submit, __wrela_pixels_p8_visible_byte, __wrela_pixels_p8_write, __wrela_pixels_p8_write4, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_scene_distance, __wrela_pixels_program_digest_byte, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_table_count, __wrela_pixels_program_validate
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 from core.render_coverage import CoverageOutcome
 from core.render_interval import FixedDomain, NumericOutcome, interval_ceil_div, interval_floor_div, interval_narrow, interval_sub, interval_valid
+from core.render_light import P9ShadingMeta, __wrela_pixels_p9_concentric_disk, __wrela_pixels_p9_disk_offset, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_shade_pixel, __wrela_pixels_p9_texture_mip_bounds, __wrela_pixels_p9_texture_moments
 from core.render_isolation import __wrela_pixels_p5_finite, __wrela_pixels_p7_collect_roots, __wrela_pixels_p7_collect_roots_box, __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates, __wrela_pixels_p7_select_visibility
-from core.render_orchestrate import __wrela_pixels_p7_job_value, __wrela_pixels_p7_run_job, __wrela_pixels_p7_worker_error_code, __wrela_pixels_p7_worker_error_tile
+from core.render_orchestrate import __wrela_pixels_p7_job_value, __wrela_pixels_p7_run_job, __wrela_pixels_p7_worker_error_code, __wrela_pixels_p7_worker_error_tile, __wrela_pixels_p9_event_color
 from core.render_probe import __wrela_pixels_p7_debug_frame_dump_word
 from core.render_program import Polynomial9, Polynomial9Outcome, bernstein_from_power9, bernstein_lerp_ratio, polynomial_compose9, polynomial_multiply9, program_binomial, program_ceil_div, program_floor_div, program_gcd
 from core.render_raster import AffineRunSetup, I32x4, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, PIXELS_REGION_RASTER_CHARGE, PIXELS_REGION_RASTER_PACKET_LOOP, PIXELS_REGION_RASTER_SCALAR_PREFIX, PIXELS_REGION_RASTER_SCALAR_SUFFIX, QRunScalar, RasterRun, pixels_census_region, pixels_i32x4_backend_add
+
+pub fn __wrela_pixels_p9_debug_visibility_enabled() -> bool:
+    return __wrela_pixels_p9_debug_visibility()
+
+fn __wrela_pixels_p9_light_rate_valid(
+    current: f32,
+    previous: f32,
+    max_delta: f32,
+    frame_steps: u64,
+) -> bool:
+    if max_delta < 0.0 or frame_steps > 65535:
+        return false
+    delta = current - previous
+    if delta < 0.0:
+        delta = 0.0 - delta
+    return delta <= max_delta * frame_steps.to[f32]()
+
+fn __wrela_pixels_p9_point_radius_valid(radius: f32, maximum: f32) -> bool:
+    # 2^-12 keeps radius^2 at or above 2^-24, so the sealed attenuation clamp
+    # cannot underflow to the singular zero denominator.
+    return radius >= 0.000244140625 and radius <= maximum
+
+@test
+fn p9_light_rate_boundary_is_closed_and_excess_fails():
+    assert __wrela_pixels_p9_light_rate_valid(1.125, 1.0, 0.125, 1), "declared light rate includes its exact boundary"
+    assert not __wrela_pixels_p9_light_rate_valid(1.1251, 1.0, 0.125, 1), "light motion beyond the sealed per-frame rate fails"
+    assert __wrela_pixels_p9_point_radius_valid(0.000244140625, 1.0), "point radius includes the sealed nonsingular boundary"
+    assert not __wrela_pixels_p9_point_radius_valid(0.0001220703125, 1.0), "point radius rejects a clamp whose square can approach underflow"
 
 pub fn __wrela_pixels_p7_program_validate(renderer: usize) -> bool:
     return __wrela_pixels_program_validate(renderer)
@@ -209,12 +239,24 @@ pub struct Light:
         )
 
     pub fn point(position: Vec3, radiance: Rgb) -> Light:
+        radius = Vec3(x=0.05, y=0.0, z=0.0)
         zero = Vec3(x=0.0, y=0.0, z=0.0)
         return Light(
             kind=1,
             position=position,
             direction=zero,
-            axis_u=zero,
+            axis_u=radius,
+            axis_v=zero,
+            radiance=radiance,
+        )
+
+    pub fn point_radius(position: Vec3, radius: f32, radiance: Rgb) -> Light:
+        zero = Vec3(x=0.0, y=0.0, z=0.0)
+        return Light(
+            kind=1,
+            position=position,
+            direction=zero,
+            axis_u=Vec3(x=radius, y=0.0, z=0.0),
             axis_v=zero,
             radiance=radiance,
         )
@@ -241,14 +283,93 @@ pub struct Light:
             radiance=radiance,
         )
 
-    pub fn disk(center: Vec3, axis_u: Vec3, axis_v: Vec3, radiance: Rgb) -> Light:
+    pub fn disk(center: Vec3, normal: Vec3, radius: f32, radiance: Rgb) -> Light:
         zero = Vec3(x=0.0, y=0.0, z=0.0)
+        if (
+            not __wrela_pixels_p5_finite(normal.x)
+            or not __wrela_pixels_p5_finite(normal.y)
+            or not __wrela_pixels_p5_finite(normal.z)
+            or not __wrela_pixels_p5_finite(radius)
+            or not radius > 0.0
+        ):
+            return Light(
+                kind=4,
+                position=center,
+                direction=zero,
+                axis_u=zero,
+                axis_v=zero,
+                radiance=radiance,
+            )
+        normal_length = length3(normal)
+        if not normal_length > 0.0:
+            return Light(
+                kind=4,
+                position=center,
+                direction=zero,
+                axis_u=zero,
+                axis_v=zero,
+                radiance=radiance,
+            )
+        unit_normal = Vec3(
+            x=normal.x / normal_length,
+            y=normal.y / normal_length,
+            z=normal.z / normal_length,
+        )
+        abs_x = unit_normal.x
+        if abs_x < 0.0:
+            abs_x = 0.0 - abs_x
+        abs_y = unit_normal.y
+        if abs_y < 0.0:
+            abs_y = 0.0 - abs_y
+        abs_z = unit_normal.z
+        if abs_z < 0.0:
+            abs_z = 0.0 - abs_z
+        helper = Vec3(x=0.0, y=0.0, z=1.0)
+        if abs_x <= abs_y and abs_x <= abs_z:
+            helper = Vec3(x=1.0, y=0.0, z=0.0)
+        elif abs_y <= abs_z:
+            helper = Vec3(x=0.0, y=1.0, z=0.0)
+        axis_u_seed = cross3(helper, unit_normal)
+        axis_u_length = length3(axis_u_seed)
+        if not axis_u_length > 0.0:
+            return Light(
+                kind=4,
+                position=center,
+                direction=zero,
+                axis_u=zero,
+                axis_v=zero,
+                radiance=radiance,
+            )
+        axis_u_unit = Vec3(
+            x=axis_u_seed.x / axis_u_length,
+            y=axis_u_seed.y / axis_u_length,
+            z=axis_u_seed.z / axis_u_length,
+        )
+        axis_v_seed = cross3(unit_normal, axis_u_unit)
+        axis_v_length = length3(axis_v_seed)
+        if not axis_v_length > 0.0:
+            return Light(
+                kind=4,
+                position=center,
+                direction=zero,
+                axis_u=zero,
+                axis_v=zero,
+                radiance=radiance,
+            )
         return Light(
             kind=4,
             position=center,
             direction=zero,
-            axis_u=axis_u,
-            axis_v=axis_v,
+            axis_u=Vec3(
+                x=axis_u_unit.x * radius,
+                y=axis_u_unit.y * radius,
+                z=axis_u_unit.z * radius,
+            ),
+            axis_v=Vec3(
+                x=axis_v_seed.x / axis_v_length * radius,
+                y=axis_v_seed.y / axis_v_length * radius,
+                z=axis_v_seed.z / axis_v_length * radius,
+            ),
             radiance=radiance,
         )
 
@@ -273,6 +394,156 @@ pub struct Light:
             and __wrela_pixels_p5_finite(self.radiance.g)
             and __wrela_pixels_p5_finite(self.radiance.b)
         )
+
+    fn __wrela_p9_in_world(read self, read bounds: RendererFrameBounds) -> bool:
+        return (
+            self.position.x >= bounds.world_min_x and self.position.x <= bounds.world_max_x
+            and self.position.y >= bounds.world_min_y and self.position.y <= bounds.world_max_y
+            and self.position.z >= bounds.world_min_z and self.position.z <= bounds.world_max_z
+        )
+
+    fn __wrela_p9_area_axes_valid(read self) -> bool:
+        # Rescale each axis by its own largest component. The resulting
+        # squared-cosine test is scale invariant, cannot overflow, and needs
+        # no helper declaration outside Light's imported signature.
+        u_scale = self.axis_u.x
+        if u_scale < 0.0:
+            u_scale = 0.0 - u_scale
+        u_y = self.axis_u.y
+        if u_y < 0.0:
+            u_y = 0.0 - u_y
+        if u_y > u_scale:
+            u_scale = u_y
+        u_z = self.axis_u.z
+        if u_z < 0.0:
+            u_z = 0.0 - u_z
+        if u_z > u_scale:
+            u_scale = u_z
+        v_scale = self.axis_v.x
+        if v_scale < 0.0:
+            v_scale = 0.0 - v_scale
+        v_y = self.axis_v.y
+        if v_y < 0.0:
+            v_y = 0.0 - v_y
+        if v_y > v_scale:
+            v_scale = v_y
+        v_z = self.axis_v.z
+        if v_z < 0.0:
+            v_z = 0.0 - v_z
+        if v_z > v_scale:
+            v_scale = v_z
+        if not u_scale > 0.0 or not v_scale > 0.0:
+            return false
+        ux = self.axis_u.x / u_scale
+        uy = self.axis_u.y / u_scale
+        uz = self.axis_u.z / u_scale
+        vx = self.axis_v.x / v_scale
+        vy = self.axis_v.y / v_scale
+        vz = self.axis_v.z / v_scale
+        u2 = ux * ux + uy * uy + uz * uz
+        v2 = vx * vx + vy * vy + vz * vz
+        axis_dot = ux * vx + uy * vy + uz * vz
+        return axis_dot * axis_dot <= 0.00000001 * u2 * v2
+
+    fn __wrela_p9_disk_axes_valid(read self) -> bool:
+        if not self.__wrela_p9_area_axes_valid():
+            return false
+        u2 = (
+            self.axis_u.x * self.axis_u.x
+            + self.axis_u.y * self.axis_u.y
+            + self.axis_u.z * self.axis_u.z
+        )
+        v2 = (
+            self.axis_v.x * self.axis_v.x
+            + self.axis_v.y * self.axis_v.y
+            + self.axis_v.z * self.axis_v.z
+        )
+        largest = u2
+        if v2 > largest:
+            largest = v2
+        difference = u2 - v2
+        if difference < 0.0:
+            difference = 0.0 - difference
+        return difference <= largest * 0.0001
+
+    pub fn __wrela_p9_valid(
+        read self,
+        read bounds: RendererFrameBounds,
+        read range: [f32; 12],
+    ) -> bool:
+        if range[0] != 1.0:
+            return false
+        if (
+            self.radiance.r < 0.0 or self.radiance.r > range[8]
+            or self.radiance.g < 0.0 or self.radiance.g > range[9]
+            or self.radiance.b < 0.0 or self.radiance.b > range[10]
+        ):
+            return false
+        if self.kind == 0:
+            return (
+                self.position.x == 0.0 and self.position.y == 0.0 and self.position.z == 0.0
+                and self.direction.x == 0.0 and self.direction.y == 0.0 and self.direction.z == 0.0
+                and self.axis_u.x == 0.0 and self.axis_u.y == 0.0 and self.axis_u.z == 0.0
+                and self.axis_v.x == 0.0 and self.axis_v.y == 0.0 and self.axis_v.z == 0.0
+                and self.radiance.r == 0.0 and self.radiance.g == 0.0 and self.radiance.b == 0.0
+            )
+        in_slot_position = (
+            self.position.x >= range[1] and self.position.x <= range[4]
+            and self.position.y >= range[2] and self.position.y <= range[5]
+            and self.position.z >= range[3] and self.position.z <= range[6]
+            and self.__wrela_p9_in_world(bounds)
+        )
+        axis_max = range[7]
+        axes_bounded = (
+            self.direction.x >= 0.0 - axis_max and self.direction.x <= axis_max
+            and self.direction.y >= 0.0 - axis_max and self.direction.y <= axis_max
+            and self.direction.z >= 0.0 - axis_max and self.direction.z <= axis_max
+            and self.axis_u.x >= 0.0 - axis_max and self.axis_u.x <= axis_max
+            and self.axis_u.y >= 0.0 - axis_max and self.axis_u.y <= axis_max
+            and self.axis_u.z >= 0.0 - axis_max and self.axis_u.z <= axis_max
+            and self.axis_v.x >= 0.0 - axis_max and self.axis_v.x <= axis_max
+            and self.axis_v.y >= 0.0 - axis_max and self.axis_v.y <= axis_max
+            and self.axis_v.z >= 0.0 - axis_max and self.axis_v.z <= axis_max
+        )
+        if not axes_bounded:
+            return false
+        if self.kind == 1:
+            return in_slot_position and self.axis_u.x >= 0.000244140625 and self.axis_u.x <= axis_max
+        if self.kind == 2:
+            direction_length_squared = (
+                self.direction.x * self.direction.x
+                + self.direction.y * self.direction.y
+                + self.direction.z * self.direction.z
+            )
+            return direction_length_squared >= 0.9999 and direction_length_squared <= 1.0001
+        if self.kind == 3:
+            return (
+                in_slot_position
+                and self.__wrela_p9_area_axes_valid()
+            )
+        if self.kind == 4:
+            return in_slot_position and self.__wrela_p9_disk_axes_valid()
+        return false
+
+@test
+fn p9_disk_constructor_uses_normal_and_equal_radius_axes():
+    disk = Light.disk(
+        Vec3(x=1.0, y=2.0, z=3.0),
+        Vec3(x=0.0, y=0.0, z=2.0),
+        3.0,
+        Rgb(r=4.0, g=5.0, b=6.0),
+    )
+    assert disk.kind == 4, "disk constructor retains the sealed disk kind"
+    assert disk.axis_u.x == 0.0 and disk.axis_u.y == -3.0 and disk.axis_u.z == 0.0, "disk first half axis is deterministic"
+    assert disk.axis_v.x == 3.0 and disk.axis_v.y == 0.0 and disk.axis_v.z == 0.0, "disk second half axis uses the same radius"
+    assert disk.__wrela_p9_disk_axes_valid(), "disk axes preserve the one source radius"
+    invalid = Light.disk(
+        Vec3(x=0.0, y=0.0, z=0.0),
+        Vec3(x=0.0, y=0.0, z=0.0),
+        1.0,
+        Rgb(r=1.0, g=1.0, b=1.0),
+    )
+    assert not invalid.__wrela_p9_area_axes_valid(), "a zero disk normal fails closed"
 
 pub struct LightFrame:
     lights: [Light; 8]
@@ -326,7 +597,7 @@ pub struct LightFrame:
             index = index + 1
         return values
 
-    pub fn from_snapshot(read kinds: [u64; 8], read values: [f32; 120]) -> LightFrame:
+    fn from_snapshot(read kinds: [u64; 8], read values: [f32; 120]) -> LightFrame:
         lights: [Light; 8] = [
             Light.zero(),
             Light.zero(),
@@ -383,9 +654,45 @@ pub struct CameraBounds:
     pub fn gameplay_default() -> CameraBounds:
         return CameraBounds(max_motion=0.25)
 
+pub struct LightRange:
+    # A range is attached to one sealed light slot. Position applies to point
+    # and area emitters; axis_component_max covers point radius, directional
+    # direction, and both area-light half-axis vectors. `max_delta` is the
+    # finite per-component frame-to-frame rate premise used by kinetic reuse.
+    position_min: Vec3
+    position_max: Vec3
+    axis_component_max: f32
+    radiance_max: Rgb
+    max_delta: f32
+
+    pub fn bounded(
+        position_min: Vec3,
+        position_max: Vec3,
+        axis_component_max: f32,
+        radiance_max: Rgb,
+        max_delta: f32,
+    ) -> LightRange:
+        return LightRange(
+            position_min=position_min,
+            position_max=position_max,
+            axis_component_max=axis_component_max,
+            radiance_max=radiance_max,
+            max_delta=max_delta,
+        )
+
+    pub fn gameplay_default() -> LightRange:
+        return LightRange.bounded(
+            position_min=Vec3(x=-65504.0, y=-65504.0, z=-65504.0),
+            position_max=Vec3(x=65504.0, y=65504.0, z=65504.0),
+            axis_component_max=65504.0,
+            radiance_max=Rgb(r=65504.0, g=65504.0, b=65504.0),
+            max_delta=65504.0,
+        )
+
 pub struct LightConfig:
     capacity: u32
     kinds: [LightKind; 8]
+    ranges: [LightRange; 8]
 
     pub fn fixed(capacity: u32) -> LightConfig:
         return LightConfig(
@@ -400,22 +707,50 @@ pub struct LightConfig:
                 LightKind.Point,
                 LightKind.Point,
             ],
+            ranges=[
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+                LightRange.gameplay_default(),
+            ],
         )
 
-    pub fn declared(capacity: u32, kinds: [LightKind; 8]) -> LightConfig:
-        return LightConfig(capacity=capacity, kinds=kinds)
+    pub fn declared(
+        capacity: u32,
+        kinds: [LightKind; 8],
+        ranges: [LightRange; 8] = [
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+            LightRange.gameplay_default(),
+        ],
+    ) -> LightConfig:
+        return LightConfig(capacity=capacity, kinds=kinds, ranges=ranges)
 
     pub fn gameplay_default() -> LightConfig:
         return LightConfig.fixed(capacity=8)
 
 pub struct AoConfig:
     enabled: bool
+    radius: f32
+    strength: f32
 
     pub fn fixed(enabled: bool) -> AoConfig:
-        return AoConfig(enabled=enabled)
+        return AoConfig(enabled=enabled, radius=1.0, strength=1.0)
+
+    pub fn configured(radius: f32, strength: f32) -> AoConfig:
+        return AoConfig(enabled=true, radius=radius, strength=strength)
 
     pub fn deterministic_v1() -> AoConfig:
-        return AoConfig(enabled=true)
+        return AoConfig(enabled=true, radius=1.0, strength=1.0)
 
 pub struct ProbeConfig:
     enabled: bool
@@ -435,6 +770,10 @@ pub enum RenderProfile:
 pub enum ToneCurve:
     Linear
     FilmicV1
+    # Repository-owned diagnostics use this reserved variant to exercise the
+    # fail-closed P018 path. Ordinary source cannot name compiler-reserved
+    # `__wrela_` identifiers.
+    __wrela_NonMonotoneFixture
 
 pub enum RenderError:
     ParameterOutOfRange(RenderPath)
@@ -456,12 +795,44 @@ pub struct SurfaceContext[M]:
 pub enum TextureFilter:
     Nearest
     Bilinear
+    Trilinear
+    Anisotropic4
+
+pub enum UvSource:
+    Plane
+    Sphere
+    Cylinder
+    Torus
+    BoxFeature
+    RoundBoxFeature
+    ObjectTriplanar
+    WorldTriplanar
+
+pub enum NormalDetail:
+    Geometric
+    AnalyticSlope(sx: f32, sy: f32)
+    TextureSlope(texture_id: u32, width: u32, height: u32, filter: TextureFilter)
+    TextureSlopeUv(texture_id: u32, width: u32, height: u32, filter: TextureFilter, uv_source: UvSource)
+    ObjectSlope(sx: f32, sy: f32)
 
 pub struct MaterialSample:
     color: Rgb
+    metallic: f32
     roughness: f32
+    specular: f32
+    emissive: Rgb
+    opacity: f32
+    normal_detail: NormalDetail
 
-    pub fn standard(color: Rgb, roughness: f32) -> MaterialSample:
+    pub fn standard(
+        color: Rgb,
+        roughness: f32,
+        metallic: f32 = 0.0,
+        specular: f32 = 0.5,
+        emissive: Rgb = Rgb(r=0.0, g=0.0, b=0.0),
+        opacity: f32 = 1.0,
+        normal_detail: NormalDetail = NormalDetail.Geometric,
+    ) -> MaterialSample:
         max_finite: f32 = 340282346638528859811704183484516925440.0
         safe_r = color.r
         safe_g = color.g
@@ -484,15 +855,63 @@ pub struct MaterialSample:
             safe_b = max_finite
         if safe_b < -max_finite:
             safe_b = -max_finite
+        if safe_r < 0.0:
+            safe_r = 0.0
+        if safe_r > 1.0:
+            safe_r = 1.0
+        if safe_g < 0.0:
+            safe_g = 0.0
+        if safe_g > 1.0:
+            safe_g = 1.0
+        if safe_b < 0.0:
+            safe_b = 0.0
+        if safe_b > 1.0:
+            safe_b = 1.0
         clamped = roughness
         if clamped != clamped:
             clamped = 0.0
-        if clamped < 0.0:
-            clamped = 0.0
+        if clamped < 0.02:
+            clamped = 0.02
         if clamped > 1.0:
             clamped = 1.0
+        safe_metallic = metallic
+        if safe_metallic != safe_metallic:
+            safe_metallic = 0.0
+        if safe_metallic < 0.0:
+            safe_metallic = 0.0
+        if safe_metallic > 1.0:
+            safe_metallic = 1.0
+        safe_specular = specular
+        if safe_specular != safe_specular:
+            safe_specular = 0.0
+        if safe_specular < 0.0:
+            safe_specular = 0.0
+        if safe_specular > 1.0:
+            safe_specular = 1.0
+        safe_opacity = opacity
+        if safe_opacity != safe_opacity:
+            safe_opacity = 0.0
+        if safe_opacity < 0.0:
+            safe_opacity = 0.0
+        if safe_opacity > 1.0:
+            safe_opacity = 1.0
+        safe_emissive = emissive
+        if safe_emissive.r != safe_emissive.r or safe_emissive.r < 0.0:
+            safe_emissive.r = 0.0
+        if safe_emissive.g != safe_emissive.g or safe_emissive.g < 0.0:
+            safe_emissive.g = 0.0
+        if safe_emissive.b != safe_emissive.b or safe_emissive.b < 0.0:
+            safe_emissive.b = 0.0
         safe_color = Rgb(r=safe_r, g=safe_g, b=safe_b)
-        return MaterialSample(color=safe_color, roughness=clamped)
+        return MaterialSample(
+            color=safe_color,
+            metallic=safe_metallic,
+            roughness=clamped,
+            specular=safe_specular,
+            emissive=safe_emissive,
+            opacity=safe_opacity,
+            normal_detail=normal_detail,
+        )
 
     pub fn clay(color: Rgb, roughness: f32) -> MaterialSample:
         return MaterialSample.standard(color=color, roughness=roughness)
@@ -507,6 +926,7 @@ pub struct MaterialSample:
         width: u32,
         height: u32,
         filter: TextureFilter,
+        uv_source: UvSource = UvSource.WorldTriplanar,
     ) -> MaterialSample:
         # The Pixels compiler intercepts this closed constructor and records
         # the immutable texture descriptor. P9 supplies filtered sampling.
@@ -517,6 +937,18 @@ pub struct MaterialSample:
 
     pub fn sample_roughness(read self) -> f32:
         return self.roughness
+
+    pub fn sample_metallic(read self) -> f32:
+        return self.metallic
+
+    pub fn sample_specular(read self) -> f32:
+        return self.specular
+
+    pub fn sample_emissive(read self) -> Rgb:
+        return self.emissive
+
+    pub fn sample_opacity(read self) -> f32:
+        return self.opacity
 
 pub struct RenderFrame[P]:
     pub params: P
@@ -543,49 +975,45 @@ pub struct RenderFailure[P]:
     pub params: P
     pub error: RenderError
 
+fn __wrela_pixels_p9_post_values(exposure: f32, r: f32, g: f32, b: f32) -> [f32; 4]:
+    return [exposure, r, g, b]
+
+fn __wrela_pixels_p9_job_from_word(word: u64) -> RendererWorkerJob:
+    return RendererWorkerJob(
+        renderer_index=((word >> 48) & 15).to[usize](),
+        worker_index=((word >> 52) & 3).to[u32](),
+        tiles_start=(word & 16777215).to[u32](),
+        tiles_end=((word >> 24) & 16777215).to[u32](),
+    )
+
 pub struct FrameInputSnapshot:
-    # Every validated frame-controlled value is captured even when P7
-    # visibility uses only the packed parameter and camera coefficient subset.
+    # Structural proof state only. Lighting and post data live in the sealed
+    # per-renderer frame snapshot and are read by shading; carrying the 120
+    # light scalars through every P7 query would clone them into the complete
+    # root-isolation call graph.
     pub params: [f32; 16]
-    pub param_count: u16
     pub camera: [f32; 12]
-    pub lights: LightFrame
-    pub exposure: f32
-    pub environment: Rgb
-    pub frame_index: u64
 
     pub fn zero() -> FrameInputSnapshot:
         return FrameInputSnapshot(
             params=[0.0; 16],
-            param_count=0,
             camera=[0.0; 12],
-            lights=LightFrame.empty(),
-            exposure=0.0,
-            environment=Rgb(r=0.0, g=0.0, b=0.0),
-            frame_index=0,
         )
 
     pub fn from_packed(
         params: [f32; 16],
         param_count: u16,
         camera: [f32; 12],
-        frame_index: u64,
     ) -> FrameInputSnapshot:
         return FrameInputSnapshot(
             params=params,
-            param_count=param_count,
             camera=camera,
-            lights=LightFrame.empty(),
-            exposure=0.0,
-            environment=Rgb(r=0.0, g=0.0, b=0.0),
-            frame_index=frame_index,
         )
 
     pub fn make(
         params: [f32; 16],
         param_count: u16,
         read camera: Camera,
-        frame_index: u64,
     ) -> FrameInputSnapshot:
         camera_values: [f32; 12] = [
             camera.eye.x,
@@ -603,22 +1031,13 @@ pub struct FrameInputSnapshot:
         ]
         return FrameInputSnapshot(
             params=params,
-            param_count=param_count,
             camera=camera_values,
-            lights=LightFrame.empty(),
-            exposure=0.0,
-            environment=Rgb(r=0.0, g=0.0, b=0.0),
-            frame_index=frame_index,
         )
 
     pub fn make_frame(
         params: [f32; 16],
         param_count: u16,
         read camera: Camera,
-        read lights: LightFrame,
-        exposure: f32,
-        environment: Rgb,
-        frame_index: u64,
     ) -> FrameInputSnapshot:
         camera_values: [f32; 12] = [
             camera.eye.x,
@@ -634,23 +1053,16 @@ pub struct FrameInputSnapshot:
             camera.up.y,
             camera.up.z,
         ]
+        # The generated packer uses 65535 when its authenticated slot map
+        # disagrees with the expected traversal. Keep that fail-closed signal
+        # out of the structural record width by poisoning the copied camera;
+        # the actor rejects it before publishing the snapshot.
+        if param_count > 16:
+            camera_values[0] = 0.0.to[f32]() / 0.0.to[f32]()
         return FrameInputSnapshot(
             params=params,
-            param_count=param_count,
             camera=camera_values,
-            lights=lights,
-            exposure=exposure,
-            environment=environment,
-            frame_index=frame_index,
         )
-
-    pub fn post_values(read self) -> [f32; 4]:
-        return [
-            self.exposure,
-            self.environment.r,
-            self.environment.g,
-            self.environment.b,
-        ]
 
 pub struct RendererWorkerAssignment:
     word: u64
@@ -959,7 +1371,1047 @@ pub struct P8RasterContext:
     pub height: u32
     pub camera: [f32; 12]
     pub scale: f32
-    pub color: u32
+    pub identity: u32
+    pub feature: u32
+    pub hit: bool
+    pub normal: [f32; 3]
+    pub params: [f32; 16]
+    pub light_kinds: [u64; 8]
+    pub light_values: [f32; 120]
+    pub exposure: f32
+    pub environment: [f32; 3]
+    # P9 keeps P8's independently-scored identity framebuffer available only
+    # in compiler-internal conformance images. Production always ignores it.
+    pub debug_color: u32
+
+pub struct P9LightingCertificate:
+    pub ok: bool
+    # One word per light keeps all 64 depth-three Morton leaves lossless.
+    pub visibility: [u64; 8]
+    # A set bit denotes a terminal source cell whose complete visibility
+    # could not be classified. Shading carries [0, full contribution] for
+    # that cell; the candidate bit above is never promoted to a proof.
+    pub visibility_uncertain: [u64; 8]
+    # The single live area source selected by the global queue owns the first
+    # sixteen words of each array as a canonical 32x32 terminal mask. Its
+    # bounded depth-eight density records occupy the remaining payload words.
+    # Other sources retain their coarse complete bounds and therefore cannot
+    # be accidentally promoted by this refinement.
+    pub visibility_refined: [u64; 32]
+    pub visibility_refined_uncertain: [u64; 32]
+    pub visibility_terminal_light: u64
+    pub ao: f32
+    pub ao_lower: f32
+    pub ao_upper: f32
+
+pub fn __wrela_pixels_p9_origin_epsilon(renderer: usize, read point: [f32; 3]) -> [f32; 2]:
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1:
+        return [0.0, 0.0]
+    scale: f32 = 1.0
+    axis: usize = 0
+    @budget(bound=3)
+    while axis < 3:
+        magnitude = point[axis]
+        if magnitude < 0.0:
+            magnitude = -magnitude
+        if magnitude > scale:
+            scale = magnitude
+        axis = axis + 1
+    q_quantum = __wrela_pixels_p7_raw_to_f32(1, config[3].to[i32]())
+    if q_quantum < 0.0:
+        q_quantum = -q_quantum
+    # Eight f32 ulps at the point scale cover reconstruction/normal multiply
+    # rounding; four sealed fixed-q quanta cover the q-to-position endpoint
+    # conversion. Both terms scale from numeric-profile facts.
+    epsilon = scale * 0.00000095367431640625 + q_quantum * 4.0
+    if not epsilon > 0.0:
+        return [0.0, 0.0]
+    return [1.0, epsilon]
+
+pub fn __wrela_pixels_p9_segment_intersects_aabb(
+    read origin: [f32; 3],
+    read direction: [f32; 3],
+    t_max: f32,
+    read bounds: [f32; 6],
+) -> bool:
+    t0: f32 = 0.0
+    t1 = t_max
+    axis: usize = 0
+    @budget(bound=3)
+    while axis < 3:
+        component = direction[axis]
+        if component == 0.0:
+            if origin[axis] < bounds[axis] or origin[axis] > bounds[axis + 3]:
+                return false
+        else:
+            inverse = 1.0 / component
+            near = (bounds[axis] - origin[axis]) * inverse
+            far = (bounds[axis + 3] - origin[axis]) * inverse
+            if near > far:
+                swap = near
+                near = far
+                far = swap
+            if near > t0:
+                t0 = near
+            if far < t1:
+                t1 = far
+            if t0 > t1:
+                return false
+        axis = axis + 1
+    return t1 >= 0.0 and t0 <= t_max
+
+fn __wrela_pixels_p9_aabb_overlaps(read a: [f32; 6], read b: [f32; 6]) -> bool:
+    return (
+        a[0] <= b[3] and a[3] >= b[0]
+        and a[1] <= b[4] and a[4] >= b[1]
+        and a[2] <= b[5] and a[5] >= b[2]
+    )
+
+fn __wrela_pixels_p9_secondary_candidates_common(
+    renderer: usize,
+    bundle: bool,
+    # Segment origin in the first three lanes, or complete bundle AABB.
+    read query: [f32; 6],
+    read direction: [f32; 3],
+    t_max: f32,
+) -> [u64; 5]:
+    # word zero is the success tag; words one through four are the complete
+    # feature-id set. Feature IDs are sealed below 256 by the shared Pixels
+    # capacity contract, so this is lossless and naturally de-duplicates
+    # features shared by adjacent object leaves.
+    failed: [u64; 5] = [0; 5]
+    summary_count = __wrela_pixels_program_table_count(renderer, 13)
+    if summary_count == 4294967295:
+        return failed
+    bvh_record: u32 = 4294967295
+    record: u32 = 0
+    @budget(bound=256)
+    while record < summary_count:
+        header = __wrela_pixels_program_record(renderer, 13, record)
+        if header[0] != 1:
+            return failed
+        if header[2] == 3:
+            bvh_record = record
+        record = record + 1
+    if bvh_record == 4294967295:
+        return [1, 0, 0, 0, 0]
+    object_count = __wrela_pixels_program_operand(renderer, 13, bvh_record, 0)
+    node_count = __wrela_pixels_program_operand(renderer, 13, bvh_record, 1)
+    root = __wrela_pixels_program_operand(renderer, 13, bvh_record, 2)
+    stack_capacity = __wrela_pixels_program_operand(renderer, 13, bvh_record, 3)
+    if object_count[0] != 1 or node_count[0] != 1 or root[0] != 1 or stack_capacity[0] != 1 or object_count[1] > 64 or node_count[1] > 256 or stack_capacity[1] > 256:
+        return failed
+    stack: [u32; 256] = [0; 256]
+    stack[0] = root[1].to[u32]()
+    stack_count: u32 = 1
+    bits: [u64; 4] = [0; 4]
+    node_base = 4 + object_count[1] * 9
+    @budget(bound=512)
+    while stack_count > 0:
+        stack_count = stack_count - 1
+        node = stack[stack_count.to[usize]()].to[u64]()
+        if node >= node_count[1]:
+            return failed
+        cursor = node_base + node * 10
+        bounds: [f32; 6] = [0.0; 6]
+        axis: usize = 0
+        @budget(bound=6)
+        while axis < 6:
+            encoded = __wrela_pixels_program_operand(renderer, 13, bvh_record, (cursor + axis.to[u64]()).to[u16]())
+            if encoded[0] != 1:
+                return failed
+            bounds[axis] = __wrela_pixels_f64_bits_to_f32(encoded[1])
+            axis = axis + 1
+        overlaps = __wrela_pixels_p9_segment_intersects_aabb(
+            [query[0], query[1], query[2]], direction, t_max, bounds,
+        )
+        if bundle:
+            overlaps = __wrela_pixels_p9_aabb_overlaps(query, bounds)
+        if overlaps:
+            first = __wrela_pixels_program_operand(renderer, 13, bvh_record, (cursor + 6).to[u16]())
+            count = __wrela_pixels_program_operand(renderer, 13, bvh_record, (cursor + 7).to[u16]())
+            left = __wrela_pixels_program_operand(renderer, 13, bvh_record, (cursor + 8).to[u16]())
+            right = __wrela_pixels_program_operand(renderer, 13, bvh_record, (cursor + 9).to[u16]())
+            if first[0] != 1 or count[0] != 1 or left[0] != 1 or right[0] != 1:
+                return failed
+            # Leaves are identified by the canonical absent-child sentinels,
+            # not by `count`: internal nodes retain their subtree range/count
+            # so the host verifier can prove the serialized hierarchy.
+            if left[1] == 18446744073709551615 and right[1] == 18446744073709551615:
+                if count[1] == 0 or count[1] > 2:
+                    return failed
+                object_ordinal = first[1]
+                object_end = first[1] + count[1]
+                @budget(bound=64)
+                while object_ordinal < object_end:
+                    if object_ordinal >= object_count[1]:
+                        return failed
+                    object_cursor = 4 + object_ordinal * 9
+                    feature_first = __wrela_pixels_program_operand(renderer, 13, bvh_record, (object_cursor + 1).to[u16]())
+                    feature_count = __wrela_pixels_program_operand(renderer, 13, bvh_record, (object_cursor + 2).to[u16]())
+                    if feature_first[0] != 1 or feature_count[0] != 1 or feature_count[1] > 256:
+                        return failed
+                    feature = feature_first[1]
+                    feature_end = feature_first[1] + feature_count[1]
+                    @budget(bound=256)
+                    while feature < feature_end:
+                        if feature >= 256:
+                            return failed
+                        word = (feature / 64).to[usize]()
+                        bit = feature % 64
+                        bits[word] = bits[word] | (1.to[u64]() << bit)
+                        feature = feature + 1
+                    object_ordinal = object_ordinal + 1
+            else:
+                if left[1] == 18446744073709551615 or right[1] == 18446744073709551615 or count[1] <= 2 or stack_count + 2 > stack_capacity[1].to[u32]():
+                    return failed
+                # Reverse push preserves deterministic left-before-right walk.
+                stack[stack_count.to[usize]()] = right[1].to[u32]()
+                stack[stack_count.to[usize]() + 1] = left[1].to[u32]()
+                stack_count = stack_count + 2
+    return [1, bits[0], bits[1], bits[2], bits[3]]
+
+pub fn __wrela_pixels_p9_secondary_candidates(
+    renderer: usize,
+    read origin: [f32; 3],
+    read direction: [f32; 3],
+    t_max: f32,
+) -> [u64; 5]:
+    return __wrela_pixels_p9_secondary_candidates_common(
+        renderer, false,
+        [origin[0], origin[1], origin[2], 0.0, 0.0, 0.0],
+        direction, t_max,
+    )
+
+# Return the complete feature set whose compiler-emitted surface-object BVH
+# overlaps the swept convex hull of a source-cell segment bundle. Unlike a
+# handful of corner rays, this cannot miss a blocker lying strictly between
+# candidate rays.
+fn __wrela_pixels_p9_secondary_bundle_candidates(
+    renderer: usize,
+    read bundle_bounds: [f32; 6],
+) -> [u64; 5]:
+    return __wrela_pixels_p9_secondary_candidates_common(
+        renderer, true, bundle_bounds, [0.0, 0.0, 0.0], 0.0,
+    )
+
+# Classify every segment from `point` to one affine rectangle source cell.
+# Status 1 is uniformly clear, 2 uniformly blocked, and 0 unresolved. The
+# disk path deliberately supplies its enclosing square cell: a verdict over
+# that superset is also valid for the concentric disk image.
+fn __wrela_pixels_p9_segment_bundle_visibility(
+    renderer: usize,
+    worker: u32,
+    read point: [f32; 3],
+    # center xyz, axis-u xyz, axis-v xyz, then s0/s1/t0/t1.
+    read source_frame: [f32; 13],
+    exclude_feature: u32,
+    read params: [f32; 16],
+) -> u32:
+    source_center: [f32; 3] = [source_frame[0], source_frame[1], source_frame[2]]
+    axis_u: [f32; 3] = [source_frame[3], source_frame[4], source_frame[5]]
+    axis_v: [f32; 3] = [source_frame[6], source_frame[7], source_frame[8]]
+    cell: [f32; 4] = [source_frame[9], source_frame[10], source_frame[11], source_frame[12]]
+    if cell[0] > cell[1] or cell[2] > cell[3]:
+        return 0
+    epsilon = __wrela_pixels_p9_origin_epsilon(renderer, point)
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if epsilon[0] != 1.0 or config[0] != 1 or config[4] <= 0 or config[5] <= config[4]:
+        return 0
+    # Source-cell and segment-hull bounds. The point is included explicitly.
+    source_min: [f32; 3] = [3.4028234663852886e38; 3]
+    source_max: [f32; 3] = [-3.4028234663852886e38; 3]
+    corner: u32 = 0
+    @budget(bound=4)
+    while corner < 4:
+        s = cell[(corner & 1).to[usize]()]
+        t = cell[2 + (corner >> 1).to[usize]()]
+        axis: usize = 0
+        @budget(bound=3)
+        while axis < 3:
+            value = source_center[axis] + s * axis_u[axis] + t * axis_v[axis]
+            if value < source_min[axis]:
+                source_min[axis] = value
+            if value > source_max[axis]:
+                source_max[axis] = value
+            axis = axis + 1
+        corner = corner + 1
+    bundle_bounds: [f32; 6] = [0.0; 6]
+    axis: usize = 0
+    @budget(bound=3)
+    while axis < 3:
+        bundle_bounds[axis] = point[axis]
+        bundle_bounds[axis + 3] = point[axis]
+        if source_min[axis] < bundle_bounds[axis]:
+            bundle_bounds[axis] = source_min[axis]
+        if source_max[axis] > bundle_bounds[axis + 3]:
+            bundle_bounds[axis + 3] = source_max[axis]
+        axis = axis + 1
+    candidate_bits = __wrela_pixels_p9_secondary_bundle_candidates(renderer, bundle_bounds)
+    if candidate_bits[0] != 1:
+        return 0
+    if candidate_bits[1] == 0 and candidate_bits[2] == 0 and candidate_bits[3] == 0 and candidate_bits[4] == 0:
+        return 1
+    query_ids: [u32; 256] = [0; 256]
+    query_count: u16 = 0
+    # An outward ray from a convex analytic primitive cannot encounter the
+    # same primitive again. This narrowly permits omission of the originating
+    # plane/quadric after the certified normal offset. Inward CSG occurrences,
+    # deformations, and quartics retain the feature as a candidate.
+    omit_origin = false
+    origin_record = __wrela_pixels_program_record(renderer, 4, exclude_feature)
+    origin_predicate_count = __wrela_pixels_program_operand(renderer, 4, exclude_feature, 20)
+    if (
+        origin_record[0] == 1 and origin_record[1] == exclude_feature.to[u64]()
+        and (origin_record[2] == 1 or origin_record[2] == 2)
+        and origin_predicate_count[0] == 1 and origin_predicate_count[1] <= 16
+    ):
+        origin_orientation = __wrela_pixels_program_operand(
+            renderer, 4, exclude_feature, (21 + origin_predicate_count[1]).to[u16](),
+        )
+        omit_origin = origin_orientation[0] == 1 and origin_orientation[1] == 1
+    candidate: u32 = 0
+    @budget(bound=256)
+    while candidate < 256:
+        word = candidate / 64
+        bit = candidate % 64
+        if (not omit_origin or candidate != exclude_feature) and (candidate_bits[word.to[usize]() + 1] & (1.to[u64]() << bit.to[u64]())) != 0:
+            query_ids[query_count.to[usize]()] = candidate
+            query_count = query_count + 1
+        candidate = candidate + 1
+    query_candidates = P7RowCandidates(ok=true, error=0, ids=query_ids, count=query_count)
+    center_s = (cell[0] + cell[1]) * 0.5
+    center_t = (cell[2] + cell[3]) * 0.5
+    radius_s = (cell[1] - cell[0]) * 0.5
+    radius_t = (cell[3] - cell[2]) * 0.5
+    center_direction = [
+        source_center[0] + center_s * axis_u[0] + center_t * axis_v[0] - point[0],
+        source_center[1] + center_s * axis_u[1] + center_t * axis_v[1] - point[1],
+        source_center[2] + center_s * axis_u[2] + center_t * axis_v[2] - point[2],
+    ]
+    max_delta: [f32; 3] = [0.0; 3]
+    axis = 0
+    @budget(bound=3)
+    while axis < 3:
+        low_delta = source_min[axis] - point[axis]
+        high_delta = source_max[axis] - point[axis]
+        if low_delta < 0.0:
+            low_delta = 0.0 - low_delta
+        if high_delta < 0.0:
+            high_delta = 0.0 - high_delta
+        max_delta[axis] = low_delta
+        if high_delta > max_delta[axis]:
+            max_delta[axis] = high_delta
+        axis = axis + 1
+    max_length = sqrt_scalar(
+        max_delta[0] * max_delta[0]
+        + max_delta[1] * max_delta[1]
+        + max_delta[2] * max_delta[2]
+    )
+    if not max_length > epsilon[1]:
+        return 0
+    ratio = config[5].to[f32]() / config[4].to[f32]()
+    lambda_start = epsilon[1] / max_length
+    terminal_start = 1.0 / ratio
+    window: u32 = 0
+    @budget(bound=8)
+    while lambda_start < 1.0 and window < 8:
+        scale = lambda_start * config[5].to[f32]()
+        if lambda_start >= terminal_start:
+            scale = config[4].to[f32]()
+            lambda_start = 1.0
+        camera: [f32; 12] = [
+            point[0], point[1], point[2],
+            center_direction[0] * scale, center_direction[1] * scale, center_direction[2] * scale,
+            axis_u[0] * scale, axis_u[1] * scale, axis_u[2] * scale,
+            axis_v[0] * scale, axis_v[1] * scale, axis_v[2] * scale,
+        ]
+        snapshot = FrameInputSnapshot.from_packed(params, config[6].to[u16](), camera)
+        roots = __wrela_pixels_p7_collect_roots_box(
+            renderer, worker, 0, 1, 0,
+            [center_s, center_t, radius_s, radius_t], query_candidates, snapshot,
+        )
+        selected = __wrela_pixels_p7_select_visibility(renderer, roots)
+        if not selected.ok:
+            return 0
+        if selected.hit:
+            # The exact source feature is excluded only in the proven origin
+            # offset corridor. A later intersection with it remains a blocker.
+            if selected.root_count >> 16 == exclude_feature and lambda_start < epsilon[1] / max_length * ratio:
+                pass
+            else:
+                return 2
+        if lambda_start >= 1.0:
+            return 1
+        lambda_start = lambda_start * ratio
+        window = window + 1
+    return 0
+
+# Adaptive source-domain visibility tree. It visits cells in depth-first
+# Morton order, stops on a whole-cell verdict, and expands that verdict into
+# the canonical 32x32 terminal mask. The coarse 8x8 mask is derived from each
+# sixteen-grandchild bundle. The sealed v1 visibility depth is five and the
+# exact visit capacity is 1+4+16+64+256+1024 = 1365 cells. Depth-first
+# traversal retains at most 1+3*5 = 16 live cells.
+fn __wrela_pixels_p9_area_visibility_failure() -> [u64; 67]:
+    return [0; 67]
+
+fn __wrela_pixels_p9_area_visibility_mask(
+    renderer: usize,
+    worker: u32,
+    read point: [f32; 3],
+    # center/axes followed by the light-kind tag.
+    read source_frame: [f32; 10],
+    exclude_feature: u32,
+    read params: [f32; 16],
+    density_terminal: bool,
+) -> [u64; 67]:
+    stack_x: [u32; 16] = [0; 16]
+    stack_y: [u32; 16] = [0; 16]
+    stack_depth: [u32; 16] = [0; 16]
+    stack_count: u32 = 1
+    refined_mask: [u64; 16] = [0; 16]
+    refined_uncertain: [u64; 16] = [0; 16]
+    visits: u32 = 0
+    @budget(bound=1365)
+    while stack_count > 0:
+        stack_count = stack_count - 1
+        x = stack_x[stack_count.to[usize]()]
+        y = stack_y[stack_count.to[usize]()]
+        depth = stack_depth[stack_count.to[usize]()]
+        visits = visits + 1
+        divisions = (1.to[u32]() << depth).to[f32]()
+        cell_width = 2.0 / divisions
+        s0: f32 = 0.0.to[f32]() - 1.0 + x.to[f32]() * cell_width
+        t0: f32 = 0.0.to[f32]() - 1.0 + y.to[f32]() * cell_width
+        verdict: u32 = 0
+        proof_s0 = s0
+        proof_s1 = s0 + cell_width
+        proof_t0 = t0
+        proof_t1 = t0 + cell_width
+        kind = source_frame[9].to[u32]()
+        if kind == 4 and depth < 5:
+            # The concentric map crosses branches in coarse cells. Subdivide
+            # deterministically until one sealed leaf has the local Lipschitz
+            # enclosure used below.
+            verdict = 0
+        else:
+            if kind == 4:
+                a = (x.to[f32]() * 2.0 + 1.0) / 32.0 - 1.0
+                b = (y.to[f32]() * 2.0 + 1.0) / 32.0 - 1.0
+                disk = __wrela_pixels_p9_concentric_disk(a, b)
+                if disk[0] != 1.0:
+                    return __wrela_pixels_p9_area_visibility_failure()
+                proof_s0 = disk[1] - 0.078125
+                proof_s1 = disk[1] + 0.078125
+                proof_t0 = disk[2] - 0.078125
+                proof_t1 = disk[2] + 0.078125
+                if proof_s0 < -1.0:
+                    proof_s0 = -1.0
+                if proof_s1 > 1.0:
+                    proof_s1 = 1.0
+                if proof_t0 < -1.0:
+                    proof_t0 = -1.0
+                if proof_t1 > 1.0:
+                    proof_t1 = 1.0
+            verdict = __wrela_pixels_p9_segment_bundle_visibility(
+                renderer,
+                worker,
+                point,
+                [
+                    source_frame[0], source_frame[1], source_frame[2],
+                    source_frame[3], source_frame[4], source_frame[5],
+                    source_frame[6], source_frame[7], source_frame[8],
+                    proof_s0, proof_s1, proof_t0, proof_t1,
+                ],
+                exclude_feature,
+                params,
+            )
+        if verdict == 0:
+            if depth >= 5:
+                # Retain the unresolved leaf as a complete [blocked, clear]
+                # contribution interval. A deterministic blocked candidate
+                # is allowed only as the center proposal inside that interval;
+                # the byte gate below must succeed for both endpoints.
+                sample = y * 32 + x
+                word = sample >> 6
+                bit = sample & 63
+                refined_uncertain[word.to[usize]()] = refined_uncertain[word.to[usize]()] | (1.to[u64]() << bit.to[u64]())
+            elif stack_count + 4 > 16:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 160, 1)
+                return __wrela_pixels_p9_area_visibility_failure()
+            else:
+                # Reverse push gives child order 0,1,2,3 on the LIFO walk.
+                child: u32 = 4
+                @budget(bound=4)
+                while child > 0:
+                    child = child - 1
+                    stack_x[stack_count.to[usize]()] = x * 2 + (child & 1)
+                    stack_y[stack_count.to[usize]()] = y * 2 + (child >> 1)
+                    stack_depth[stack_count.to[usize]()] = depth + 1
+                    stack_count = stack_count + 1
+        elif verdict == 1:
+            leaf_span = 1.to[u32]() << (5 - depth)
+            leaf_x0 = x * leaf_span
+            leaf_y0 = y * leaf_span
+            dy: u32 = 0
+            @budget(bound=32)
+            while dy < leaf_span:
+                dx: u32 = 0
+                @budget(bound=32)
+                while dx < leaf_span:
+                    leaf_x = leaf_x0 + dx
+                    leaf_y = leaf_y0 + dy
+                    sample = leaf_y * 32 + leaf_x
+                    word = sample >> 6
+                    bit = sample & 63
+                    refined_mask[word.to[usize]()] = refined_mask[word.to[usize]()] | (1.to[u64]() << bit.to[u64]())
+                    dx = dx + 1
+                dy = dy + 1
+        elif verdict != 2:
+            return __wrela_pixels_p9_area_visibility_failure()
+    mask: u64 = 0
+    uncertain: u64 = 0
+    parent: u32 = 0
+    @budget(bound=64)
+    while parent < 64:
+        clear_children: u32 = 0
+        uncertain_children: u32 = 0
+        child: u32 = 0
+        @budget(bound=16)
+        while child < 16:
+            parent_x = parent & 7
+            parent_y = parent >> 3
+            child_x = child & 3
+            child_y = child >> 2
+            sample = (parent_y * 4 + child_y) * 32 + parent_x * 4 + child_x
+            word = sample >> 6
+            bit = sample & 63
+            if ((refined_mask[word.to[usize]()] >> bit.to[u64]()) & 1) != 0:
+                clear_children = clear_children + 1
+            if ((refined_uncertain[word.to[usize]()] >> bit.to[u64]()) & 1) != 0:
+                uncertain_children = uncertain_children + 1
+            child = child + 1
+        if clear_children == 16 and uncertain_children == 0:
+            mask = mask | (1.to[u64]() << parent.to[u64]())
+        elif clear_children != 0 or uncertain_children != 0:
+            # The coarse candidate is deterministic and remains contained by
+            # the complete [blocked, clear] parent interval.
+            if clear_children >= 8:
+                mask = mask | (1.to[u64]() << parent.to[u64]())
+            uncertain = uncertain | (1.to[u64]() << parent.to[u64]())
+        parent = parent + 1
+    result: [u64; 67] = [0; 67]
+    result[0] = 1
+    result[1] = mask
+    result[2] = uncertain
+    word: usize = 0
+    @budget(bound=16)
+    while word < 16:
+        result[3 + word] = refined_mask[word]
+        result[19 + word] = refined_uncertain[word]
+        word = word + 1
+    # A selected event source may refine only its unresolved depth-five
+    # cells to an 8x8 density grid. Each 28-bit record stores the parent ID
+    # plus proved-clear and possibly-clear counts in [0,64]. Two records fit
+    # per payload word, so the fixed spare payload retains up to 62 edge
+    # cells. Wider terminal edges fail closed instead of truncating.
+    density_count: u32 = 0
+    density_parent: u32 = 0
+    @budget(bound=1024)
+    while density_terminal and density_parent < 1024:
+        parent_word = density_parent >> 6
+        parent_bit = density_parent & 63
+        if ((refined_uncertain[parent_word.to[usize]()] >> parent_bit.to[u64]()) & 1) != 0:
+            if density_count >= 62:
+                _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 160, 1)
+                return __wrela_pixels_p9_area_visibility_failure()
+            parent_x = density_parent & 31
+            parent_y = density_parent >> 5
+            clear_count: u64 = 0
+            possible_count: u64 = 0
+            density_sample: u32 = 0
+            @budget(bound=64)
+            while density_sample < 64:
+                density_x = parent_x * 8 + (density_sample & 7)
+                density_y = parent_y * 8 + (density_sample >> 3)
+                proof_s0: f32 = 0.0.to[f32]() - 1.0 + density_x.to[f32]() * 0.0078125
+                proof_s1 = proof_s0 + 0.0078125
+                proof_t0: f32 = 0.0.to[f32]() - 1.0 + density_y.to[f32]() * 0.0078125
+                proof_t1 = proof_t0 + 0.0078125
+                if source_frame[9].to[u32]() == 4:
+                    a = (density_x.to[f32]() * 2.0 + 1.0) / 256.0 - 1.0
+                    b = (density_y.to[f32]() * 2.0 + 1.0) / 256.0 - 1.0
+                    disk = __wrela_pixels_p9_concentric_disk(a, b)
+                    if disk[0] != 1.0:
+                        return __wrela_pixels_p9_area_visibility_failure()
+                    # The sealed concentric-map Lipschitz enclosure is 2.5
+                    # source-cell widths in each mapped coordinate.
+                    proof_s0 = disk[1] - 0.009765625
+                    proof_s1 = disk[1] + 0.009765625
+                    proof_t0 = disk[2] - 0.009765625
+                    proof_t1 = disk[2] + 0.009765625
+                    if proof_s0 < -1.0:
+                        proof_s0 = -1.0
+                    if proof_s1 > 1.0:
+                        proof_s1 = 1.0
+                    if proof_t0 < -1.0:
+                        proof_t0 = -1.0
+                    if proof_t1 > 1.0:
+                        proof_t1 = 1.0
+                density_verdict = __wrela_pixels_p9_segment_bundle_visibility(
+                    renderer,
+                    worker,
+                    point,
+                    [
+                        source_frame[0], source_frame[1], source_frame[2],
+                        source_frame[3], source_frame[4], source_frame[5],
+                        source_frame[6], source_frame[7], source_frame[8],
+                        proof_s0, proof_s1, proof_t0, proof_t1,
+                    ],
+                    exclude_feature,
+                    params,
+                )
+                if density_verdict == 1:
+                    clear_count = clear_count + 1
+                    possible_count = possible_count + 1
+                elif density_verdict == 0:
+                    possible_count = possible_count + 1
+                elif density_verdict != 2:
+                    return __wrela_pixels_p9_area_visibility_failure()
+                density_sample = density_sample + 1
+            density_record = (
+                density_parent.to[u64]()
+                | (clear_count << 10)
+                | (possible_count << 19)
+            )
+            density_word = density_count >> 1
+            if density_word < 15:
+                if density_count & 1 == 0:
+                    result[36 + density_word.to[usize]()] = density_record
+                else:
+                    result[36 + density_word.to[usize]()] = result[36 + density_word.to[usize]()] | (density_record << 28)
+            else:
+                payload_word = density_word - 15
+                if density_count & 1 == 0:
+                    result[51 + payload_word.to[usize]()] = density_record
+                else:
+                    result[51 + payload_word.to[usize]()] = result[51 + payload_word.to[usize]()] | (density_record << 28)
+            density_count = density_count + 1
+            visits = visits + 64
+        density_parent = density_parent + 1
+    result[35] = density_count.to[u64]()
+    _ = __wrela_pixels_p7_telemetry_charge(renderer, worker, 159, visits.to[u64]())
+    return result
+
+pub fn __wrela_pixels_p9_segment_visibility(
+    renderer: usize,
+    worker: u32,
+    read point: [f32; 3],
+    read direction_input: [f32; 3],
+    t_max: f32,
+    exclude_feature: u32,
+    read params: [f32; 16],
+) -> [f32; 4]:
+    length_squared = direction_input[0] * direction_input[0] + direction_input[1] * direction_input[1] + direction_input[2] * direction_input[2]
+    if not length_squared > 0.0 or not t_max > 0.0:
+        return [0.0; 4]
+    inverse_length = 1.0 / sqrt_scalar(length_squared)
+    direction = [
+        direction_input[0] * inverse_length,
+        direction_input[1] * inverse_length,
+        direction_input[2] * inverse_length,
+    ]
+    candidate_bits = __wrela_pixels_p9_secondary_candidates(renderer, point, direction, t_max)
+    if candidate_bits[0] != 1:
+        return [0.0; 4]
+    if candidate_bits[1] == 0 and candidate_bits[2] == 0 and candidate_bits[3] == 0 and candidate_bits[4] == 0:
+        return [1.0, 1.0, t_max, 0.0]
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[1] <= 0 or config[2] <= 0:
+        return [0.0; 4]
+    epsilon_result = __wrela_pixels_p9_origin_epsilon(renderer, point)
+    if epsilon_result[0] != 1.0:
+        return [0.0; 4]
+    epsilon = epsilon_result[1]
+    window_start = epsilon * 2.0
+    q_ratio = (
+        __wrela_pixels_p7_raw_to_f32(config[5].to[i32](), config[3].to[i32]())
+        / __wrela_pixels_p7_raw_to_f32(config[4].to[i32](), config[3].to[i32]())
+    )
+    if not q_ratio > 1.0:
+        return [0.0; 4]
+    corridor = true
+    @budget(bound=5)
+    while corridor or window_start < t_max:
+        inside_exclusion = corridor
+        window_end = window_start * q_ratio
+        scale = window_start * __wrela_pixels_p7_raw_to_f32(config[5].to[i32](), config[3].to[i32]())
+        if corridor:
+            # The shared q domain is intentionally broad, so its ordinary
+            # window cannot land on the small offset corridor. Anchor this
+            # first bundle by its upper distance instead: it conservatively
+            # covers (0, 2*epsilon], with only the exact source feature
+            # removed. All other features remain blockers in the corridor.
+            window_end = epsilon * 2.0
+            scale = window_end * __wrela_pixels_p7_raw_to_f32(config[4].to[i32](), config[3].to[i32]())
+        query_ids: [u32; 256] = [0; 256]
+        query_count: u16 = 0
+        candidate: u32 = 0
+        @budget(bound=256)
+        while candidate < 256:
+            word = candidate / 64
+            bit = candidate % 64
+            present = (candidate_bits[word.to[usize]() + 1] & (1.to[u64]() << bit.to[u64]())) != 0
+            if present and (not inside_exclusion or candidate != exclude_feature):
+                query_ids[query_count.to[usize]()] = candidate
+                query_count = query_count + 1
+            candidate = candidate + 1
+        query_candidates = P7RowCandidates(
+            ok=true, error=0, ids=query_ids, count=query_count,
+        )
+        camera: [f32; 12] = [
+            point[0], point[1], point[2],
+            direction[0] * scale, direction[1] * scale, direction[2] * scale,
+            0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+        ]
+        snapshot = FrameInputSnapshot.from_packed(params, config[6].to[u16](), camera)
+        roots = __wrela_pixels_p7_collect_roots_box(
+            renderer, worker, 0, config[1].to[u32](), 0,
+            [0.0, 0.0, 0.0, 0.0], query_candidates, snapshot,
+        )
+        selected = __wrela_pixels_p7_select_visibility(renderer, roots)
+        if not selected.ok:
+            return [0.0; 4]
+        if selected.hit:
+            q_near = __wrela_pixels_p7_raw_to_f32(
+                selected.q_hi,
+                config[3].to[i32](),
+            )
+            q_far = __wrela_pixels_p7_raw_to_f32(
+                selected.q_lo,
+                config[3].to[i32](),
+            )
+            if not q_near > 0.0 or not q_far > 0.0:
+                return [0.0; 4]
+            distance_lower = scale / q_near
+            distance_upper = scale / q_far
+            if distance_lower <= t_max:
+                if distance_upper > t_max:
+                    return [0.0; 4]
+                return [1.0, 0.0, distance_lower, selected.identity.to[f32]()]
+        if corridor:
+            corridor = false
+            window_start = epsilon * 2.0
+        else:
+            window_start = window_end
+    return [1.0, 1.0, t_max, 0.0]
+
+fn __wrela_pixels_p9_lighting_failure() -> P9LightingCertificate:
+    return P9LightingCertificate(
+        ok=false,
+        visibility=[0; 8],
+        visibility_uncertain=[0; 8],
+        visibility_refined=[0; 32],
+        visibility_refined_uncertain=[0; 32],
+        visibility_terminal_light=8,
+        ao=0.0,
+        ao_lower=0.0,
+        ao_upper=0.0,
+    )
+
+fn __wrela_pixels_p9_lighting_clear() -> P9LightingCertificate:
+    return P9LightingCertificate(
+        ok=true,
+        visibility=[18446744073709551615; 8],
+        visibility_uncertain=[0; 8],
+        visibility_refined=[18446744073709551615; 32],
+        visibility_refined_uncertain=[0; 32],
+        visibility_terminal_light=8,
+        ao=1.0,
+        ao_lower=1.0,
+        ao_upper=1.0,
+    )
+
+pub fn __wrela_pixels_p9_lighting_certificate(
+    renderer: usize,
+    worker: u32,
+    read point: [f32; 3],
+    read normal_input: [f32; 3],
+    feature: u32,
+    read params: [f32; 16],
+    read light_kinds: [u64; 8],
+    read light_values: [f32; 120],
+) -> P9LightingCertificate:
+    # The eight-argument guest ABI leaves no separate selector argument.
+    # Compiler-internal event refinement therefore seals bit 31 as the
+    # density-terminal tag and bits 28..30 as its area-light slot. Authored
+    # feature IDs occupy only the low 24 bits and are validated after decode.
+    density_terminal = (feature & 2147483648) != 0
+    density_light = (feature >> 28) & 7
+    actual_feature = feature & 16777215
+    if actual_feature >= 16777215 and feature != 4294967295:
+        return __wrela_pixels_p9_lighting_failure()
+    ao_config = __wrela_pixels_p9_ao_config(renderer)
+    has_light = false
+    light_slot: usize = 0
+    @budget(bound=8)
+    while light_slot < 8:
+        if light_kinds[light_slot] != 0:
+            has_light = true
+        light_slot = light_slot + 1
+    if not has_light and ao_config[0] == 0.0:
+        # Neither the point nor its normal can influence an unlit, AO-free
+        # material.  This also keeps deformation-only visibility fixtures on
+        # their certified path when no point-normal evaluator was emitted.
+        return __wrela_pixels_p9_lighting_clear()
+    normal_length = sqrt_scalar(
+        normal_input[0] * normal_input[0]
+        + normal_input[1] * normal_input[1]
+        + normal_input[2] * normal_input[2]
+    )
+    if not normal_length > 0.0:
+        return __wrela_pixels_p9_lighting_failure()
+    normal = [
+        normal_input[0] / normal_length,
+        normal_input[1] / normal_length,
+        normal_input[2] / normal_length,
+    ]
+    epsilon = __wrela_pixels_p9_origin_epsilon(renderer, point)
+    if epsilon[0] != 1.0:
+        return __wrela_pixels_p9_lighting_failure()
+    offset_point = [
+        point[0] + normal[0] * epsilon[1],
+        point[1] + normal[1] * epsilon[1],
+        point[2] + normal[2] * epsilon[1],
+    ]
+    visibility: [u64; 8] = [18446744073709551615; 8]
+    visibility_uncertain: [u64; 8] = [0; 8]
+    visibility_refined: [u64; 32] = [18446744073709551615; 32]
+    visibility_refined_uncertain: [u64; 32] = [0; 32]
+    visibility_terminal_light: u64 = 8
+    light: usize = 0
+    @budget(bound=8)
+    while light < 8:
+        kind = light_kinds[light]
+        base = light * 15
+        if (
+            (kind == 3 or kind == 4)
+            and light_values[base + 12] == 0.0
+            and light_values[base + 13] == 0.0
+            and light_values[base + 14] == 0.0
+        ):
+            # A black emitter has an exactly zero source integral. Avoid all
+            # visibility work and seal the coarse source as blocked.
+            visibility[light] = 0
+            kind = 0
+        samples: u32 = 1
+        if kind == 3 or kind == 4:
+            samples = 64
+            # Do not cull against the geometric normal here. Normal-detail
+            # taps are resolved later and can cross a geometric grazing
+            # plane while remaining in the surface's upper hemisphere. The
+            # visibility certificate must therefore cover the source before
+            # any detailed-normal BRDF decision is made.
+            area_visibility = __wrela_pixels_p9_area_visibility_mask(
+                renderer,
+                worker,
+                offset_point,
+                [
+                    light_values[base], light_values[base + 1], light_values[base + 2],
+                    light_values[base + 6], light_values[base + 7], light_values[base + 8],
+                    light_values[base + 9], light_values[base + 10], light_values[base + 11],
+                    kind.to[f32](),
+                ],
+                actual_feature,
+                params,
+                density_terminal and light.to[u32]() == density_light,
+            )
+            if area_visibility[0] != 1:
+                return __wrela_pixels_p9_lighting_failure()
+            visibility[light] = area_visibility[1]
+            visibility_uncertain[light] = area_visibility[2]
+            retain_terminal = visibility_terminal_light == 8
+            if density_terminal:
+                retain_terminal = light.to[u32]() == density_light
+            if retain_terminal:
+                # Payload ties are ordered by the lowest light slot. A deep
+                # request names that same slot explicitly and carries its
+                # compact density records in the spare payload words.
+                visibility_terminal_light = light.to[u64]()
+                refined_word: usize = 0
+                @budget(bound=16)
+                while refined_word < 16:
+                    visibility_refined[refined_word] = area_visibility[3 + refined_word]
+                    visibility_refined_uncertain[refined_word] = area_visibility[19 + refined_word]
+                    refined_word = refined_word + 1
+                density_count = area_visibility[35]
+                if density_count > 62:
+                    return __wrela_pixels_p9_lighting_failure()
+                visibility_refined[16] = density_count
+                density_word: usize = 0
+                @budget(bound=31)
+                while density_word < 31:
+                    if density_word < 15:
+                        visibility_refined[17 + density_word] = area_visibility[36 + density_word]
+                    else:
+                        visibility_refined_uncertain[16 + density_word - 15] = area_visibility[36 + density_word]
+                    density_word = density_word + 1
+        sample: u32 = 0
+        @budget(bound=64)
+        while sample < samples:
+            base = light * 15
+            direction: [f32; 3] = [0.0; 3]
+            maximum: f32 = 0.0
+            if kind == 1 or kind == 3 or kind == 4:
+                source = [
+                    light_values[base],
+                    light_values[base + 1],
+                    light_values[base + 2],
+                ]
+                if kind == 3 or kind == 4:
+                    cell_x = sample & 7
+                    cell_y = sample >> 3
+                    offset_u = (cell_x.to[f32]() * 2.0 - 7.0) * 0.125
+                    offset_v = (cell_y.to[f32]() * 2.0 - 7.0) * 0.125
+                    if kind == 4:
+                        disk_offset = __wrela_pixels_p9_disk_offset(sample)
+                        if disk_offset[0] != 1.0:
+                            return __wrela_pixels_p9_lighting_failure()
+                        offset_u = disk_offset[1]
+                        offset_v = disk_offset[2]
+                    source[0] = source[0] + offset_u * light_values[base + 6] + offset_v * light_values[base + 9]
+                    source[1] = source[1] + offset_u * light_values[base + 7] + offset_v * light_values[base + 10]
+                    source[2] = source[2] + offset_u * light_values[base + 8] + offset_v * light_values[base + 11]
+                direction = [
+                    source[0] - point[0],
+                    source[1] - point[1],
+                    source[2] - point[2],
+                ]
+                maximum = sqrt_scalar(
+                    direction[0] * direction[0]
+                    + direction[1] * direction[1]
+                    + direction[2] * direction[2]
+                )
+            elif kind == 2:
+                direction = [
+                    light_values[base + 3],
+                    light_values[base + 4],
+                    light_values[base + 5],
+                ]
+                maximum = __wrela_pixels_p7_raw_to_f32(
+                    __wrela_pixels_p7_numeric_config(renderer)[5].to[i32](),
+                    __wrela_pixels_p7_numeric_config(renderer)[3].to[i32](),
+                )
+                if maximum > 0.0:
+                    maximum = 1.0 / maximum
+            elif kind != 0:
+                return __wrela_pixels_p9_lighting_failure()
+            if kind != 0:
+                # Visibility precedes normal-detail evaluation. Even a light
+                # at geometric grazing can contribute for a certified detail
+                # normal, so point and directional segments cannot be culled
+                # with `normal` here.
+                if kind != 3 and kind != 4:
+                    segment = __wrela_pixels_p9_segment_visibility(
+                        renderer, worker, offset_point, direction, maximum, actual_feature, params,
+                    )
+                    if segment[0] != 1.0:
+                        return __wrela_pixels_p9_lighting_failure()
+                    if segment[1] == 0.0:
+                        visibility[light] = visibility[light] & (18446744073709551615 ^ (1.to[u64]() << sample.to[u64]()))
+            sample = sample + 1
+        light = light + 1
+    ao: f32 = 1.0
+    ao_lower: f32 = 1.0
+    ao_upper: f32 = 1.0
+    if ao_config[0] == 1.0:
+        if not ao_config[1] > 0.0 or ao_config[2] < 0.0 or ao_config[2] > 1.0:
+            return __wrela_pixels_p9_lighting_failure()
+        fractions: [f32; 5] = [0.0625, 0.125, 0.25, 0.5, 1.0]
+        weights: [f32; 5] = [0.40, 0.25, 0.16, 0.11, 0.08]
+        occlusion: f32 = 0.0
+        occlusion_lower: f32 = 0.0
+        occlusion_upper: f32 = 0.0
+        tap: usize = 0
+        @budget(bound=5)
+        while tap < 5:
+            distance = ao_config[1] * fractions[tap]
+            tap_point = [
+                point[0] + normal[0] * distance,
+                point[1] + normal[1] * distance,
+                point[2] + normal[2] * distance,
+            ]
+            # The surface-object BVH first proves whether any surface bound
+            # can enter the complete distance-radius cube. An empty result is
+            # an exact zero-occlusion tap. Nonempty results retain the active
+            # semantic field evaluation below; candidate centers never stand
+            # in for the scene-distance program.
+            ao_candidates = __wrela_pixels_p9_secondary_bundle_candidates(
+                renderer,
+                [
+                    tap_point[0] - distance,
+                    tap_point[1] - distance,
+                    tap_point[2] - distance,
+                    tap_point[0] + distance,
+                    tap_point[1] + distance,
+                    tap_point[2] + distance,
+                ],
+            )
+            if ao_candidates[0] != 1:
+                return __wrela_pixels_p9_lighting_failure()
+            if ao_candidates[1] == 0 and ao_candidates[2] == 0 and ao_candidates[3] == 0 and ao_candidates[4] == 0:
+                tap = tap + 1
+                continue
+            scene_distance = __wrela_pixels_p9_scene_distance(renderer, tap_point, params)
+            if scene_distance[0] != 1.0:
+                return __wrela_pixels_p9_lighting_failure()
+            distance_lower = scene_distance[1]
+            distance_upper = scene_distance[2]
+            if distance_lower < 0.0:
+                distance_lower = 0.0
+            if distance_upper < 0.0:
+                distance_upper = 0.0
+            occ_upper = (distance - distance_lower) / distance
+            occ_lower = (distance - distance_upper) / distance
+            if occ_lower < 0.0:
+                occ_lower = 0.0
+            if occ_lower > 1.0:
+                occ_lower = 1.0
+            if occ_upper < 0.0:
+                occ_upper = 0.0
+            if occ_upper > 1.0:
+                occ_upper = 1.0
+            exact_distance = scene_distance[3]
+            if exact_distance < 0.0:
+                exact_distance = 0.0
+            occ = (distance - exact_distance) / distance
+            if occ < 0.0:
+                occ = 0.0
+            if occ > 1.0:
+                occ = 1.0
+            if occ < occ_lower or occ > occ_upper:
+                return __wrela_pixels_p9_lighting_failure()
+            occlusion = occlusion + weights[tap] * occ
+            occlusion_lower = occlusion_lower + weights[tap] * occ_lower
+            occlusion_upper = occlusion_upper + weights[tap] * occ_upper
+            tap = tap + 1
+        ao = 1.0 - ao_config[2] * occlusion
+        ao_lower = 1.0 - ao_config[2] * occlusion_upper
+        ao_upper = 1.0 - ao_config[2] * occlusion_lower
+        if ao < 0.0:
+            ao = 0.0
+        if ao > 1.0:
+            ao = 1.0
+        if ao_lower < 0.0:
+            ao_lower = 0.0
+        if ao_upper > 1.0:
+            ao_upper = 1.0
+        if ao_lower > ao or ao > ao_upper:
+            return __wrela_pixels_p9_lighting_failure()
+    return P9LightingCertificate(ok=true, visibility=visibility, visibility_uncertain=visibility_uncertain, visibility_refined=visibility_refined, visibility_refined_uncertain=visibility_refined_uncertain, visibility_terminal_light=visibility_terminal_light, ao=ao, ao_lower=ao_lower, ao_upper=ao_upper)
 
 struct P8RasterSetupOutcome:
     pub ok: bool
@@ -1198,20 +2650,183 @@ fn __wrela_pixels_p8_geometry_packet_valid(
         geometry_lane = geometry_lane + 1
     return true
 
+fn __wrela_pixels_p9_raster_color(
+    read context: P8RasterContext,
+    read raster: RasterRun,
+    raster_x: u32,
+    q_raw: i32,
+) -> [u64; 2]:
+    if __wrela_pixels_p9_debug_visibility():
+        return [1, context.debug_color.to[u64]()]
+    u = (
+        2 * raster_x.to[i64]() + 1 - context.width.to[i64]()
+    ).to[f32]() / context.height.to[f32]()
+    v = (
+        context.height.to[i64]() - 2 * context.y.to[i64]() - 1
+    ).to[f32]() / context.height.to[f32]()
+    hit_code: u64 = 0
+    if context.hit:
+        if context.feature >= 16777215:
+            return [0, 0]
+        hit_code = 1
+        hit_code = hit_code | ((context.feature.to[u64]() + 1) << 8)
+    hit_code = hit_code | (context.worker.to[u64]() << 32)
+    q = q_raw.to[f32]() * context.scale
+    if not context.hit and not q > 0.0:
+        q = 1.0
+    normal: [f32; 4] = [0.0; 4]
+    if context.hit:
+        normal = __wrela_pixels_p7_feature_normal(
+            context.renderer,
+            context.feature,
+            u,
+            v,
+            q,
+            context.params,
+            context.camera,
+        )
+    shade_normal = context.normal
+    if normal[0] == 1.0:
+        shade_normal = [normal[1], normal[2], normal[3]]
+    ray_x = context.camera[3] + u * context.camera[6] + v * context.camera[9]
+    ray_y = context.camera[4] + u * context.camera[7] + v * context.camera[10]
+    ray_z = context.camera[5] + u * context.camera[8] + v * context.camera[11]
+    normal_length_squared = (
+        shade_normal[0] * shade_normal[0]
+        + shade_normal[1] * shade_normal[1]
+        + shade_normal[2] * shade_normal[2]
+    )
+    if not normal_length_squared > 0.0:
+        # Some certified deformation paths deliberately have no point-normal
+        # evaluator.  A normal is immaterial when the frame has neither a
+        # light nor AO; use the view-facing direction only to satisfy the
+        # total material ABI.  Any frame that could observe the normal still
+        # fails closed.
+        normal_required = false
+        light: usize = 0
+        @budget(bound=8)
+        while light < 8:
+            if context.light_kinds[light] != 0:
+                normal_required = true
+            light = light + 1
+        ao_config = __wrela_pixels_p9_ao_config(context.renderer)
+        if ao_config[0] == 1.0:
+            normal_required = true
+        if normal_required:
+            return [0, 0]
+        shade_normal = [0.0 - ray_x, 0.0 - ray_y, 0.0 - ray_z]
+    if (
+        shade_normal[0] * ray_x
+        + shade_normal[1] * ray_y
+        + shade_normal[2] * ray_z
+    ) > 0.0:
+        shade_normal = [-shade_normal[0], -shade_normal[1], -shade_normal[2]]
+    point = [
+        context.camera[0] + ray_x / q,
+        context.camera[1] + ray_y / q,
+        context.camera[2] + ray_z / q,
+    ]
+    lighting = __wrela_pixels_p9_lighting_clear()
+    if context.hit:
+        lighting = __wrela_pixels_p9_lighting_certificate(
+            context.renderer,
+            context.worker,
+            point,
+            shade_normal,
+            context.feature,
+            context.params,
+            context.light_kinds,
+            context.light_values,
+        )
+        if not lighting.ok:
+            return [0, 0]
+    shade_surface: [f32; 15] = [0.0; 15]
+    shade_surface[0] = u
+    shade_surface[1] = v
+    shade_surface[2] = q
+    shade_surface[3] = shade_normal[0]
+    shade_surface[4] = shade_normal[1]
+    shade_surface[5] = shade_normal[2]
+    pixel_step = 2.0 / context.height.to[f32]()
+    offset = (raster_x - raster.x0.to[u32]()).to[i64]()
+    q_u_raw = raster.q_u.value.to[i64]() + offset * raster.q_u.delta.to[i64]()
+    q_v_raw = raster.q_v.value.to[i64]()
+    if not __wrela_pixels_p8_i32_fits(q_u_raw) or not __wrela_pixels_p8_i32_fits(q_v_raw):
+        return [0, 0]
+    q_u = q_u_raw.to[f32]() * context.scale
+    q_v = q_v_raw.to[f32]() * context.scale
+    inverse_q2 = 1.0 / (q * q)
+    shade_surface[6] = (context.camera[6] / q - ray_x * q_u * inverse_q2) * pixel_step
+    shade_surface[7] = (context.camera[7] / q - ray_y * q_u * inverse_q2) * pixel_step
+    shade_surface[8] = (context.camera[8] / q - ray_z * q_u * inverse_q2) * pixel_step
+    shade_surface[9] = (context.camera[9] / q - ray_x * q_v * inverse_q2) * pixel_step
+    shade_surface[10] = (context.camera[10] / q - ray_y * q_v * inverse_q2) * pixel_step
+    shade_surface[11] = (context.camera[11] / q - ray_z * q_v * inverse_q2) * pixel_step
+    shade_surface[12] = lighting.ao
+    shade_surface[13] = lighting.ao_lower
+    shade_surface[14] = lighting.ao_upper
+    shade_meta = P9ShadingMeta(
+        identity=context.identity.to[u64](),
+        flags=hit_code,
+        visibility=lighting.visibility,
+        visibility_uncertain=lighting.visibility_uncertain,
+        visibility_refined=lighting.visibility_refined,
+        visibility_refined_uncertain=lighting.visibility_refined_uncertain,
+        visibility_terminal_light=lighting.visibility_terminal_light,
+    )
+    return __wrela_pixels_p9_shade_pixel(
+        context.renderer,
+        shade_meta,
+        shade_surface,
+        context.params,
+        context.camera,
+        context.light_kinds,
+        context.light_values,
+        [
+            context.exposure,
+            context.environment[0], context.environment[1], context.environment[2],
+        ],
+    )
+
+pub fn __wrela_pixels_p9_constant_summary_eligible(read context: P8RasterContext) -> bool:
+    if __wrela_pixels_p9_debug_visibility():
+        return false
+    if not context.hit:
+        return true
+    inputs = __wrela_pixels_p9_material_inputs(context.renderer, context.identity)
+    if inputs[0] != 1 or inputs[1] != 0:
+        return false
+    light: usize = 0
+    @budget(bound=8)
+    while light < 8:
+        if context.light_kinds[light] != 0:
+            return false
+        light = light + 1
+    return __wrela_pixels_p9_ao_config(context.renderer)[0] == 0.0
+
 pub fn __wrela_pixels_p8_raster_regular(read context: P8RasterContext, read raster: RasterRun) -> u64:
     start = raster.x0.to[u32]()
     end = raster.x1.to[u32]()
     if end < start or end > context.width:
         return 18446744073709551615
     geometry_required = raster.proof_code.bits & 8 == 0
-    r = (context.color & 255).to[u8]()
-    g = ((context.color >> 8) & 255).to[u8]()
-    b = ((context.color >> 16) & 255).to[u8]()
     pixels_census_region(PIXELS_REGION_RASTER_SCALAR_PREFIX)
     raster_x = start
     raster_q = raster.q.value().to[i64]()
     raster_dq = raster.q.delta().to[i64]()
     raster_ddq = raster.q.second_delta().to[i64]()
+    constant_summary: [u64; 2] = [0, 0]
+    if start < end and __wrela_pixels_p9_constant_summary_eligible(context):
+        constant_summary = __wrela_pixels_p9_raster_color(
+            context, raster, start, raster_q.to[i32](),
+        )
+        if constant_summary[0] != 1:
+            return 18446744073709551615
+        _ = __wrela_pixels_p7_telemetry_charge(context.renderer, context.worker, 150, 1)
+    else:
+        _ = __wrela_pixels_p7_telemetry_charge(
+            context.renderer, context.worker, 157, (end -% start).to[u64](),
+        )
     @budget(bound=3)
     while raster_x < end and raster_x % 4 != 0:
         if not __wrela_pixels_p8_geometry_lane_valid(
@@ -1222,11 +2837,14 @@ pub fn __wrela_pixels_p8_raster_regular(read context: P8RasterContext, read rast
             geometry_required,
         ):
             return 18446744073709551615
-        if not __wrela_pixels_p8_write(
+        color = constant_summary
+        if color[0] != 1:
+            color = __wrela_pixels_p9_raster_color(context, raster, raster_x, raster_q.to[i32]())
+        if color[0] != 1 or not __wrela_pixels_p8_write(
             context.renderer,
             context.worker,
             context.y *% context.width +% raster_x,
-            context.color,
+            color[1].to[u32](),
             255,
             0,
         ):
@@ -1260,15 +2878,42 @@ pub fn __wrela_pixels_p8_raster_regular(read context: P8RasterContext, read rast
                 geometry_required,
             ):
                 return 18446744073709551615
-            if not __wrela_pixels_p8_write4(
-                context.renderer,
-                context.worker,
-                context.y *% context.width +% raster_x,
-                r,
-                g,
-                b,
-            ):
+            lane_color_0 = constant_summary
+            lane_color_1 = constant_summary
+            lane_color_2 = constant_summary
+            lane_color_3 = constant_summary
+            if constant_summary[0] != 1:
+                lane_color_0 = __wrela_pixels_p9_raster_color(context, raster, raster_x, q_packet.lane(0))
+                lane_color_1 = __wrela_pixels_p9_raster_color(context, raster, raster_x + 1, q_packet.lane(1))
+                lane_color_2 = __wrela_pixels_p9_raster_color(context, raster, raster_x + 2, q_packet.lane(2))
+                lane_color_3 = __wrela_pixels_p9_raster_color(context, raster, raster_x + 3, q_packet.lane(3))
+            if lane_color_0[0] != 1 or lane_color_1[0] != 1 or lane_color_2[0] != 1 or lane_color_3[0] != 1:
                 return 18446744073709551615
+            packet_colors: [u32; 4] = [
+                lane_color_0[1].to[u32](),
+                lane_color_1[1].to[u32](),
+                lane_color_2[1].to[u32](),
+                lane_color_3[1].to[u32](),
+            ]
+            if packet_colors[0] == packet_colors[1] and packet_colors[0] == packet_colors[2] and packet_colors[0] == packet_colors[3]:
+                if not __wrela_pixels_p8_write4(
+                    context.renderer,
+                    context.worker,
+                    context.y *% context.width +% raster_x,
+                    (packet_colors[0] & 255).to[u8](),
+                    ((packet_colors[0] >> 8) & 255).to[u8](),
+                    ((packet_colors[0] >> 16) & 255).to[u8](),
+                ):
+                    return 18446744073709551615
+            else:
+                pixel_base = context.y *% context.width +% raster_x
+                if (
+                    not __wrela_pixels_p8_write(context.renderer, context.worker, pixel_base, packet_colors[0], 255, 0)
+                    or not __wrela_pixels_p8_write(context.renderer, context.worker, pixel_base + 1, packet_colors[1], 255, 0)
+                    or not __wrela_pixels_p8_write(context.renderer, context.worker, pixel_base + 2, packet_colors[2], 255, 0)
+                    or not __wrela_pixels_p8_write(context.renderer, context.worker, pixel_base + 3, packet_colors[3], 255, 0)
+                ):
+                    return 18446744073709551615
             raster_x = raster_x +% 4
             raster_q = raster_q +% 4 *% raster_dq +% 6 *% raster_ddq
             raster_dq = raster_dq +% 4 *% raster_ddq
@@ -1286,11 +2931,14 @@ pub fn __wrela_pixels_p8_raster_regular(read context: P8RasterContext, read rast
             geometry_required,
         ):
             return 18446744073709551615
-        if not __wrela_pixels_p8_write(
+        color = constant_summary
+        if color[0] != 1:
+            color = __wrela_pixels_p9_raster_color(context, raster, raster_x, raster_q.to[i32]())
+        if color[0] != 1 or not __wrela_pixels_p8_write(
             context.renderer,
             context.worker,
             context.y *% context.width +% raster_x,
-            context.color,
+            color[1].to[u32](),
             255,
             0,
         ):
@@ -1348,7 +2996,7 @@ pub struct RendererWorker0:
         pass
 
     pub fn run_job(read self, word: u64) -> u64:
-        return __wrela_pixels_p7_run_job(RendererWorkerJob(renderer_index=((word >> 48) & 15).to[usize](), worker_index=((word >> 52) & 3).to[u32](), tiles_start=(word & 16777215).to[u32](), tiles_end=((word >> 24) & 16777215).to[u32]()), true)
+        return __wrela_pixels_p7_run_job(__wrela_pixels_p9_job_from_word(word), true)
 
 @actor
 pub struct RendererWorker1:
@@ -1356,7 +3004,7 @@ pub struct RendererWorker1:
         pass
 
     pub fn run_job(read self, word: u64) -> u64:
-        return __wrela_pixels_p7_run_job(RendererWorkerJob(renderer_index=((word >> 48) & 15).to[usize](), worker_index=((word >> 52) & 3).to[u32](), tiles_start=(word & 16777215).to[u32](), tiles_end=((word >> 24) & 16777215).to[u32]()), true)
+        return __wrela_pixels_p7_run_job(__wrela_pixels_p9_job_from_word(word), true)
 
 @actor
 pub struct RendererWorker2:
@@ -1364,7 +3012,7 @@ pub struct RendererWorker2:
         pass
 
     pub fn run_job(read self, word: u64) -> u64:
-        return __wrela_pixels_p7_run_job(RendererWorkerJob(renderer_index=((word >> 48) & 15).to[usize](), worker_index=((word >> 52) & 3).to[u32](), tiles_start=(word & 16777215).to[u32](), tiles_end=((word >> 24) & 16777215).to[u32]()), true)
+        return __wrela_pixels_p7_run_job(__wrela_pixels_p9_job_from_word(word), true)
 
 @actor
 pub struct RendererWorker3:
@@ -1372,7 +3020,7 @@ pub struct RendererWorker3:
         pass
 
     pub fn run_job(read self, word: u64) -> u64:
-        return __wrela_pixels_p7_run_job(RendererWorkerJob(renderer_index=((word >> 48) & 15).to[usize](), worker_index=((word >> 52) & 3).to[u32](), tiles_start=(word & 16777215).to[u32](), tiles_end=((word >> 24) & 16777215).to[u32]()), true)
+        return __wrela_pixels_p7_run_job(__wrela_pixels_p9_job_from_word(word), true)
 
 pub struct P7CertifiedRow:
     pub ok: bool
@@ -1434,7 +3082,6 @@ pub fn __wrela_pixels_p7_debug_probe(
         params,
         __wrela_pixels_p7_numeric_config(renderer)[6].to[u16](),
         camera,
-        0,
     )
     candidates = __wrela_pixels_p7_row_candidates(renderer, tile, y, snapshot)
     roots = __wrela_pixels_p7_collect_roots(renderer, 0, x, y, candidates, snapshot)
@@ -1502,7 +3149,6 @@ pub fn __wrela_pixels_p7_debug_probe_at_u(
         params,
         __wrela_pixels_p7_numeric_config(renderer)[6].to[u16](),
         camera,
-        0,
     )
     candidates = __wrela_pixels_p7_row_candidates(renderer, tile, y, snapshot)
     roots = __wrela_pixels_p7_collect_roots_box(
@@ -1674,6 +3320,12 @@ pub struct RendererFrameBounds:
     camera_up_y_max: f32
     camera_up_z_min: f32
     camera_up_z_max: f32
+    world_min_x: f32
+    world_min_y: f32
+    world_min_z: f32
+    world_max_x: f32
+    world_max_y: f32
+    world_max_z: f32
     light_capacity: usize
     light_kind_0: usize
     light_kind_1: usize
@@ -1763,6 +3415,12 @@ pub struct Renderer[P]:
             return Err(RenderError.NonFiniteInput(RenderPath(component=2)))
         if frame.exposure < self.bounds.exposure_min or frame.exposure > self.bounds.exposure_max:
             return Err(RenderError.ParameterOutOfRange(RenderPath(component=2)))
+        # FilmicV1's deterministic multiplier table is defined on an exact
+        # 1/256-stop lattice. Values between lattice points are unsupported,
+        # not silently rounded with an unbudgeted post-processing error.
+        exposure_code = frame.exposure * 256.0
+        if exposure_code.to[i32]().to[f32]() != exposure_code:
+            return Err(RenderError.FrameContractMismatch(RenderPath(component=2)))
         if (
             not __wrela_pixels_p5_finite(frame.environment.r)
             or not __wrela_pixels_p5_finite(frame.environment.g)
@@ -1782,12 +3440,43 @@ pub struct Renderer[P]:
             return Err(RenderError.NonFiniteInput(RenderPath(component=4)))
         if not self.bounds.__wrela_p5_accepts_camera(frame.camera):
             return Err(RenderError.FrameContractMismatch(RenderPath(component=4)))
+        current_light_scalars = frame.lights.snapshot_scalars()
+        previous_meta = __wrela_pixels_p7_frame_snapshot_meta(
+            self.renderer_index.to[usize](),
+        )
+        previous_light_scalars: [f32; 120] = [0.0; 120]
+        frame_steps: u64 = 0
+        if previous_meta[0] == 1:
+            if frame.frame_index <= previous_meta[1]:
+                return Err(RenderError.FrameContractMismatch(RenderPath(component=5)))
+            frame_steps = frame.frame_index - previous_meta[1]
+            previous_light_scalars = __wrela_pixels_p7_frame_snapshot_light_scalars(
+                self.renderer_index.to[usize](),
+            )
         index: usize = 0
         @budget(bound=8)
         while index < 8:
             light = frame.lights.lights[index]
+            light_range = __wrela_pixels_p9_light_range(
+                self.renderer_index.to[usize](), index,
+            )
             if not light.__wrela_p5_finite():
                 return Err(RenderError.NonFiniteInput(RenderPath(component=5)))
+            if not light.__wrela_p9_valid(self.bounds, light_range):
+                return Err(RenderError.ParameterOutOfRange(RenderPath(component=5)))
+            if previous_meta[0] == 1:
+                component: usize = 0
+                @budget(bound=15)
+                while component < 15:
+                    scalar_index = index * 15 + component
+                    if not __wrela_pixels_p9_light_rate_valid(
+                        current_light_scalars[scalar_index],
+                        previous_light_scalars[scalar_index],
+                        light_range[11],
+                        frame_steps,
+                    ):
+                        return Err(RenderError.FrameContractMismatch(RenderPath(component=5)))
+                    component = component + 1
             expected_kind: usize = 0
             if index == 0:
                 expected_kind = self.bounds.light_kind_0
@@ -1844,14 +3533,13 @@ pub struct Renderer[P]:
 
     fn __snapshot_frame(read self, read frame: RenderFrame[P]) -> FrameInputSnapshot:
         values: [f32; 16] = [0.0; 16]
-        return FrameInputSnapshot.make(
+        return FrameInputSnapshot.make_frame(
             params=values,
             param_count=0,
             camera=frame.camera,
-            frame_index=frame.frame_index,
         )
 
-    fn __construct_debug_frame(
+    fn __construct_final_frame(
         read self,
         take frame: RenderFrame[P],
         worker_digest: u64,
@@ -1915,8 +3603,8 @@ pub struct Renderer[P]:
             0,
         )[0] == 1
         counter: usize = 0
-        @budget(bound=150)
-        while telemetry_present and counter < 150:
+        @budget(bound=162)
+        while telemetry_present and counter < 162:
             merged: u64 = 0
             worker = 0
             @budget(bound=4)
@@ -2049,8 +3737,8 @@ pub struct Renderer[P]:
 
     pub async fn render(mut self, take frame: RenderFrame[P])
         -> Result[RenderedFrame[P], RenderFailure[P]]:
-        # P7 always validates and constructs the debug visibility result from
-        # the sealed program and current owned frame. No kinetic state is read.
+        # Primary visibility remains P7-certified; P9 consumes it to produce
+        # opaque, filmic, byte-certified output from the owned frame snapshot.
         validated = self.__validate_frame(frame)
         match validated:
             case .Err(error):
@@ -2074,17 +3762,24 @@ pub struct Renderer[P]:
             return self.__internal_error(take frame, 4106)
         if config[6] > 16:
             return self.__internal_error(take frame, 4106)
-        if snapshot.param_count.to[i64]() != config[6]:
+        snapshot_eye_finite = __wrela_pixels_p5_finite(snapshot.camera[0])
+        if snapshot_eye_finite == false:
             return self.__internal_error(take frame, 4106)
+        frame_post = __wrela_pixels_p9_post_values(
+            frame.exposure,
+            frame.environment.r,
+            frame.environment.g,
+            frame.environment.b,
+        )
         snapshot_stored = __wrela_pixels_p7_frame_snapshot_store(
             renderer_index.to[usize](),
             snapshot.params,
-            snapshot.param_count,
+            config[6].to[u16](),
             snapshot.camera,
-            snapshot.lights.snapshot_kinds(),
-            snapshot.lights.snapshot_scalars(),
-            snapshot.post_values(),
-            snapshot.frame_index,
+            frame.lights.snapshot_kinds(),
+            frame.lights.snapshot_scalars(),
+            frame_post,
+            frame.frame_index,
         )
         if snapshot_stored == false:
             return self.__internal_error(take frame, 4096)
@@ -2119,7 +3814,7 @@ pub struct Renderer[P]:
                 worker_state.error,
                 worker_state.tile,
             )
-        return self.__construct_debug_frame(take frame, worker_state.digest, renderer_index)
+        return self.__construct_final_frame(take frame, worker_state.digest, renderer_index)
 
 pub fn __wrela_pixels_bootstrap_dispatch(table: u32, tag: u32) -> Result[u32, RenderError]:
     if table == 1 and tag >= 1 and tag <= 32:
@@ -2149,6 +3844,10 @@ pub fn __wrela_pixels_bootstrap_dispatch(table: u32, tag: u32) -> Result[u32, Re
     if table == 9 and tag >= 30 and tag <= 35:
         return Ok(tag)
     if table == 11 and tag == 1:
+        return Ok(tag)
+    if table == 12 and tag == 1:
+        return Ok(tag)
+    if table == 13 and tag >= 1 and tag <= 6:
         return Ok(tag)
     return Err(RenderError.InternalInvariant(RenderInvariant(kind=tag)))
 
@@ -2181,3 +3880,9 @@ pub fn __wrela_pixels_bootstrap_fixed_domain(tag: u32) -> Result[u32, RenderErro
 
 pub fn __wrela_pixels_bootstrap_camera_light_post(tag: u32) -> Result[u32, RenderError]:
     return __wrela_pixels_bootstrap_dispatch(11, tag)
+
+pub fn __wrela_pixels_bootstrap_texture(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(12, tag)
+
+pub fn __wrela_pixels_bootstrap_shading_summary(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(13, tag)
