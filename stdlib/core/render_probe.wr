@@ -1,10 +1,581 @@
 module render_probe
 
-from core.__image_pixels import __wrela_pixels_f32_to_bits, __wrela_pixels_p7_event_polynomial, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p8_visible_word, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
-from core.render import FrameInputSnapshot, RenderError
+from core.__image_pixels import __wrela_pixels_f32_to_bits, __wrela_pixels_p10_probe_invalidate, __wrela_pixels_p10_probe_prepare, __wrela_pixels_p10_probe_status, __wrela_pixels_p10_probe_word_load, __wrela_pixels_p10_probe_word_store, __wrela_pixels_p7_event_polynomial, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p8_visible_word, __wrela_pixels_p9_material, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_table_count, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
+from core.render import FrameInputSnapshot, P7RowCandidates, RenderError, __wrela_pixels_p9_lighting_certificate, __wrela_pixels_p9_secondary_candidates
 from core.render_arrangement import __wrela_pixels_p7_event_polynomial_at_q, __wrela_pixels_p7_pixel_visibility_from_candidates, __wrela_pixels_p7_silhouette_coverage
 from core.render_certify import __wrela_pixels_p7_certify_pixel_row
-from core.render_isolation import __wrela_pixels_p7_collect_roots_box, __wrela_pixels_p7_load_root, __wrela_pixels_p7_row_candidates, __wrela_pixels_p7_select_visibility
+from core.render_isolation import __wrela_pixels_p10_ordered_layers, __wrela_pixels_p7_collect_roots_box, __wrela_pixels_p7_load_root, __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates, __wrela_pixels_p7_select_visibility
+from core.render_light import P9ShadingMeta, __wrela_pixels_p9_hdr_pixel
+from core.render_raster import pixels_f32_from_bits
+
+# P10 probe state is deliberately ordinary, fixed-capacity numeric data. The
+# compiler lays out two generations of these cells in the probe reservation;
+# candidate coefficients and radii are never conflated.
+pub struct ProbeCellV1:
+    pub coefficients: [f32; 27]
+    pub coefficient_radii: [f32; 27]
+    pub axis_distance: [f32; 6]
+    pub axis_distance_radii: [f32; 6]
+    pub scene_version: u32
+    pub light_version: u32
+    pub material_version: u32
+    pub valid: bool
+
+pub struct ProbeDependencyInputV1:
+    pub params: [f32; 16]
+    pub camera: [f32; 12]
+    pub light_kinds: [u64; 8]
+    pub light_values: [f32; 120]
+    pub post: [f32; 4]
+
+pub fn probe_worker_range(count: u32, workers: u32, worker: u32) -> [u32; 2]:
+    if workers == 0 or worker >= workers:
+        return [0, 0]
+    return [
+        (count.to[u64]() * worker.to[u64]() / workers.to[u64]()).to[u32](),
+        (count.to[u64]() * (worker + 1).to[u64]() / workers.to[u64]()).to[u32](),
+    ]
+
+pub fn __wrela_pixels_p10_probe_accumulate32(read radiance: [f32; 96], read distance: [f32; 32], read weights: [f32; 32], read basis: [f32; 288], read axis_ids: [u8; 32]) -> ProbeCellV1:
+    coefficients: [f32; 27] = [0.0; 27]
+    radii: [f32; 27] = [0.0; 27]
+    axis_sum: [f32; 6] = [0.0; 6]
+    axis_radius: [f32; 6] = [0.0; 6]
+    axis_count: [u8; 6] = [0; 6]
+    direction: usize = 0
+    @budget(bound=32)
+    while direction < 32:
+        if distance[direction] < 0.0 or distance[direction] != distance[direction] or weights[direction] < 0.0:
+            return ProbeCellV1(coefficients=[0.0; 27], coefficient_radii=[0.0; 27], axis_distance=[0.0; 6], axis_distance_radii=[0.0; 6], scene_version=0, light_version=0, material_version=0, valid=false)
+        axis = axis_ids[direction].to[usize]()
+        if axis >= 6:
+            return ProbeCellV1(coefficients=[0.0; 27], coefficient_radii=[0.0; 27], axis_distance=[0.0; 6], axis_distance_radii=[0.0; 6], scene_version=0, light_version=0, material_version=0, valid=false)
+        axis_sum[axis] = axis_sum[axis] + distance[direction]
+        axis_radius[axis] = axis_radius[axis] + distance[direction]
+        axis_count[axis] = axis_count[axis] + 1
+        channel: usize = 0
+        @budget(bound=3)
+        while channel < 3:
+            if radiance[direction * 3 + channel] < 0.0 or radiance[direction * 3 + channel] != radiance[direction * 3 + channel]:
+                return ProbeCellV1(coefficients=[0.0; 27], coefficient_radii=[0.0; 27], axis_distance=[0.0; 6], axis_distance_radii=[0.0; 6], scene_version=0, light_version=0, material_version=0, valid=false)
+            coefficient: usize = 0
+            @budget(bound=9)
+            while coefficient < 9:
+                output = channel * 9 + coefficient
+                term = radiance[direction * 3 + channel] * weights[direction] * basis[direction * 9 + coefficient]
+                coefficients[output] = coefficients[output] + term
+                absolute = term
+                if absolute < 0.0:
+                    absolute = -absolute
+                radii[output] = radii[output] + absolute
+                coefficient = coefficient + 1
+            channel = channel + 1
+        direction = direction + 1
+    axis: usize = 0
+    @budget(bound=6)
+    while axis < 6:
+        if axis_count[axis] == 0:
+            return ProbeCellV1(coefficients=[0.0; 27], coefficient_radii=[0.0; 27], axis_distance=[0.0; 6], axis_distance_radii=[0.0; 6], scene_version=0, light_version=0, material_version=0, valid=false)
+        axis_sum[axis] = axis_sum[axis] / axis_count[axis].to[f32]()
+        # A 2e-5 relative envelope dominates the fixed 32-term f32
+        # multiply/add/divide chain (gamma_128 < 8e-6). The absolute floor
+        # also covers zero/subnormal candidates and the rounding of this
+        # radius calculation itself.
+        axis_radius[axis] = (axis_radius[axis] / axis_count[axis].to[f32]()) * 0.00002 + 0.000001
+        axis = axis + 1
+    coefficient: usize = 0
+    @budget(bound=27)
+    while coefficient < 27:
+        radii[coefficient] = radii[coefficient] * 0.00002 + 0.000001
+        coefficient = coefficient + 1
+    return ProbeCellV1(coefficients=coefficients, coefficient_radii=radii, axis_distance=axis_sum, axis_distance_radii=axis_radius, scene_version=0, light_version=0, material_version=0, valid=false)
+
+pub fn __wrela_pixels_p10_probe_commit(cell: ProbeCellV1, scene_version: u32, light_version: u32, material_version: u32, complete_direction_count: u8) -> ProbeCellV1:
+    result = cell
+    result.scene_version = scene_version
+    result.light_version = light_version
+    result.material_version = material_version
+    result.valid = complete_direction_count == 32
+    return result
+
+pub fn probe_versions_valid(read cell: ProbeCellV1, scene_version: u32, light_version: u32, material_version: u32) -> bool:
+    return cell.valid and cell.scene_version == scene_version and cell.light_version == light_version and cell.material_version == material_version
+
+pub fn probe_leak_weight(recorded_distance_upper: f32, surface_distance: f32, spacing: f32) -> f32:
+    if spacing <= 0.0 or recorded_distance_upper < 0.0 or surface_distance < 0.0:
+        return 0.0
+    value = (recorded_distance_upper + spacing - surface_distance) / spacing
+    if value < 0.0:
+        value = 0.0
+    if value > 1.0:
+        value = 1.0
+    return value * value * (3.0 - 2.0 * value)
+
+pub fn probe_renormalize8(read values: [f32; 8], read weights: [f32; 8]) -> [f32; 2]:
+    weighted: f32 = 0.0
+    total: f32 = 0.0
+    index: usize = 0
+    @budget(bound=8)
+    while index < 8:
+        weight = weights[index]
+        if weight < 0.0:
+            weight = 0.0
+        if weight > 1.0:
+            weight = 1.0
+        weighted = weighted + values[index] * weight
+        total = total + weight
+        index = index + 1
+    if total == 0.0:
+        return [0.0, 0.0]
+    return [weighted / total, total]
+
+pub fn __wrela_pixels_p10_probe_candidates(
+    renderer: usize,
+    read origin: [f32; 3],
+    read direction: [f32; 3],
+    far: f32,
+) -> P7RowCandidates:
+    bits = __wrela_pixels_p9_secondary_candidates(renderer, origin, direction, far)
+    ids: [u32; 256] = [0; 256]
+    count: u16 = 0
+    if bits[0] != 1:
+        return P7RowCandidates(ok=false, error=5, ids=ids, count=0)
+    feature: u32 = 0
+    @budget(bound=256)
+    while feature < 256:
+        word = (feature / 64).to[usize]() + 1
+        bit = (feature & 63).to[u64]()
+        if bits[word] & (1.to[u64]() << bit) != 0:
+            ids[count.to[usize]()] = feature
+            count = count + 1
+        feature = feature + 1
+    return P7RowCandidates(ok=true, error=0, ids=ids, count=count)
+
+pub fn __wrela_pixels_p10_probe_trace(
+    renderer: usize,
+    read origin: [f32; 3],
+    read direction: [f32; 3],
+    read params: [f32; 16],
+    read light_kinds: [u64; 8],
+    read light_values: [f32; 120],
+    read environment: [f32; 3],
+) -> [f32; 5]:
+    config = __wrela_pixels_p7_numeric_config(renderer)
+    if config[0] != 1 or config[5] <= config[4]:
+        return [0.0; 5]
+    q_far = __wrela_pixels_p7_raw_to_f32(config[4].to[i32](), config[3].to[i32]())
+    if not q_far > 0.0:
+        return [0.0; 5]
+    far = 1.0 / q_far
+    if not far > 0.0:
+        return [0.0; 5]
+    candidates = __wrela_pixels_p10_probe_candidates(renderer, origin, direction, far)
+    camera: [f32; 12] = [
+        origin[0], origin[1], origin[2],
+        direction[0], direction[1], direction[2],
+        0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0,
+    ]
+    snapshot = FrameInputSnapshot.from_packed(params, config[6].to[u16](), camera)
+    roots = __wrela_pixels_p7_collect_roots_box(
+        renderer, 0, 0, 1, 0, [0.0; 4], candidates, snapshot,
+    )
+    layers = __wrela_pixels_p10_ordered_layers(renderer, roots)
+    if not layers.ok:
+        return [0.0; 5]
+    radiance: [f32; 3] = [0.0; 3]
+    transmittance: f32 = 1.0
+    first_distance: f32 = far
+    layer: u8 = 0
+    @budget(bound=64)
+    while layer < layers.count:
+        slot = layer.to[usize]()
+        q_raw = layers.q_lo[slot] + (layers.q_hi[slot] - layers.q_lo[slot]) / 2
+        q = __wrela_pixels_p7_raw_to_f32(q_raw, config[3].to[i32]())
+        if not q > 0.0 or layers.features[slot] >= 16777215:
+            return [0.0; 5]
+        if layer == 0:
+            first_distance = 1.0 / q
+        normal = __wrela_pixels_p7_feature_normal(
+            renderer, layers.features[slot], 0.0, 0.0, q, params, camera,
+        )
+        if normal[0] != 1.0:
+            return [0.0; 5]
+        shade_normal: [f32; 3] = [normal[1], normal[2], normal[3]]
+        if shade_normal[0] * direction[0] + shade_normal[1] * direction[1] + shade_normal[2] * direction[2] > 0.0:
+            shade_normal = [-shade_normal[0], -shade_normal[1], -shade_normal[2]]
+        point = [
+            origin[0] + direction[0] / q,
+            origin[1] + direction[1] / q,
+            origin[2] + direction[2] / q,
+        ]
+        lighting = __wrela_pixels_p9_lighting_certificate(
+            renderer, 0, point, shade_normal, layers.features[slot], params,
+            light_kinds, light_values,
+        )
+        if not lighting.ok:
+            return [0.0; 5]
+        surface: [f32; 15] = [0.0; 15]
+        surface[2] = q
+        surface[3] = shade_normal[0]
+        surface[4] = shade_normal[1]
+        surface[5] = shade_normal[2]
+        surface[12] = lighting.ao
+        surface[13] = lighting.ao_lower
+        surface[14] = lighting.ao_upper
+        meta = P9ShadingMeta(
+            identity=layers.identities[slot].to[u64](),
+            # Bit 128 selects the normative diffuse/emissive probe query and
+            # excludes recursive probe GI from this one-bounce evaluation.
+            flags=1.to[u64]() | 16 | 32 | 128 | ((layers.features[slot].to[u64]() + 1) << 8),
+            visibility=lighting.visibility,
+            visibility_uncertain=lighting.visibility_uncertain,
+            visibility_refined=lighting.visibility_refined,
+            visibility_refined_uncertain=lighting.visibility_refined_uncertain,
+            visibility_terminal_light=lighting.visibility_terminal_light,
+        )
+        hdr = __wrela_pixels_p9_hdr_pixel(
+            renderer, meta, surface, params, camera, light_kinds, light_values,
+            [0.0, 0.0, 0.0, 0.0],
+        )
+        material = __wrela_pixels_p9_material(
+            renderer, layers.identities[slot],
+            [0.0, 0.0, q, shade_normal[0], shade_normal[1], shade_normal[2]],
+            params, camera,
+        )
+        if hdr[0] != 1.0 or material[0] != 1.0 or material[10] < 0.0 or material[10] > 1.0:
+            return [0.0; 5]
+        opacity = material[10]
+        channel: usize = 0
+        @budget(bound=3)
+        while channel < 3:
+            radiance[channel] = radiance[channel] + transmittance * opacity * hdr[channel + 7]
+            channel = channel + 1
+        transmittance = transmittance * (1.0 - opacity)
+        if transmittance == 0.0:
+            layer = layers.count
+        else:
+            layer = layer + 1
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        radiance[channel] = radiance[channel] + transmittance * environment[channel]
+        if radiance[channel] < 0.0 or radiance[channel] != radiance[channel]:
+            return [0.0; 5]
+        channel = channel + 1
+    return [1.0, radiance[0], radiance[1], radiance[2], first_distance]
+
+pub fn __wrela_pixels_p10_probe_floor(value: f32) -> i32:
+    result = value.to[i32]()
+    if result.to[f32]() > value:
+        result = result - 1
+    return result
+
+pub fn __wrela_pixels_p10_probe_store_cell(
+    renderer: usize,
+    probe: u32,
+    header_words: usize,
+    read cell: ProbeCellV1,
+    frame_index: u64,
+) -> bool:
+    base = header_words + probe.to[usize]() * 36
+    coefficient: usize = 0
+    @budget(bound=27)
+    while coefficient < 27:
+        word = __wrela_pixels_f32_to_bits(cell.coefficients[coefficient]).to[u64]()
+        word = word | (__wrela_pixels_f32_to_bits(cell.coefficient_radii[coefficient]).to[u64]() << 32)
+        if not __wrela_pixels_p10_probe_word_store(renderer, base + coefficient, word):
+            return false
+        coefficient = coefficient + 1
+    axis: usize = 0
+    @budget(bound=6)
+    while axis < 6:
+        word = __wrela_pixels_f32_to_bits(cell.axis_distance[axis]).to[u64]()
+        word = word | (__wrela_pixels_f32_to_bits(cell.axis_distance_radii[axis]).to[u64]() << 32)
+        if not __wrela_pixels_p10_probe_word_store(renderer, base + 27 + axis, word):
+            return false
+        axis = axis + 1
+    if not __wrela_pixels_p10_probe_word_store(renderer, base + 33, frame_index & 4294967295 | ((frame_index & 4294967295) << 32)):
+        return false
+    if not __wrela_pixels_p10_probe_word_store(renderer, base + 34, frame_index & 4294967295):
+        return false
+    # Validity is the final cell write. The global commit marker is written
+    # only after every cell has reached this point.
+    return __wrela_pixels_p10_probe_word_store(renderer, base + 35, 9223372036854775808 | frame_index)
+
+pub fn __wrela_pixels_p10_probe_snapshot_word(
+    renderer: usize,
+    base: usize,
+    offset: usize,
+    expected: u64,
+    store: bool,
+) -> bool:
+    if store:
+        return __wrela_pixels_p10_probe_word_store(renderer, base + offset, expected)
+    actual = __wrela_pixels_p10_probe_word_load(renderer, base + offset)
+    return actual[0] == 1 and actual[1] == expected
+
+pub fn __wrela_pixels_p10_probe_dependency_snapshot(
+    renderer: usize,
+    base: usize,
+    levels: u32,
+    read input: ProbeDependencyInputV1,
+    store: bool,
+) -> bool:
+    cursor: usize = 0
+    pair: usize = 0
+    @budget(bound=8)
+    while pair < 8:
+        word = __wrela_pixels_f32_to_bits(input.params[pair * 2]).to[u64]()
+        word = word | (__wrela_pixels_f32_to_bits(input.params[pair * 2 + 1]).to[u64]() << 32)
+        if not __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor, word, store):
+            return false
+        cursor = cursor + 1
+        pair = pair + 1
+    level: u32 = 0
+    @budget(bound=3)
+    while level < levels:
+        record_index = level + 1
+        dim_x = __wrela_pixels_program_operand(renderer, 15, record_index, 1)
+        dim_y = __wrela_pixels_program_operand(renderer, 15, record_index, 2)
+        dim_z = __wrela_pixels_program_operand(renderer, 15, record_index, 3)
+        spacing_bits = __wrela_pixels_program_operand(renderer, 15, record_index, 4)
+        if dim_x[0] != 1 or dim_y[0] != 1 or dim_z[0] != 1 or spacing_bits[0] != 1:
+            return false
+        spacing = pixels_f32_from_bits(spacing_bits[1].to[u32]())
+        if not spacing > 0.0:
+            return false
+        origins: [i32; 3] = [
+            __wrela_pixels_p10_probe_floor(input.camera[0] / spacing) - (dim_x[1] / 2).to[i32](),
+            __wrela_pixels_p10_probe_floor(input.camera[1] / spacing) - (dim_y[1] / 2).to[i32](),
+            __wrela_pixels_p10_probe_floor(input.camera[2] / spacing) - (dim_z[1] / 2).to[i32](),
+        ]
+        axis: usize = 0
+        @budget(bound=3)
+        while axis < 3:
+            word = (origins[axis].to[i64]() & 4294967295).to[u64]()
+            if not __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor, word, store):
+                return false
+            cursor = cursor + 1
+            axis = axis + 1
+        level = level + 1
+    light: usize = 0
+    @budget(bound=8)
+    while light < 8:
+        if not __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor, input.light_kinds[light], store):
+            return false
+        cursor = cursor + 1
+        light = light + 1
+    pair = 0
+    @budget(bound=60)
+    while pair < 60:
+        word = __wrela_pixels_f32_to_bits(input.light_values[pair * 2]).to[u64]()
+        word = word | (__wrela_pixels_f32_to_bits(input.light_values[pair * 2 + 1]).to[u64]() << 32)
+        if not __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor, word, store):
+            return false
+        cursor = cursor + 1
+        pair = pair + 1
+    environment0 = __wrela_pixels_f32_to_bits(input.post[1]).to[u64]() | (__wrela_pixels_f32_to_bits(input.post[2]).to[u64]() << 32)
+    environment1 = __wrela_pixels_f32_to_bits(input.post[3]).to[u64]()
+    if not __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor, environment0, store):
+        return false
+    return __wrela_pixels_p10_probe_snapshot_word(renderer, base, cursor + 1, environment1, store)
+
+pub fn __wrela_pixels_p10_probe_update_all_impl(renderer: usize, frame_index: u64) -> bool:
+    count = __wrela_pixels_program_table_count(renderer, 15)
+    if count == 0:
+        return __wrela_pixels_p10_probe_prepare(renderer, frame_index)
+    if count == 4294967295:
+        return false
+    header = __wrela_pixels_program_record(renderer, 15, 0)
+    if header[0] != 1 or header[2] != 1:
+        return false
+    levels = __wrela_pixels_program_operand(renderer, 15, 0, 2)
+    probe_count = __wrela_pixels_program_operand(renderer, 15, 0, 7)
+    if levels[0] != 1 or probe_count[0] != 1 or levels[1] == 0 or levels[1] > 3 or probe_count[1] == 0 or probe_count[1] > 6144:
+        return false
+    camera = __wrela_pixels_p7_frame_snapshot_camera(renderer)
+    params = __wrela_pixels_p7_frame_snapshot_params(renderer)
+    light_kinds = __wrela_pixels_p7_frame_snapshot_light_kinds(renderer)
+    light_values = __wrela_pixels_p7_frame_snapshot_light_scalars(renderer)
+    post = __wrela_pixels_p7_frame_snapshot_post(renderer)
+    dependency_input = ProbeDependencyInputV1(
+        params=params, camera=camera, light_kinds=light_kinds,
+        light_values=light_values, post=post,
+    )
+    header_words = (256 + levels[1].to[usize]() * 64) / 8
+    dependency_base = header_words + probe_count[1].to[usize]() * 72
+    status = __wrela_pixels_p10_probe_status(renderer)
+    if status[0] == 1 and __wrela_pixels_p10_probe_dependency_snapshot(
+        renderer, dependency_base, levels[1].to[u32](), dependency_input, false,
+    ):
+        return true
+    if not __wrela_pixels_p10_probe_prepare(renderer, frame_index):
+        return false
+    workers: u32 = 0
+    @budget(bound=4)
+    while workers < 4 and __wrela_pixels_p7_worker_assignment(renderer, workers)[0] == 1:
+        workers = workers + 1
+    if workers == 0:
+        _ = __wrela_pixels_p10_probe_invalidate(renderer)
+        return false
+    worker: u32 = 0
+    range: [u32; 2] = [
+        (probe_count[1] * worker.to[u64]() / workers.to[u64]()).to[u32](),
+        (probe_count[1] * (worker + 1).to[u64]() / workers.to[u64]()).to[u32](),
+    ]
+    probe = range[0]
+    range_end = range[1]
+    @budget(bound=4)
+    while probe == range_end and worker + 1 < workers:
+        worker = worker + 1
+        range = [
+            (probe_count[1] * worker.to[u64]() / workers.to[u64]()).to[u32](),
+            (probe_count[1] * (worker + 1).to[u64]() / workers.to[u64]()).to[u32](),
+        ]
+        probe = range[0]
+        range_end = range[1]
+    @budget(bound=6144)
+    while probe.to[u64]() < probe_count[1]:
+        level_index: u32 = 0
+        level_found = false
+        level_record: u32 = 0
+        local: u32 = 0
+        @budget(bound=3)
+        while level_index.to[u64]() < levels[1]:
+            record_index = level_index + 1
+            record = __wrela_pixels_program_record(renderer, 15, record_index)
+            first = __wrela_pixels_program_operand(renderer, 15, record_index, 5)
+            level_count = __wrela_pixels_program_operand(renderer, 15, record_index, 6)
+            if record[0] != 1 or record[2] != 2 or first[0] != 1 or level_count[0] != 1:
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            if probe.to[u64]() >= first[1] and probe.to[u64]() < first[1] + level_count[1]:
+                level_found = true
+                level_record = record_index
+                local = (probe.to[u64]() - first[1]).to[u32]()
+            level_index = level_index + 1
+        if not level_found:
+            _ = __wrela_pixels_p10_probe_invalidate(renderer)
+            return false
+        dim_x = __wrela_pixels_program_operand(renderer, 15, level_record, 1)
+        dim_y = __wrela_pixels_program_operand(renderer, 15, level_record, 2)
+        dim_z = __wrela_pixels_program_operand(renderer, 15, level_record, 3)
+        spacing_bits = __wrela_pixels_program_operand(renderer, 15, level_record, 4)
+        if dim_x[0] != 1 or dim_y[0] != 1 or dim_z[0] != 1 or spacing_bits[0] != 1 or dim_x[1] == 0 or dim_y[1] == 0 or dim_z[1] == 0:
+            _ = __wrela_pixels_p10_probe_invalidate(renderer)
+            return false
+        spacing = pixels_f32_from_bits(spacing_bits[1].to[u32]())
+        if not spacing > 0.0:
+            _ = __wrela_pixels_p10_probe_invalidate(renderer)
+            return false
+        local_x = local.to[u64]() % dim_x[1]
+        local_y = (local.to[u64]() / dim_x[1]) % dim_y[1]
+        local_z = local.to[u64]() / (dim_x[1] * dim_y[1])
+        origin_x = __wrela_pixels_p10_probe_floor(camera[0] / spacing) - (dim_x[1] / 2).to[i32]()
+        origin_y = __wrela_pixels_p10_probe_floor(camera[1] / spacing) - (dim_y[1] / 2).to[i32]()
+        origin_z = __wrela_pixels_p10_probe_floor(camera[2] / spacing) - (dim_z[1] / 2).to[i32]()
+        position: [f32; 3] = [
+            (origin_x + local_x.to[i32]()).to[f32]() * spacing,
+            (origin_y + local_y.to[i32]()).to[f32]() * spacing,
+            (origin_z + local_z.to[i32]()).to[f32]() * spacing,
+        ]
+        radiance: [f32; 96] = [0.0; 96]
+        distance: [f32; 32] = [0.0; 32]
+        weights: [f32; 32] = [0.0; 32]
+        basis: [f32; 288] = [0.0; 288]
+        axis_ids: [u8; 32] = [0; 32]
+        direction_id: u32 = 0
+        @budget(bound=32)
+        while direction_id < 32:
+            direction_record = 1 + levels[1].to[u32]() + direction_id
+            record = __wrela_pixels_program_record(renderer, 15, direction_record)
+            stable = __wrela_pixels_program_operand(renderer, 15, direction_record, 0)
+            if record[0] != 1 or record[2] != 3 or stable[0] != 1 or stable[1] != direction_id.to[u64]():
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            direction: [f32; 3] = [0.0; 3]
+            axis: usize = 0
+            @budget(bound=3)
+            while axis < 3:
+                encoded = __wrela_pixels_program_operand(renderer, 15, direction_record, (axis + 1).to[u16]())
+                if encoded[0] != 1:
+                    _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                    return false
+                direction[axis] = pixels_f32_from_bits(encoded[1].to[u32]())
+                axis = axis + 1
+            traced = __wrela_pixels_p10_probe_trace(
+                renderer, position, direction, params, light_kinds, light_values,
+                [post[1], post[2], post[3]],
+            )
+            if traced[0] != 1.0:
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            radiance[direction_id.to[usize]() * 3] = traced[1]
+            radiance[direction_id.to[usize]() * 3 + 1] = traced[2]
+            radiance[direction_id.to[usize]() * 3 + 2] = traced[3]
+            distance[direction_id.to[usize]()] = traced[4]
+            weight = __wrela_pixels_program_operand(renderer, 15, direction_record, 4)
+            if weight[0] != 1:
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            weights[direction_id.to[usize]()] = pixels_f32_from_bits(weight[1].to[u32]())
+            coefficient: usize = 0
+            @budget(bound=9)
+            while coefficient < 9:
+                encoded = __wrela_pixels_program_operand(renderer, 15, direction_record, (5 + coefficient).to[u16]())
+                if encoded[0] != 1:
+                    _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                    return false
+                basis[direction_id.to[usize]() * 9 + coefficient] = pixels_f32_from_bits(encoded[1].to[u32]())
+                coefficient = coefficient + 1
+            dominant: usize = 0
+            if direction[1] * direction[1] > direction[dominant] * direction[dominant]:
+                dominant = 1
+            if direction[2] * direction[2] > direction[dominant] * direction[dominant]:
+                dominant = 2
+            bucket = dominant * 2
+            if direction[dominant] < 0.0:
+                bucket = bucket + 1
+            axis_ids[direction_id.to[usize]()] = bucket.to[u8]()
+            direction_id = direction_id + 1
+        cell = __wrela_pixels_p10_probe_commit(__wrela_pixels_p10_probe_accumulate32(radiance, distance, weights, basis, axis_ids), frame_index.to[u32](), frame_index.to[u32](), frame_index.to[u32](), 32)
+        if not cell.valid or not __wrela_pixels_p10_probe_store_cell(renderer, probe, header_words, cell, frame_index):
+            _ = __wrela_pixels_p10_probe_invalidate(renderer)
+            return false
+        probe = probe + 1
+        if probe == range_end and probe.to[u64]() < probe_count[1]:
+            worker = worker + 1
+            if worker >= workers:
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            range = [
+                (probe_count[1] * worker.to[u64]() / workers.to[u64]()).to[u32](),
+                (probe_count[1] * (worker + 1).to[u64]() / workers.to[u64]()).to[u32](),
+            ]
+            if range[0] != probe or range[1] < range[0]:
+                _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                return false
+            probe = range[0]
+            range_end = range[1]
+            @budget(bound=4)
+            while probe == range_end and worker + 1 < workers:
+                worker = worker + 1
+                range = [
+                    (probe_count[1] * worker.to[u64]() / workers.to[u64]()).to[u32](),
+                    (probe_count[1] * (worker + 1).to[u64]() / workers.to[u64]()).to[u32](),
+                ]
+                if range[0] != probe or range[1] < range[0]:
+                    _ = __wrela_pixels_p10_probe_invalidate(renderer)
+                    return false
+                probe = range[0]
+                range_end = range[1]
+    if not __wrela_pixels_p10_probe_dependency_snapshot(
+        renderer, dependency_base, levels[1].to[u32](), dependency_input, true,
+    ) or not __wrela_pixels_p10_probe_word_store(renderer, 4, probe_count[1]) or not __wrela_pixels_p10_probe_word_store(renderer, 0, 5778452918429499973):
+        _ = __wrela_pixels_p10_probe_invalidate(renderer)
+        return false
+    return true
 
 pub fn __wrela_pixels_p7_debug_probe_cell(
     renderer: usize,

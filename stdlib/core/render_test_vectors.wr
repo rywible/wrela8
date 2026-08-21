@@ -13,7 +13,7 @@ from core.render_transfer import Transfer, TransferOutcome, transfer_balanced2, 
 from core.render_display import ByteSingletonOutcome, QuantizeOutcome, RgbSingletonOutcome, byte_singleton, color_matrix_channel, exposure_channel, monotone_lut17, quantize_ties_even, rgb_singleton
 
 pub const VECTOR_COUNT: u64 = 1215
-pub const VECTOR_DIGEST: u64 = 9018606281591794787
+pub const VECTOR_DIGEST: u64 = 1782237490821022222
 
 pub fn fold2(a: i32, b: i32) -> i64:
     return a.to[i64]() * 257 + b.to[i64]()
@@ -2120,26 +2120,26 @@ pub fn run_vector_chunk_12():
     assert vector_case_matches(48, -1, 0, 1, 5, -33882878, false), "transfer_balanced case 1"
     assert vector_case_matches(48, 0, 0, 0, 61, 1, false), "transfer_balanced case 2"
     assert vector_case_matches(48, 6, -2, -8, 4, 34213899, false), "transfer_balanced case 100"
-    assert vector_case_matches(48, -5, 5, -4, -8, -102045704, false), "transfer_balanced case 101"
-    assert vector_case_matches(48, -5, -6, 7, 4, -153167114, false), "transfer_balanced case 102"
+    assert vector_case_matches(48, -5, 5, -4, -8, -101979655, false), "transfer_balanced case 101"
+    assert vector_case_matches(48, -5, -6, 7, 4, -136192521, false), "transfer_balanced case 102"
     assert vector_case_matches(19, -8, 8, -7, 3, -152177152, false), "transfer_compose case 0"
     assert vector_case_matches(19, -1, 0, 0, 1, -16908801, false), "transfer_compose case 1"
     assert vector_case_matches(19, 2147483646, 2147483647, 255, 256, 0, true), "transfer_compose case 2"
     assert vector_case_matches(19, 3, 5, -1, 3, 34345224, false), "transfer_compose case 100"
     assert vector_case_matches(19, -8, 6, 5, 5, -135334657, false), "transfer_compose case 101"
     assert vector_case_matches(19, -3, 7, -4, 0, -50395643, false), "transfer_compose case 102"
-    assert vector_case_matches(49, 1, 2, 3, 0, 51200359, false), "transfer_replace case 0"
+    assert vector_case_matches(49, 1, 2, 3, 0, 51266408, false), "transfer_replace case 0"
     assert vector_case_matches(49, -1, 0, 1, 5, -33816829, false), "transfer_replace case 1"
     assert vector_case_matches(49, 0, 0, 0, 61, 1, false), "transfer_replace case 2"
-    assert vector_case_matches(49, 8, -4, 8, 4, 272717096, false), "transfer_replace case 100"
-    assert vector_case_matches(49, -2, 8, -3, 4, 17173515, false), "transfer_replace case 101"
+    assert vector_case_matches(49, 8, -4, 8, 4, 272783145, false), "transfer_replace case 100"
+    assert vector_case_matches(49, -2, 8, -3, 4, 132873, false), "transfer_replace case 101"
     assert vector_case_matches(49, 4, -4, 0, 5, 34213641, false), "transfer_replace case 102"
     assert vector_case_matches(20, 8, 4, 4, 8, 1, false), "transparency_tail case 0"
-    assert vector_case_matches(20, 1, 0, 0, 1, 1, false), "transparency_tail case 1"
-    assert vector_case_matches(20, 0, 0, 0, 0, 1, false), "transparency_tail case 2"
+    assert vector_case_matches(20, 1, 0, 0, 1, 0, false), "transparency_tail case 1"
+    assert vector_case_matches(20, 0, 0, 0, 0, 0, false), "transparency_tail case 2"
     assert vector_case_matches(20, 2, 6, 2, 4, 1, false), "transparency_tail case 100"
     assert vector_case_matches(20, 4, 0, 3, 2, 1, false), "transparency_tail case 101"
-    assert vector_case_matches(20, 5, 7, 1, 2, 1, false), "transparency_tail case 102"
+    assert vector_case_matches(20, 5, 7, 1, 2, 0, false), "transparency_tail case 102"
 
 pub fn run_all_vectors():
     run_vector_chunk_0()

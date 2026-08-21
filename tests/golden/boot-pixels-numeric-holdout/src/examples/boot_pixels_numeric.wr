@@ -103,7 +103,7 @@ pub fn pixels_numeric_vectors():
             assert combined.red_lower() == 2, "transfer composition"
         case .Error:
             assert false, "transfer composition must decide"
-    assert transparency_tail(1, 1, 1), "transparency tail"
+    assert transparency_tail(1, 1, 2), "transparency tail"
     match byte_singleton(Iv32.point(8), 2):
         case .Value(code):
             assert code == 2, "display byte singleton"

@@ -4,7 +4,7 @@ module examples.boot_pixels_partial_mode_three_core
 # ordinary boot-golden corpus.
 # @wrela-compiler-internal: this fixture traces its negotiated Pixels result.
 from core.runtime import __wrela_trace_p7_u64
-from core.field import Field, Rgb, Vec3, mark, plane
+from core.field import Field, Rgb, Vec3, cross3, dot3, length3, mark, plane, sqrt_scalar
 from core.render import (
     AoConfig,
     Camera,

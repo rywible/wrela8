@@ -867,10 +867,83 @@ Transparency uses premultiplied radiance and residual transmittance:
 ```
 
 A suffix is dropped only when bounded remaining radiance times current
-transmittance fits its assigned encoded error. Point/directional visibility is
-certified. Rectangular/disk lights use deterministic adaptive integration. AO
-uses bounded field taps. GI uses a deterministic fixed-capacity world-space
-probe clipmap with compiler-known update and invalidation rules.
+transmittance and the complete post sensitivity is strictly below its assigned
+error. That product is only an early sufficient predicate: the prefix, fixed
+suffix proxy, and tail HDR interval must still pass the endpoint-singleton byte
+test. The v1 suffix proxies are the environment interval, a compiler-proved
+immutable static transfer summary, or zero only when the suffix radiance bound
+is zero. Layer count and a scalar transmittance candidate are never cutoff
+predicates.
+
+#### Ordered transparency v1
+
+Every complete CSG sweep retains composite boundary transitions in decreasing
+q order. Front and back boundaries count separately. A zero-opacity,
+zero-emissive identity is proved invisible and omitted from transfer work while
+still participating in occupancy. Parameter-dependent opacity is represented
+as a transfer layer for its complete range, so values at zero and one cannot
+silently change topology. The sweep stops at the first opaque transition, the
+far/background boundary, or the certified tail rule above. Capacity is checked
+before writing a layer. Coincident or depth-swapping surfaces form an analytic
+event corridor with separate side order and coverage; feature IDs never decide
+visibility.
+
+A shaded layer with coverage `a` and opacity `o` is `(C,T) =
+(a*o*shaded_rgb, 1-a*o)`. Leaves are stored front-to-back in a fixed array tree
+whose leaf count is the next power of two of the sealed maximum; unused leaves
+are `(0,1)`, and parents compose left/front then right/back. V1 transparency is
+absorptive/emissive alpha compositing. Refraction, participating media,
+stochastic alpha tests, order-independent approximations, and unbounded
+particle or hair stacks are outside the language contract and are rejected.
+
+#### Deterministic probe GI v1
+
+Probe GI is a finite one-bounce renderer definition, not an approximation
+claim about the rendering equation. The default has three camera-centered
+clipmap levels of `16 x 8 x 16` probes. `ProbeConfig` may reduce these counts or
+disable GI, but cannot exceed them. Level zero uses sealed `base_spacing`; each
+following level multiplies spacing by four. Each probe contains 9 real SH
+coefficients for each RGB channel, each as an f32 candidate plus verifier
+radius, six signed-axis distance moments from the same rays, and explicit
+validity and scene/light/material versions.
+
+Exactly 32 checked-in unit directions are traced in direction-ID order. Their
+stored solid-angle weights cover `4*pi`; the emitted direction, weight, and SH
+basis table is digest-pinned numeric-contract data. Every ray is one complete
+segment to the scene far boundary or environment. A hit returns the bounded
+outgoing diffuse-plus-emissive one-bounce query; a miss returns environment.
+There is no RNG, time phase, or random rotation. Accumulation order is direction
+ID, then RGB channel, then SH coefficient.
+
+Before the first GI frame, clipmaps snap to the finest spacing and every probe
+is updated. Workers own contiguous probe-ID ranges; results commit in ID order
+only after all rays succeed. Cancellation commits no validity. Static
+preinitialized mode must provide a fully versioned image; dynamic admission is
+charged for the all-invalid state (all probes times all 32 complete rays,
+accumulation, and presentation), never for a typical subset. Disabled GI is an
+explicit zero-level source configuration and allocates no state.
+
+At frame start, changed geometry invalidates every probe whose support sphere
+intersects its conservative swept AABB. Environment, bounded light, material,
+and emissive changes invalidate their complete compiler influence bounds;
+exposure and post settings do not alter incident-radiance probes. A snapped
+clipmap move retains cells only by exact `(level, world-cell)` identity and
+invalidates newly exposed cells. Every invalid probe is updated before shading;
+an exact-mode frame may not read or present stale state.
+
+Shading selects a deterministic adjacent level pair from camera distance,
+trilinearly interpolates eight probes per level including coefficient radii,
+evaluates cosine-convolved SH at the normal cone, blends levels, and multiplies
+the diffuse albedo/energy factor. Leak reduction selects the dominant signed
+axis of the surface-to-probe vector, compares its distance with that axis'
+outward distance-moment interval, and applies clamped smoothstep over one probe
+spacing. The 8 weights are clamped and renormalized. If their sum is zero, that
+level contributes exactly zero GI. The resulting candidate and interval enter
+the same HDR endpoint-singleton proof as direct light, AO, emissive radiance,
+and transparency.
+
+Point/directional visibility is certified. Rectangular/disk lights use
+deterministic adaptive integration. AO uses bounded field taps.
 
 The final interval pipeline is geometry and coverage, material, lighting,
 transparency, exposure, color transform, monotone tone/transfer tables, then

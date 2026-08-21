@@ -22,6 +22,16 @@ def Transfer.identity : Transfer where
   color := 0
   transmittance := 1
 
+theorem transfer_identity_left (value : Transfer) :
+    Transfer.identity.compose value = value := by
+  cases value
+  simp [Transfer.identity, Transfer.compose]
+
+theorem transfer_identity_right (value : Transfer) :
+    value.compose Transfer.identity = value := by
+  cases value
+  simp [Transfer.identity, Transfer.compose]
+
 def transferBalanced : List Transfer → Transfer
   | [] => Transfer.identity
   | value :: rest => value.compose (transferBalanced rest)
@@ -42,5 +52,11 @@ theorem transfer_replace_model
     transferBalanced (transferReplace values index replacement) =
       transferBalanced (values.set index replacement) := by
   rfl
+
+theorem transfer_replace_preserves_other_leaf
+    (values : List Transfer) (index other : Nat) (replacement : Transfer)
+    (different : other ≠ index) :
+    (transferReplace values index replacement)[other]? = values[other]? := by
+  simp [transferReplace, List.getElem?_set, Ne.symm different]
 
 end Pixels

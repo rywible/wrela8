@@ -1,5 +1,5 @@
-FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e83411c0a1c287b118bbc3a
-  Header bytes=80 flags=0x1 total_bytes=87824 profile_revision=1 numeric_revision=4 formal_revision=1 formal_name=pixels-v1
+FrameProgram v1 renderer=0 digest=57a280029599d31c4bd19060ea7035d0c441c5e5ef02fb70f53f17fb46d300ae
+  Header bytes=80 flags=0x1 total_bytes=88496 profile_revision=1 numeric_revision=4 formal_revision=1 formal_name=pixels-v1
   Directory count=17 offset=80
   Table kind=scalar code=1 record_bytes=16 count=15 offset=384 byte_len=240
   Table kind=field code=2 record_bytes=16 count=3 offset=640 byte_len=48
@@ -10,11 +10,11 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
   Table kind=event code=7 record_bytes=16 count=4 offset=960 byte_len=64
   Table kind=csg code=8 record_bytes=16 count=1 offset=1024 byte_len=16
   Table kind=fixed-domain code=9 record_bytes=16 count=149 offset=1088 byte_len=2384
-  Table kind=immediate code=10 record_bytes=24 count=3499 offset=3520 byte_len=83976
-  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=87552 byte_len=16
+  Table kind=immediate code=10 record_bytes=24 count=3525 offset=3520 byte_len=84600
+  Table kind=camera-light-post code=11 record_bytes=16 count=1 offset=88128 byte_len=16
   Table kind=texture code=12 record_bytes=16 count=0 offset=0 byte_len=0
-  Table kind=shading-summary code=13 record_bytes=16 count=13 offset=87616 byte_len=208
-  Table kind=transparency code=14 record_bytes=16 count=0 offset=0 byte_len=0
+  Table kind=shading-summary code=13 record_bytes=16 count=13 offset=88192 byte_len=208
+  Table kind=transparency code=14 record_bytes=16 count=3 offset=88448 byte_len=48
   Table kind=probe code=15 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=kinetic code=16 record_bytes=16 count=0 offset=0 byte_len=0
   Table kind=debug-name code=17 record_bytes=16 count=0 offset=0 byte_len=0
@@ -36,7 +36,7 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
   Exclusion id=x1 subject=event:projected-bound-exit:feature=g0:owner=-:ordinal=1 reason=full-domain-projection domain=domain0 proof=proof1 margin=[0.49999999999999994,0.5000000000000001]
   ExclusionProof id=proof0 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
   ExclusionProof id=proof1 payload=positive-margin:rule=projected-boundary-outside-complete-output-domain:facts=[span=[0,64]x[0,32] output=64x32 nearest-center-gap=0.5]
-  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a70000 frameprog_bytes=87824 state_base=0x40a90000 state_bytes=156210
+  GeneratedConfig module=core.__image_pixels frameprog_base=0x40a70000 frameprog_bytes=88496 state_base=0x40a90000 state_bytes=156210
   GeneratedModule begin
     module __image_pixels
 
@@ -201,7 +201,7 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
     pub const N_RENDER_WORKERS: usize = 1
 
     const R0_FRAMEPROG_BASE: usize = 1084686336
-    const R0_FRAMEPROG_BYTES: usize = 87824
+    const R0_FRAMEPROG_BYTES: usize = 88496
     const R0_STATE_BASE: usize = 1084817408
     const R0_STATE_BYTES: usize = 156210
     const R0_WIDTH: usize = 64
@@ -507,35 +507,40 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
     @placed(0x40a70440)
     static R0_FIXED_DOMAIN_TABLE: R0FixedDomainTableView
     const R0_IMMEDIATE_BASE: usize = 0x40a70dc0
-    const R0_IMMEDIATE_COUNT: usize = 3499
-    const R0_IMMEDIATE_BYTES: usize = 83976
+    const R0_IMMEDIATE_COUNT: usize = 3525
+    const R0_IMMEDIATE_BYTES: usize = 84600
     @layout(runtime, endian=little)
     struct R0ImmediateTableView:
         records: [FrameProgramImmediateV1; R0_IMMEDIATE_COUNT]
     @placed(0x40a70dc0)
     static R0_IMMEDIATE_TABLE: R0ImmediateTableView
-    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40a85600
+    const R0_CAMERA_LIGHT_POST_BASE: usize = 0x40a85840
     const R0_CAMERA_LIGHT_POST_COUNT: usize = 1
     const R0_CAMERA_LIGHT_POST_BYTES: usize = 16
     @layout(runtime, endian=little)
     struct R0CameraLightPostTableView:
         records: [FrameProgramRecordV1; R0_CAMERA_LIGHT_POST_COUNT]
-    @placed(0x40a85600)
+    @placed(0x40a85840)
     static R0_CAMERA_LIGHT_POST_TABLE: R0CameraLightPostTableView
     const R0_TEXTURE_BASE: usize = 0x0
     const R0_TEXTURE_COUNT: usize = 0
     const R0_TEXTURE_BYTES: usize = 0
-    const R0_SHADING_SUMMARY_BASE: usize = 0x40a85640
+    const R0_SHADING_SUMMARY_BASE: usize = 0x40a85880
     const R0_SHADING_SUMMARY_COUNT: usize = 13
     const R0_SHADING_SUMMARY_BYTES: usize = 208
     @layout(runtime, endian=little)
     struct R0ShadingSummaryTableView:
         records: [FrameProgramRecordV1; R0_SHADING_SUMMARY_COUNT]
-    @placed(0x40a85640)
+    @placed(0x40a85880)
     static R0_SHADING_SUMMARY_TABLE: R0ShadingSummaryTableView
-    const R0_TRANSPARENCY_BASE: usize = 0x0
-    const R0_TRANSPARENCY_COUNT: usize = 0
-    const R0_TRANSPARENCY_BYTES: usize = 0
+    const R0_TRANSPARENCY_BASE: usize = 0x40a85980
+    const R0_TRANSPARENCY_COUNT: usize = 3
+    const R0_TRANSPARENCY_BYTES: usize = 48
+    @layout(runtime, endian=little)
+    struct R0TransparencyTableView:
+        records: [FrameProgramRecordV1; R0_TRANSPARENCY_COUNT]
+    @placed(0x40a85980)
+    static R0_TRANSPARENCY_TABLE: R0TransparencyTableView
     const R0_PROBE_BASE: usize = 0x0
     const R0_PROBE_COUNT: usize = 0
     const R0_PROBE_BYTES: usize = 0
@@ -555,7 +560,7 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
     static R0_FRAME_PROGRAM_DIRECTORY: R0FrameProgramDirectoryView
     const R0_DIRECTORY_COUNT: usize = 17
 
-    const R0_EXPECTED_DIGEST: [u8; 32] = [162, 169, 201, 71, 100, 196, 236, 79, 205, 202, 227, 197, 135, 237, 153, 222, 65, 73, 26, 100, 62, 131, 65, 28, 10, 28, 40, 123, 17, 139, 188, 58, ]
+    const R0_EXPECTED_DIGEST: [u8; 32] = [87, 162, 128, 2, 149, 153, 211, 28, 75, 209, 144, 96, 234, 112, 53, 208, 196, 65, 197, 229, 239, 2, 251, 112, 245, 63, 23, 251, 70, 211, 0, 174, ]
     const R0_EXPECTED_DIRECTORY: [[u64; 5]; 17] = [
         [1, 16, 15, 384, 240],
         [2, 16, 3, 640, 48],
@@ -566,11 +571,11 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
         [7, 16, 4, 960, 64],
         [8, 16, 1, 1024, 16],
         [9, 16, 149, 1088, 2384],
-        [10, 24, 3499, 3520, 83976],
-        [11, 16, 1, 87552, 16],
+        [10, 24, 3525, 3520, 84600],
+        [11, 16, 1, 88128, 16],
         [12, 16, 0, 0, 0],
-        [13, 16, 13, 87616, 208],
-        [14, 16, 0, 0, 0],
+        [13, 16, 13, 88192, 208],
+        [14, 16, 3, 88448, 48],
         [15, 16, 0, 0, 0],
         [16, 16, 0, 0, 0],
         [17, 16, 0, 0, 0],
@@ -578,7 +583,7 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
 
     pub fn __wrela_pixels_program_validate(renderer: usize) -> bool:
         if renderer == 0:
-            header_ok = R0_FRAME_PROGRAM_HEADER.magic[0] == 87 and R0_FRAME_PROGRAM_HEADER.magic[1] == 82 and R0_FRAME_PROGRAM_HEADER.magic[2] == 69 and R0_FRAME_PROGRAM_HEADER.magic[3] == 76 and R0_FRAME_PROGRAM_HEADER.magic[4] == 65 and R0_FRAME_PROGRAM_HEADER.magic[5] == 80 and R0_FRAME_PROGRAM_HEADER.magic[6] == 88 and R0_FRAME_PROGRAM_HEADER.magic[7] == 0 and R0_FRAME_PROGRAM_HEADER.version == 1 and R0_FRAME_PROGRAM_HEADER.header_bytes == 80 and R0_FRAME_PROGRAM_HEADER.flags == 1 and R0_FRAME_PROGRAM_HEADER.total_bytes == 87824 and R0_FRAME_PROGRAM_HEADER.renderer_index == 0 and R0_FRAME_PROGRAM_HEADER.reserved0 == 0 and R0_FRAME_PROGRAM_HEADER.numeric_revision == 4 and R0_FRAME_PROGRAM_HEADER.formal_revision == 1 and R0_FRAME_PROGRAM_HEADER.table_count == 17
+            header_ok = R0_FRAME_PROGRAM_HEADER.magic[0] == 87 and R0_FRAME_PROGRAM_HEADER.magic[1] == 82 and R0_FRAME_PROGRAM_HEADER.magic[2] == 69 and R0_FRAME_PROGRAM_HEADER.magic[3] == 76 and R0_FRAME_PROGRAM_HEADER.magic[4] == 65 and R0_FRAME_PROGRAM_HEADER.magic[5] == 80 and R0_FRAME_PROGRAM_HEADER.magic[6] == 88 and R0_FRAME_PROGRAM_HEADER.magic[7] == 0 and R0_FRAME_PROGRAM_HEADER.version == 1 and R0_FRAME_PROGRAM_HEADER.header_bytes == 80 and R0_FRAME_PROGRAM_HEADER.flags == 1 and R0_FRAME_PROGRAM_HEADER.total_bytes == 88496 and R0_FRAME_PROGRAM_HEADER.renderer_index == 0 and R0_FRAME_PROGRAM_HEADER.reserved0 == 0 and R0_FRAME_PROGRAM_HEADER.numeric_revision == 4 and R0_FRAME_PROGRAM_HEADER.formal_revision == 1 and R0_FRAME_PROGRAM_HEADER.table_count == 17
             if not header_ok:
                 return false
             reserved: usize = 0
@@ -617,69 +622,69 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
 
     pub fn __wrela_pixels_program_digest_byte(renderer: usize, byte: usize) -> u8:
         if renderer == 0 and byte == 0:
-            return 162
+            return 87
         if renderer == 0 and byte == 1:
-            return 169
+            return 162
         if renderer == 0 and byte == 2:
-            return 201
+            return 128
         if renderer == 0 and byte == 3:
-            return 71
+            return 2
         if renderer == 0 and byte == 4:
-            return 100
+            return 149
         if renderer == 0 and byte == 5:
-            return 196
-        if renderer == 0 and byte == 6:
-            return 236
-        if renderer == 0 and byte == 7:
-            return 79
-        if renderer == 0 and byte == 8:
-            return 205
-        if renderer == 0 and byte == 9:
-            return 202
-        if renderer == 0 and byte == 10:
-            return 227
-        if renderer == 0 and byte == 11:
-            return 197
-        if renderer == 0 and byte == 12:
-            return 135
-        if renderer == 0 and byte == 13:
-            return 237
-        if renderer == 0 and byte == 14:
             return 153
+        if renderer == 0 and byte == 6:
+            return 211
+        if renderer == 0 and byte == 7:
+            return 28
+        if renderer == 0 and byte == 8:
+            return 75
+        if renderer == 0 and byte == 9:
+            return 209
+        if renderer == 0 and byte == 10:
+            return 144
+        if renderer == 0 and byte == 11:
+            return 96
+        if renderer == 0 and byte == 12:
+            return 234
+        if renderer == 0 and byte == 13:
+            return 112
+        if renderer == 0 and byte == 14:
+            return 53
         if renderer == 0 and byte == 15:
-            return 222
+            return 208
         if renderer == 0 and byte == 16:
-            return 65
+            return 196
         if renderer == 0 and byte == 17:
-            return 73
-        if renderer == 0 and byte == 18:
-            return 26
-        if renderer == 0 and byte == 19:
-            return 100
-        if renderer == 0 and byte == 20:
-            return 62
-        if renderer == 0 and byte == 21:
-            return 131
-        if renderer == 0 and byte == 22:
             return 65
+        if renderer == 0 and byte == 18:
+            return 197
+        if renderer == 0 and byte == 19:
+            return 229
+        if renderer == 0 and byte == 20:
+            return 239
+        if renderer == 0 and byte == 21:
+            return 2
+        if renderer == 0 and byte == 22:
+            return 251
         if renderer == 0 and byte == 23:
-            return 28
+            return 112
         if renderer == 0 and byte == 24:
-            return 10
+            return 245
         if renderer == 0 and byte == 25:
-            return 28
+            return 63
         if renderer == 0 and byte == 26:
-            return 40
+            return 23
         if renderer == 0 and byte == 27:
-            return 123
+            return 251
         if renderer == 0 and byte == 28:
-            return 17
+            return 70
         if renderer == 0 and byte == 29:
-            return 139
+            return 211
         if renderer == 0 and byte == 30:
-            return 188
+            return 0
         if renderer == 0 and byte == 31:
-            return 58
+            return 174
         return 0
 
     pub fn __wrela_pixels_program_table_count(renderer: usize, table: u16) -> u32:
@@ -708,7 +713,7 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
         if renderer == 0 and table == 13:
             return 13
         if renderer == 0 and table == 14:
-            return 0
+            return 3
         if renderer == 0 and table == 15:
             return 0
         if renderer == 0 and table == 16:
@@ -740,6 +745,8 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
             return [1, R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].tag.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].flags.to[u64](), R0_CAMERA_LIGHT_POST_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
         if renderer == 0 and table == 13 and id < R0_SHADING_SUMMARY_COUNT.to[u32]():
             return [1, R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].tag.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].flags.to[u64](), R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
+        if renderer == 0 and table == 14 and id < R0_TRANSPARENCY_COUNT.to[u32]():
+            return [1, R0_TRANSPARENCY_TABLE.records[id.to[usize]()].stable_id.to[u64](), R0_TRANSPARENCY_TABLE.records[id.to[usize]()].tag.to[u64](), R0_TRANSPARENCY_TABLE.records[id.to[usize]()].flags.to[u64](), R0_TRANSPARENCY_TABLE.records[id.to[usize]()].operand_count.to[u64]()]
         return [0; 5]
 
     pub fn __wrela_pixels_program_operand(renderer: usize, table: u16, id: u32, ordinal: u16) -> [u64; 2]:
@@ -837,6 +844,15 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
             if ordinal >= R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_count:
                 return [0; 2]
             immediate_index = R0_SHADING_SUMMARY_TABLE.records[id.to[usize]()].operand_offset.to[usize]() + ordinal.to[usize]()
+            if immediate_index >= R0_IMMEDIATE_COUNT:
+                return [0; 2]
+            if R0_IMMEDIATE_TABLE.records[immediate_index].owner_kind != table or R0_IMMEDIATE_TABLE.records[immediate_index].owner_id != id or R0_IMMEDIATE_TABLE.records[immediate_index].ordinal != ordinal.to[u32]() or R0_IMMEDIATE_TABLE.records[immediate_index].reserved0 != 0 or R0_IMMEDIATE_TABLE.records[immediate_index].reserved1 != 0:
+                return [0; 2]
+            return [1, R0_IMMEDIATE_TABLE.records[immediate_index].value]
+        if renderer == 0 and table == 14 and id < R0_TRANSPARENCY_COUNT.to[u32]():
+            if ordinal >= R0_TRANSPARENCY_TABLE.records[id.to[usize]()].operand_count:
+                return [0; 2]
+            immediate_index = R0_TRANSPARENCY_TABLE.records[id.to[usize]()].operand_offset.to[usize]() + ordinal.to[usize]()
             if immediate_index >= R0_IMMEDIATE_COUNT:
                 return [0; 2]
             if R0_IMMEDIATE_TABLE.records[immediate_index].owner_kind != table or R0_IMMEDIATE_TABLE.records[immediate_index].owner_id != id or R0_IMMEDIATE_TABLE.records[immediate_index].ordinal != ordinal.to[u32]() or R0_IMMEDIATE_TABLE.records[immediate_index].reserved0 != 0 or R0_IMMEDIATE_TABLE.records[immediate_index].reserved1 != 0:
@@ -2876,6 +2892,34 @@ FrameProgram v1 renderer=0 digest=a2a9c94764c4ec4fcdcae3c587ed99de41491a643e8341
 
     pub fn __wrela_pixels_p8_submit(doorbell_addr: u64, control_addr: u64) -> unit:
         return unit
+
+    pub fn __wrela_pixels_p10_probe_prepare_r0(frame_index: u64) -> bool:
+        return true
+    pub fn __wrela_pixels_p10_probe_invalidate_r0() -> bool:
+        return true
+    pub fn __wrela_pixels_p10_probe_status_r0() -> [u64; 4]:
+        return [1, 0, 0, 0]
+
+    pub fn __wrela_pixels_p10_probe_prepare(renderer: usize, frame_index: u64) -> bool:
+        if renderer == 0:
+            return __wrela_pixels_p10_probe_prepare_r0(frame_index)
+        return false
+
+    pub fn __wrela_pixels_p10_probe_invalidate(renderer: usize) -> bool:
+        if renderer == 0:
+            return __wrela_pixels_p10_probe_invalidate_r0()
+        return false
+
+    pub fn __wrela_pixels_p10_probe_status(renderer: usize) -> [u64; 4]:
+        if renderer == 0:
+            return __wrela_pixels_p10_probe_status_r0()
+        return [0; 4]
+
+    pub fn __wrela_pixels_p10_probe_word_load(renderer: usize, word: usize) -> [u64; 2]:
+        return [0; 2]
+
+    pub fn __wrela_pixels_p10_probe_word_store(renderer: usize, word: usize, value: u64) -> bool:
+        return false
   GeneratedModule end
-  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,parameter,scalar,shading-summary]
+  GeneratedActors coordinator=__wrela_renderer_0_coordinator workers=1 palette=debug-identity-fixed-q families=[camera-light-post,csg,event,feature,field,fixed-domain,material,object,parameter,scalar,shading-summary,transparency]
   Execution from_scratch_sweep=true raster=scalar+i32x4-asimd coverage=analytic-exact presentation=machine-v1-bgra8-srgb bounded_local_rebuild=true dense_frame=false previous_state=false oracle_runtime=false debug_visibility=true

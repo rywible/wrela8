@@ -1,0 +1,9 @@
+P10Conformance version=1 model=normative status=pass
+case=transparent-1 layers=1 candidate=3fb6000000000000,3fc6000000000000,3fd2000000000000 interval=352:352;704:704;1152:1152 bytes=83,115,145 status=pass
+case=transparent-2 layers=2 candidate=3fc0580000000000,3fd0400000000000,3fd9800000000000 interval=523:523;1040:1040;1632:1632 bytes=100,138,169 status=pass
+case=transparent-8 layers=8 candidate=3fce256e80000000,3fdd326400000000,3fe5ff6c00000000 interval=963:966;1867:1869;2815:2817 bytes=133,180,216 status=pass
+case=transparent-64 layers=64 candidate=3fd0bffffacb51f1,3fdffffffb4280bb,3fe7fffffc9d3760 interval=1070:1077;2046:2051;3070:3077 bytes=140,188,225 status=pass
+case=bright-emissive-tail layers=8 candidate=3fee85b97f000000,3fe6f86902000000,3fe63b9d44000000 interval=3903:3909;2938:2941;2844:2847 bytes=250,220,217 early_out=false status=pass
+case=transparent-tail-early early_out=true full=137,137,137 proxy=137,137,137 status=pass
+case=transparent-depth-swap ab=3fe0000000000000,3fd0000000000000 ba=3fd0000000000000,3fe0000000000000 status=pass
+case=transparent-silhouette coverage=128 rgb=3fd0101010101010,3fc0101010101010,3fb0101010101010 status=pass

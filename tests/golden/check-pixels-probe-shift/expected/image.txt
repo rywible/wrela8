@@ -16,7 +16,7 @@ ImageGraph v0
     Arg label=width value=64
     Arg label=height value=32
     Arg label=refresh_hz value=60
-    Arg label=shade_hz value=60
+    Arg label=shade_hz value=4
     Arg label=profile value=RenderProfile.AaaByteExact
     Arg label=tone_curve value=ToneCurve.Linear
     Arg label=near value=0.1
@@ -28,7 +28,7 @@ ImageGraph v0
     Arg label=exposure_range value=(-1, 1)
     Arg label=environment_range value=((0, 0, 0), (1, 1, 1))
     Arg label=ao value=(false, 1, 1)
-    Arg label=probes value=(true, 250)
+    Arg label=probes value=(true, false, 3, 16, 8, 16, 1, 250)
     Arg label=initialization_deadline_ms value=250
   OnFailure index=0
     Arg label=policy value=Failure.Halt

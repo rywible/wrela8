@@ -3319,6 +3319,29 @@ fn verify_pixels_placed_static_reservations(
                 })?,
             size: renderer.mutable_layout.header.bytes,
         });
+        let mut probe_offset = 0_u64;
+        let mut probe_chunk = 0_usize;
+        while probe_offset < renderer.mutable_layout.probes.bytes {
+            let size = (renderer.mutable_layout.probes.bytes - probe_offset)
+                .min(crate::pixels::glue::WORKSPACE_VIEW_CHUNK_BYTES);
+            aliases.push(AllowedPixelsAlias {
+                name: format!("R{}_PROBE_STATE_CHUNK_{probe_chunk}", placement.index),
+                addr: placement
+                    .state_base
+                    .checked_add(renderer.mutable_layout.probes.offset)
+                    .and_then(|base| base.checked_add(probe_offset))
+                    .ok_or_else(|| {
+                        LayoutError::new("P025: generated probe chunk alias address overflow")
+                    })?,
+                size,
+            });
+            probe_offset = probe_offset.checked_add(size).ok_or_else(|| {
+                LayoutError::new("P025: generated probe chunk alias offset overflow")
+            })?;
+            probe_chunk = probe_chunk.checked_add(1).ok_or_else(|| {
+                LayoutError::new("P015: generated probe chunk alias count overflow")
+            })?;
+        }
         let mut display_list_offset = 0_u64;
         let mut display_list_chunk = 0_usize;
         while display_list_offset < renderer.mutable_layout.tile_descriptors.bytes {

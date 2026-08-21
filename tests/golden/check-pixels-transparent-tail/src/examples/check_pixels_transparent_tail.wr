@@ -23,12 +23,10 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 10
-# production Pixels stage is not implemented; implemented in task P10.4
-
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-const LAYER_COUNT: u32 = 4
+const LAYER_COUNT: u32 = 8
 const BRIGHT_SUFFIX_RAW: u32 = 4096
 
 struct SceneParams:
@@ -49,12 +47,17 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+        emissive=Rgb(r=16.0, g=8.0, b=4.0),
+        opacity=0.125,
+    )
 
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 10, "fixture id must remain pinned"
-    assert LAYER_COUNT == 4, "adversarial scene value must remain pinned"
+    assert LAYER_COUNT == 8, "front and back boundaries must remain pinned"
 
 @image
 pub fn build() -> Image:

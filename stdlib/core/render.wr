@@ -1,19 +1,23 @@
 module render
 
 from core.__image_pixels import __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p9_light_range, __wrela_pixels_p9_material_inputs
-from core.__image_pixels import __wrela_pixels_f64_bits_to_f32, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p8_begin, __wrela_pixels_p8_cancel, __wrela_pixels_p8_complete, __wrela_pixels_p8_descriptor_digest, __wrela_pixels_p8_digest, __wrela_pixels_p8_display_doorbell, __wrela_pixels_p8_initialize, __wrela_pixels_p8_present, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_raster_evidence_word, __wrela_pixels_p8_raw_digest, __wrela_pixels_p8_submit, __wrela_pixels_p8_visible_byte, __wrela_pixels_p8_write, __wrela_pixels_p8_write4, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_scene_distance, __wrela_pixels_program_digest_byte, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_table_count, __wrela_pixels_program_validate
+from core.__image_pixels import __wrela_pixels_f64_bits_to_f32, __wrela_pixels_p10_probe_invalidate, __wrela_pixels_p10_probe_prepare, __wrela_pixels_p10_probe_status, __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_feature_valid, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_store, __wrela_pixels_p7_framebuffer_alpha_samples, __wrela_pixels_p7_framebuffer_byte, __wrela_pixels_p7_framebuffer_digest, __wrela_pixels_p7_framebuffer_reset, __wrela_pixels_p7_framebuffer_write, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_param_slot, __wrela_pixels_p7_pinned_camera, __wrela_pixels_p7_polynomial_at_q, __wrela_pixels_p7_standard_interval_mul, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_counter, __wrela_pixels_p7_worker_assignment, __wrela_pixels_p7_worker_error_class, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_counter, __wrela_pixels_p7_workspace_load_certified_run_word, __wrela_pixels_p8_begin, __wrela_pixels_p8_cancel, __wrela_pixels_p8_complete, __wrela_pixels_p8_descriptor_digest, __wrela_pixels_p8_digest, __wrela_pixels_p8_display_doorbell, __wrela_pixels_p8_initialize, __wrela_pixels_p8_present, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_raster_evidence_word, __wrela_pixels_p8_raw_digest, __wrela_pixels_p8_submit, __wrela_pixels_p8_visible_byte, __wrela_pixels_p8_write, __wrela_pixels_p8_write4, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_material, __wrela_pixels_p9_scene_distance, __wrela_pixels_program_digest_byte, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_table_count, __wrela_pixels_program_validate
 from core.field import Rgb, Vec3, Vec4, cross3, dot3, length3, sqrt_scalar
 from core.render_coverage import CoverageOutcome
 from core.render_interval import FixedDomain, NumericOutcome, interval_ceil_div, interval_floor_div, interval_narrow, interval_sub, interval_valid
-from core.render_light import P9ShadingMeta, __wrela_pixels_p9_concentric_disk, __wrela_pixels_p9_disk_offset, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_shade_pixel, __wrela_pixels_p9_texture_mip_bounds, __wrela_pixels_p9_texture_moments
-from core.render_isolation import __wrela_pixels_p5_finite, __wrela_pixels_p7_collect_roots, __wrela_pixels_p7_collect_roots_box, __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates, __wrela_pixels_p7_select_visibility
+from core.render_light import P9ShadingMeta, __wrela_pixels_p9_concentric_disk, __wrela_pixels_p9_disk_offset, __wrela_pixels_p9_encode_certified, __wrela_pixels_p9_exposure_multiplier, __wrela_pixels_p9_hdr_pixel, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_shade_pixel, __wrela_pixels_p9_texture_mip_bounds, __wrela_pixels_p9_texture_moments
+from core.render_isolation import __wrela_pixels_p10_ordered_layers, __wrela_pixels_p5_finite, __wrela_pixels_p7_collect_roots, __wrela_pixels_p7_collect_roots_box, __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates, __wrela_pixels_p7_select_visibility
 from core.render_orchestrate import __wrela_pixels_p7_job_value, __wrela_pixels_p7_run_job, __wrela_pixels_p7_worker_error_code, __wrela_pixels_p7_worker_error_tile, __wrela_pixels_p9_event_color
-from core.render_probe import __wrela_pixels_p7_debug_frame_dump_word
+from core.render_probe import __wrela_pixels_p10_probe_update_all_impl, __wrela_pixels_p7_debug_frame_dump_word
 from core.render_program import Polynomial9, Polynomial9Outcome, bernstein_from_power9, bernstein_lerp_ratio, polynomial_compose9, polynomial_multiply9, program_binomial, program_ceil_div, program_floor_div, program_gcd
 from core.render_raster import AffineRunSetup, I32x4, IdentitySetId, LightSummaryId, MaterialSummaryId, OutputProofCode, PIXELS_REGION_RASTER_CHARGE, PIXELS_REGION_RASTER_PACKET_LOOP, PIXELS_REGION_RASTER_SCALAR_PREFIX, PIXELS_REGION_RASTER_SCALAR_SUFFIX, QRunScalar, RasterRun, pixels_census_region, pixels_i32x4_backend_add
+from core.render_transfer import F32TransferV1, __wrela_pixels_p10_f32_transfer_balanced64, __wrela_pixels_p10_f32_transfer_compose
 
 pub fn __wrela_pixels_p9_debug_visibility_enabled() -> bool:
     return __wrela_pixels_p9_debug_visibility()
+
+pub fn __wrela_pixels_p10_probe_update_all(renderer: usize, frame_index: u64) -> bool:
+    return __wrela_pixels_p10_probe_update_all_impl(renderer, frame_index)
 
 fn __wrela_pixels_p9_light_rate_valid(
     current: f32,
@@ -753,15 +757,80 @@ pub struct AoConfig:
 
 pub struct ProbeConfig:
     enabled: bool
+    static_preinitialized: bool
+    levels: u32
+    dim_x: u32
+    dim_y: u32
+    dim_z: u32
+    base_spacing: f32
     initialization_worst_case_ms: u32
 
     pub fn fixed(enabled: bool) -> ProbeConfig:
         if enabled:
-            return ProbeConfig(enabled=true, initialization_worst_case_ms=250)
-        return ProbeConfig(enabled=false, initialization_worst_case_ms=0)
+            return ProbeConfig(
+                enabled=true,
+                static_preinitialized=false,
+                levels=3,
+                dim_x=16,
+                dim_y=8,
+                dim_z=16,
+                base_spacing=1.0,
+                initialization_worst_case_ms=250,
+            )
+        return ProbeConfig(
+            enabled=false,
+            static_preinitialized=false,
+            levels=0,
+            dim_x=0,
+            dim_y=0,
+            dim_z=0,
+            base_spacing=1.0,
+            initialization_worst_case_ms=0,
+        )
+
+    pub fn dynamic_v1(
+        base_spacing: f32,
+        levels: u32,
+        dim_x: u32,
+        dim_y: u32,
+        dim_z: u32,
+        initialization_worst_case_ms: u32,
+    ) -> ProbeConfig:
+        return ProbeConfig(
+            enabled=true,
+            static_preinitialized=false,
+            levels=levels,
+            dim_x=dim_x,
+            dim_y=dim_y,
+            dim_z=dim_z,
+            base_spacing=base_spacing,
+            initialization_worst_case_ms=initialization_worst_case_ms,
+        )
+
+    pub fn static_v1(
+        base_spacing: f32,
+        levels: u32,
+        dim_x: u32,
+        dim_y: u32,
+        dim_z: u32,
+    ) -> ProbeConfig:
+        # Reserved for the source-level embedded-blob extension. The compiler
+        # rejects this constructor fail-closed until such a blob is part of
+        # the sealed renderer declaration; it must never silently run the
+        # dynamic initializer under a static contract.
+        return ProbeConfig(
+            enabled=true,
+            static_preinitialized=true,
+            levels=levels,
+            dim_x=dim_x,
+            dim_y=dim_y,
+            dim_z=dim_z,
+            base_spacing=base_spacing,
+            initialization_worst_case_ms=0,
+        )
 
     pub fn disabled() -> ProbeConfig:
-        return ProbeConfig(enabled=false, initialization_worst_case_ms=0)
+        return ProbeConfig.fixed(enabled=false)
 
 pub enum RenderProfile:
     AaaByteExact
@@ -1234,6 +1303,19 @@ pub struct P7StoredRoot:
             margin=0,
         )
 
+pub struct P10LayerList:
+    pub ok: bool
+    pub error: u8
+    pub count: u8
+    pub identities: [u32; 64]
+    pub features: [u32; 64]
+    pub q_lo: [i32; 64]
+    pub q_hi: [i32; 64]
+    pub orientation: [i8; 64]
+
+    pub fn failure(error: u8) -> P10LayerList:
+        return P10LayerList(ok=false, error=error, count=0, identities=[0; 64], features=[0; 64], q_lo=[0; 64], q_hi=[0; 64], orientation=[0; 64])
+
 pub struct P7BoolResult:
     pub ok: bool
     pub value: bool
@@ -1382,6 +1464,12 @@ pub struct P8RasterContext:
     # P9 keeps P8's independently-scored identity framebuffer available only
     # in compiler-internal conformance images. Production always ignores it.
     pub debug_color: u32
+    # P10 reconstructs the complete pixel root sequence from the same sealed
+    # candidate/snapshot pair used by the row certificate.  Keeping these in
+    # the compact context prevents the regular-run summary from silently
+    # discarding transparent boundaries behind the first hit.
+    pub candidates: P7RowCandidates
+    pub snapshot: FrameInputSnapshot
 
 pub struct P9LightingCertificate:
     pub ok: bool
@@ -2649,6 +2737,293 @@ fn __wrela_pixels_p8_geometry_packet_valid(
         geometry_lane = geometry_lane + 1
     return true
 
+pub fn __wrela_pixels_p10_transfer_capacity(renderer: usize) -> [u64; 3]:
+    count = __wrela_pixels_program_table_count(renderer, 14)
+    found = false
+    capacity: u64 = 0
+    transmissive: u64 = 0
+    index: u32 = 0
+    @budget(bound=4096)
+    while index < count:
+        record = __wrela_pixels_program_record(renderer, 14, index)
+        if record[0] != 1:
+            return [0, 0, 0]
+        if record[2] == 1:
+            may_transmit = __wrela_pixels_program_operand(renderer, 14, index, 11)
+            if may_transmit[0] != 1 or may_transmit[1] > 1:
+                return [0, 0, 0]
+            transmissive = transmissive | may_transmit[1]
+        if record[2] == 2:
+            value = __wrela_pixels_program_operand(renderer, 14, index, 0)
+            if value[0] != 1 or value[1] > 64:
+                return [0, 0, 0]
+            capacity = value[1]
+            found = true
+        index = index + 1
+    if not found:
+        return [0, 0, 0]
+    return [1, capacity, transmissive]
+
+pub fn __wrela_pixels_p10_tail_radiance(renderer: usize) -> [f32; 4]:
+    count = __wrela_pixels_program_table_count(renderer, 14)
+    if count == 4294967295:
+        return [0.0; 4]
+    index: u32 = 0
+    @budget(bound=4096)
+    while index < count:
+        record = __wrela_pixels_program_record(renderer, 14, index)
+        if record[0] != 1:
+            return [0.0; 4]
+        if record[2] == 3:
+            result: [f32; 4] = [1.0; 4]
+            channel: usize = 0
+            @budget(bound=3)
+            while channel < 3:
+                encoded = __wrela_pixels_program_operand(renderer, 14, index, channel.to[u16]())
+                if encoded[0] != 1:
+                    return [0.0; 4]
+                result[channel + 1] = __wrela_pixels_f64_bits_to_f32(encoded[1])
+                if result[channel + 1] < 0.0 or result[channel + 1] != result[channel + 1]:
+                    return [0.0; 4]
+                channel = channel + 1
+            return result
+        index = index + 1
+    return [0.0; 4]
+
+# Returns status 2 when the ordinary opaque P9 path must be used unchanged,
+# status 1 with a certified transparent composite, and status 0 on failure.
+pub fn __wrela_pixels_p10_transparent_color(
+    read context: P8RasterContext,
+    read raster: RasterRun,
+    raster_x: u32,
+    front_q_raw: i32,
+) -> [u64; 2]:
+    capacity = __wrela_pixels_p10_transfer_capacity(context.renderer)
+    if capacity[0] != 1:
+        return [0, 0]
+    if capacity[2] == 0 and capacity[1] > 0:
+        return [2, 0]
+    roots = __wrela_pixels_p7_collect_roots(
+        context.renderer,
+        context.worker,
+        raster_x,
+        context.y,
+        context.candidates,
+        context.snapshot,
+    )
+    layers = __wrela_pixels_p10_ordered_layers(context.renderer, roots)
+    if not layers.ok:
+        return [0, 0]
+    if layers.count == 0:
+        return [2, 0]
+    u = (
+        2 * raster_x.to[i64]() + 1 - context.width.to[i64]()
+    ).to[f32]() / context.height.to[f32]()
+    v = (
+        context.height.to[i64]() - 2 * context.y.to[i64]() - 1
+    ).to[f32]() / context.height.to[f32]()
+    ray = [
+        context.camera[3] + u * context.camera[6] + v * context.camera[9],
+        context.camera[4] + u * context.camera[7] + v * context.camera[10],
+        context.camera[5] + u * context.camera[8] + v * context.camera[11],
+    ]
+    identity_transfer = F32TransferV1.identity()
+    transfer_layers: [F32TransferV1; 64] = [identity_transfer; 64]
+    emitted: u64 = 0
+    layer: u8 = 0
+    @budget(bound=64)
+    while layer < layers.count:
+        slot = layer.to[usize]()
+        q_raw = layers.q_lo[slot] + (layers.q_hi[slot] - layers.q_lo[slot]) / 2
+        if layer == 0:
+            q_raw = front_q_raw
+        q = q_raw.to[f32]() * context.scale
+        if not q > 0.0 or layers.features[slot] >= 16777215:
+            return [0, 0]
+        evaluated_normal = __wrela_pixels_p7_feature_normal(
+            context.renderer,
+            layers.features[slot],
+            u,
+            v,
+            q,
+            context.params,
+            context.camera,
+        )
+        if evaluated_normal[0] != 1.0:
+            return [0, 0]
+        shade_normal: [f32; 3] = [
+            evaluated_normal[1], evaluated_normal[2], evaluated_normal[3],
+        ]
+        if shade_normal[0] * ray[0] + shade_normal[1] * ray[1] + shade_normal[2] * ray[2] > 0.0:
+            shade_normal = [-shade_normal[0], -shade_normal[1], -shade_normal[2]]
+        point = [
+            context.camera[0] + ray[0] / q,
+            context.camera[1] + ray[1] / q,
+            context.camera[2] + ray[2] / q,
+        ]
+        lighting = __wrela_pixels_p9_lighting_certificate(
+            context.renderer,
+            context.worker,
+            point,
+            shade_normal,
+            layers.features[slot],
+            context.params,
+            context.light_kinds,
+            context.light_values,
+        )
+        if not lighting.ok:
+            return [0, 0]
+        surface: [f32; 15] = [0.0; 15]
+        surface[0] = u
+        surface[1] = v
+        surface[2] = q
+        surface[3] = shade_normal[0]
+        surface[4] = shade_normal[1]
+        surface[5] = shade_normal[2]
+        # A deeper layer has no run-level differential certificate in v1.
+        # Constant/parameter-only materials are complete without derivatives;
+        # textured or normal-mapped deeper layers fail closed instead of
+        # borrowing the front sheet's differential model.
+        inputs = __wrela_pixels_p9_material_inputs(context.renderer, layers.identities[slot])
+        if inputs[0] != 1 or (layer != 0 and inputs[1] & 112 != 0):
+            return [0, 0]
+        if layer == 0:
+            pixel_step = 2.0 / context.height.to[f32]()
+            offset = (raster_x - raster.x0.to[u32]()).to[i64]()
+            q_u_raw = raster.q_u.value.to[i64]() + offset * raster.q_u.delta.to[i64]()
+            q_v_raw = raster.q_v.value.to[i64]()
+            if not __wrela_pixels_p8_i32_fits(q_u_raw) or not __wrela_pixels_p8_i32_fits(q_v_raw):
+                return [0, 0]
+            q_u = q_u_raw.to[f32]() * context.scale
+            q_v = q_v_raw.to[f32]() * context.scale
+            inverse_q2 = 1.0 / (q * q)
+            surface[6] = (context.camera[6] / q - ray[0] * q_u * inverse_q2) * pixel_step
+            surface[7] = (context.camera[7] / q - ray[1] * q_u * inverse_q2) * pixel_step
+            surface[8] = (context.camera[8] / q - ray[2] * q_u * inverse_q2) * pixel_step
+            surface[9] = (context.camera[9] / q - ray[0] * q_v * inverse_q2) * pixel_step
+            surface[10] = (context.camera[10] / q - ray[1] * q_v * inverse_q2) * pixel_step
+            surface[11] = (context.camera[11] / q - ray[2] * q_v * inverse_q2) * pixel_step
+        surface[12] = lighting.ao
+        surface[13] = lighting.ao_lower
+        surface[14] = lighting.ao_upper
+        material = __wrela_pixels_p9_material(
+            context.renderer,
+            layers.identities[slot],
+            [u, v, q, shade_normal[0], shade_normal[1], shade_normal[2]],
+            context.params,
+            context.camera,
+        )
+        if material[0] != 1.0 or material[10] < 0.0 or material[10] > 1.0:
+            return [0, 0]
+        opacity = material[10]
+        if layer == 0 and opacity == 1.0:
+            # Preserve every P9 opaque byte and refinement decision exactly.
+            return [2, 0]
+        if opacity == 0.0 and material[7] == 0.0 and material[8] == 0.0 and material[9] == 0.0:
+            layer = layer + 1
+            continue
+        if emitted >= capacity[1]:
+            return [0, 0]
+        emitted_index = emitted.to[usize]()
+        emitted = emitted + 1
+        meta = P9ShadingMeta(
+            identity=layers.identities[slot].to[u64](),
+            flags=127.to[u64]() | ((layers.features[slot].to[u64]() + 1) << 8) | (context.worker.to[u64]() << 32),
+            visibility=lighting.visibility,
+            visibility_uncertain=lighting.visibility_uncertain,
+            visibility_refined=lighting.visibility_refined,
+            visibility_refined_uncertain=lighting.visibility_refined_uncertain,
+            visibility_terminal_light=lighting.visibility_terminal_light,
+        )
+        hdr = __wrela_pixels_p9_hdr_pixel(
+            context.renderer,
+            meta,
+            surface,
+            context.params,
+            context.camera,
+            context.light_kinds,
+            context.light_values,
+            [0.0, 0.0, 0.0, 0.0],
+        )
+        if hdr[0] != 1.0:
+            return [0, 0]
+        channel: usize = 0
+        @budget(bound=3)
+        while channel < 3:
+            transfer_layers[emitted_index].candidate[channel] = opacity * hdr[channel + 7]
+            transfer_layers[emitted_index].lower[channel] = opacity * hdr[channel + 1]
+            transfer_layers[emitted_index].upper[channel] = opacity * hdr[channel + 4]
+            channel = channel + 1
+        transfer_layers[emitted_index].transmittance = 1.0 - opacity
+        # The direct byte proof is the final tail decision. The proxy is the
+        # environment and the interval is widened by the compiler's complete
+        # suffix-radiance contract, so a successful encode is independent of
+        # every unvisited layer's candidate transmittance.
+        if layer + 1 < layers.count and opacity < 1.0:
+            tail = __wrela_pixels_p10_tail_radiance(context.renderer)
+            exposure = __wrela_pixels_p9_exposure_multiplier(context.exposure)
+            if tail[0] == 1.0 and exposure[0] == 1.0:
+                prefix = __wrela_pixels_p10_f32_transfer_balanced64(
+                    transfer_layers, emitted.to[u8](),
+                )
+                tail_candidate: [f32; 3] = [0.0; 3]
+                tail_lower: [f32; 3] = [0.0; 3]
+                tail_upper: [f32; 3] = [0.0; 3]
+                channel = 0
+                @budget(bound=3)
+                while channel < 3:
+                    proxy = prefix.candidate[channel] + prefix.transmittance * context.environment[channel]
+                    deviation = prefix.transmittance * (tail[channel + 1] + context.environment[channel])
+                    tail_candidate[channel] = proxy * exposure[1]
+                    tail_lower[channel] = (proxy - deviation) * exposure[1]
+                    if tail_lower[channel] < 0.0:
+                        tail_lower[channel] = 0.0
+                    tail_upper[channel] = (proxy + deviation) * exposure[1]
+                    channel = channel + 1
+                tail_encoded = __wrela_pixels_p9_encode_certified(
+                    context.renderer, tail_candidate, tail_lower, tail_upper,
+                )
+                if tail_encoded[0] == 1:
+                    return tail_encoded
+        if opacity == 1.0:
+            layer = layers.count
+        else:
+            layer = layer + 1
+    if emitted == 0:
+        return [2, 0]
+    prefix = __wrela_pixels_p10_f32_transfer_balanced64(
+        transfer_layers, emitted.to[u8](),
+    )
+    background = F32TransferV1(
+        candidate=context.environment,
+        lower=context.environment,
+        upper=context.environment,
+        transmittance=0.0,
+    )
+    composite = __wrela_pixels_p10_f32_transfer_compose(prefix, background)
+    accumulated = composite.candidate
+    accumulated_lower = composite.lower
+    accumulated_upper = composite.upper
+    exposure = __wrela_pixels_p9_exposure_multiplier(context.exposure)
+    if exposure[0] != 1.0:
+        return [0, 0]
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        accumulated[channel] = accumulated[channel] * exposure[1]
+        accumulated_lower[channel] = accumulated_lower[channel] * exposure[1]
+        accumulated_upper[channel] = accumulated_upper[channel] * exposure[1]
+        channel = channel + 1
+    encoded = __wrela_pixels_p9_encode_certified(
+        context.renderer,
+        accumulated,
+        accumulated_lower,
+        accumulated_upper,
+    )
+    if encoded[0] != 1:
+        return [0, 0]
+    return encoded
+
 fn __wrela_pixels_p9_raster_color(
     read context: P8RasterContext,
     read raster: RasterRun,
@@ -2657,6 +3032,11 @@ fn __wrela_pixels_p9_raster_color(
 ) -> [u64; 2]:
     if __wrela_pixels_p9_debug_visibility():
         return [1, context.debug_color.to[u64]()]
+    transparent = __wrela_pixels_p10_transparent_color(context, raster, raster_x, q_raw)
+    if transparent[0] == 0:
+        return [0, 0]
+    if transparent[0] == 1:
+        return transparent
     u = (
         2 * raster_x.to[i64]() + 1 - context.width.to[i64]()
     ).to[f32]() / context.height.to[f32]()
@@ -2789,6 +3169,9 @@ fn __wrela_pixels_p9_raster_color(
 
 pub fn __wrela_pixels_p9_constant_summary_eligible(read context: P8RasterContext) -> bool:
     if __wrela_pixels_p9_debug_visibility():
+        return false
+    transparency = __wrela_pixels_p10_transfer_capacity(context.renderer)
+    if transparency[0] != 1 or transparency[2] != 0 or transparency[1] == 0:
         return false
     if not context.hit:
         return true
@@ -3609,6 +3992,11 @@ pub struct Renderer[P]:
             counter = counter + 1
         if not telemetry_present:
             telemetry_digest = [0; 4]
+        probe_status = __wrela_pixels_p10_probe_status(renderer_index)
+        if probe_status[0] != 1:
+            _ = __wrela_pixels_p10_probe_invalidate(renderer_index)
+            _ = __wrela_pixels_p8_cancel(renderer_index)
+            return self.__internal_error(take frame, 4110)
         submission = __wrela_pixels_p8_present(renderer_index, frame.frame_index)
         if submission[0] != 2:
             _ = __wrela_pixels_p8_cancel(renderer_index)
@@ -3762,6 +4150,11 @@ pub struct Renderer[P]:
         )
         if snapshot_stored == false:
             return self.__internal_error(take frame, 4096)
+        probes_ready = __wrela_pixels_p10_probe_update_all(
+            renderer_index.to[usize](), frame.frame_index,
+        )
+        if probes_ready == false:
+            return self.__internal_error(take frame, 4110)
         scanout = __wrela_pixels_p8_begin(renderer_index.to[usize]())
         if scanout[0] != 1:
             return self.__internal_error(take frame, 4096)
@@ -3787,6 +4180,7 @@ pub struct Renderer[P]:
             for result in results:
                 worker_state = __wrela_pixels_p7_digest_result(worker_state, take result)
         if worker_state.ok == false:
+            _ = __wrela_pixels_p10_probe_invalidate(renderer_usize)
             _ = __wrela_pixels_p8_cancel(renderer_usize)
             return self.__worker_error(
                 take frame,
@@ -3865,3 +4259,9 @@ pub fn __wrela_pixels_bootstrap_texture(tag: u32) -> Result[u32, RenderError]:
 
 pub fn __wrela_pixels_bootstrap_shading_summary(tag: u32) -> Result[u32, RenderError]:
     return __wrela_pixels_bootstrap_dispatch(13, tag)
+
+pub fn __wrela_pixels_bootstrap_transparency(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(14, tag)
+
+pub fn __wrela_pixels_bootstrap_probe(tag: u32) -> Result[u32, RenderError]:
+    return __wrela_pixels_bootstrap_dispatch(15, tag)

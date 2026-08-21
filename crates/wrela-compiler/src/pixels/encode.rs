@@ -278,23 +278,32 @@ mod tests {
         }
         assert_eq!(
             wrela_machine::sha256::sha256_hex(&first),
-            "9dc822326a13b1e4baeb20aca60234deb40f6b2db17c49d6d5ed4ea3e474245e"
+            "f211202d5ee8540ef0323973edfff60be0c0d81486cfa9673070294ad30dcfd8"
         );
     }
 
     #[test]
-    fn predeclared_future_tables_are_canonical_empty_entries() {
+    fn unused_tables_are_canonical_empty_entries() {
         let bytes = encode(&crate::pixels::program::minimal_verified_frame_program()).unwrap();
         let tables = binary_verify::verify_envelope(&bytes).unwrap();
         for kind in [
-            FrameProgramTableKindV1::Transparency,
-            FrameProgramTableKindV1::Probe,
             FrameProgramTableKindV1::Kinetic,
             FrameProgramTableKindV1::DebugName,
+            FrameProgramTableKindV1::Probe,
         ] {
             let table = tables.iter().find(|table| table.kind == kind).unwrap();
             assert_eq!((table.count, table.offset, table.byte_len), (0, 0, 0));
         }
+        let transparency = tables
+            .iter()
+            .find(|table| table.kind == FrameProgramTableKindV1::Transparency)
+            .unwrap();
+        assert_eq!(
+            transparency.offset % FRAME_PROGRAM_HOT_ALIGNMENT_V1 as u32,
+            0
+        );
+        assert_ne!(transparency.count, 0);
+        assert_ne!(transparency.byte_len, 0);
     }
 
     #[test]

@@ -1615,6 +1615,156 @@ pub fn verify_frame_record_shape_v1(
                 }
             }
         }
+        FrameProgramTableKindV1::Transparency => match record.tag {
+            1 => {
+                exact_operands(kind, record, 12)?;
+                if !(1..=4).contains(&record.operands[1])
+                    || record.operands[10] > 1
+                    || record.operands[11] > 1
+                {
+                    return Err(
+                        "pixels::verify: transparency material class is invalid".to_string()
+                    );
+                }
+                let lo = f64::from_bits(record.operands[2]);
+                let hi = f64::from_bits(record.operands[3]);
+                if !lo.is_finite() || !hi.is_finite() || lo < 0.0 || lo > hi || hi > 1.0 {
+                    return Err(
+                        "pixels::verify: transparency opacity interval is invalid".to_string()
+                    );
+                }
+                if record.operands[4..10]
+                    .iter()
+                    .map(|bits| f64::from_bits(*bits))
+                    .any(|value| !value.is_finite() || value < 0.0)
+                {
+                    return Err(
+                        "pixels::verify: transparency radiance bound is invalid".to_string()
+                    );
+                }
+            }
+            2 => {
+                exact_operands(kind, record, 5)?;
+                let capacity = record.operands[0];
+                let leaves = record.operands[1];
+                if capacity > 64
+                    || (capacity == 0) != (leaves == 0)
+                    || (leaves != 0 && (!leaves.is_power_of_two() || leaves < capacity))
+                    || record.operands[2..] != [1, 1, 0]
+                {
+                    return Err(
+                        "pixels::verify: transparency transfer-tree contract is invalid"
+                            .to_string(),
+                    );
+                }
+            }
+            3 => {
+                exact_operands(kind, record, 9)?;
+                if record.operands[..3]
+                    .iter()
+                    .map(|bits| f64::from_bits(*bits))
+                    .any(|value| !value.is_finite() || value < 0.0)
+                {
+                    return Err(
+                        "pixels::verify: transparency suffix radiance is invalid".to_string()
+                    );
+                }
+                for bits in &record.operands[3..] {
+                    let value = f32::from_bits(u32::try_from(*bits).map_err(|_| {
+                        "pixels::verify: transparency environment exceeds f32 bits".to_string()
+                    })?);
+                    if !value.is_finite() || value < 0.0 {
+                        return Err(
+                            "pixels::verify: transparency environment bound is invalid".to_string()
+                        );
+                    }
+                }
+            }
+            _ => {}
+        },
+        FrameProgramTableKindV1::Probe => match record.tag {
+            1 => {
+                exact_operands(kind, record, 18)?;
+                if record.operands[0] != 1
+                    || record.operands[1] > 1
+                    || !(1..=3).contains(&record.operands[2])
+                    || record.operands[3] == 0
+                    || record.operands[3] > 16
+                    || record.operands[4] == 0
+                    || record.operands[4] > 8
+                    || record.operands[5] == 0
+                    || record.operands[5] > 16
+                    || record.operands[7] == 0
+                    || record.operands[8] != record.operands[7]
+                    || record.operands[11] != 288
+                    || record.operands[12] != 32
+                    || record.operands[13] != 9
+                {
+                    return Err("pixels::verify: probe header contract is invalid".to_string());
+                }
+                let spacing =
+                    f32::from_bits(u32::try_from(record.operands[6]).map_err(|_| {
+                        "pixels::verify: probe spacing exceeds f32 bits".to_string()
+                    })?);
+                if !spacing.is_finite() || spacing <= 0.0 {
+                    return Err("pixels::verify: probe spacing is invalid".to_string());
+                }
+                if record.operands[9]
+                    != record.operands[7].checked_mul(32).ok_or_else(|| {
+                        "pixels::verify: probe all-invalid ray count overflow".to_string()
+                    })?
+                {
+                    return Err(
+                        "pixels::verify: probe all-invalid ray count is inconsistent".to_string(),
+                    );
+                }
+            }
+            2 => {
+                exact_operands(kind, record, 7)?;
+                if record.operands[0] >= 3 || record.operands[1..4].contains(&0) {
+                    return Err("pixels::verify: probe level contract is invalid".to_string());
+                }
+                let spacing = f32::from_bits(u32::try_from(record.operands[4]).map_err(|_| {
+                    "pixels::verify: probe level spacing exceeds f32 bits".to_string()
+                })?);
+                if !spacing.is_finite() || spacing <= 0.0 {
+                    return Err("pixels::verify: probe level spacing is invalid".to_string());
+                }
+            }
+            3 => {
+                exact_operands(kind, record, 14)?;
+                if record.operands[0] >= 32 {
+                    return Err("pixels::verify: probe direction ID exceeds v1 table".to_string());
+                }
+                for bits in &record.operands[1..] {
+                    let value = f32::from_bits(u32::try_from(*bits).map_err(|_| {
+                        "pixels::verify: probe numeric table entry exceeds f32 bits".to_string()
+                    })?);
+                    if !value.is_finite() {
+                        return Err(
+                            "pixels::verify: probe numeric table contains nonfinite data"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            4 => {
+                exact_operands(kind, record, 9)?;
+                if !(1..=4).contains(&record.operands[0])
+                    || record.operands[2..]
+                        .iter()
+                        .map(|bits| f64::from_bits(*bits))
+                        .any(|value| !value.is_finite())
+                    || f64::from_bits(record.operands[2]) > f64::from_bits(record.operands[5])
+                    || f64::from_bits(record.operands[3]) > f64::from_bits(record.operands[6])
+                    || f64::from_bits(record.operands[4]) > f64::from_bits(record.operands[7])
+                    || f64::from_bits(record.operands[8]) < 0.0
+                {
+                    return Err("pixels::verify: probe dependency bound is invalid".to_string());
+                }
+            }
+            _ => {}
+        },
         FrameProgramTableKindV1::FixedDomain => match record.tag {
             1 => exact_operands(kind, record, 31)?,
             5 => {
@@ -2181,6 +2331,198 @@ fn verify_p9_shading_links(program: &FrameProgramModelV1) -> Result<(), String> 
     Ok(())
 }
 
+fn verify_p10_transparency_probe_links(program: &FrameProgramModelV1) -> Result<(), String> {
+    let fixed_capacities = program
+        .table(FrameProgramTableKindV1::FixedDomain)
+        .expect("canonical namespace checked")
+        .records
+        .iter()
+        .find(|record| record.tag == 1)
+        .ok_or_else(|| "pixels::verify: missing capacity record".to_string())?;
+    let materials = program
+        .table(FrameProgramTableKindV1::Material)
+        .expect("canonical namespace checked");
+    let transparency = program
+        .table(FrameProgramTableKindV1::Transparency)
+        .expect("canonical namespace checked");
+    let classes = transparency
+        .records
+        .iter()
+        .filter(|record| record.tag == 1)
+        .collect::<Vec<_>>();
+    if classes.len() != materials.records.len()
+        || classes
+            .iter()
+            .enumerate()
+            .any(|(material, record)| record.operands[0] != material as u64)
+    {
+        return Err(
+            "pixels::verify: transparency classes do not cover material IDs canonically"
+                .to_string(),
+        );
+    }
+    let trees = transparency
+        .records
+        .iter()
+        .filter(|record| record.tag == 2)
+        .collect::<Vec<_>>();
+    let tails = transparency
+        .records
+        .iter()
+        .filter(|record| record.tag == 3)
+        .collect::<Vec<_>>();
+    if trees.len() != 1 || tails.len() != 1 {
+        return Err(
+            "pixels::verify: transparency table requires one tree and one tail contract"
+                .to_string(),
+        );
+    }
+    if trees[0].operands[0] != fixed_capacities.operands[13] {
+        return Err(
+            "pixels::verify: transparency tree capacity differs from renderer capacity".to_string(),
+        );
+    }
+    let has_transparency = classes.iter().any(|record| record.operands[11] == 1);
+    if ((program.flags >> 1) & 1 == 1) != has_transparency {
+        return Err("pixels::verify: transparency header flag is inconsistent".to_string());
+    }
+
+    let probe_enabled = program
+        .table(FrameProgramTableKindV1::CameraLightPost)
+        .and_then(|table| table.records.first())
+        .is_some_and(|record| record.operands[21] == 1);
+    let probes = program
+        .table(FrameProgramTableKindV1::Probe)
+        .expect("canonical namespace checked");
+    if !probe_enabled {
+        if !probes.records.is_empty()
+            || fixed_capacities.operands[15] != 0
+            || program.flags & (1 << 2) != 0
+        {
+            return Err("pixels::verify: disabled probe contract has runtime state".to_string());
+        }
+        return Ok(());
+    }
+    if program.flags & (1 << 2) == 0 {
+        return Err(
+            "pixels::verify: enabled probe contract is missing its header flag".to_string(),
+        );
+    }
+    let headers = probes
+        .records
+        .iter()
+        .filter(|record| record.tag == 1)
+        .collect::<Vec<_>>();
+    let levels = probes
+        .records
+        .iter()
+        .filter(|record| record.tag == 2)
+        .collect::<Vec<_>>();
+    let directions = probes
+        .records
+        .iter()
+        .filter(|record| record.tag == 3)
+        .collect::<Vec<_>>();
+    let dependencies = probes
+        .records
+        .iter()
+        .filter(|record| record.tag == 4)
+        .collect::<Vec<_>>();
+    let [header] = headers.as_slice() else {
+        return Err("pixels::verify: probe table requires exactly one header".to_string());
+    };
+    if levels.len() != header.operands[2] as usize
+        || directions.len() != 32
+        || header.operands[10] != fixed_capacities.operands[15]
+    {
+        return Err("pixels::verify: probe table counts differ from sealed capacities".to_string());
+    }
+    let per_level = header.operands[3]
+        .checked_mul(header.operands[4])
+        .and_then(|value| value.checked_mul(header.operands[5]))
+        .ok_or_else(|| "pixels::verify: probe dimension product overflow".to_string())?;
+    if header.operands[7] != per_level * header.operands[2] {
+        return Err("pixels::verify: probe count differs from level dimensions".to_string());
+    }
+    let base_spacing = f32::from_bits(header.operands[6] as u32);
+    for (level, record) in levels.iter().enumerate() {
+        let expected_spacing = base_spacing * 4.0_f32.powi(level as i32);
+        if record.operands[0] != level as u64
+            || record.operands[1..4] != header.operands[3..6]
+            || f32::from_bits(record.operands[4] as u32).to_bits() != expected_spacing.to_bits()
+            || record.operands[5] != level as u64 * per_level
+            || record.operands[6] != per_level
+        {
+            return Err("pixels::verify: probe levels are not canonical".to_string());
+        }
+    }
+    let mut direction_bytes = Vec::with_capacity(32 * 13 * 4);
+    let mut weight_sum = 0.0_f64;
+    for (direction, record) in directions.iter().enumerate() {
+        if record.operands[0] != direction as u64 {
+            return Err("pixels::verify: probe direction IDs are not ordered".to_string());
+        }
+        for (index, bits) in record.operands[1..].iter().enumerate() {
+            let bits = u32::try_from(*bits)
+                .map_err(|_| "pixels::verify: probe direction bits exceed u32".to_string())?;
+            if index == 3 {
+                weight_sum += f64::from(f32::from_bits(bits));
+            }
+            direction_bytes.extend(bits.to_le_bytes());
+        }
+    }
+    if (weight_sum - std::f64::consts::TAU * 2.0).abs() > 2.0e-6 {
+        return Err("pixels::verify: probe solid-angle weights do not cover 4pi".to_string());
+    }
+    let actual_digest = crate::sha256::sha256(&direction_bytes);
+    let mut sealed_digest = [0_u8; 32];
+    for (index, word) in header.operands[14..18].iter().enumerate() {
+        sealed_digest[index * 8..(index + 1) * 8].copy_from_slice(&word.to_le_bytes());
+    }
+    if actual_digest != sealed_digest {
+        return Err("pixels::verify: probe direction/SH table digest mismatch".to_string());
+    }
+    let mut dependency_ids = std::collections::BTreeSet::new();
+    let mut object_ids = std::collections::BTreeSet::new();
+    let mut light_ids = std::collections::BTreeSet::new();
+    let mut material_ids = std::collections::BTreeSet::new();
+    let mut environment_ids = std::collections::BTreeSet::new();
+    for dependency in &dependencies {
+        let kind = dependency.operands[0];
+        let stable_id = dependency.operands[1];
+        if !dependency_ids.insert((kind, stable_id)) {
+            return Err("pixels::verify: probe dependency IDs are duplicated".to_string());
+        }
+        if kind == 1 {
+            if stable_id >= program.record_count(FrameProgramTableKindV1::Object) as u64 {
+                return Err("pixels::verify: probe dependency object ID is invalid".to_string());
+            }
+            object_ids.insert(stable_id);
+        } else if kind == 2 {
+            light_ids.insert(stable_id);
+        } else if kind == 3 {
+            material_ids.insert(stable_id);
+        } else if kind == 4 {
+            environment_ids.insert(stable_id);
+        }
+    }
+    let light_capacity = program
+        .table(FrameProgramTableKindV1::CameraLightPost)
+        .and_then(|table| table.records.first())
+        .map_or(0, |record| record.operands[7]);
+    if object_ids != (0..program.record_count(FrameProgramTableKindV1::Object) as u64).collect()
+        || light_ids != (0..light_capacity).collect()
+        || material_ids != (0..materials.records.len() as u64).collect()
+        || environment_ids != std::collections::BTreeSet::from([0])
+    {
+        return Err(
+            "pixels::verify: probe dependencies omit geometry, light, material, or environment"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<(), String> {
     if program.numeric_revision != super::FRAME_PROGRAM_NUMERIC_REVISION_V1
         || program.formal_revision != super::FRAME_PROGRAM_FORMAL_REVISION_V1
@@ -2190,7 +2532,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
             program.numeric_revision, program.formal_revision
         ));
     }
-    if program.flags & !1 != 0 {
+    if program.flags & !7 != 0 {
         return Err(format!(
             "pixels::verify: unknown frame-program flags {:#x}",
             program.flags
@@ -2219,10 +2561,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
         }
         if matches!(
             table.kind,
-            FrameProgramTableKindV1::Transparency
-                | FrameProgramTableKindV1::Probe
-                | FrameProgramTableKindV1::Kinetic
-                | FrameProgramTableKindV1::DebugName
+            FrameProgramTableKindV1::Kinetic | FrameProgramTableKindV1::DebugName
         ) && !table.records.is_empty()
         {
             return Err(format!(
@@ -2257,6 +2596,8 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
                     1..=5 | 10..=17 | 20..=28 | 30..=35
                 ),
                 FrameProgramTableKindV1::CameraLightPost => record.tag == 1,
+                FrameProgramTableKindV1::Transparency => (1..=3).contains(&record.tag),
+                FrameProgramTableKindV1::Probe => (1..=4).contains(&record.tag),
                 _ => false,
             };
             if !known_tag {
@@ -2311,6 +2652,7 @@ pub fn verify_frame_program_model_v1(program: &FrameProgramModelV1) -> Result<()
     verify_sealed_numeric_policy(program)?;
     verify_sealed_light_contracts(program)?;
     verify_p9_shading_links(program)?;
+    verify_p10_transparency_probe_links(program)?;
     verify_local_index_chunks(program)?;
     let object_count = program.record_count(FrameProgramTableKindV1::Object);
     let field_count = program.record_count(FrameProgramTableKindV1::Field);

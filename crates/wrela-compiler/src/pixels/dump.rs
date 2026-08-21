@@ -61,7 +61,7 @@ fn dump_config(config: &RendererConfig, out: &mut String) {
         config.world_max.z,
     ));
     out.push_str(&format!(
-        "    Contracts camera_max_motion={} light_capacity={} light_kinds=[{}] exposure=[{},{}] environment=[{},{},{}]-[{},{},{}] ao={} ao_radius={} ao_strength={} probes={} probe_initialization_worst_case_ms={} initialization_deadline_ms={}\n",
+        "    Contracts camera_max_motion={} light_capacity={} light_kinds=[{}] exposure=[{},{}] environment=[{},{},{}]-[{},{},{}] ao={} ao_radius={} ao_strength={} probes={} probe_static={} probe_levels={} probe_dims={}x{}x{} probe_base_spacing={} probe_initialization_worst_case_ms={} initialization_deadline_ms={}\n",
         config.camera_max_motion,
         config.light_capacity,
         config.light_kinds.join(","),
@@ -77,6 +77,12 @@ fn dump_config(config: &RendererConfig, out: &mut String) {
         config.ao_radius,
         config.ao_strength,
         config.probes_enabled,
+        config.probes_static_preinitialized,
+        config.probe_levels,
+        config.probe_dims[0],
+        config.probe_dims[1],
+        config.probe_dims[2],
+        config.probe_base_spacing,
         config.probe_initialization_worst_case_ms,
         config.initialization_deadline_ms,
     ));
@@ -180,11 +186,17 @@ pub fn dump_symbolic_graphs(
             format_f64(f64::from(config.environment.max[2])),
         ));
         out.push_str(&format!(
-            "      Initialization ao={} ao_radius={} ao_strength={} probes={} probe_worst_case_ms={} deadline_ms={}\n",
+            "      Initialization ao={} ao_radius={} ao_strength={} probes={} probe_static={} probe_levels={} probe_dims={}x{}x{} probe_base_spacing={} probe_worst_case_ms={} deadline_ms={}\n",
             config.ao_enabled,
             format_f64(f64::from(config.ao_radius)),
             format_f64(f64::from(config.ao_strength)),
             config.probes_enabled,
+            config.probes_static_preinitialized,
+            config.probe_levels,
+            config.probe_dims[0],
+            config.probe_dims[1],
+            config.probe_dims[2],
+            config.probe_base_spacing,
             config.probe_initialization_worst_case_ms,
             config.initialization_deadline_ms,
         ));
@@ -2585,6 +2597,10 @@ mod tests {
                 ao_radius: 1.0,
                 ao_strength: 1.0,
                 probes_enabled: false,
+                probes_static_preinitialized: false,
+                probe_levels: 0,
+                probe_dims: [0; 3],
+                probe_base_spacing: 1.0,
                 probe_initialization_worst_case_ms: 0,
                 initialization_deadline_ms: 1,
                 parameter_contracts: vec![],

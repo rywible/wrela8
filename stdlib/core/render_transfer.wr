@@ -2,6 +2,14 @@ module render_transfer
 
 from core.render_interval import FixedDomain, Iv32, NumericOutcome, interval_add, interval_ceil_div, interval_floor_div, interval_mul, interval_narrow, interval_valid
 
+pub struct SurfaceLayer:
+    pub sheet: u32
+    pub identity: u32
+    pub q_model: u32
+    pub q_error: Iv32
+    pub orientation: i8
+    pub material_summary: u32
+
 pub struct Transfer:
     r: Iv32
     g: Iv32
@@ -22,6 +30,64 @@ pub struct Transfer:
 
     pub fn transmittance_upper(read self) -> i32:
         return self.t.upper()
+
+pub struct F32TransferV1:
+    pub candidate: [f32; 3]
+    pub lower: [f32; 3]
+    pub upper: [f32; 3]
+    pub transmittance: f32
+
+    pub fn identity() -> F32TransferV1:
+        return F32TransferV1(
+            candidate=[0.0; 3], lower=[0.0; 3], upper=[0.0; 3],
+            transmittance=1.0,
+        )
+
+pub fn __wrela_pixels_p10_f32_transfer_compose(
+    read front: F32TransferV1,
+    read back: F32TransferV1,
+) -> F32TransferV1:
+    result = F32TransferV1.identity()
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        result.candidate[channel] = front.candidate[channel] + front.transmittance * back.candidate[channel]
+        result.lower[channel] = front.lower[channel] + front.transmittance * back.lower[channel]
+        result.upper[channel] = front.upper[channel] + front.transmittance * back.upper[channel]
+        if result.candidate[channel] < result.lower[channel]:
+            result.lower[channel] = result.candidate[channel]
+        if result.candidate[channel] > result.upper[channel]:
+            result.upper[channel] = result.candidate[channel]
+        channel = channel + 1
+    result.transmittance = front.transmittance * back.transmittance
+    return result
+
+pub fn __wrela_pixels_p10_f32_transfer_balanced64(
+    read layers: [F32TransferV1; 64],
+    count: u8,
+) -> F32TransferV1:
+    identity = F32TransferV1.identity()
+    if count == 0 or count > 64:
+        return identity
+    nodes: [F32TransferV1; 128] = [identity; 128]
+    leaf_count: u8 = 1
+    @budget(bound=6)
+    while leaf_count < count:
+        leaf_count = leaf_count * 2
+    leaf: u8 = 0
+    @budget(bound=64)
+    while leaf < leaf_count:
+        if leaf < count:
+            nodes[(leaf_count + leaf).to[usize]()] = layers[leaf.to[usize]()]
+        leaf = leaf + 1
+    node = leaf_count - 1
+    @budget(bound=63)
+    while node > 0:
+        nodes[node.to[usize]()] = __wrela_pixels_p10_f32_transfer_compose(
+            nodes[(node * 2).to[usize]()], nodes[(node * 2 + 1).to[usize]()],
+        )
+        node = node - 1
+    return nodes[1]
 
 pub enum TransferOutcome:
     Value(Transfer)
@@ -82,52 +148,42 @@ pub fn transfer_balanced64(take layers: [Transfer; 64], count: u8, fraction_bits
     if count > 64 or fraction_bits != 8 or rounding_radius < 0:
         return .Error
     identity = Transfer.make(Iv32.point(0), Iv32.point(0), Iv32.point(0), Iv32.point(256))
-    frame_lo: [u8; 8] = [0; 8]
-    frame_hi: [u8; 8] = [0; 8]
-    frame_state: [u8; 8] = [0; 8]
-    left_results: [Transfer; 8] = [identity; 8]
-    depth: i32 = 1
-    frame_hi[0] = count
-    current = identity
-    @budget(bound=253)
-    while depth > 0:
-        frame = depth - 1
-        lo = frame_lo[frame.to[usize]()].to[i32]()
-        hi = frame_hi[frame.to[usize]()].to[i32]()
-        length = hi - lo
-        if length == 0:
-            current = identity
-            depth = depth - 1
-        elif length == 1:
-            current = layers[lo.to[usize]()]
-            depth = depth - 1
-        elif frame_state[frame.to[usize]()] == 0:
-            if depth >= 8:
+    nodes: [Transfer; 128] = [identity; 128]
+    leaf_count: u8 = 1
+    @budget(bound=6)
+    while leaf_count < count:
+        leaf_count = leaf_count * 2
+    leaf: u8 = 0
+    @budget(bound=64)
+    while leaf < leaf_count:
+        if leaf < count:
+            nodes[(leaf_count + leaf).to[usize]()] = layers[leaf.to[usize]()]
+        leaf = leaf + 1
+    node = leaf_count - 1
+    @budget(bound=63)
+    while node > 0:
+        match transfer_compose(nodes[(node * 2).to[usize]()], nodes[(node * 2 + 1).to[usize]()], fraction_bits, rounding_radius):
+            case .Value(value):
+                nodes[node.to[usize]()] = value
+            case .Error:
                 return .Error
-            middle = lo + length / 2
-            frame_state[frame.to[usize]()] = 1
-            frame_lo[depth.to[usize]()] = lo.to[u8]()
-            frame_hi[depth.to[usize]()] = middle.to[u8]()
-            frame_state[depth.to[usize]()] = 0
-            depth = depth + 1
-        elif frame_state[frame.to[usize]()] == 1:
-            if depth >= 8:
+        node = node - 1
+    return .Value(nodes[1])
+
+pub fn transfer_replace_tree64(take nodes: [Transfer; 128], leaf_count: u8, index: u8, replacement: Transfer, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
+    if leaf_count == 0 or leaf_count > 64 or leaf_count & (leaf_count - 1) != 0 or index >= leaf_count:
+        return .Error
+    node = leaf_count + index
+    nodes[node.to[usize]()] = replacement
+    @budget(bound=6)
+    while node > 1:
+        node = node / 2
+        match transfer_compose(nodes[(node * 2).to[usize]()], nodes[(node * 2 + 1).to[usize]()], fraction_bits, rounding_radius):
+            case .Value(value):
+                nodes[node.to[usize]()] = value
+            case .Error:
                 return .Error
-            middle = lo + length / 2
-            left_results[frame.to[usize]()] = current
-            frame_state[frame.to[usize]()] = 2
-            frame_lo[depth.to[usize]()] = middle.to[u8]()
-            frame_hi[depth.to[usize]()] = hi.to[u8]()
-            frame_state[depth.to[usize]()] = 0
-            depth = depth + 1
-        else:
-            match transfer_compose(left_results[frame.to[usize]()], current, fraction_bits, rounding_radius):
-                case .Value(value):
-                    current = value
-                case .Error:
-                    return .Error
-            depth = depth - 1
-    return .Value(current)
+    return .Value(nodes[1])
 
 pub fn transfer_replace64(take layers: [Transfer; 64], count: u8, index: u8, replacement: Transfer, fraction_bits: i32, rounding_radius: i32) -> TransferOutcome:
     if count > 64 or index >= count:
@@ -138,4 +194,40 @@ pub fn transfer_replace64(take layers: [Transfer; 64], count: u8, index: u8, rep
 pub fn transparency_tail(transmittance: i32, maximum_radiance: i32, budget: i32) -> bool:
     if transmittance < 0 or maximum_radiance < 0 or budget < 0:
         return false
-    return transmittance.to[i64]() * maximum_radiance.to[i64]() <= budget.to[i64]() * 256
+    product = transmittance.to[i64]() * maximum_radiance.to[i64]()
+    # Match the normative Iv32 outward multiplication in Q24.8. A nonzero
+    # discarded fraction rounds the upper endpoint up before comparison.
+    upper = product / 256
+    if product % 256 != 0:
+        upper = upper + 1
+    return upper < budget.to[i64]()
+
+pub fn transparency_tail_with_post(transmittance: i32, maximum_radiance: i32, post_sensitivity: i32, budget: i32) -> bool:
+    if transmittance < 0 or maximum_radiance < 0 or post_sensitivity < 0 or budget < 0:
+        return false
+    first_product = transmittance.to[i64]() * maximum_radiance.to[i64]()
+    first = first_product / 256
+    if first_product % 256 != 0:
+        first = first + 1
+    if first > 36028797018963967:
+        return false
+    second_product = first * post_sensitivity.to[i64]()
+    upper = second_product / 256
+    if second_product % 256 != 0:
+        upper = upper + 1
+    return upper < budget.to[i64]()
+
+pub fn transparency_byte_singleton(read candidate: [u8; 3], read lower: [u8; 3], read upper: [u8; 3]) -> bool:
+    channel: usize = 0
+    @budget(bound=3)
+    while channel < 3:
+        if lower[channel] != candidate[channel] or upper[channel] != candidate[channel]:
+            return false
+        channel = channel + 1
+    return true
+
+pub fn transparency_tail_decision(transmittance: i32, maximum_radiance: i32, post_sensitivity: i32, budget: i32, read candidate: [u8; 3], read lower: [u8; 3], read upper: [u8; 3]) -> bool:
+    return (
+        transparency_tail_with_post(transmittance, maximum_radiance, post_sensitivity, budget)
+        and transparency_byte_singleton(candidate, lower, upper)
+    )

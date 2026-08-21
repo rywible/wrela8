@@ -97,6 +97,12 @@ fn generated_display_list_root(suffix: &str) -> bool {
         .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
+fn generated_probe_root(suffix: &str) -> bool {
+    suffix
+        .strip_prefix("PROBE_STATE_CHUNK_")
+        .is_some_and(|chunk| !chunk.is_empty() && chunk.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
 pub fn classify(name: &str) -> Class {
     if fixed_core_names().iter().any(|n| n == name) {
         return Class::Fixed;
@@ -127,6 +133,7 @@ pub fn classify(name: &str) -> Class {
             || suffix == "FRAME_SNAPSHOT"
             || suffix == "SCANOUT_STATE"
             || generated_framebuffer_root(suffix)
+            || generated_probe_root(suffix)
             || generated_display_list_root(suffix)
             || generated_worker_root(suffix)
             || matches!(
@@ -144,6 +151,8 @@ pub fn classify(name: &str) -> Class {
                     | "FIXED_DOMAIN_TABLE"
                     | "IMMEDIATE_TABLE"
                     | "CAMERA_LIGHT_POST_TABLE"
+                    | "TRANSPARENCY_TABLE"
+                    | "PROBE_TABLE"
             ))
     {
         return Class::RendererRoot(index);
@@ -256,6 +265,8 @@ mod tests {
         assert_eq!(classify("R0_FRAME_PROGRAM"), Class::RendererRoot(0));
         assert_eq!(classify("R17_FRAME_PROGRAM"), Class::RendererRoot(17));
         assert_eq!(classify("R0_EVENT_TABLE"), Class::RendererRoot(0));
+        assert_eq!(classify("R0_TRANSPARENCY_TABLE"), Class::RendererRoot(0));
+        assert_eq!(classify("R0_PROBE_TABLE"), Class::RendererRoot(0));
         assert_eq!(
             classify("R17_CAMERA_LIGHT_POST_TABLE"),
             Class::RendererRoot(17)
@@ -273,6 +284,11 @@ mod tests {
         assert_eq!(
             classify("R0_DEBUG_FRAMEBUFFER_CHUNK_42"),
             Class::RendererRoot(0)
+        );
+        assert_eq!(classify("R0_PROBE_STATE_CHUNK_0"), Class::RendererRoot(0));
+        assert_eq!(
+            classify("R17_PROBE_STATE_CHUNK_42"),
+            Class::RendererRoot(17)
         );
         assert_eq!(classify("R0_FRAME_SNAPSHOT"), Class::RendererRoot(0));
         assert_eq!(
@@ -304,6 +320,7 @@ mod tests {
             Class::Unexpected
         );
         assert_eq!(classify("R0_DEBUG_FRAMEBUFFER_CHUNK_X"), Class::Unexpected);
+        assert_eq!(classify("R0_PROBE_STATE_CHUNK_X"), Class::Unexpected);
         assert_eq!(classify("R0_BOGUS_TABLE"), Class::Unexpected);
         assert_eq!(classify("RX_FRAME_PROGRAM"), Class::Unexpected);
         assert_eq!(classify("RING0_DATA"), Class::Unexpected);

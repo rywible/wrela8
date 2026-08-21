@@ -167,6 +167,10 @@ pub struct RendererConfig {
     pub ao_radius: f32,
     pub ao_strength: f32,
     pub probes_enabled: bool,
+    pub probes_static_preinitialized: bool,
+    pub probe_levels: u32,
+    pub probe_dims: [u32; 3],
+    pub probe_base_spacing: f32,
     pub probe_initialization_worst_case_ms: u32,
     pub initialization_deadline_ms: u32,
     pub parameter_contracts: Vec<ParameterContract>,
@@ -752,9 +756,19 @@ fn ao_config(renderer: &RendererDecl) -> ConfigResult<(bool, f32, f32)> {
     Ok((enabled, radius, strength))
 }
 
-fn probe_config(renderer: &RendererDecl) -> ConfigResult<(bool, u32)> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SealedProbeConfig {
+    enabled: bool,
+    static_preinitialized: bool,
+    levels: u32,
+    dims: [u32; 3],
+    base_spacing: f32,
+    initialization_worst_case_ms: u32,
+}
+
+fn probe_config(renderer: &RendererDecl) -> ConfigResult<SealedProbeConfig> {
     let span = arg(renderer, "probes")?.span;
-    let fields = structure(renderer, "probes", "ProbeConfig", 2)?;
+    let fields = structure(renderer, "probes", "ProbeConfig", 8)?;
     let enabled = match fields[0] {
         Value::Bool(value) => value,
         _ => {
@@ -765,7 +779,36 @@ fn probe_config(renderer: &RendererDecl) -> ConfigResult<(bool, u32)> {
             .at(span));
         }
     };
-    let deadline = crate::eval::value::as_i128(&fields[1])
+    let static_preinitialized = match fields[1] {
+        Value::Bool(value) => value,
+        _ => {
+            return Err(coded(
+                "P007",
+                "renderer bound `probes` static-preinitialized value must be boolean",
+            )
+            .at(span));
+        }
+    };
+    let read_u32 = |index: usize, label: &str| {
+        crate::eval::value::as_i128(&fields[index])
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                coded(
+                    "P007",
+                    format!("renderer bound `probes` {label} must be a nonnegative u32"),
+                )
+                .at(span)
+            })
+    };
+    let levels = read_u32(2, "level count")?;
+    let dims = [
+        read_u32(3, "x dimension")?,
+        read_u32(4, "y dimension")?,
+        read_u32(5, "z dimension")?,
+    ];
+    let base_spacing =
+        f32_value(&fields[6], "probes.base_spacing").map_err(|error| error.at(span))?;
+    let deadline = crate::eval::value::as_i128(&fields[7])
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| {
             coded(
@@ -774,21 +817,88 @@ fn probe_config(renderer: &RendererDecl) -> ConfigResult<(bool, u32)> {
             )
             .at(span)
         })?;
-    if !enabled && deadline != 0 {
+    if !base_spacing.is_finite() || base_spacing <= 0.0 {
         return Err(coded(
             "P007",
-            "renderer bound `probes` disabled configuration must have zero initialization work",
+            "renderer bound `probes` base spacing must be finite and positive",
         )
         .at(span));
     }
-    if enabled && deadline == 0 {
+    if !enabled && (static_preinitialized || levels != 0 || dims != [0, 0, 0] || deadline != 0) {
         return Err(coded(
             "P007",
-            "renderer bound `probes` enabled configuration must declare initialization work",
+            "renderer bound `probes` disabled configuration must have zero levels, dimensions, and initialization work",
         )
         .at(span));
     }
-    Ok((enabled, deadline))
+    if enabled && (levels == 0 || levels > 3 || dims.into_iter().any(|value| value == 0)) {
+        return Err(coded(
+            "P007",
+            "renderer bound `probes` enabled configuration requires 1..=3 levels and positive dimensions",
+        )
+        .at(span));
+    }
+    if enabled && (dims[0] > 16 || dims[1] > 8 || dims[2] > 16) {
+        return Err(coded(
+            "P015",
+            "renderer capacity `probes` exceeds the v1 maximum dimensions 16x8x16",
+        )
+        .at(span));
+    }
+    if enabled && !static_preinitialized && deadline == 0 {
+        return Err(coded(
+            "P007",
+            "renderer bound `probes` dynamic configuration must declare initialization work",
+        )
+        .at(span));
+    }
+    if static_preinitialized && deadline != 0 {
+        return Err(coded(
+            "P007",
+            "renderer bound `probes` static-preinitialized configuration must have zero dynamic initialization work",
+        )
+        .at(span));
+    }
+    if static_preinitialized {
+        return Err(coded(
+            "P007",
+            "renderer bound `probes` static-preinitialized mode requires an embedded probe blob, which source v1 does not provide",
+        )
+        .at(span));
+    }
+    Ok(SealedProbeConfig {
+        enabled,
+        static_preinitialized,
+        levels,
+        dims,
+        base_spacing,
+        initialization_worst_case_ms: deadline,
+    })
+}
+
+fn validate_dynamic_probe_deadlines(
+    probes: SealedProbeConfig,
+    shade_hz: u32,
+    initialization_deadline_ms: u32,
+    span: Span,
+) -> ConfigResult<()> {
+    if !probes.enabled || probes.static_preinitialized {
+        return Ok(());
+    }
+    let frame_deadline_ms = 1_000 / shade_hz;
+    let required = probes.initialization_worst_case_ms;
+    if required > initialization_deadline_ms || required > frame_deadline_ms {
+        return Err(coded(
+            "P015",
+            format!(
+                "renderer capacity `probe_all_invalid_work` needs {required} ms, which exceeds \
+                 the initialization deadline {initialization_deadline_ms} ms or shade-frame \
+                 deadline {frame_deadline_ms} ms at {shade_hz} Hz\n  the all-invalid admission covers every configured probe times 32 complete secondary rays, accumulation, and presentation\n  help: reduce or disable dynamic probes, lower shade_hz, or provide a supported static preinitialized probe image"
+            ),
+        )
+        .at(span));
+    }
+    Ok(())
 }
 
 fn enum_variant(
@@ -1367,7 +1477,7 @@ fn validate_renderers_inner(
         let exposure = scalar_range(renderer, "exposure_range")?;
         let environment = rgb_range(renderer, "environment_range")?;
         let (ao_enabled, ao_radius, ao_strength) = ao_config(renderer)?;
-        let (probes_enabled, probe_initialization_worst_case_ms) = probe_config(renderer)?;
+        let probes = probe_config(renderer)?;
         let initialization_deadline_ms = integer(renderer, "initialization_deadline_ms")?;
         if initialization_deadline_ms == 0 {
             return Err(coded(
@@ -1376,16 +1486,12 @@ fn validate_renderers_inner(
             )
             .at(arg(renderer, "initialization_deadline_ms")?.span));
         }
-        if initialization_deadline_ms < probe_initialization_worst_case_ms {
-            return Err(coded(
-                "P007",
-                format!(
-                    "renderer initialization range deadline {initialization_deadline_ms} is below \
-                     the deterministic probe bound {probe_initialization_worst_case_ms}"
-                ),
-            )
-            .at(arg(renderer, "initialization_deadline_ms")?.span));
-        }
+        validate_dynamic_probe_deadlines(
+            probes,
+            shade_hz,
+            initialization_deadline_ms,
+            arg(renderer, "probes")?.span,
+        )?;
         let parameter_contracts = super::params::collect_parameter_contracts(
             owner,
             programs,
@@ -1424,8 +1530,12 @@ fn validate_renderers_inner(
             ao_enabled,
             ao_radius,
             ao_strength,
-            probes_enabled,
-            probe_initialization_worst_case_ms,
+            probes_enabled: probes.enabled,
+            probes_static_preinitialized: probes.static_preinitialized,
+            probe_levels: probes.levels,
+            probe_dims: probes.dims,
+            probe_base_spacing: probes.base_spacing,
+            probe_initialization_worst_case_ms: probes.initialization_worst_case_ms,
             initialization_deadline_ms,
             parameter_contracts,
         });
@@ -1790,6 +1900,102 @@ mod tests {
         assert!(
             render_source.contains(&declaration),
             "update the typed light-kind decoder deliberately when the stdlib enum changes"
+        );
+    }
+
+    #[test]
+    fn probe_config_is_explicit_bounded_and_fail_closed() {
+        let renderer = |fields| {
+            renderer_arg(
+                "probes",
+                Type::Named("ProbeConfig".to_string(), vec![]),
+                Value::Struct(fields),
+            )
+        };
+        let dynamic = renderer(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::U32(3),
+            Value::U32(16),
+            Value::U32(8),
+            Value::U32(16),
+            Value::F32(1.0),
+            Value::U32(250),
+        ]);
+        let decoded = probe_config(&dynamic).unwrap();
+        assert_eq!((decoded.levels, decoded.dims), (3, [16, 8, 16]));
+        assert!(!decoded.static_preinitialized);
+
+        let oversized = renderer(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::U32(3),
+            Value::U32(17),
+            Value::U32(8),
+            Value::U32(16),
+            Value::F32(1.0),
+            Value::U32(250),
+        ]);
+        assert_eq!(probe_config(&oversized).unwrap_err().code, "P015");
+
+        let hidden_fallback = renderer(vec![
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::U32(1),
+            Value::U32(1),
+            Value::U32(1),
+            Value::U32(1),
+            Value::F32(1.0),
+            Value::U32(0),
+        ]);
+        assert!(probe_config(&hidden_fallback).is_err());
+
+        let unsupported_static_mode = renderer(vec![
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::U32(1),
+            Value::U32(2),
+            Value::U32(2),
+            Value::U32(2),
+            Value::F32(4.0),
+            Value::U32(0),
+        ]);
+        let error = probe_config(&unsupported_static_mode).unwrap_err();
+        assert_eq!(error.code, "P007");
+        assert!(error.message.contains("embedded probe blob"));
+    }
+
+    #[test]
+    fn dynamic_probe_all_invalid_work_must_fit_both_deadlines() {
+        let probes = SealedProbeConfig {
+            enabled: true,
+            static_preinitialized: false,
+            levels: 3,
+            dims: [16, 8, 16],
+            base_spacing: 1.0,
+            initialization_worst_case_ms: 250,
+        };
+        let span = Span {
+            line: 7,
+            col: 11,
+            ..Span::default()
+        };
+        assert!(validate_dynamic_probe_deadlines(probes, 4, 250, span).is_ok());
+
+        let frame_error = validate_dynamic_probe_deadlines(probes, 60, 250, span).unwrap_err();
+        assert_eq!(frame_error.code, "P015");
+        assert_eq!(
+            frame_error.message,
+            "renderer capacity `probe_all_invalid_work` needs 250 ms, which exceeds the initialization deadline 250 ms or shade-frame deadline 16 ms at 60 Hz\n  the all-invalid admission covers every configured probe times 32 complete secondary rays, accumulation, and presentation\n  help: reduce or disable dynamic probes, lower shade_hz, or provide a supported static preinitialized probe image"
+        );
+
+        let initialization_error =
+            validate_dynamic_probe_deadlines(probes, 4, 249, span).unwrap_err();
+        assert_eq!(initialization_error.code, "P015");
+        assert!(
+            initialization_error
+                .message
+                .contains("initialization deadline 249 ms")
         );
     }
 

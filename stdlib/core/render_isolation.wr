@@ -2,7 +2,7 @@ module render_isolation
 
 from core.__image_pixels import __wrela_pixels_p7_abs, __wrela_pixels_p7_csg_influence, __wrela_pixels_p7_csg_occupancy, __wrela_pixels_p7_feature_filter_excludes_root, __wrela_pixels_p7_feature_polynomial, __wrela_pixels_p7_feature_polynomial_uv_bounds, __wrela_pixels_p7_feature_q_span, __wrela_pixels_p7_feature_support_q_span, __wrela_pixels_p7_feature_valid_filter, __wrela_pixels_p7_feature_world_bounds, __wrela_pixels_p7_initial_inside, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_object_composed_root, __wrela_pixels_p7_object_q_tube, __wrela_pixels_p7_standard_torus_feature, __wrela_pixels_p7_standard_torus_positive_hit, __wrela_pixels_p7_workspace_load_root, __wrela_pixels_p7_workspace_load_root_tmp, __wrela_pixels_p7_workspace_store_root, __wrela_pixels_p7_workspace_store_root_tmp, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_tile_feature, __wrela_pixels_tile_feature_count
 from core.field import sqrt_scalar
-from core.render import FrameInputSnapshot, P7BoolResult, P7RootContext, P7RootList, P7RowCandidates, P7StoredRoot, P7VisibilitySample, P7WalkTarget
+from core.render import FrameInputSnapshot, P10LayerList, P7BoolResult, P7RootContext, P7RootList, P7RowCandidates, P7StoredRoot, P7VisibilitySample, P7WalkTarget
 from core.render_certificate import certify_monotone_root, certify_quadratic_discriminant
 from core.render_interval import FixedDomain, Iv32, interval_add, interval_mul
 from core.render_program import polynomial_horner9
@@ -1876,6 +1876,57 @@ pub fn __wrela_pixels_p7_collect_roots(
         candidates,
         snapshot,
     )
+
+# Emit every regular composite occupancy transition in certified front-to-back
+# order.  Any overlap component is an event corridor and is deliberately left
+# to the analytic event path; it may never be broken by identity ordering.
+pub fn __wrela_pixels_p10_ordered_layers(renderer: usize, read roots: P7RootList) -> P10LayerList:
+    if not roots.ok:
+        return P10LayerList.failure(roots.error)
+    result = P10LayerList(ok=true, error=0, count=0, identities=[0; 64], features=[0; 64], q_lo=[0; 64], q_hi=[0; 64], orientation=[0; 64])
+    bits = roots.initial_inside
+    initial = __wrela_pixels_p7_csg_evaluate(renderer, bits)
+    if not initial.ok:
+        return P10LayerList.failure(5)
+    occupied = initial.value
+    index: u32 = 0
+    @budget(bound=1048576)
+    while index < roots.count:
+        root = __wrela_pixels_p7_load_root(roots, index)
+        if not root.ok or root.object >= 64:
+            return P10LayerList.failure(5)
+        # A second tube reaching this tube makes a transitive corridor. The
+        # row/event machinery integrates its side stacks separately.
+        if index + 1 < roots.count:
+            next = __wrela_pixels_p7_load_root(roots, index + 1)
+            if not next.ok:
+                return P10LayerList.failure(5)
+            if next.hi >= root.lo:
+                return P10LayerList.failure(4)
+        if not root.crossing:
+            return P10LayerList.failure(4)
+        mask = 1.to[u64]() << root.object.to[u64]()
+        before_inside = (bits & mask) != 0
+        bits = bits ^ mask
+        after = __wrela_pixels_p7_csg_evaluate(renderer, bits)
+        if not after.ok:
+            return P10LayerList.failure(5)
+        if after.value != occupied:
+            if result.count >= 64:
+                return P10LayerList.failure(1)
+            slot = result.count.to[usize]()
+            result.identities[slot] = root.identity
+            result.features[slot] = root.feature
+            result.q_lo[slot] = root.lo
+            result.q_hi[slot] = root.hi
+            if before_inside:
+                result.orientation[slot] = -1
+            else:
+                result.orientation[slot] = 1
+            result.count = result.count + 1
+        occupied = after.value
+        index = index + 1
+    return result
 
 pub fn __wrela_pixels_p7_select_visibility(renderer: usize, read roots: P7RootList) -> P7VisibilitySample:
     if not roots.ok:

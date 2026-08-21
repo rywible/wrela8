@@ -47,6 +47,11 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
   Fn __wrela_pixels_p9_debug_visibility() -> bool
+  Fn __wrela_pixels_p10_probe_prepare(renderer: read usize, frame_index: read u64) -> bool
+  Fn __wrela_pixels_p10_probe_invalidate(renderer: read usize) -> bool
+  Fn __wrela_pixels_p10_probe_status(renderer: read usize) -> [u64; 4]
+  Fn __wrela_pixels_p10_probe_word_load(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p10_probe_word_store(renderer: read usize, word: read usize, value: read u64) -> bool
   Fn __wrela_pixels_p9_round_ratio(numerator: read u64, denominator: read u64) -> u64
   Fn __wrela_pixels_p9_table_value(index: read u64, filmic: read bool) -> [u64; 2]
   Fn __wrela_pixels_p9_lut_interpolate(coordinate: read u64, fraction_bits: read u32, filmic: read bool) -> [u64; 2]
@@ -770,6 +775,13 @@ Module path=render_test_vectors
   Fn run_vector_chunk_12() -> unit
   Fn run_all_vectors() -> unit
 Module path=render_transfer
+  Struct SurfaceLayer data
+    pub field sheet: u32
+    pub field identity: u32
+    pub field q_model: u32
+    pub field q_error: Iv32
+    pub field orientation: i8
+    pub field material_summary: u32
   Struct Transfer data
     field r: Iv32
     field g: Iv32
@@ -780,6 +792,14 @@ Module path=render_transfer
     fn red_upper(read self) -> i32
     fn transmittance_lower(read self) -> i32
     fn transmittance_upper(read self) -> i32
+  Struct F32TransferV1 data
+    pub field candidate: [f32; 3]
+    pub field lower: [f32; 3]
+    pub field upper: [f32; 3]
+    pub field transmittance: f32
+    fn identity() -> F32TransferV1
+  Fn __wrela_pixels_p10_f32_transfer_compose(front: read F32TransferV1, back: read F32TransferV1) -> F32TransferV1
+  Fn __wrela_pixels_p10_f32_transfer_balanced64(layers: read [F32TransferV1; 64], count: read u8) -> F32TransferV1
   Enum TransferOutcome data
     variant Value(Transfer)
     variant Error
@@ -788,7 +808,11 @@ Module path=render_transfer
   Fn transfer_balanced2(first: read Transfer, second: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
   Fn transfer_replace2(first: read Transfer, second: read Transfer, replacement: read Transfer, replace_second: read bool, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
   Fn transfer_balanced64(layers: take [Transfer; 64], count: read u8, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace_tree64(nodes: take [Transfer; 128], leaf_count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
   Fn transfer_replace64(layers: take [Transfer; 64], count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
   Fn transparency_tail(transmittance: read i32, maximum_radiance: read i32, budget: read i32) -> bool
+  Fn transparency_tail_with_post(transmittance: read i32, maximum_radiance: read i32, post_sensitivity: read i32, budget: read i32) -> bool
+  Fn transparency_byte_singleton(candidate: read [u8; 3], lower: read [u8; 3], upper: read [u8; 3]) -> bool
+  Fn transparency_tail_decision(transmittance: read i32, maximum_radiance: read i32, post_sensitivity: read i32, budget: read i32, candidate: read [u8; 3], lower: read [u8; 3], upper: read [u8; 3]) -> bool
 Module path=examples.boot_pixels_numeric
   Fn pixels_numeric_vectors() -> unit

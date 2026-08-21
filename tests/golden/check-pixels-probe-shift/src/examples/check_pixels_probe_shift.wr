@@ -22,8 +22,6 @@ from core.render import (
 from drivers.display import Display, DisplayDevice
 
 const FIXTURE_ID: u32 = 22
-# production Pixels stage is not implemented; implemented in task P10.7
-
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
@@ -64,7 +62,7 @@ pub fn build() -> Image:
         width=64,
         height=32,
         refresh_hz=60,
-        shade_hz=60,
+        shade_hz=4,
         profile=RenderProfile.AaaByteExact,
         tone_curve=ToneCurve.Linear,
         near=0.1,

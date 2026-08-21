@@ -10,6 +10,248 @@ use super::objects::ObjectPartition;
 use super::scalar::ScalarOp;
 use super::symbolic::SymbolicGraph;
 
+/// Complete-range topology class for one material-program node.
+///
+/// `Parameterized` deliberately remains a transfer layer for every runtime
+/// value.  That conservative policy avoids an opacity==0/1 topology event;
+/// it is the permitted fail-closed alternative in P10.1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OpacityClass {
+    Opaque,
+    Transparent { lo: f64, hi: f64 },
+    Invisible,
+    Parameterized,
+}
+
+impl OpacityClass {
+    pub fn emits_transfer_layer(self) -> bool {
+        !matches!(self, Self::Invisible)
+    }
+
+    pub fn may_transmit(self) -> bool {
+        !matches!(self, Self::Opaque | Self::Invisible)
+    }
+
+    pub fn tag(self) -> u64 {
+        match self {
+            Self::Opaque => 1,
+            Self::Transparent { .. } => 2,
+            Self::Invisible => 3,
+            Self::Parameterized => 4,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialOpacity {
+    pub material: MaterialId,
+    pub class: OpacityClass,
+    pub opacity_lo: f64,
+    pub opacity_hi: f64,
+    pub maximum_emissive: [f64; 3],
+}
+
+fn merge_opacity(
+    material: MaterialId,
+    children: &[MaterialOpacity],
+    parameterized_choice: bool,
+) -> Result<MaterialOpacity, String> {
+    let first = children
+        .first()
+        .ok_or_else(|| format!("P019: material {material} has no reachable opacity cases"))?;
+    let opacity_lo = children
+        .iter()
+        .map(|child| child.opacity_lo)
+        .fold(f64::INFINITY, f64::min);
+    let opacity_hi = children
+        .iter()
+        .map(|child| child.opacity_hi)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let maximum_emissive = std::array::from_fn(|channel| {
+        children
+            .iter()
+            .map(|child| child.maximum_emissive[channel])
+            .fold(0.0_f64, f64::max)
+    });
+    let same_class = children.iter().all(|child| child.class == first.class);
+    let class = if same_class {
+        first.class
+    } else if opacity_lo == 0.0 && opacity_hi == 0.0 && maximum_emissive == [0.0; 3] {
+        OpacityClass::Invisible
+    } else if opacity_lo == 1.0 && opacity_hi == 1.0 {
+        OpacityClass::Opaque
+    } else if parameterized_choice
+        || children
+            .iter()
+            .any(|child| matches!(child.class, OpacityClass::Parameterized))
+    {
+        OpacityClass::Parameterized
+    } else {
+        OpacityClass::Transparent {
+            lo: opacity_lo,
+            hi: opacity_hi,
+        }
+    };
+    Ok(MaterialOpacity {
+        material,
+        class,
+        opacity_lo,
+        opacity_hi,
+        maximum_emissive,
+    })
+}
+
+fn classify_material(
+    graph: &SymbolicGraph,
+    values: &ValueBounds,
+    material: MaterialId,
+    memo: &mut BTreeMap<MaterialId, MaterialOpacity>,
+    visiting: &mut BTreeSet<MaterialId>,
+) -> Result<MaterialOpacity, String> {
+    if let Some(classification) = memo.get(&material) {
+        return Ok(classification.clone());
+    }
+    if !visiting.insert(material) {
+        return Err(format!(
+            "P019: material {material} opacity classification contains a cycle"
+        ));
+    }
+    let classification = match &graph.materials.get(material)?.kind {
+        MaterialKind::Sample(sample) => {
+            let opacity = values.get(sample.opacity)?;
+            if !opacity.lo.is_finite()
+                || !opacity.hi.is_finite()
+                || opacity.lo < 0.0
+                || opacity.hi > 1.0
+                || opacity.lo > opacity.hi
+            {
+                return Err(format!(
+                    "P019: material {material} has no finite opacity/radiance-tail bound"
+                ));
+            }
+            let mut maximum_emissive = [0.0; 3];
+            for (channel, scalar) in sample.emissive.iter().enumerate() {
+                let bound = values.get(*scalar)?;
+                if !bound.hi.is_finite() || bound.lo < 0.0 {
+                    return Err(format!(
+                        "P019: material {material} has no finite opacity/radiance-tail bound"
+                    ));
+                }
+                maximum_emissive[channel] = bound.hi;
+            }
+            let class = if opacity.lo == 1.0 && opacity.hi == 1.0 {
+                OpacityClass::Opaque
+            } else if opacity.lo == 0.0 && opacity.hi == 0.0 && maximum_emissive == [0.0; 3] {
+                OpacityClass::Invisible
+            } else if graph.scalar.get(sample.opacity)?.dependency
+                != super::scalar::Dependency::Constant
+                && graph.scalar.get(sample.opacity)?.dependency
+                    != super::scalar::Dependency::Coordinate
+            {
+                OpacityClass::Parameterized
+            } else {
+                OpacityClass::Transparent {
+                    lo: opacity.lo,
+                    hi: opacity.hi,
+                }
+            };
+            MaterialOpacity {
+                material,
+                class,
+                opacity_lo: opacity.lo,
+                opacity_hi: opacity.hi,
+                maximum_emissive,
+            }
+        }
+        MaterialKind::Select { predicate, a, b } => {
+            let children = [
+                classify_material(graph, values, *a, memo, visiting)?,
+                classify_material(graph, values, *b, memo, visiting)?,
+            ];
+            let parameterized_choice =
+                graph.scalar.get(*predicate)?.dependency != super::scalar::Dependency::Constant;
+            merge_opacity(material, &children, parameterized_choice)?
+        }
+        MaterialKind::IdentityTable { cases, .. } => {
+            let children = cases
+                .iter()
+                .map(|(_, child)| classify_material(graph, values, *child, memo, visiting))
+                .collect::<Result<Vec<_>, _>>()?;
+            merge_opacity(material, &children, false)?
+        }
+    };
+    visiting.remove(&material);
+    memo.insert(material, classification.clone());
+    Ok(classification)
+}
+
+pub fn classify_opacity(
+    graph: &SymbolicGraph,
+    values: &ValueBounds,
+) -> Result<Vec<MaterialOpacity>, String> {
+    let mut memo = BTreeMap::new();
+    for (material, _) in graph.materials.iter() {
+        classify_material(graph, values, material, &mut memo, &mut BTreeSet::new())?;
+    }
+    Ok(memo.into_values().collect())
+}
+
+pub fn maximum_radiance_v1(
+    graph: &SymbolicGraph,
+    values: &ValueBounds,
+    config: &super::config::RendererConfig,
+) -> Result<[f64; 3], String> {
+    let mut incident = config.environment.max.map(f64::from);
+    for (slot, range) in config.light_ranges.iter().enumerate() {
+        let kind = config
+            .light_kinds
+            .get(slot)
+            .map(String::as_str)
+            .unwrap_or("Disabled");
+        let scale = match kind {
+            "Disabled" => 0.0,
+            "Point" => {
+                let radius = super::reference::light::POINT_RADIUS_MIN_V1;
+                1.0 / (radius * radius)
+            }
+            "Directional" | "Rectangle" | "Disk" => 1.0,
+            other => {
+                return Err(format!(
+                    "P019: material radiance bound has unknown light kind `{other}`"
+                ));
+            }
+        };
+        for channel in 0..3 {
+            incident[channel] += f64::from(range.radiance_max[channel]) * scale;
+        }
+    }
+    let mut maximum = config.environment.max.map(f64::from);
+    for (_, node) in graph.materials.iter() {
+        let MaterialKind::Sample(sample) = &node.kind else {
+            continue;
+        };
+        for channel in 0..3 {
+            let base = values.get(sample.base_color[channel])?.hi;
+            let emissive = values.get(sample.emissive[channel])?.hi;
+            let glossy = values.get(sample.specular_level)?.hi > 0.0
+                || values.get(sample.metallic)?.hi > 0.0;
+            // Match the sealed P9 terminal BRDF-response envelope. Tail
+            // termination must cover the complete shaded layer, including a
+            // legal roughness-floor highlight, rather than only Lambertian
+            // base color and emissive radiance.
+            let brdf_response = base + if glossy { 4.0e23 } else { 0.0 };
+            let candidate = emissive + brdf_response * incident[channel];
+            if !candidate.is_finite() || candidate < 0.0 {
+                return Err(
+                    "P019: transparent material has no finite radiance-tail bound".to_string(),
+                );
+            }
+            maximum[channel] = maximum[channel].max(candidate);
+        }
+    }
+    Ok(maximum)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialEventKind {
     NominalIdentity,
@@ -318,6 +560,59 @@ mod tests {
     use super::super::symbolic::SymbolicGraph;
     use super::*;
     use crate::sema::types::Type;
+
+    fn opacity(
+        material: u32,
+        class: OpacityClass,
+        lo: f64,
+        hi: f64,
+        maximum_emissive: [f64; 3],
+    ) -> MaterialOpacity {
+        MaterialOpacity {
+            material: MaterialId(material),
+            class,
+            opacity_lo: lo,
+            opacity_hi: hi,
+            maximum_emissive,
+        }
+    }
+
+    #[test]
+    fn opacity_merge_preserves_invisible_emissive_and_parameterized_topology() {
+        let invisible = opacity(0, OpacityClass::Invisible, 0.0, 0.0, [0.0; 3]);
+        assert_eq!(
+            merge_opacity(MaterialId(2), &[invisible.clone(), invisible], false)
+                .unwrap()
+                .class,
+            OpacityClass::Invisible
+        );
+        let emissive = opacity(
+            0,
+            OpacityClass::Transparent { lo: 0.0, hi: 0.0 },
+            0.0,
+            0.0,
+            [4.0, 0.0, 0.0],
+        );
+        assert!(emissive.class.emits_transfer_layer());
+        let mixed = merge_opacity(
+            MaterialId(3),
+            &[
+                opacity(0, OpacityClass::Opaque, 1.0, 1.0, [0.0; 3]),
+                opacity(
+                    1,
+                    OpacityClass::Transparent { lo: 0.25, hi: 0.75 },
+                    0.25,
+                    0.75,
+                    [1.0, 2.0, 3.0],
+                ),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(mixed.class, OpacityClass::Parameterized);
+        assert_eq!((mixed.opacity_lo, mixed.opacity_hi), (0.25, 1.0));
+        assert_eq!(mixed.maximum_emissive, [1.0, 2.0, 3.0]);
+    }
 
     #[test]
     fn nested_identity_owner_sets_cannot_escape_the_incoming_branch() {

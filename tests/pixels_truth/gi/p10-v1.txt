@@ -1,0 +1,6 @@
+P10Conformance version=1 model=normative status=pass
+case=static-gi-room rgb=3fa9999a3f3fcead,3f99999a3f3fcead,3f89999a3f3fcead interval=3fa999396bf730d5:3fa999fb12886c87 workers=identical status=pass
+case=moving-emissive invalidated=2 updated=2 status=pass
+case=camera-clipmap-shift retained=4 updated=4 status=pass
+case=thin-wall-leak weighted=3fcd41e4d1496bb8 unweighted=3fd4ccccbbc7c90f status=pass
+case=area-light-transparency rgb=3fe133333af6fdb0,3fd133333af6fdb0,3fc133333af6fdb0 status=pass

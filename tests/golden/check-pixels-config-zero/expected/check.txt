@@ -47,6 +47,11 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
   Fn __wrela_pixels_p9_debug_visibility() -> bool
+  Fn __wrela_pixels_p10_probe_prepare(renderer: read usize, frame_index: read u64) -> bool
+  Fn __wrela_pixels_p10_probe_invalidate(renderer: read usize) -> bool
+  Fn __wrela_pixels_p10_probe_status(renderer: read usize) -> [u64; 4]
+  Fn __wrela_pixels_p10_probe_word_load(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p10_probe_word_store(renderer: read usize, word: read usize, value: read u64) -> bool
   Fn __wrela_pixels_p9_round_ratio(numerator: read u64, denominator: read u64) -> u64
   Fn __wrela_pixels_p9_table_value(index: read u64, filmic: read bool) -> [u64; 2]
   Fn __wrela_pixels_p9_lut_interpolate(coordinate: read u64, fraction_bits: read u32, filmic: read bool) -> [u64; 2]

@@ -2229,6 +2229,128 @@ pub fn finish_frame_program(
         }
     }
 
+    // P10 opacity topology and radiance-tail contracts.  The table is
+    // material-ID ordered, and parameterized opacity is conservatively kept
+    // as a transfer layer so runtime topology cannot change without an event.
+    let opacity = super::material::classify_opacity(graph, &structural.values)?;
+    let maximum_radiance = super::material::maximum_radiance_v1(graph, &structural.values, config)?;
+    let transparency = by_kind
+        .get_mut(&FrameProgramTableKindV1::Transparency)
+        .expect("namespace seeded");
+    for material in &opacity {
+        let mut operands = vec![
+            u64::from(material.material.0),
+            material.class.tag(),
+            material.opacity_lo.to_bits(),
+            material.opacity_hi.to_bits(),
+        ];
+        operands.extend(material.maximum_emissive.map(f64::to_bits));
+        operands.extend(maximum_radiance.map(f64::to_bits));
+        operands.extend([
+            u64::from(material.class.emits_transfer_layer()),
+            u64::from(material.class.may_transmit()),
+        ]);
+        push_record(transparency, 1, 0, operands);
+    }
+    let tree_leaves = if structural.capacities.max_transparent_layers == 0 {
+        0
+    } else {
+        structural
+            .capacities
+            .max_transparent_layers
+            .checked_next_power_of_two()
+            .ok_or_else(|| "P015: transparent transfer-tree leaf count overflow".to_string())?
+    };
+    push_record(
+        transparency,
+        2,
+        0,
+        vec![
+            u64::from(structural.capacities.max_transparent_layers),
+            u64::from(tree_leaves),
+            1, // front-to-back order
+            1, // environment interval suffix proxy
+            0, // zero suffix is not generally legal
+        ],
+    );
+    push_record(
+        transparency,
+        3,
+        0,
+        maximum_radiance
+            .into_iter()
+            .map(f64::to_bits)
+            .chain(config.environment.min.map(f32::to_bits).map(u64::from))
+            .chain(config.environment.max.map(f32::to_bits).map(u64::from))
+            .collect(),
+    );
+
+    // P10 deterministic probe model.  Direction ID order is the accumulation
+    // order, and each direction record carries the complete real-SH basis.
+    let probe_program = super::probe::compile(
+        config,
+        &structural.objects,
+        u32::try_from(graph.materials.len())
+            .map_err(|_| "P015: material count exceeds u32 for probe dependencies")?,
+    )?;
+    let probes = by_kind
+        .get_mut(&FrameProgramTableKindV1::Probe)
+        .expect("namespace seeded");
+    if probe_program.enabled {
+        let mut header = vec![
+            1, // probe-table revision
+            u64::from(probe_program.static_preinitialized),
+            probe_program.levels.len() as u64,
+            u64::from(config.probe_dims[0]),
+            u64::from(config.probe_dims[1]),
+            u64::from(config.probe_dims[2]),
+            u64::from(config.probe_base_spacing.to_bits()),
+            u64::from(probe_program.probe_count),
+            u64::from(probe_program.invalidation_capacity),
+            probe_program.all_invalid_secondary_rays,
+            probe_program.storage_bytes,
+            super::probe::PROBE_CELL_BYTES_V1,
+            u64::from(super::probe::PROBE_DIRECTION_COUNT_V1),
+            u64::from(super::probe::PROBE_SH_COEFFICIENTS_V1),
+        ];
+        header.extend(
+            probe_program
+                .table_digest
+                .chunks_exact(8)
+                .map(|word| u64::from_le_bytes(word.try_into().expect("digest word"))),
+        );
+        push_record(probes, 1, 0, header);
+        for level in &probe_program.levels {
+            push_record(
+                probes,
+                2,
+                0,
+                vec![
+                    u64::from(level.level),
+                    u64::from(level.dims[0]),
+                    u64::from(level.dims[1]),
+                    u64::from(level.dims[2]),
+                    u64::from(level.spacing.to_bits()),
+                    u64::from(level.first_probe),
+                    u64::from(level.probe_count),
+                ],
+            );
+        }
+        for (direction_id, direction) in probe_program.directions.iter().enumerate() {
+            let mut operands = vec![direction_id as u64];
+            operands.extend(direction.direction_bits.map(u64::from));
+            operands.push(u64::from(direction.weight_bits));
+            operands.extend(direction.sh_basis_bits.map(u64::from));
+            push_record(probes, 3, 0, operands);
+        }
+        for dependency in &probe_program.dependencies {
+            let mut operands = vec![u64::from(dependency.kind), u64::from(dependency.stable_id)];
+            operands.extend(dependency.bounds.map(f64::to_bits));
+            operands.push(dependency.support_radius.to_bits());
+            push_record(probes, 4, 0, operands);
+        }
+    }
+
     // P9 immutable texture records own the complete mip/minmax/moment bytes.
     // Stable asset IDs, not material traversal order, decide record order.
     let mut texture_ids = std::collections::BTreeSet::new();
@@ -3223,12 +3345,18 @@ pub fn finish_frame_program(
     }
     push_record(camera, 1, 0, operands);
 
-    let flags = u32::from(
+    let mut flags = u32::from(
         graph
             .materials
             .iter()
             .any(|(_, node)| matches!(node.kind, super::material_graph::MaterialKind::Sample(_))),
     );
+    if opacity.iter().any(|material| material.class.may_transmit()) {
+        flags |= 1 << 1;
+    }
+    if probe_program.enabled {
+        flags |= 1 << 2;
+    }
     Ok(FrameProgram {
         renderer_index,
         flags,
@@ -3335,11 +3463,13 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         flags: 0,
         operands: Vec::new(),
     });
+    let mut minimal_capacities = vec![1; 31];
+    minimal_capacities[15] = 0;
     records(&mut tables, FrameProgramTableKindV1::FixedDomain).push(FrameRecord {
         stable_id: 0,
         tag: 1,
         flags: 0,
-        operands: vec![1; 31],
+        operands: minimal_capacities,
     });
     let near = 0.1_f64;
     let far = 128.0_f64;
@@ -3412,6 +3542,20 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         flags: 0,
         operands: vec![0, 0, u64::from(1.0_f32.to_bits()), 0, 5, 4, 25],
     });
+    records(&mut tables, FrameProgramTableKindV1::Transparency).extend([
+        FrameRecord {
+            stable_id: 0,
+            tag: 2,
+            flags: 0,
+            operands: vec![1, 1, 1, 1, 0],
+        },
+        FrameRecord {
+            stable_id: 1,
+            tag: 3,
+            flags: 0,
+            operands: vec![0; 9],
+        },
+    ]);
     let bounds = [
         (-1.0_f64).to_bits(),
         (-1.0_f64).to_bits(),

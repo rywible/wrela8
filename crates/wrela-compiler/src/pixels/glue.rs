@@ -8313,6 +8313,160 @@ fn write_p8_scanout_accessors(
     Ok(())
 }
 
+fn write_p10_probe_accessors(
+    output: &mut String,
+    placements: &[crate::layout::RendererPlacement],
+    compiled: &[super::CompiledRenderer],
+) -> Result<(), String> {
+    const VALID_MAGIC: u64 = 0x5031_3050_524f_4245;
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        let index = placement.index;
+        if !renderer.config.probes_enabled {
+            writeln!(output,
+                "\npub fn __wrela_pixels_p10_probe_prepare_r{index}(frame_index: u64) -> bool:\n    return true\n\
+                 pub fn __wrela_pixels_p10_probe_invalidate_r{index}() -> bool:\n    return true\n\
+                 pub fn __wrela_pixels_p10_probe_status_r{index}() -> [u64; 4]:\n    return [1, 0, 0, 0]")
+                .expect("String writes cannot fail");
+            continue;
+        }
+        let per_level = renderer
+            .config
+            .probe_dims
+            .into_iter()
+            .try_fold(1_u64, |product, value| {
+                product.checked_mul(u64::from(value))
+            })
+            .ok_or_else(|| "P015: generated probe count overflow".to_string())?;
+        let probe_count = per_level
+            .checked_mul(u64::from(renderer.config.probe_levels))
+            .ok_or_else(|| "P015: generated probe count overflow".to_string())?;
+        let header_words = (super::probe::PROBE_STATE_HEADER_BYTES_V1
+            + u64::from(renderer.config.probe_levels) * super::probe::PROBE_LEVEL_HEADER_BYTES_V1)
+            / 8;
+        let cell_words = super::probe::PROBE_CELL_BYTES_V1 / 8;
+        let all_rays = probe_count
+            .checked_mul(u64::from(super::probe::PROBE_DIRECTION_COUNT_V1))
+            .ok_or_else(|| "P015: generated probe ray count overflow".to_string())?;
+        let probe_bytes = renderer.mutable_layout.probes.bytes;
+        writeln!(
+            output,
+            "\npub fn __wrela_pixels_p10_probe_load_r{index}(word: usize) -> [u64; 2]:"
+        )
+        .expect("String writes cannot fail");
+        let mut chunk_offset = 0_u64;
+        let mut chunk = 0_usize;
+        while chunk_offset < probe_bytes {
+            let chunk_bytes = (probe_bytes - chunk_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(output,
+                "    if word.to[u64]() >= {first} and word.to[u64]() < {last}:\n        return [1, R{index}_PROBE_STATE_CHUNK_{chunk}.words[word - {first_usize}]]",
+                first = chunk_offset / 8,
+                last = (chunk_offset + chunk_bytes) / 8,
+                first_usize = chunk_offset / 8,
+            ).expect("String writes cannot fail");
+            chunk_offset += chunk_bytes;
+            chunk += 1;
+        }
+        output.push_str("    return [0; 2]\n");
+        writeln!(
+            output,
+            "pub fn __wrela_pixels_p10_probe_store_r{index}(word: usize, value: u64) -> bool:"
+        )
+        .expect("String writes cannot fail");
+        chunk_offset = 0;
+        chunk = 0;
+        while chunk_offset < probe_bytes {
+            let chunk_bytes = (probe_bytes - chunk_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+            writeln!(output,
+                "    if word.to[u64]() >= {first} and word.to[u64]() < {last}:\n        R{index}_PROBE_STATE_CHUNK_{chunk}.words[word - {first_usize}] = value\n        return true",
+                first = chunk_offset / 8,
+                last = (chunk_offset + chunk_bytes) / 8,
+                first_usize = chunk_offset / 8,
+            ).expect("String writes cannot fail");
+            chunk_offset += chunk_bytes;
+            chunk += 1;
+        }
+        output.push_str("    return false\n");
+        writeln!(output,
+            "\npub fn __wrela_pixels_p10_probe_prepare_r{index}(frame_index: u64) -> bool:\n\
+             \x20   if not __wrela_pixels_p10_probe_store_r{index}(0, 0) or not __wrela_pixels_p10_probe_store_r{index}(1, frame_index) or not __wrela_pixels_p10_probe_store_r{index}(2, {probe_count}) or not __wrela_pixels_p10_probe_store_r{index}(3, {all_rays}):\n\
+             \x20       return false\n\
+             \x20   probe: usize = 0\n\
+             \x20   @budget(bound={probe_count})\n\
+             \x20   while probe < {probe_count}:\n\
+             \x20       if not __wrela_pixels_p10_probe_store_r{index}({header_words} + probe * {cell_words} + {last_word}, 0):\n\
+             \x20           return false\n\
+             \x20       probe = probe + 1\n\
+             \x20   return __wrela_pixels_p10_probe_store_r{index}(4, 0)\n\
+             pub fn __wrela_pixels_p10_probe_invalidate_r{index}() -> bool:\n\
+             \x20   return __wrela_pixels_p10_probe_store_r{index}(0, 0) and __wrela_pixels_p10_probe_store_r{index}(4, 0)\n\
+             pub fn __wrela_pixels_p10_probe_status_r{index}() -> [u64; 4]:\n\
+             \x20   magic = __wrela_pixels_p10_probe_load_r{index}(0)\n\
+             \x20   stored_count = __wrela_pixels_p10_probe_load_r{index}(2)\n\
+             \x20   stored_rays = __wrela_pixels_p10_probe_load_r{index}(3)\n\
+             \x20   valid_count = __wrela_pixels_p10_probe_load_r{index}(4)\n\
+             \x20   if magic[0] != 1 or stored_count[0] != 1 or stored_rays[0] != 1 or valid_count[0] != 1 or magic[1] != {VALID_MAGIC} or stored_count[1] != {probe_count} or stored_rays[1] != {all_rays} or valid_count[1] != {probe_count}:\n\
+             \x20       return [0; 4]\n\
+             \x20   probe: usize = 0\n\
+             \x20   @budget(bound={probe_count})\n\
+             \x20   while probe < {probe_count}:\n\
+             \x20       valid = __wrela_pixels_p10_probe_load_r{index}({header_words} + probe * {cell_words} + {last_word})\n\
+             \x20       if valid[0] != 1 or valid[1] & 9223372036854775808 == 0:\n\
+             \x20           return [0; 4]\n\
+             \x20       probe = probe + 1\n\
+             \x20   generation = __wrela_pixels_p10_probe_load_r{index}(1)\n\
+             \x20   if generation[0] != 1:\n\
+             \x20       return [0; 4]\n\
+             \x20   return [1, {probe_count}, {all_rays}, generation[1]]",
+            last_word = cell_words - 1,
+        ).expect("String writes cannot fail");
+    }
+    output.push_str(
+        "\npub fn __wrela_pixels_p10_probe_prepare(renderer: usize, frame_index: u64) -> bool:\n",
+    );
+    for placement in placements {
+        writeln!(output, "    if renderer == {}:\n        return __wrela_pixels_p10_probe_prepare_r{}(frame_index)", placement.index, placement.index)
+            .expect("String writes cannot fail");
+    }
+    output.push_str("    return false\n\npub fn __wrela_pixels_p10_probe_invalidate(renderer: usize) -> bool:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n        return __wrela_pixels_p10_probe_invalidate_r{}()",
+            placement.index, placement.index
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return false\n\npub fn __wrela_pixels_p10_probe_status(renderer: usize) -> [u64; 4]:\n");
+    for placement in placements {
+        writeln!(
+            output,
+            "    if renderer == {}:\n        return __wrela_pixels_p10_probe_status_r{}()",
+            placement.index, placement.index
+        )
+        .expect("String writes cannot fail");
+    }
+    output.push_str("    return [0; 4]\n\npub fn __wrela_pixels_p10_probe_word_load(renderer: usize, word: usize) -> [u64; 2]:\n");
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        if renderer.config.probes_enabled {
+            writeln!(
+                output,
+                "    if renderer == {}:\n        return __wrela_pixels_p10_probe_load_r{}(word)",
+                placement.index, placement.index
+            )
+            .expect("String writes cannot fail");
+        }
+    }
+    output.push_str("    return [0; 2]\n\npub fn __wrela_pixels_p10_probe_word_store(renderer: usize, word: usize, value: u64) -> bool:\n");
+    for (placement, renderer) in placements.iter().zip(compiled) {
+        if renderer.config.probes_enabled {
+            writeln!(output, "    if renderer == {}:\n        return __wrela_pixels_p10_probe_store_r{}(word, value)", placement.index, placement.index)
+                .expect("String writes cannot fail");
+        }
+    }
+    output.push_str("    return false\n");
+    Ok(())
+}
+
 pub fn configuration_source(
     placements: &[crate::layout::RendererPlacement],
     compiled: &[super::CompiledRenderer],
@@ -8831,6 +8985,35 @@ pub fn configuration_source(
             state.header.bytes / 8,
         )
         .expect("String writes cannot fail");
+        if state.probes.bytes != 0 {
+            if state.probes.bytes % 8 != 0 {
+                return Err(format!(
+                    "pixels::glue: renderer {index} probe view is not representable"
+                ));
+            }
+            let probe_base = placement
+                .state_base
+                .checked_add(state.probes.offset)
+                .ok_or_else(|| "P025: P10 probe state base overflow".to_string())?;
+            let mut probe_offset = 0_u64;
+            let mut probe_chunk = 0_usize;
+            while probe_offset < state.probes.bytes {
+                let chunk_bytes =
+                    (state.probes.bytes - probe_offset).min(WORKSPACE_VIEW_CHUNK_BYTES);
+                writeln!(output,
+                    "@layout(runtime, endian=little)\n\
+                     struct R{index}ProbeStateChunk{probe_chunk}View:\n\
+                     \x20   words: [u64; {}]\n\
+                     @placed({:#x})\n\
+                     static R{index}_PROBE_STATE_CHUNK_{probe_chunk}: R{index}ProbeStateChunk{probe_chunk}View",
+                    chunk_bytes / 8,
+                    probe_base.checked_add(probe_offset)
+                        .ok_or_else(|| "P025: P10 probe state chunk overflow".to_string())?,
+                ).expect("String writes cannot fail");
+                probe_offset += chunk_bytes;
+                probe_chunk += 1;
+            }
+        }
         if state.tile_descriptors.bytes % 8 != 0 {
             return Err(format!(
                 "pixels::glue: renderer {index} display-list storage is not word aligned"
@@ -9098,6 +9281,7 @@ pub fn configuration_source(
     write_visibility_polynomial_accessors(&mut output, compiled)?;
     write_p7_runtime_storage_accessors(&mut output, placements, compiled, instrumented)?;
     write_p8_scanout_accessors(&mut output, placements, compiled)?;
+    write_p10_probe_accessors(&mut output, placements, compiled)?;
     Ok(output)
 }
 
@@ -9564,7 +9748,8 @@ mod tests {
                 "fixed-domain",
                 "object",
                 "scalar",
-                "shading-summary"
+                "shading-summary",
+                "transparency"
             ]
         );
     }

@@ -1,0 +1,16 @@
+test pinned_scene_contract: ok
+p7 0000000000000008
+p7 0000000000000100
+p7 0000000000000080
+p7 0000000000000000
+p7 0000000000000078
+p7 444f41c7e764c854
+p7 b898221721008b03
+p7 a9312237f61b3db3
+p7 f546daea15ba5662
+p7 2ac1935569858c79
+test gi_state_precedes_first_present: ok
+2 passed, 0 failed
+lane1 turns=2 run_one=4 messages=2
+lane1 hits=0:2,1:1
+display v1 renderer=0 frame=0 generation=0 released=none mode=64x32@60 format=1 descriptor=2ea4b45b683ba8e9df2f75309f2194bc96cdee46ba3fa009530fe7f4cfbeaea7 visible=bbf2d38e8fdc926ddec73289590b900581a4f020f7658b83d6d808e02c6d3426 raw=bbf2d38e8fdc926ddec73289590b900581a4f020f7658b83d6d808e02c6d3426 vsync=0 checkpoint=0

@@ -1,13 +1,13 @@
 module render_orchestrate
 
-from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_write, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_encode, __wrela_pixels_p9_material_inputs, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
+from core.__image_pixels import __wrela_pixels_p7_feature_normal, __wrela_pixels_p7_frame_snapshot_camera, __wrela_pixels_p7_frame_snapshot_light_kinds, __wrela_pixels_p7_frame_snapshot_light_scalars, __wrela_pixels_p7_frame_snapshot_meta, __wrela_pixels_p7_frame_snapshot_params, __wrela_pixels_p7_frame_snapshot_post, __wrela_pixels_p7_numeric_config, __wrela_pixels_p7_telemetry_charge, __wrela_pixels_p7_telemetry_reset, __wrela_pixels_p7_workspace_charge, __wrela_pixels_p7_workspace_reset, __wrela_pixels_p7_workspace_store_certified_run, __wrela_pixels_p8_raster_evidence_store, __wrela_pixels_p8_write, __wrela_pixels_p9_ao_config, __wrela_pixels_p9_debug_visibility, __wrela_pixels_p9_encode, __wrela_pixels_p9_material, __wrela_pixels_p9_material_inputs, __wrela_pixels_program_operand, __wrela_pixels_program_record, __wrela_pixels_program_table_count, __wrela_pixels_tile_event, __wrela_pixels_tile_event_count
 from core.field import Rgb
-from core.render import FrameInputSnapshot, LightFrame, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P7VisibilitySample, P8RasterContext, P9LightingCertificate, RendererWorkerJob, __wrela_pixels_p8_charge_raster_run, __wrela_pixels_p8_derivative_bounds, __wrela_pixels_p8_raster_regular, __wrela_pixels_p8_raster_setup, __wrela_pixels_p9_lighting_certificate, __wrela_pixels_p9_secondary_candidates, __wrela_pixels_p9_segment_intersects_aabb, __wrela_pixels_p9_segment_visibility
+from core.render import FrameInputSnapshot, LightFrame, P7CertifiedRow, P7RowCandidates, P7RowCertificationContext, P7VisibilitySample, P8RasterContext, P9LightingCertificate, RendererWorkerJob, __wrela_pixels_p10_transfer_capacity, __wrela_pixels_p10_transparent_color, __wrela_pixels_p8_charge_raster_run, __wrela_pixels_p8_derivative_bounds, __wrela_pixels_p8_raster_regular, __wrela_pixels_p8_raster_setup, __wrela_pixels_p9_lighting_certificate, __wrela_pixels_p9_secondary_candidates, __wrela_pixels_p9_segment_intersects_aabb, __wrela_pixels_p9_segment_visibility
 from core.render_arrangement import __wrela_pixels_p7_event_pixel_span, __wrela_pixels_p7_pixel_visibility_from_candidates
 from core.render_certify import __wrela_pixels_p7_certify_row, __wrela_pixels_p7_charge_run_telemetry, __wrela_pixels_p7_density_bin, __wrela_pixels_p7_revalidated_proposal_count, __wrela_pixels_p7_row_candidates_with_proposal
 from core.render_interval import Iv32
-from core.render_isolation import __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates
-from core.render_light import P9ShadingMeta, __wrela_pixels_p9_encode_certified, __wrela_pixels_p9_encode_hdr, __wrela_pixels_p9_hdr_pixel, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_select_refinement, __wrela_pixels_p9_texture_mip_bounds
+from core.render_isolation import __wrela_pixels_p10_ordered_layers, __wrela_pixels_p7_collect_roots, __wrela_pixels_p7_raw_to_f32, __wrela_pixels_p7_row_candidates
+from core.render_light import P9ShadingMeta, __wrela_pixels_p9_encode_certified, __wrela_pixels_p9_encode_hdr, __wrela_pixels_p9_exposure_multiplier, __wrela_pixels_p9_hdr_pixel, __wrela_pixels_p9_map_uv, __wrela_pixels_p9_select_refinement, __wrela_pixels_p9_texture_mip_bounds
 from core.render_raster import EventId, EventPixel, IdSlice, RunId
 
 fn __wrela_pixels_p7_worker_error(error: u8, tile: u32) -> u64:
@@ -1045,6 +1045,8 @@ pub fn __wrela_pixels_p7_run_job(job: RendererWorkerJob, proposals_enabled: bool
                                 post[1], post[2], post[3],
                             ],
                             debug_color=debug_front,
+                            candidates=candidates,
+                            snapshot=snapshot,
                         ),
                         raster,
                     )

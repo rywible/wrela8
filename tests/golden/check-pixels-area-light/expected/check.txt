@@ -47,6 +47,11 @@ Module path=__image_pixels
   Fn __wrela_pixels_p7_feature_filter_excludes_root(renderer: read usize, feature: read u32, uv: read [f32; 4], q: read [i32; 2], params: read [f32; 16], camera: read [f32; 12], exponent: read i32) -> [i64; 2]
   Fn __wrela_pixels_p7_feature_normal(renderer: read usize, feature: read u32, u: read f32, v: read f32, q: read f32, params: read [f32; 16], camera: read [f32; 12]) -> [f32; 4]
   Fn __wrela_pixels_p9_debug_visibility() -> bool
+  Fn __wrela_pixels_p10_probe_prepare(renderer: read usize, frame_index: read u64) -> bool
+  Fn __wrela_pixels_p10_probe_invalidate(renderer: read usize) -> bool
+  Fn __wrela_pixels_p10_probe_status(renderer: read usize) -> [u64; 4]
+  Fn __wrela_pixels_p10_probe_word_load(renderer: read usize, word: read usize) -> [u64; 2]
+  Fn __wrela_pixels_p10_probe_word_store(renderer: read usize, word: read usize, value: read u64) -> bool
   Fn __wrela_pixels_p9_round_ratio(numerator: read u64, denominator: read u64) -> u64
   Fn __wrela_pixels_p9_table_value(index: read u64, filmic: read bool) -> [u64; 2]
   Fn __wrela_pixels_p9_lut_interpolate(coordinate: read u64, fraction_bits: read u32, filmic: read bool) -> [u64; 2]
@@ -186,6 +191,7 @@ Module path=field
   Fn scalar_vector_intrinsic_source_semantics_are_pinned() -> unit
 Module path=render
   Fn __wrela_pixels_p9_debug_visibility_enabled() -> bool
+  Fn __wrela_pixels_p10_probe_update_all(renderer: read usize, frame_index: read u64) -> bool
   Fn __wrela_pixels_p9_light_rate_valid(current: read f32, previous: read f32, max_delta: read f32, frame_steps: read u64) -> bool
   Fn __wrela_pixels_p9_point_radius_valid(radius: read f32, maximum: read f32) -> bool
   Fn p9_light_rate_boundary_is_closed_and_excess_fails() -> unit
@@ -284,8 +290,16 @@ Module path=render
     fn deterministic_v1() -> AoConfig
   Struct ProbeConfig data
     field enabled: bool
+    field static_preinitialized: bool
+    field levels: u32
+    field dim_x: u32
+    field dim_y: u32
+    field dim_z: u32
+    field base_spacing: f32
     field initialization_worst_case_ms: u32
     fn fixed(enabled: read bool) -> ProbeConfig
+    fn dynamic_v1(base_spacing: read f32, levels: read u32, dim_x: read u32, dim_y: read u32, dim_z: read u32, initialization_worst_case_ms: read u32) -> ProbeConfig
+    fn static_v1(base_spacing: read f32, levels: read u32, dim_x: read u32, dim_y: read u32, dim_z: read u32) -> ProbeConfig
     fn disabled() -> ProbeConfig
   Enum RenderProfile data
     variant AaaByteExact
@@ -446,6 +460,16 @@ Module path=render
     pub field method: u8
     pub field margin: i32
     fn failure() -> P7StoredRoot
+  Struct P10LayerList data
+    pub field ok: bool
+    pub field error: u8
+    pub field count: u8
+    pub field identities: [u32; 64]
+    pub field features: [u32; 64]
+    pub field q_lo: [i32; 64]
+    pub field q_hi: [i32; 64]
+    pub field orientation: [i8; 64]
+    fn failure(error: read u8) -> P10LayerList
   Struct P7BoolResult data
     pub field ok: bool
     pub field value: bool
@@ -486,6 +510,8 @@ Module path=render
     pub field exposure: f32
     pub field environment: [f32; 3]
     pub field debug_color: u32
+    pub field candidates: P7RowCandidates
+    pub field snapshot: FrameInputSnapshot
   Struct P9LightingCertificate data
     pub field ok: bool
     pub field visibility: [u64; 8]
@@ -518,6 +544,9 @@ Module path=render
   Fn __wrela_pixels_p8_raster_setup(sample: read P7VisibilitySample, model: read [i64; 8], modeled: read bool, x: read u32, x1: read u32, exponent: read i32, height: read u32, derivatives: read [i64; 4]) -> P8RasterSetupOutcome
   Fn __wrela_pixels_p8_geometry_lane_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_raw: read i32, geometry_required: read bool) -> bool
   Fn __wrela_pixels_p8_geometry_packet_valid(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_packet: read I32x4, geometry_required: read bool) -> bool
+  Fn __wrela_pixels_p10_transfer_capacity(renderer: read usize) -> [u64; 3]
+  Fn __wrela_pixels_p10_tail_radiance(renderer: read usize) -> [f32; 4]
+  Fn __wrela_pixels_p10_transparent_color(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, front_q_raw: read i32) -> [u64; 2]
   Fn __wrela_pixels_p9_raster_color(context: read P8RasterContext, raster: read RasterRun, raster_x: read u32, q_raw: read i32) -> [u64; 2]
   Fn __wrela_pixels_p9_constant_summary_eligible(context: read P8RasterContext) -> bool
   Fn __wrela_pixels_p8_raster_regular(context: read P8RasterContext, raster: read RasterRun) -> u64
@@ -672,6 +701,8 @@ Module path=render
   Fn __wrela_pixels_bootstrap_camera_light_post(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_texture(tag: read u32) -> Result[u32, RenderError]
   Fn __wrela_pixels_bootstrap_shading_summary(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_transparency(tag: read u32) -> Result[u32, RenderError]
+  Fn __wrela_pixels_bootstrap_probe(tag: read u32) -> Result[u32, RenderError]
 Module path=render_arrangement
   Struct RendererWorkerP8RSubdivisionCell data
     field center_u: f32
@@ -827,6 +858,7 @@ Module path=render_isolation
   Fn __wrela_pixels_p7_isolate_smooth_object(roots: read P7RootList, context: read P7RootContext, object_id: read u32, q_lo: read i32, q_hi: read i32, capacity: read u32) -> P7RootList
   Fn __wrela_pixels_p7_collect_roots_box(renderer: read usize, worker: read u32, x0: read u32, x1: read u32, y: read u32, filter: read [f32; 4], candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7RootList
   Fn __wrela_pixels_p7_collect_roots(renderer: read usize, worker: read u32, x: read u32, y: read u32, candidates: read P7RowCandidates, snapshot: read FrameInputSnapshot) -> P7RootList
+  Fn __wrela_pixels_p10_ordered_layers(renderer: read usize, roots: read P7RootList) -> P10LayerList
   Fn __wrela_pixels_p7_select_visibility(renderer: read usize, roots: read P7RootList) -> P7VisibilitySample
   Fn __wrela_pixels_p7_quartic_discriminant(polynomial: read [f32; 11]) -> [f32; 11]
 Module path=render_light
@@ -852,6 +884,10 @@ Module path=render_light
     pub field visibility_refined: [u64; 32]
     pub field visibility_refined_uncertain: [u64; 32]
     pub field visibility_terminal_light: u64
+  Fn __wrela_pixels_p10_probe_gi_floor(value: read f32) -> i32
+  Fn __wrela_pixels_p10_probe_gi_pair(renderer: read usize, word: read usize) -> [f32; 3]
+  Fn __wrela_pixels_p10_probe_gi_level(renderer: read usize, level_index: read u32, levels: read u32, point: read [f32; 3], normal: read [f32; 3], camera: read [f32; 12]) -> [f32; 10]
+  Fn __wrela_pixels_p10_probe_gi(renderer: read usize, point: read [f32; 3], normal: read [f32; 3], albedo: read [f32; 3]) -> [f32; 10]
   Fn __wrela_pixels_p9_shading_failure() -> [f32; 10]
   Fn __wrela_pixels_p9_select_refinement(options: read [u64; 48], count: read u32) -> [u64; 2]
   Fn __wrela_pixels_p9_pow5(value: read f32) -> f32
@@ -906,6 +942,34 @@ Module path=render_orchestrate
   Fn __wrela_pixels_p7_run_job(job: read RendererWorkerJob, proposals_enabled: read bool) -> u64
   Fn __wrela_pixels_p7_job_value(result: take Result[u64, CallError[never]]) -> u64
 Module path=render_probe
+  Struct ProbeCellV1 data
+    pub field coefficients: [f32; 27]
+    pub field coefficient_radii: [f32; 27]
+    pub field axis_distance: [f32; 6]
+    pub field axis_distance_radii: [f32; 6]
+    pub field scene_version: u32
+    pub field light_version: u32
+    pub field material_version: u32
+    pub field valid: bool
+  Struct ProbeDependencyInputV1 data
+    pub field params: [f32; 16]
+    pub field camera: [f32; 12]
+    pub field light_kinds: [u64; 8]
+    pub field light_values: [f32; 120]
+    pub field post: [f32; 4]
+  Fn probe_worker_range(count: read u32, workers: read u32, worker: read u32) -> [u32; 2]
+  Fn __wrela_pixels_p10_probe_accumulate32(radiance: read [f32; 96], distance: read [f32; 32], weights: read [f32; 32], basis: read [f32; 288], axis_ids: read [u8; 32]) -> ProbeCellV1
+  Fn __wrela_pixels_p10_probe_commit(cell: read ProbeCellV1, scene_version: read u32, light_version: read u32, material_version: read u32, complete_direction_count: read u8) -> ProbeCellV1
+  Fn probe_versions_valid(cell: read ProbeCellV1, scene_version: read u32, light_version: read u32, material_version: read u32) -> bool
+  Fn probe_leak_weight(recorded_distance_upper: read f32, surface_distance: read f32, spacing: read f32) -> f32
+  Fn probe_renormalize8(values: read [f32; 8], weights: read [f32; 8]) -> [f32; 2]
+  Fn __wrela_pixels_p10_probe_candidates(renderer: read usize, origin: read [f32; 3], direction: read [f32; 3], far: read f32) -> P7RowCandidates
+  Fn __wrela_pixels_p10_probe_trace(renderer: read usize, origin: read [f32; 3], direction: read [f32; 3], params: read [f32; 16], light_kinds: read [u64; 8], light_values: read [f32; 120], environment: read [f32; 3]) -> [f32; 5]
+  Fn __wrela_pixels_p10_probe_floor(value: read f32) -> i32
+  Fn __wrela_pixels_p10_probe_store_cell(renderer: read usize, probe: read u32, header_words: read usize, cell: read ProbeCellV1, frame_index: read u64) -> bool
+  Fn __wrela_pixels_p10_probe_snapshot_word(renderer: read usize, base: read usize, offset: read usize, expected: read u64, store: read bool) -> bool
+  Fn __wrela_pixels_p10_probe_dependency_snapshot(renderer: read usize, base: read usize, levels: read u32, input: read ProbeDependencyInputV1, store: read bool) -> bool
+  Fn __wrela_pixels_p10_probe_update_all_impl(renderer: read usize, frame_index: read u64) -> bool
   Fn __wrela_pixels_p7_debug_probe_cell(renderer: read usize, tile: read u32, x: read u32, y: read u32, filter: read [f32; 4], index: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
   Fn __wrela_pixels_p7_debug_probe_coverage(renderer: read usize, tile: read u32, x: read u32, y: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
   Fn __wrela_pixels_p7_debug_probe_silhouette(renderer: read usize, tile: read u32, x: read u32, y: read u32, which: read u32, params: read [f32; 16], camera: read [f32; 12]) -> [i64; 12]
@@ -1202,6 +1266,46 @@ Module path=render_raster
   Fn fixed_q_setup(q: read i32, dq: read i32, ddq: read i32, requested_width: read u8, model_error_radius: read i32) -> QSetup
   Fn fixed_q_step(run: read QRunScalar) -> QStep
   Fn fixed_q_nearer(a_q: read i32, a_error: read i32, b_q: read i32, b_error: read i32) -> bool
+Module path=render_transfer
+  Struct SurfaceLayer data
+    pub field sheet: u32
+    pub field identity: u32
+    pub field q_model: u32
+    pub field q_error: Iv32
+    pub field orientation: i8
+    pub field material_summary: u32
+  Struct Transfer data
+    field r: Iv32
+    field g: Iv32
+    field b: Iv32
+    field t: Iv32
+    fn make(r: read Iv32, g: read Iv32, b: read Iv32, t: read Iv32) -> Transfer
+    fn red_lower(read self) -> i32
+    fn red_upper(read self) -> i32
+    fn transmittance_lower(read self) -> i32
+    fn transmittance_upper(read self) -> i32
+  Struct F32TransferV1 data
+    pub field candidate: [f32; 3]
+    pub field lower: [f32; 3]
+    pub field upper: [f32; 3]
+    pub field transmittance: f32
+    fn identity() -> F32TransferV1
+  Fn __wrela_pixels_p10_f32_transfer_compose(front: read F32TransferV1, back: read F32TransferV1) -> F32TransferV1
+  Fn __wrela_pixels_p10_f32_transfer_balanced64(layers: read [F32TransferV1; 64], count: read u8) -> F32TransferV1
+  Enum TransferOutcome data
+    variant Value(Transfer)
+    variant Error
+  Fn transfer_channel(front: read Iv32, transmittance: read Iv32, back: read Iv32, rounding: read Iv32, domain: read FixedDomain) -> NumericOutcome
+  Fn transfer_compose(front: read Transfer, back: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced2(first: read Transfer, second: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace2(first: read Transfer, second: read Transfer, replacement: read Transfer, replace_second: read bool, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_balanced64(layers: take [Transfer; 64], count: read u8, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace_tree64(nodes: take [Transfer; 128], leaf_count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transfer_replace64(layers: take [Transfer; 64], count: read u8, index: read u8, replacement: read Transfer, fraction_bits: read i32, rounding_radius: read i32) -> TransferOutcome
+  Fn transparency_tail(transmittance: read i32, maximum_radiance: read i32, budget: read i32) -> bool
+  Fn transparency_tail_with_post(transmittance: read i32, maximum_radiance: read i32, post_sensitivity: read i32, budget: read i32) -> bool
+  Fn transparency_byte_singleton(candidate: read [u8; 3], lower: read [u8; 3], upper: read [u8; 3]) -> bool
+  Fn transparency_tail_decision(transmittance: read i32, maximum_radiance: read i32, post_sensitivity: read i32, budget: read i32, candidate: read [u8; 3], lower: read [u8; 3], upper: read [u8; 3]) -> bool
 Module path=display
   Struct DisplayDevice data
     field id: u32

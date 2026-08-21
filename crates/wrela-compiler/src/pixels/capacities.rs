@@ -6,7 +6,6 @@ use super::csg::CsgProgram;
 use super::deform::DeformationTemplate;
 use super::features::FeatureRecord;
 use super::material::MaterialEvent;
-use super::material_graph::MaterialKind;
 use super::objects::ObjectPartition;
 use super::params::ParameterLayout;
 use super::projection_bounds::TILE_WIDTH_V1;
@@ -51,6 +50,7 @@ pub struct PixelsCeilings {
     pub repeat_analysis_candidates: u32,
     pub structural_depth: u32,
     pub event_isolation_depth: u32,
+    pub transparent_layers: u32,
     pub immutable_index_bytes: u64,
     pub renderer_state_bytes: u64,
 }
@@ -70,6 +70,7 @@ impl PixelsCeilings {
         repeat_analysis_candidates: 1_000_000,
         structural_depth: 1024,
         event_isolation_depth: 2,
+        transparent_layers: 64,
         immutable_index_bytes: 64 * 1024 * 1024,
         renderer_state_bytes: 512 * 1024 * 1024,
     };
@@ -1003,13 +1004,30 @@ pub fn derive(
     let max_run_records_per_tile_row = u32::try_from(max_run_records_u64)
         .map_err(|_| "P015: run record count exceeds u32".to_string())?;
     let max_csg_events_per_row = max_object_roots_per_row_start;
-    let max_transparent_layers = if object_count == 0 {
+    let opacity = super::material::classify_opacity(graph, values)?;
+    let max_transparent_layers = if object_count == 0
+        || opacity
+            .iter()
+            .all(|material| !material.class.emits_transfer_layer())
+    {
         0
-    } else if material_may_transmit(graph, values)? {
+    } else if opacity.iter().any(|material| material.class.may_transmit()) {
         max_object_roots_per_row_start
     } else {
         1
     };
+    ceiling(
+        "transparent_layers",
+        u64::from(max_transparent_layers),
+        u64::from(ceilings.transparent_layers),
+        &[
+            format!(
+                "{max_object_roots_per_row_start} complete front/back composite-boundary transitions"
+            ),
+            "front and back boundaries are counted separately; opaque prefixes stop traversal"
+                .to_string(),
+        ],
+    )?;
     let max_local_rebuild_queue = max_run_records_per_tile_row;
 
     let candidate_bytes = mul(
@@ -1114,11 +1132,13 @@ pub fn derive(
         "output_tile_bytes",
     )?;
     let output_double_buffer_bytes = mul(output_tile_bytes, 2, "output_double_buffer_bytes")?;
-    let probe_bytes = if config.probes_enabled {
-        mul(pixel_count, 16, "probe_bytes")?
-    } else {
-        0
-    };
+    let probe_program = super::probe::compile(
+        config,
+        objects,
+        u32::try_from(graph.materials.len())
+            .map_err(|_| "P015: material count exceeds u32 for probe dependencies")?,
+    )?;
+    let probe_bytes = probe_program.storage_bytes;
     let kinetic_certificate_bytes = mul(
         u64::from(feature_count),
         KINETIC_CERTIFICATE_BYTES_V1,
@@ -1281,6 +1301,32 @@ pub fn derive(
             ],
         },
         CapacityDerivation {
+            field: "max_transparent_layers",
+            value: u64::from(max_transparent_layers),
+            why: vec![
+                format!("{} classified material-program nodes", opacity.len()),
+                "complete ordered CSG transitions; invisible leaves emit no transfer layer"
+                    .to_string(),
+                "opaque prefixes contribute one absorbing boundary and terminate the suffix"
+                    .to_string(),
+            ],
+        },
+        CapacityDerivation {
+            field: "probe_bytes",
+            value: probe_bytes,
+            why: vec![
+                format!(
+                    "{} probes in {} clipmap levels, two fail-closed generations",
+                    probe_program.probe_count,
+                    probe_program.levels.len()
+                ),
+                format!(
+                    "{} all-invalid complete secondary rays; invalidation capacity={}",
+                    probe_program.all_invalid_secondary_rays, probe_program.invalidation_capacity
+                ),
+            ],
+        },
+        CapacityDerivation {
             field: "renderer_state_bytes",
             value: total_renderer_state_bytes,
             why: vec![
@@ -1366,14 +1412,9 @@ pub(crate) fn material_may_transmit(
     graph: &SymbolicGraph,
     values: &ValueBounds,
 ) -> Result<bool, String> {
-    for (_, material) in graph.materials.iter() {
-        if let MaterialKind::Sample(sample) = &material.kind {
-            if values.get(sample.opacity)?.lo < 1.0 {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    Ok(super::material::classify_opacity(graph, values)?
+        .into_iter()
+        .any(|material| material.class.may_transmit()))
 }
 
 #[cfg(test)]
@@ -1395,6 +1436,24 @@ mod tests {
             verify_immutable_index_bytes(PixelsCeilings::MACHINE_V1.immutable_index_bytes + 1)
                 .unwrap_err()
                 .contains("completed local indexes require 67108865 bytes")
+        );
+    }
+
+    #[test]
+    fn transparent_front_and_back_boundaries_have_a_deterministic_p015_ceiling() {
+        assert_eq!(
+            ceiling(
+                "transparent_layers",
+                66,
+                PixelsCeilings::MACHINE_V1.transparent_layers.into(),
+                &[
+                    "66 complete front/back composite-boundary transitions".to_string(),
+                    "front and back boundaries are counted separately; opaque prefixes stop traversal"
+                        .to_string(),
+                ],
+            )
+            .unwrap_err(),
+            "P015: renderer capacity `transparent_layers` needs 66 slots, which exceeds the machine-v1 ceiling of 64\n  66 complete front/back composite-boundary transitions\n  front and back boundaries are counted separately; opaque prefixes stop traversal"
         );
     }
 

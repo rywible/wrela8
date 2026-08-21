@@ -1,5 +1,8 @@
 module examples.boot_pixels_transparent
 
+# @wrela-compiler-internal: acceptance fixture for the compiler-reserved trace.
+from core.runtime import __wrela_trace_p7_u64
+
 from core.field import (
     Field,
     Rgb,
@@ -10,15 +13,20 @@ from core.field import (
 )
 from core.render import (
     AoConfig,
+    Camera,
     CameraBounds,
     LightConfig,
+    LightFrame,
     MaterialSample,
     ProbeConfig,
+    RenderFrame,
+    Renderer,
     RenderProfile,
     RgbRange,
     ScalarRange,
     SurfaceContext,
     ToneCurve,
+    __wrela_pixels_p7_debug_frame_digest,
 )
 from drivers.display import Display, DisplayDevice
 
@@ -27,10 +35,7 @@ const FIXTURE_ID: u32 = 36
 fn fixture_id() -> u32:
     return FIXTURE_ID
 
-fn production_pixels_placeholder():
-    comptime assert false, "production Pixels stage is not implemented; implemented in task P10.10"
-
-const TRANSPARENT_LAYERS: u32 = 4
+const TRANSPARENT_LAYERS: u32 = 8
 
 struct SceneParams:
     @range(min=-2.0, max=2.0)
@@ -46,16 +51,78 @@ fn world(p: Vec3, read params: SceneParams) -> Field:
     b = sphere(p, Vec3(x=0.0, y=0.0, z=0.5), radius=0.75)
     c = sphere(p, Vec3(x=0.0, y=0.0, z=1.0), radius=0.5)
     d = sphere(p, Vec3(x=0.0, y=0.0, z=1.5), radius=0.25)
-    return mark(union(union(a, b), union(c, d)), object=36, material=MaterialId.Ground)
+    return mark(
+        union(union(a, b), union(c, d)),
+        object=MaterialId.Ground,
+        material=MaterialId.Ground,
+    )
 
 @material
 fn shade(surface: SurfaceContext[MaterialId], read params: SceneParams) -> MaterialSample:
-    return MaterialSample.standard(color=Rgb(r=0.25, g=0.5, b=0.75), roughness=0.5)
+    return MaterialSample.standard(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+        emissive=Rgb(r=0.5, g=0.25, b=0.125),
+        opacity=0.25,
+    )
 
 @test(runtime)
 fn pinned_scene_contract():
     assert FIXTURE_ID == 36, "fixture id must remain pinned"
-    assert TRANSPARENT_LAYERS == 4, "adversarial scene value must remain pinned"
+    assert TRANSPARENT_LAYERS == 8, "front and back boundaries must remain pinned"
+
+@test(runtime)
+async fn transparent_stack_renders(renderer: Actor[Renderer[SceneParams]]):
+    frame = RenderFrame[SceneParams](
+        params=SceneParams(phase=0.0),
+        camera=Camera.canonical(eye=Vec3(x=0.0, y=0.0, z=-4.35)),
+        lights=LightFrame.empty(),
+        exposure=0.0,
+        environment=Rgb(r=0.03125, g=0.0625, b=0.125),
+        frame_index=0,
+    )
+    result = await renderer.render(frame=take frame)
+    @discard(reason="render failure must fail this P10 acceptance fixture")
+    match result:
+        case .Ok(rendered):
+            __wrela_trace_p7_u64(rendered.certificate_runs)
+            __wrela_trace_p7_u64(rendered.event_corridors)
+            __wrela_trace_p7_u64(rendered.revalidated_proposals)
+            __wrela_trace_p7_u64(4922225244575680596)
+            digest = __wrela_pixels_p7_debug_frame_digest(0)
+            assert digest[0] == 1, "transparent frame is complete"
+            index: usize = 0
+            @budget(bound=4)
+            while index < 4:
+                __wrela_trace_p7_u64(digest[index + 1])
+                index = index + 1
+        case .Err(call_error):
+            match call_error:
+                case .Op(failure):
+                    match failure.error:
+                        case .RootIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(4294967296 + tile.value.to[u64]())
+                        case .EventIsolationExhausted(tile):
+                            __wrela_trace_p7_u64(8589934592 + tile.value.to[u64]())
+                        case .CertificateExhausted(tile):
+                            __wrela_trace_p7_u64(12884901888 + tile.value.to[u64]())
+                        case .CapacityExceeded(capacity):
+                            __wrela_trace_p7_u64(17179869184 + capacity.kind.to[u64]())
+                        case .FixedPointRangeExceeded(tile):
+                            __wrela_trace_p7_u64(21474836480 + tile.value.to[u64]())
+                        case .InternalInvariant(invariant):
+                            __wrela_trace_p7_u64(25769803776 + invariant.kind.to[u64]())
+                        case .ParameterOutOfRange(_):
+                            __wrela_trace_p7_u64(30064771073)
+                        case .NonFiniteInput(_):
+                            __wrela_trace_p7_u64(30064771074)
+                        case .FrameContractMismatch(path):
+                            __wrela_trace_p7_u64(30064771072 + path.component.to[u64]())
+                        case .Display(_):
+                            __wrela_trace_p7_u64(30064771076)
+                case _:
+                    __wrela_trace_p7_u64(34359738368)
+            assert false, "transparent frame must render"
 
 @image
 pub fn build() -> Image:

@@ -46,6 +46,7 @@ pub mod objects;
 pub mod params;
 pub mod polynomial;
 pub mod primitive;
+pub mod probe;
 pub mod program;
 pub mod projection_bounds;
 pub mod projective;

@@ -31,7 +31,7 @@ ImageGraph v0
     Arg label=exposure_range value=(-1, 1)
     Arg label=environment_range value=((0, 0, 0), (1, 1, 1))
     Arg label=ao value=(false, 1, 1)
-    Arg label=probes value=(false, 0)
+    Arg label=probes value=(false, false, 0, 0, 0, 0, 1, 0)
     Arg label=initialization_deadline_ms value=10
   OnFailure index=0
     Arg label=policy value=Failure.Halt

@@ -2247,11 +2247,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepted_pixels_bundles_exclude_placeholder_boot_cases() {
+    fn accepted_pixels_bundles_include_activated_boot_cases() {
         let cases = root().join("tests/golden");
         assert!(accepted_pixels_case(&cases.join("check-pixels-plane")));
         assert!(accepted_pixels_case(&cases.join("boot-pixels-plane")));
-        assert!(!accepted_pixels_case(&cases.join("boot-pixels-gi")));
+        assert!(accepted_pixels_case(&cases.join("boot-pixels-gi")));
         assert!(!accepted_pixels_case(&cases.join("check-placement")));
     }
 

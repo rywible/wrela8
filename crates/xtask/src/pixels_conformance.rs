@@ -7,6 +7,8 @@ use crate::root;
 const EXPECTED: &str = "tests/pixels_truth/p8-visibility.txt";
 const QUALITY_EXPECTED: &str = "tests/pixels_truth/quality/p9-production-v1.txt";
 const QUALITY_GUEST_EXPECTED: &str = "tests/pixels_truth/quality/p9-guest-v1.txt";
+const P10_TRANSPARENT_EXPECTED: &str = "tests/pixels_truth/transparent/p10-v1.txt";
+const P10_GI_EXPECTED: &str = "tests/pixels_truth/gi/p10-v1.txt";
 const OUTPUT_DIR_ENV: &str = "WRELA_P8_CONFORMANCE_OUTPUT_DIR";
 
 /// Version of the recorded truth schema and the numeric contract the scorer
@@ -258,6 +260,49 @@ fn write_actual_report(actual: &str) -> Result<(), String> {
     std::fs::rename(&staged, &path)
         .map_err(|error| format!("pixels conformance: publish {}: {error}", path.display()))
 }
+
+fn verify_p10_truth(update: bool) -> Result<(), String> {
+    let report = wrela_compiler::pixels::reference::p10_conformance::run()?;
+    let header = report
+        .lines()
+        .next()
+        .ok_or_else(|| "pixels conformance: P10 report omitted its header".to_string())?;
+    let mut transparent = format!("{header}\n");
+    let mut gi = format!("{header}\n");
+    for line in report.lines().skip(1) {
+        if line.contains("transparent") || line.contains("bright-emissive-tail") {
+            transparent.push_str(line);
+            transparent.push('\n');
+        } else {
+            gi.push_str(line);
+            gi.push('\n');
+        }
+    }
+    for (relative, actual) in [
+        (P10_TRANSPARENT_EXPECTED, transparent),
+        (P10_GI_EXPECTED, gi),
+    ] {
+        let path = root().join(relative);
+        let expected = std::fs::read_to_string(&path).unwrap_or_default();
+        if expected == actual {
+            continue;
+        }
+        if !update {
+            return Err(format!(
+                "pixels conformance: deterministic P10 truth differs from {relative}\n--- expected\n{expected}--- actual\n{actual}"
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("pixels conformance: create {}: {error}", parent.display())
+            })?;
+        }
+        std::fs::write(&path, &actual)
+            .map_err(|error| format!("pixels conformance: write {}: {error}", path.display()))?;
+        println!("pixels-conformance: updated {relative}");
+    }
+    Ok(())
+}
 const GUEST_FRAME_DIGEST_MARKER: u64 = 4_922_225_244_575_680_596;
 const GUEST_ALPHA_SAMPLE_MARKER: u64 = 5_780_180_186_688_408_645;
 const GUEST_CERTIFIED_RUN_MARKER: u64 = 4_847_371_096_046_259_761;
@@ -362,6 +407,7 @@ pub fn pixels_conformance(
     deep_worker_variants: bool,
     only: Option<&[String]>,
 ) -> Result<(), String> {
+    verify_p10_truth(update)?;
     const ALL_GUEST_CASES: [&str; 14] = [
         "boot-pixels-plane",
         "boot-pixels-plane-one-core",
@@ -1107,24 +1153,53 @@ pub fn pixels_conformance(
         let quality_frame_count = wrela_compiler::pixels::reference::quality::FRAME_COUNT;
         let quality_width = wrela_compiler::pixels::reference::quality::FRAME_WIDTH;
         let quality_height = wrela_compiler::pixels::reference::quality::FRAME_HEIGHT;
-        if frames.len() != quality_frame_count
-            || frames
-                .iter()
-                .any(|frame| frame.len() != quality_width * quality_height * 4)
-        {
-            return Err(format!(
-                "pixels conformance: P9 quality capture has {} complete {}x{} frames, expected {}",
-                frames.len(),
-                quality_width,
-                quality_height,
-                quality_frame_count,
-            ));
-        }
         if frames.last() != Some(&final_bytes) {
             return Err(
                 "pixels conformance: final frame dump differs from sequence tail".to_string(),
             );
         }
+        if frames
+            .iter()
+            .any(|frame| frame.len() != quality_width * quality_height * 4)
+        {
+            return Err(format!(
+                "pixels conformance: P9 quality capture has a malformed frame among {} {}x{} captures",
+                frames.len(),
+                quality_width,
+                quality_height,
+            ));
+        }
+        // The fixture also contains an independent rate-violation rebuild
+        // test. Runtime-test scheduling may place that successfully presented
+        // frame before, after, or between the eight locked quality frames.
+        // Select the unique ordered frames bound by the test's traced digests
+        // instead of depending on actor scheduling between unrelated tests.
+        let mut selected = Vec::with_capacity(quality_frame_count);
+        let mut next_digest = 0_usize;
+        for frame in &frames {
+            if next_digest == digests.len() {
+                break;
+            }
+            let captured: [u8; 32] = wrela_machine::pixels::guest_bounded_digest(frame)
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| "pixels conformance: quality digest width mismatch".to_string())?;
+            if captured == digests[next_digest] {
+                selected.push(frame.clone());
+                next_digest += 1;
+            }
+        }
+        if selected.len() != quality_frame_count {
+            return Err(format!(
+                "pixels conformance: found {} of {} digest-bound quality frames among {} complete captures",
+                selected.len(),
+                quality_frame_count,
+                frames.len(),
+            ));
+        }
+        frames = selected;
         for (frame_index, (digest, frame)) in digests.iter().zip(&frames).enumerate() {
             let captured: [u8; 32] = wrela_machine::pixels::guest_bounded_digest(frame)
                 .into_iter()

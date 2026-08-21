@@ -4,7 +4,7 @@ Renderers count=1
     Config display=driver#0 mode=64x32@60 shade_hz=60 profile=AaaByteExact tone_curve=Linear depth=[0.1,128]
       World min=[-4,-4,-4] max=[4,4,4]
       RuntimeBounds camera_max_motion=0.25 light_capacity=0 light_kinds=[] exposure=[-1,1] environment=[0,0,0]-[1,1,1]
-      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_worst_case_ms=0 deadline_ms=10
+      Initialization ao=false ao_radius=1 ao_strength=1 probes=false probe_static=false probe_levels=0 probe_dims=0x0x0 probe_base_spacing=1 probe_worst_case_ms=0 deadline_ms=10
     Param id=p0 path=SceneParams.offset indexes=[1] component=scalar ty=f32 range=[-0.125,0.125]
     Param id=p1 path=SceneParams.capsule_a.x indexes=[2] component=0 ty=f32 range=[-1,1]
     Param id=p2 path=SceneParams.capsule_a.y indexes=[2] component=1 ty=f32 range=[-1,1]
@@ -1090,6 +1090,8 @@ Renderers count=1
       CapacityDerivation field=feature_count value=49 why=[10 maximal smooth objects; 49 immutable fused primitive feature templates; 49 total feature slots after instantiating those templates across 10 objects; 6 repeat template records]
       CapacityDerivation field=max_projected_features_per_row value=49 why=[P3 conservative projected interval is the complete output row domain; P4 may tighten but may not exceed this count]
       CapacityDerivation field=max_run_records_per_tile_row value=9281 why=[232 generators; 49 primitive equation generators; 134 feature-validity boundary generators; 49 material event/owner generators; 0 repeat wrap generators; 40 subdivisions each (10 roots * 2^2 dyadic depth); one terminal run, with a floor of 16 terminal pixel-cell records]
+      CapacityDerivation field=max_transparent_layers value=1 why=[3 classified material-program nodes; complete ordered CSG transitions; invisible leaves emit no transfer layer; opaque prefixes contribute one absorbing boundary and terminate the suffix]
+      CapacityDerivation field=probe_bytes value=0 why=[0 probes in 0 clipmap levels, two fail-closed generations; 0 all-invalid complete secondary rays; invalidation capacity=0]
       CapacityDerivation field=renderer_state_bytes value=3291698 why=[header=256; coefficient_snapshots=56; frame_snapshots=1376; frame_complexes=131072; scratch=3133136 (3133136 * 1 workers); output=16384; probes=0; page_alignment_padding=2712; kinetic=6272; tile_descriptors=368; tile_ownership=2; failure=64]
       CapacityDerivation field=instrumented_renderer_state_bytes value=3342152 why=[production=3291698; telemetry=50448]
     StructuralReport coefficient_bytes=28 objects=10 features=49 production_state_bytes=3291698 instrumented_state_bytes=3342152 dependency_schema=081eaae092c3427ad03c26e7596f17c1e2ce48afc4fdd1aadec6ef2dc354379c

@@ -403,7 +403,7 @@ fn validate_frame_program_v1(bytes: &[u8]) -> Result<(), String> {
     if u16_at(22) != 0 || bytes[34..48].iter().any(|byte| *byte != 0) {
         return Err("FrameProgram reserved header bytes are nonzero".to_string());
     }
-    if u32_at(12) & !1 != 0 {
+    if u32_at(12) & !7 != 0 {
         return Err("FrameProgram flags contain unsupported bits".to_string());
     }
     if u32_at(24) != format::FRAME_PROGRAM_NUMERIC_REVISION_V1
@@ -453,13 +453,10 @@ fn validate_frame_program_v1(bytes: &[u8]) -> Result<(), String> {
         }
         if matches!(
             kind,
-            format::FrameProgramTableKindV1::Transparency
-                | format::FrameProgramTableKindV1::Probe
-                | format::FrameProgramTableKindV1::Kinetic
-                | format::FrameProgramTableKindV1::DebugName
+            format::FrameProgramTableKindV1::Kinetic | format::FrameProgramTableKindV1::DebugName
         ) {
             return Err(format!(
-                "FrameProgram P5 {} table is unexpectedly populated",
+                "FrameProgram reserved {} table is unexpectedly populated",
                 kind.stable_name()
             ));
         }
