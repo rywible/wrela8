@@ -1287,6 +1287,22 @@ fn validate_renderers_inner(
             )
             .at(arg(renderer, label)?.span));
         }
+        let machine_mode = wrela_machine::pixels::DisplayModeV1 {
+            width,
+            height,
+            refresh_hz,
+        };
+        if machine_mode.validate().is_err() {
+            return Err(coded(
+                "P010",
+                format!(
+                    "renderer display mode {width}x{height}@{refresh_hz} exceeds the machine-v1 \
+                     complete guest-memory budget (maximum product is {} pixels)",
+                    wrela_machine::pixels::MAX_MODE_PIXELS,
+                ),
+            )
+            .at(display_argument.span));
+        }
         if refresh_hz % shade_hz != 0 {
             return Err(coded(
                 "P010",

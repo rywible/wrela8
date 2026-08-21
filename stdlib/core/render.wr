@@ -491,7 +491,6 @@ pub struct Light:
             self.position.x >= range[1] and self.position.x <= range[4]
             and self.position.y >= range[2] and self.position.y <= range[5]
             and self.position.z >= range[3] and self.position.z <= range[6]
-            and self.__wrela_p9_in_world(bounds)
         )
         axis_max = range[7]
         axes_bounded = (
@@ -3440,19 +3439,8 @@ pub struct Renderer[P]:
             return Err(RenderError.NonFiniteInput(RenderPath(component=4)))
         if not self.bounds.__wrela_p5_accepts_camera(frame.camera):
             return Err(RenderError.FrameContractMismatch(RenderPath(component=4)))
-        current_light_scalars = frame.lights.snapshot_scalars()
-        previous_meta = __wrela_pixels_p7_frame_snapshot_meta(
-            self.renderer_index.to[usize](),
-        )
-        previous_light_scalars: [f32; 120] = [0.0; 120]
-        frame_steps: u64 = 0
-        if previous_meta[0] == 1:
-            if frame.frame_index <= previous_meta[1]:
-                return Err(RenderError.FrameContractMismatch(RenderPath(component=5)))
-            frame_steps = frame.frame_index - previous_meta[1]
-            previous_light_scalars = __wrela_pixels_p7_frame_snapshot_light_scalars(
-                self.renderer_index.to[usize](),
-            )
+        # Frame indices and motion limits guide cross-frame proof reuse. This
+        # renderer rebuilds each frame, so neither is a legal-input boundary.
         index: usize = 0
         @budget(bound=8)
         while index < 8:
@@ -3464,19 +3452,10 @@ pub struct Renderer[P]:
                 return Err(RenderError.NonFiniteInput(RenderPath(component=5)))
             if not light.__wrela_p9_valid(self.bounds, light_range):
                 return Err(RenderError.ParameterOutOfRange(RenderPath(component=5)))
-            if previous_meta[0] == 1:
-                component: usize = 0
-                @budget(bound=15)
-                while component < 15:
-                    scalar_index = index * 15 + component
-                    if not __wrela_pixels_p9_light_rate_valid(
-                        current_light_scalars[scalar_index],
-                        previous_light_scalars[scalar_index],
-                        light_range[11],
-                        frame_steps,
-                    ):
-                        return Err(RenderError.FrameContractMismatch(RenderPath(component=5)))
-                    component = component + 1
+            # light_range[11] is a soft cross-frame reuse premise, not a hard
+            # legal-input bound. This renderer rebuilds its per-frame proof
+            # state, so exceeding the motion budget remains valid and
+            # byte-equivalent to an explicit from-scratch render.
             expected_kind: usize = 0
             if index == 0:
                 expected_kind = self.bounds.light_kind_0

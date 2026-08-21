@@ -309,11 +309,15 @@ impl MemRef {
     }
 
     pub fn stack_in(function: u64, offset: u64) -> MemRef {
+        Self::stack_at_base(function, offset, MEM_SP_REG)
+    }
+
+    pub fn stack_at_base(function: u64, offset: u64, base: u8) -> MemRef {
         MemRef {
             class: MemClass::Stack,
             key: offset,
             target: MemTarget::Stack { function, offset },
-            base: Some(MEM_SP_REG),
+            base: Some(base),
         }
     }
 

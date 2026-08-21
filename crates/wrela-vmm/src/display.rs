@@ -16,6 +16,18 @@ use crate::{VmmError, guest_dram_offset};
 
 pub use headless::{HeadlessBackend, HeadlessDisplay};
 
+/// Production keeps only a bounded diagnostic tail. Tests that need complete
+/// histories should supply an explicit collector rather than changing frame
+/// ownership in the device.
+pub const DISPLAY_DIAGNOSTIC_HISTORY_LIMIT: usize = 256;
+
+fn push_diagnostic<T>(history: &mut Vec<T>, value: T) {
+    if history.len() == DISPLAY_DIAGNOSTIC_HISTORY_LIMIT {
+        history.remove(0);
+    }
+    history.push(value);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
     Headless,
@@ -167,19 +179,31 @@ impl RuntimeDisplay {
             .devices
             .get_mut(&doorbell_addr)
             .expect("inserted display device exists");
-        let frame_count = device.frames().len();
-        let event_count = device.events().len();
-        let digest_count = device.backend_digests().len();
+        let frame_count = device.frame_records;
+        let event_count = device.event_records;
+        let digest_count = device.digest_records;
         let result = unsafe {
             device.consume_volatile_from(doorbell_addr, host_ram, dram_len, control_addr)
         };
         self.last_completion_status = device.last_completion_status();
-        self.frames
-            .extend_from_slice(&device.frames()[frame_count..]);
-        self.events
-            .extend_from_slice(&device.events()[event_count..]);
-        self.backend_digests
-            .extend_from_slice(&device.backend_digests()[digest_count..]);
+        let frame = (device.frame_records != frame_count)
+            .then(|| device.frames().last().cloned())
+            .flatten();
+        let event = (device.event_records != event_count)
+            .then(|| device.events().last().cloned())
+            .flatten();
+        let digest = (device.digest_records != digest_count)
+            .then(|| device.backend_digests().last().copied())
+            .flatten();
+        if let Some(frame) = frame {
+            push_diagnostic(&mut self.frames, frame);
+        }
+        if let Some(event) = event {
+            push_diagnostic(&mut self.events, event);
+        }
+        if let Some(digest) = digest {
+            push_diagnostic(&mut self.backend_digests, digest);
+        }
         result
     }
 
@@ -208,17 +232,29 @@ impl RuntimeDisplay {
             .devices
             .get_mut(&doorbell_addr)
             .expect("display inserted");
-        let frame_count = device.frames().len();
-        let event_count = device.events().len();
-        let digest_count = device.backend_digests().len();
+        let frame_count = device.frame_records;
+        let event_count = device.event_records;
+        let digest_count = device.digest_records;
         let result = device.consume_published_from(doorbell_addr, memory, control_addr);
         self.last_completion_status = device.last_completion_status();
-        self.frames
-            .extend_from_slice(&device.frames()[frame_count..]);
-        self.events
-            .extend_from_slice(&device.events()[event_count..]);
-        self.backend_digests
-            .extend_from_slice(&device.backend_digests()[digest_count..]);
+        let frame = (device.frame_records != frame_count)
+            .then(|| device.frames().last().cloned())
+            .flatten();
+        let event = (device.event_records != event_count)
+            .then(|| device.events().last().cloned())
+            .flatten();
+        let digest = (device.digest_records != digest_count)
+            .then(|| device.backend_digests().last().copied())
+            .flatten();
+        if let Some(frame) = frame {
+            push_diagnostic(&mut self.frames, frame);
+        }
+        if let Some(event) = event {
+            push_diagnostic(&mut self.events, event);
+        }
+        if let Some(digest) = digest {
+            push_diagnostic(&mut self.backend_digests, digest);
+        }
         result
     }
 }
@@ -247,6 +283,9 @@ pub struct DisplayDevice<B> {
     frames: Vec<PresentedFrame>,
     events: Vec<DisplayEvent>,
     backend_digests: Vec<[u8; 32]>,
+    frame_records: u64,
+    event_records: u64,
+    digest_records: u64,
     last_completion_status: u32,
 }
 
@@ -260,6 +299,9 @@ impl<B: PresentationBackend> DisplayDevice<B> {
             frames: Vec::new(),
             events: Vec::new(),
             backend_digests: Vec::new(),
+            frame_records: 0,
+            event_records: 0,
+            digest_records: 0,
             last_completion_status: wrela_machine::pixels::COMPLETION_PENDING,
         }
     }
@@ -282,6 +324,21 @@ impl<B: PresentationBackend> DisplayDevice<B> {
 
     pub fn last_completion_status(&self) -> u32 {
         self.last_completion_status
+    }
+
+    fn record_event(&mut self, event: DisplayEvent) {
+        self.event_records = self.event_records.saturating_add(1);
+        push_diagnostic(&mut self.events, event);
+    }
+
+    fn record_frame(&mut self, frame: PresentedFrame) {
+        self.frame_records = self.frame_records.saturating_add(1);
+        push_diagnostic(&mut self.frames, frame);
+    }
+
+    fn record_digest(&mut self, digest: [u8; 32]) {
+        self.digest_records = self.digest_records.saturating_add(1);
+        push_diagnostic(&mut self.backend_digests, digest);
     }
 
     pub fn consume(&mut self, dram: &[u8], control_addr: u64) -> Result<PresentedFrame, VmmError> {
@@ -410,7 +467,7 @@ impl<B: PresentationBackend> DisplayDevice<B> {
         let (candidate_queue, frame) = match result {
             Ok(value) => value,
             Err(error) => {
-                self.events.push(DisplayEvent::Rejected {
+                self.record_event(DisplayEvent::Rejected {
                     sequence: read_sequence_best_effort(control_addr, &mut read),
                     error: error.to_string(),
                 });
@@ -455,7 +512,7 @@ impl<B: PresentationBackend> DisplayDevice<B> {
                     "display completion became unknown after host commit: {error}"
                 )));
             }
-            self.events.push(DisplayEvent::Rejected {
+            self.record_event(DisplayEvent::Rejected {
                 sequence: Some(frame.sequence),
                 error: error.to_string(),
             });
@@ -475,19 +532,17 @@ impl<B: PresentationBackend> DisplayDevice<B> {
         self.queues.insert(frame.renderer_index, candidate_queue);
         self.doorbell_bindings
             .insert(doorbell_addr, frame.renderer_index);
-        self.backend_digests.push(backend_digest);
-        self.events.push(DisplayEvent::Presented {
+        self.record_digest(backend_digest);
+        self.record_event(DisplayEvent::Presented {
             renderer_index: frame.renderer_index,
             sequence: frame.sequence,
             generation: frame.generation,
             visible_digest: frame.visible_digest,
             raw_tile_digest: frame.raw_tile_digest,
         });
-        // Replay owns the digest record, not an extra copy of potentially
-        // multi-megabyte visible bytes.
-        let mut recorded = frame.clone();
-        recorded.bgra.clear();
-        self.frames.push(recorded);
+        // Replay owns metadata, not an extra copy of potentially multi-megabyte
+        // visible bytes. `metadata_only` constructs this directly.
+        self.record_frame(frame.metadata_only());
         self.last_completion_status = wrela_machine::pixels::COMPLETION_PRESENTED;
         Ok(frame)
     }
@@ -601,6 +656,20 @@ fn display_error(error: DisplayError) -> VmmError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_diagnostic_history_is_a_fixed_tail() {
+        let mut history = Vec::new();
+        for value in 0..DISPLAY_DIAGNOSTIC_HISTORY_LIMIT + 17 {
+            push_diagnostic(&mut history, value);
+        }
+        assert_eq!(history.len(), DISPLAY_DIAGNOSTIC_HISTORY_LIMIT);
+        assert_eq!(history[0], 17);
+        assert_eq!(
+            history.last(),
+            Some(&(DISPLAY_DIAGNOSTIC_HISTORY_LIMIT + 16))
+        );
+    }
     use wrela_machine::{layout, pixels};
 
     fn seal_guest_digests(dram: &mut [u8], control_addr: u64) {

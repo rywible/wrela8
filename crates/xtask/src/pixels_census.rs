@@ -270,6 +270,21 @@ fn source_tree_digest_with_stdlib(
         );
         bytes.push(0xff);
     }
+    let mut sealed_data = Vec::new();
+    collect_source_files(&root().join("stdlib/data/pixels"), "bin", &mut sealed_data)?;
+    sealed_data.sort();
+    for path in sealed_data {
+        let relative = path
+            .strip_prefix(&repo)
+            .map_err(|_| format!("pixels-census: {} escaped repository root", path.display()))?;
+        bytes.extend_from_slice(relative.to_string_lossy().as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(
+            &std::fs::read(&path)
+                .map_err(|error| format!("pixels-census: read {}: {error}", path.display()))?,
+        );
+        bytes.push(0xff);
+    }
     bytes.extend_from_slice(basis.source.as_bytes());
     bytes.push(0);
     bytes.extend_from_slice(&std::fs::read(basis_path).map_err(|error| {

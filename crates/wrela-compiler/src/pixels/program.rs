@@ -3,7 +3,9 @@
 //! These records are compiler data. They deliberately describe coefficient
 //! dependencies instead of forming another executable Wrela IR.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::ids::{CoeffId, ParamId, PolyProgramId, PredicateProgramId, ScalarId};
 use super::polynomial::PolyProgram;
@@ -71,16 +73,66 @@ pub enum CoeffOp {
     Neg(CoeffId),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum CoeffSemanticKey {
+#[derive(Clone, Debug)]
+struct CoeffSemanticKey(Arc<CoeffSemanticNode>);
+
+#[derive(Clone, Debug)]
+enum CoeffSemanticNode {
     ConstF64(u64),
     Scalar(ScalarId),
     Camera(CameraCoeff),
     ScalarParamDerivative(ScalarId, ParamId),
     ParamRate(ParamId, u8),
-    Add(Box<CoeffSemanticKey>, Box<CoeffSemanticKey>),
-    Mul(Box<CoeffSemanticKey>, Box<CoeffSemanticKey>),
-    Neg(Box<CoeffSemanticKey>),
+    Add(CoeffSemanticKey, CoeffSemanticKey),
+    Mul(CoeffSemanticKey, CoeffSemanticKey),
+    Neg(CoeffSemanticKey),
+}
+
+impl PartialEq for CoeffSemanticKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for CoeffSemanticKey {}
+
+impl PartialOrd for CoeffSemanticKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CoeffSemanticKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return Ordering::Equal;
+        }
+        use CoeffSemanticNode::*;
+        let rank = |node: &CoeffSemanticNode| match node {
+            ConstF64(_) => 0,
+            Scalar(_) => 1,
+            Camera(_) => 2,
+            ScalarParamDerivative(_, _) => 3,
+            ParamRate(_, _) => 4,
+            Add(_, _) => 5,
+            Mul(_, _) => 6,
+            Neg(_) => 7,
+        };
+        rank(&self.0)
+            .cmp(&rank(&other.0))
+            .then_with(|| match (&*self.0, &*other.0) {
+                (ConstF64(a), ConstF64(b)) => a.cmp(b),
+                (Scalar(a), Scalar(b)) => a.cmp(b),
+                (Camera(a), Camera(b)) => a.cmp(b),
+                (ScalarParamDerivative(a0, a1), ScalarParamDerivative(b0, b1)) => {
+                    (a0, a1).cmp(&(b0, b1))
+                }
+                (ParamRate(a0, a1), ParamRate(b0, b1)) => (a0, a1).cmp(&(b0, b1)),
+                (Add(a0, a1), Add(b0, b1)) | (Mul(a0, a1), Mul(b0, b1)) => (a0, a1).cmp(&(b0, b1)),
+                (Neg(a), Neg(b)) => a.cmp(b),
+                _ => Ordering::Equal,
+            })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +144,38 @@ pub struct CoeffNode {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CoeffProgram {
     pub nodes: Vec<CoeffNode>,
+}
+
+fn coeff_semantic_key(
+    op: &CoeffOp,
+    prior: &[CoeffSemanticKey],
+) -> Result<CoeffSemanticKey, String> {
+    let child = |id: CoeffId| {
+        prior.get(id.index()).cloned().ok_or_else(|| {
+            format!("pixels::program: coefficient {id} names a non-predecessor semantic key")
+        })
+    };
+    let node = match *op {
+        CoeffOp::ConstF64(bits) => CoeffSemanticNode::ConstF64(bits),
+        CoeffOp::Scalar(value) => CoeffSemanticNode::Scalar(value),
+        CoeffOp::Camera(value) => CoeffSemanticNode::Camera(value),
+        CoeffOp::ScalarParamDerivative(scalar, param) => {
+            CoeffSemanticNode::ScalarParamDerivative(scalar, param)
+        }
+        CoeffOp::ParamRate(param, order) => CoeffSemanticNode::ParamRate(param, order),
+        CoeffOp::Add(a, b) => {
+            let (a, b) = (child(a)?, child(b)?);
+            let (a, b) = if a <= b { (a, b) } else { (b, a) };
+            CoeffSemanticNode::Add(a, b)
+        }
+        CoeffOp::Mul(a, b) => {
+            let (a, b) = (child(a)?, child(b)?);
+            let (a, b) = if a <= b { (a, b) } else { (b, a) };
+            CoeffSemanticNode::Mul(a, b)
+        }
+        CoeffOp::Neg(value) => CoeffSemanticNode::Neg(child(value)?),
+    };
+    Ok(CoeffSemanticKey(Arc::new(node)))
 }
 
 impl CoeffProgram {
@@ -123,30 +207,6 @@ impl CoeffProgram {
             CoeffOp::ConstF64(bits) => Some(f64::from_bits(*bits)),
             _ => None,
         }
-    }
-
-    fn semantic_key(&self, id: CoeffId) -> Result<CoeffSemanticKey, String> {
-        let key = match self.get(id)?.op {
-            CoeffOp::ConstF64(bits) => CoeffSemanticKey::ConstF64(bits),
-            CoeffOp::Scalar(value) => CoeffSemanticKey::Scalar(value),
-            CoeffOp::Camera(value) => CoeffSemanticKey::Camera(value),
-            CoeffOp::ScalarParamDerivative(scalar, param) => {
-                CoeffSemanticKey::ScalarParamDerivative(scalar, param)
-            }
-            CoeffOp::ParamRate(param, order) => CoeffSemanticKey::ParamRate(param, order),
-            CoeffOp::Add(a, b) => {
-                let (a, b) = (self.semantic_key(a)?, self.semantic_key(b)?);
-                let (a, b) = if a <= b { (a, b) } else { (b, a) };
-                CoeffSemanticKey::Add(Box::new(a), Box::new(b))
-            }
-            CoeffOp::Mul(a, b) => {
-                let (a, b) = (self.semantic_key(a)?, self.semantic_key(b)?);
-                let (a, b) = if a <= b { (a, b) } else { (b, a) };
-                CoeffSemanticKey::Mul(Box::new(a), Box::new(b))
-            }
-            CoeffOp::Neg(value) => CoeffSemanticKey::Neg(Box::new(self.semantic_key(value)?)),
-        };
-        Ok(key)
     }
 
     pub fn influencing_params(
@@ -381,6 +441,9 @@ impl CoeffProgram {
 pub struct CoeffBuilder {
     program: CoeffProgram,
     canonical: BTreeMap<CoeffOp, CoeffId>,
+    /// Canonical semantic identity for each DAG node. Unlike the old boxed
+    /// recursive key, this remains O(nodes) for shared repeated-squaring DAGs.
+    semantic_keys: Vec<CoeffSemanticKey>,
 }
 
 impl CoeffBuilder {
@@ -390,6 +453,7 @@ impl CoeffBuilder {
 
     pub fn from_program(program: CoeffProgram) -> Result<Self, String> {
         let mut canonical = BTreeMap::new();
+        let mut semantic_keys = Vec::with_capacity(program.nodes.len());
         for (index, node) in program.nodes.iter().enumerate() {
             if node.id.index() != index {
                 return Err(format!(
@@ -403,8 +467,13 @@ impl CoeffBuilder {
                     node.id
                 ));
             }
+            semantic_keys.push(coeff_semantic_key(&node.op, &semantic_keys)?);
         }
-        Ok(Self { program, canonical })
+        Ok(Self {
+            program,
+            canonical,
+            semantic_keys,
+        })
     }
 
     fn intern(&mut self, op: CoeffOp) -> Result<CoeffId, String> {
@@ -415,7 +484,9 @@ impl CoeffBuilder {
             u32::try_from(self.program.nodes.len())
                 .map_err(|_| "P015: renderer capacity `coefficient_programs` overflows u32")?,
         );
+        let semantic_key = coeff_semantic_key(&op, &self.semantic_keys)?;
         self.program.nodes.push(CoeffNode { id, op: op.clone() });
+        self.semantic_keys.push(semantic_key);
         self.canonical.insert(op, id);
         Ok(id)
     }
@@ -470,7 +541,12 @@ impl CoeffBuilder {
             match self.program.get(id)?.op {
                 CoeffOp::Add(left, right) => pending.extend([left, right]),
                 _ if self.program.is_exact_zero(id) => {}
-                _ => leaves.push((self.program.semantic_key(id)?, id)),
+                _ => leaves.push((
+                    self.semantic_keys.get(id.index()).cloned().ok_or_else(|| {
+                        format!("pixels::program: coefficient {id} has no semantic key")
+                    })?,
+                    id,
+                )),
             }
         }
         leaves.sort_by(|left, right| left.0.cmp(&right.0));
@@ -604,6 +680,20 @@ mod tests {
         assert_eq!(builder.add(scalar, zero).unwrap(), scalar);
         let camera = builder.camera(CameraCoeff::Eye(0)).unwrap();
         assert_ne!(builder.sub(camera, camera).unwrap(), zero);
+    }
+
+    #[test]
+    fn semantic_fingerprints_stay_linear_for_a_shared_dag() {
+        let mut builder = CoeffBuilder::new();
+        let mut repeated = builder.scalar(ScalarId(0)).unwrap();
+        for _ in 0..40 {
+            repeated = builder.mul(repeated, repeated).unwrap();
+        }
+        let camera = builder.camera(CameraCoeff::Eye(0)).unwrap();
+        let sum = builder.add(repeated, camera).unwrap();
+        assert_eq!(builder.semantic_keys.len(), builder.program.nodes.len());
+        assert_eq!(builder.program.get(sum).unwrap().id, sum);
+        assert!(builder.program.nodes.len() < 50);
     }
 
     #[test]
@@ -2452,32 +2542,30 @@ pub fn finish_frame_program(
         push_record(summaries, 3, 0, operands);
     }
 
-    // The canonical P9 transfer tables are shared image data. Only renderer
-    // zero owns their packed records; generated accessors for every renderer
-    // deliberately reference that one verified copy. Four little-endian u16
-    // entries per operand keep the FrameProgram representation bounded.
-    if renderer_index == 0 {
-        for (tag, kind) in [
-            (4, super::tables::TableKind::FilmicV1),
-            (5, super::tables::TableKind::SrgbV1),
-        ] {
-            let values = super::tables::values(kind)?;
-            let digest = wrela_machine::sha256::sha256(kind.bytes());
-            let mut operands = vec![values.len() as u64];
-            operands.extend(
-                digest
-                    .chunks_exact(8)
-                    .map(|word| u64::from_le_bytes(word.try_into().expect("digest word"))),
-            );
-            for entries in values.chunks(4) {
-                let mut word = 0_u64;
-                for (index, value) in entries.iter().enumerate() {
-                    word |= u64::from(*value) << (index * 16);
-                }
-                operands.push(word);
+    // Each FrameProgram is independently verifiable and therefore carries
+    // its own canonical P9 transfer-table records. Generated accessors may
+    // still share renderer zero's verified copy at image scope. Four
+    // little-endian u16 entries per operand keep the representation bounded.
+    for (tag, kind) in [
+        (4, super::tables::TableKind::FilmicV1),
+        (5, super::tables::TableKind::SrgbV1),
+    ] {
+        let values = super::tables::values(kind)?;
+        let digest = wrela_machine::sha256::sha256(kind.bytes());
+        let mut operands = vec![values.len() as u64];
+        operands.extend(
+            digest
+                .chunks_exact(8)
+                .map(|word| u64::from_le_bytes(word.try_into().expect("digest word"))),
+        );
+        for entries in values.chunks(4) {
+            let mut word = 0_u64;
+            for (index, value) in entries.iter().enumerate() {
+                word |= u64::from(*value) << (index * 16);
             }
-            push_record(summaries, tag, 0, operands);
+            operands.push(word);
         }
+        push_record(summaries, tag, 0, operands);
     }
 
     let params = by_kind
@@ -3318,6 +3406,57 @@ pub(crate) fn minimal_verified_frame_program() -> VerifiedFrameProgram {
         flags: 0,
         operands: camera,
     });
+    records(&mut tables, FrameProgramTableKindV1::ShadingSummary).push(FrameRecord {
+        stable_id: 0,
+        tag: 2,
+        flags: 0,
+        operands: vec![0, 0, u64::from(1.0_f32.to_bits()), 0, 5, 4, 25],
+    });
+    let bounds = [
+        (-1.0_f64).to_bits(),
+        (-1.0_f64).to_bits(),
+        (-1.0_f64).to_bits(),
+        1.0_f64.to_bits(),
+        1.0_f64.to_bits(),
+        1.0_f64.to_bits(),
+    ];
+    let mut secondary = vec![1, 1, 0, 1, 0, 0, 1];
+    secondary.extend(bounds);
+    secondary.extend(bounds);
+    secondary.extend([0, 1, u64::MAX, u64::MAX]);
+    records(&mut tables, FrameProgramTableKindV1::ShadingSummary).push(FrameRecord {
+        stable_id: 1,
+        tag: 3,
+        flags: 0,
+        operands: secondary,
+    });
+    for (tag, kind) in [
+        (4, super::tables::TableKind::FilmicV1),
+        (5, super::tables::TableKind::SrgbV1),
+    ] {
+        let values = super::tables::values(kind).expect("sealed minimal transfer table");
+        let digest = wrela_machine::sha256::sha256(kind.bytes());
+        let mut operands = vec![values.len() as u64];
+        operands.extend(
+            digest
+                .chunks_exact(8)
+                .map(|word| u64::from_le_bytes(word.try_into().expect("digest word"))),
+        );
+        for entries in values.chunks(4) {
+            let mut word = 0_u64;
+            for (index, value) in entries.iter().enumerate() {
+                word |= u64::from(*value) << (index * 16);
+            }
+            operands.push(word);
+        }
+        let summaries = records(&mut tables, FrameProgramTableKindV1::ShadingSummary);
+        summaries.push(FrameRecord {
+            stable_id: summaries.len() as u32,
+            tag,
+            flags: 0,
+            operands,
+        });
+    }
     for slot in 0..8_u64 {
         let summaries = records(&mut tables, FrameProgramTableKindV1::ShadingSummary);
         summaries.push(FrameRecord {

@@ -137,7 +137,7 @@ total = 213
 "cost/bridge.rs" = 3
 
 [emitted_a64]
-encode_enc_site_total = 464
+encode_enc_site_total = 466
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -149,7 +149,7 @@ non_inventory = ["codegen.rs::load_imm", "layout.rs::expand_rodata_adr_sites", "
 wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
-"codegen.rs" = 388
+"codegen.rs" = 390
 "layout.rs" = 11
 "layout/harness.rs" = 30
 "layout/stage1.rs" = 15

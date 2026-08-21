@@ -8,7 +8,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Owner name=runtime proxy_cycles=424
   Owner name=driver proxy_cycles=0
   Core n=0 proxy_cycles=0 max_entry_method_proxy_cycles=0
-  Budget n=0 fetched_text_bytes=23360 executable_code_bytes=23316 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=6 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Budget n=0 fetched_text_bytes=23360 executable_code_bytes=23316 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=6 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
   Shared proxy_cycles=4646
   Fn key=__image_abort_fixed owner=app frame_bytes=0 proxy_cycles=8
     Term rule=Mem level=buffered count=2

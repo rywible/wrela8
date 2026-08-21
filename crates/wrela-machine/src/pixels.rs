@@ -36,8 +36,64 @@ pub const TILE_STRIDE_BYTES: u32 = TILE_WIDTH * BYTES_PER_PIXEL;
 pub const TILE_ALLOCATION_BYTES: usize = TILE_STRIDE_BYTES as usize * TILE_HEIGHT as usize;
 pub const MAX_MODE_WIDTH: u32 = 8192;
 pub const MAX_MODE_HEIGHT: u32 = 8192;
+/// Maximum product mode admitted by the 512 MiB Rasputin guest profile.
+/// 4096x4096 and 8192x2048 are examples of the same maximum product; the
+/// independent dimension ceilings are not themselves a supported product.
+pub const MAX_MODE_PIXELS: u64 = 4096 * 4096;
 pub const MAX_TILE_COUNT: u32 =
     MAX_MODE_WIDTH.div_ceil(TILE_WIDTH) * MAX_MODE_HEIGHT.div_ceil(TILE_HEIGHT);
+
+pub const GUEST_DRAM_BUDGET_BYTES: u64 = 512 << 20;
+pub const GUEST_RUNTIME_RESERVE_BYTES: u64 = 64 << 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeBudget {
+    pub visible_bytes: u64,
+    pub tile_bytes_per_buffer: u64,
+    pub swapchain_bytes: u64,
+    pub renderer_program_reserve: u64,
+    pub renderer_state_reserve: u64,
+    pub runtime_reserve: u64,
+    pub total_bytes: u64,
+}
+
+impl ModeBudget {
+    pub fn calculate(width: u32, height: u32) -> Option<Self> {
+        let pixels = u64::from(width).checked_mul(u64::from(height))?;
+        if width == 0
+            || height == 0
+            || width > MAX_MODE_WIDTH
+            || height > MAX_MODE_HEIGHT
+            || pixels > MAX_MODE_PIXELS
+        {
+            return None;
+        }
+        let visible_bytes = pixels.checked_mul(u64::from(BYTES_PER_PIXEL))?;
+        let tile_count = u64::from(width.div_ceil(TILE_WIDTH))
+            .checked_mul(u64::from(height.div_ceil(TILE_HEIGHT)))?;
+        let tile_bytes_per_buffer = tile_count.checked_mul(TILE_ALLOCATION_BYTES as u64)?;
+        let swapchain_bytes = tile_bytes_per_buffer.checked_mul(2)?;
+        if swapchain_bytes > crate::layout::PIXELS_FRAMEBUFFER_BYTES_MAX {
+            return None;
+        }
+        let total_bytes = crate::layout::PIXELS_PROGRAM_BYTES_MAX
+            .checked_add(crate::layout::PIXELS_STATE_BYTES_MAX)?
+            .checked_add(swapchain_bytes)?
+            .checked_add(GUEST_RUNTIME_RESERVE_BYTES)?;
+        if total_bytes > GUEST_DRAM_BUDGET_BYTES {
+            return None;
+        }
+        Some(Self {
+            visible_bytes,
+            tile_bytes_per_buffer,
+            swapchain_bytes,
+            renderer_program_reserve: crate::layout::PIXELS_PROGRAM_BYTES_MAX,
+            renderer_state_reserve: crate::layout::PIXELS_STATE_BYTES_MAX,
+            runtime_reserve: GUEST_RUNTIME_RESERVE_BYTES,
+            total_bytes,
+        })
+    }
+}
 
 pub const CONTROL_BASE: u64 = crate::layout::DRAM_BASE + 0x10_0000;
 pub const TILES_BASE: u64 = CONTROL_BASE + 0x100;
@@ -316,6 +372,7 @@ impl DisplayModeV1 {
         {
             return Err(DisplayError::WrongMode);
         }
+        ModeBudget::calculate(self.width, self.height).ok_or(DisplayError::ModeBudgetExceeded)?;
         Ok(())
     }
 
@@ -431,23 +488,48 @@ impl PresentControl {
 /// recomputed by the host. This supplements the host SHA-256 replay digests;
 /// it is not a replacement for them.
 pub fn guest_bounded_digest(bytes: &[u8]) -> [u64; 4] {
-    let mut state = [
-        1_469_598_103_934_665_603_u64,
-        1_099_511_628_211,
-        7_809_847_782_465_536_322,
-        1_609_587_929_392_839_161,
-    ];
-    for (index, value) in bytes.iter().copied().enumerate() {
-        let value = u64::from(value);
-        state[0] = (state[0] ^ value).wrapping_mul(1_099_511_628_211);
-        state[1] =
-            (state[1] ^ value.wrapping_add(index as u64)).wrapping_mul(14_029_467_366_897_019_727);
-        state[2] = state[2]
-            .wrapping_add(value)
-            .wrapping_mul(11_400_714_785_074_694_791);
-        state[3] = (state[3] ^ (value << (index % 8))).wrapping_mul(9_650_029_242_287_828_579);
+    let mut state = GuestBoundedDigest::new();
+    state.update(bytes);
+    state.finish()
+}
+
+struct GuestBoundedDigest {
+    state: [u64; 4],
+    bytes: u64,
+}
+
+impl GuestBoundedDigest {
+    const fn new() -> Self {
+        Self {
+            state: [
+                1_469_598_103_934_665_603_u64,
+                1_099_511_628_211,
+                7_809_847_782_465_536_322,
+                1_609_587_929_392_839_161,
+            ],
+            bytes: 0,
+        }
     }
-    state
+
+    fn update(&mut self, bytes: &[u8]) {
+        for (relative, value) in bytes.iter().copied().enumerate() {
+            let index = self.bytes.wrapping_add(relative as u64);
+            let value = u64::from(value);
+            self.state[0] = (self.state[0] ^ value).wrapping_mul(1_099_511_628_211);
+            self.state[1] = (self.state[1] ^ value.wrapping_add(index))
+                .wrapping_mul(14_029_467_366_897_019_727);
+            self.state[2] = self.state[2]
+                .wrapping_add(value)
+                .wrapping_mul(11_400_714_785_074_694_791);
+            self.state[3] =
+                (self.state[3] ^ (value << (index % 8))).wrapping_mul(9_650_029_242_287_828_579);
+        }
+        self.bytes = self.bytes.wrapping_add(bytes.len() as u64);
+    }
+
+    const fn finish(self) -> [u64; 4] {
+        self.state
+    }
 }
 
 #[repr(C)]
@@ -509,6 +591,7 @@ pub enum DisplayError {
     WrongVersion(u32),
     WrongFormat(u8),
     WrongMode,
+    ModeBudgetExceeded,
     ModeChanged,
     ModeByteOverflow,
     TileCountOverflow,
@@ -551,6 +634,27 @@ pub struct PresentedFrame {
     pub vsync_id: u64,
     pub checkpoint: u64,
     pub bgra: Vec<u8>,
+}
+
+impl PresentedFrame {
+    /// Build the replay/diagnostic record without cloning framebuffer bytes.
+    pub fn metadata_only(&self) -> Self {
+        Self {
+            renderer_index: self.renderer_index,
+            sequence: self.sequence,
+            generation: self.generation,
+            released_generation: self.released_generation,
+            mode: self.mode,
+            format: self.format,
+            tile_descriptor_digest: self.tile_descriptor_digest,
+            visible_digest: self.visible_digest,
+            raw_tile_digest: self.raw_tile_digest,
+            digest: self.digest.clone(),
+            vsync_id: self.vsync_id,
+            checkpoint: self.checkpoint,
+            bgra: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -654,26 +758,21 @@ impl DisplayQueue {
         validate_descriptors(control.mode, tiles)?;
 
         let mut frame = vec![0_u8; control.mode.visible_bytes()?];
-        let mut raw = Vec::with_capacity(
-            tiles
-                .len()
-                .checked_mul(TILE_ALLOCATION_BYTES)
-                .ok_or(DisplayError::ModeByteOverflow)?,
-        );
-        let mut descriptor_bytes = Vec::with_capacity(
-            tiles
-                .len()
-                .checked_mul(DISPLAY_TILE_DESC_BYTES_V1)
-                .ok_or(DisplayError::ModeByteOverflow)?,
-        );
+        let mut raw_sha256 = crate::sha256::Sha256::new();
+        let mut raw_guest_digest = GuestBoundedDigest::new();
+        let mut descriptor_sha256 = crate::sha256::Sha256::new();
+        let mut descriptor_guest_digest = GuestBoundedDigest::new();
         for (index, tile) in tiles.iter().enumerate() {
-            descriptor_bytes.extend_from_slice(&tile.encode());
+            let descriptor = tile.encode();
+            descriptor_sha256.update(&descriptor);
+            descriptor_guest_digest.update(&descriptor);
             let pixels = read_pixels(tile).ok_or(DisplayError::PixelBytes(index as u32))?;
             if pixels.len() != TILE_ALLOCATION_BYTES {
                 return Err(DisplayError::PixelBytes(index as u32));
             }
             validate_padding(index as u32, tile, &pixels)?;
-            raw.extend_from_slice(&pixels);
+            raw_sha256.update(&pixels);
+            raw_guest_digest.update(&pixels);
             for row in 0..u32::from(tile.height) {
                 for column in 0..u32::from(tile.width) {
                     let source = (row * TILE_STRIDE_BYTES + column * BYTES_PER_PIXEL) as usize;
@@ -693,16 +792,16 @@ impl DisplayQueue {
             .next_sequence
             .checked_add(1)
             .ok_or(DisplayError::SequenceOverflow)?;
-        let tile_descriptor_digest = crate::sha256::sha256(&descriptor_bytes);
+        let tile_descriptor_digest = descriptor_sha256.finish();
         let visible_digest = crate::sha256::sha256(&frame);
-        let raw_tile_digest = crate::sha256::sha256(&raw);
+        let raw_tile_digest = raw_sha256.finish();
         if guest_bounded_digest(&frame) != control.guest_visible_digest {
             return Err(DisplayError::GuestVisibleDigest);
         }
-        if guest_bounded_digest(&raw) != control.guest_raw_tile_digest {
+        if raw_guest_digest.finish() != control.guest_raw_tile_digest {
             return Err(DisplayError::GuestRawTileDigest);
         }
-        if guest_bounded_digest(&descriptor_bytes) != control.guest_tile_descriptor_digest {
+        if descriptor_guest_digest.finish() != control.guest_tile_descriptor_digest {
             return Err(DisplayError::GuestTileDescriptorDigest);
         }
         self.mode = Some(control.mode);
@@ -718,7 +817,7 @@ impl DisplayQueue {
             tile_descriptor_digest,
             visible_digest,
             raw_tile_digest,
-            digest: crate::sha256::sha256_hex(&frame),
+            digest: crate::sha256::digest_hex(visible_digest),
             vsync_id: control.vsync_id,
             checkpoint: control.checkpoint,
             bgra: frame,
@@ -795,6 +894,9 @@ fn validate_padding(
     tile: &DisplayTileDescV1,
     pixels: &[u8],
 ) -> Result<(), DisplayError> {
+    if u32::from(tile.width) == TILE_WIDTH && u32::from(tile.height) == TILE_HEIGHT {
+        return Ok(());
+    }
     for row in 0..TILE_HEIGHT {
         for column in 0..TILE_WIDTH {
             if row < u32::from(tile.height) && column < u32::from(tile.width) {
@@ -833,6 +935,28 @@ mod tests {
             guest_tile_descriptor_digest: [0; 4],
             completion_status: COMPLETION_PENDING,
         }
+    }
+
+    #[test]
+    fn mode_budget_admits_product_modes_and_rejects_impossible_dimension_product() {
+        for (width, height) in [(1920, 1080), (3840, 2160), (4096, 4096), (8192, 2048)] {
+            let mode = DisplayModeV1 {
+                width,
+                height,
+                refresh_hz: 60,
+            };
+            mode.validate().unwrap();
+            let budget = ModeBudget::calculate(width, height).unwrap();
+            assert!(budget.total_bytes <= GUEST_DRAM_BUDGET_BYTES);
+            assert!(budget.swapchain_bytes <= crate::layout::PIXELS_FRAMEBUFFER_BYTES_MAX);
+        }
+        let impossible = DisplayModeV1 {
+            width: MAX_MODE_WIDTH,
+            height: MAX_MODE_HEIGHT,
+            refresh_hz: 60,
+        };
+        assert_eq!(impossible.validate(), Err(DisplayError::ModeBudgetExceeded));
+        assert_eq!(ModeBudget::calculate(8192, 2049), None);
     }
 
     fn descriptors(mode: DisplayModeV1, generation: u8) -> Vec<DisplayTileDescV1> {

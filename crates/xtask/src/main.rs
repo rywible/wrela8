@@ -682,7 +682,7 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
     // hardening, presenter, and normalized-input regressions. The selected-host
     // BRK fixture adds one signed HVF case and runs as a Linux KVM test on
     // Rasputin; both censuses are pinned deliberately here.
-    const ALL: usize = 164;
+    const ALL: usize = 165;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",

@@ -327,7 +327,7 @@ ImageReport v0
     Owner name=runtime proxy_cycles=9550
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=38 max_entry_method_proxy_cycles=26
-    Budget n=0 fetched_text_bytes=58816 executable_code_bytes=58780 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=15 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=8 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Budget n=0 fetched_text_bytes=58816 executable_code_bytes=58780 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=15 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=7 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
     Shared proxy_cycles=10681
     Scope name=linked-image executable_words=14695 executable_code_bytes=58780 fetched_text_bytes=58816 image_bytes=4200816 rodata_bytes=709 sync_frame_max_bytes=1328 async_frame_total_bytes=1360
   Convention fns=320 frameless=239 tail_calls=0

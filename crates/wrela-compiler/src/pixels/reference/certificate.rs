@@ -88,9 +88,7 @@ pub fn bernstein_faces(
 ) -> Option<RootCertificate> {
     let lower_sign = lower.sign();
     let upper_sign = upper.sign();
-    if !opposite_signs(lower_sign, upper_sign)
-        || !(derivative.strict_positive() || derivative.strict_negative())
-    {
+    if !oriented_crossing(lower_sign, upper_sign, derivative) {
         return None;
     }
     Some(RootCertificate {
@@ -121,9 +119,12 @@ pub fn bernstein_faces_subdivided(
     while stack_len != 0 {
         stack_len -= 1;
         let (lower, upper, depth) = stack[stack_len];
-        if opposite_signs(lower.sign(), upper.sign()) {
+        if oriented_crossing(lower.sign(), upper.sign(), derivative) {
             minimum_margin = minimum_margin.min(coefficient_margin(lower, upper).lo);
             continue;
+        }
+        if opposite_signs(lower.sign(), upper.sign()) {
+            return Ok(None);
         }
         if depth >= maximum_depth || stack_len + 2 > stack.len() {
             return Ok(None);
@@ -148,9 +149,12 @@ pub fn monotone_tube(
     upper_face: Iv32,
     derivative: Iv32,
 ) -> Option<RootCertificate> {
-    if !((lower_face.strict_negative() && upper_face.strict_positive())
-        || (lower_face.strict_positive() && upper_face.strict_negative()))
-        || !(derivative.strict_positive() || derivative.strict_negative())
+    if !((lower_face.strict_negative()
+        && upper_face.strict_positive()
+        && derivative.strict_positive())
+        || (lower_face.strict_positive()
+            && upper_face.strict_negative()
+            && derivative.strict_negative()))
     {
         return None;
     }
@@ -217,6 +221,23 @@ fn opposite_signs(a: CoefficientSign, b: CoefficientSign) -> bool {
     )
 }
 
+fn oriented_crossing(lower: CoefficientSign, upper: CoefficientSign, derivative: Iv32) -> bool {
+    matches!(
+        (lower, upper),
+        (
+            CoefficientSign::StrictNegative,
+            CoefficientSign::StrictPositive
+        )
+    ) && derivative.strict_positive()
+        || matches!(
+            (lower, upper),
+            (
+                CoefficientSign::StrictPositive,
+                CoefficientSign::StrictNegative
+            )
+        ) && derivative.strict_negative()
+}
+
 fn strict_margin(interval: Iv32) -> Iv32 {
     Iv32::point(if interval.strict_positive() {
         interval.lo
@@ -266,6 +287,44 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn face_crossings_must_agree_with_derivative_orientation() {
+        let signs = [
+            (Iv32::point(-2), Iv32::point(3)),
+            (Iv32::point(2), Iv32::point(-3)),
+        ];
+        let derivatives = [Iv32::point(1), Iv32::point(-1)];
+        for (faces_index, (lower, upper)) in signs.into_iter().enumerate() {
+            for (derivative_index, derivative) in derivatives.into_iter().enumerate() {
+                assert_eq!(
+                    monotone_tube(lower, upper, derivative).is_some(),
+                    faces_index == derivative_index,
+                    "faces {lower:?}->{upper:?}, derivative {derivative:?}"
+                );
+            }
+        }
+
+        let constant = |value| {
+            let mut coefficients =
+                [Iv32::point(0); crate::pixels::reference::poly::MAX_COEFFICIENTS];
+            coefficients[0] = Iv32::point(value);
+            Bernstein {
+                coefficients,
+                degree: 0,
+            }
+        };
+        for (faces_index, (lower, upper)) in [(-2, 3), (2, -3)].into_iter().enumerate() {
+            for (derivative_index, derivative) in
+                [Iv32::point(1), Iv32::point(-1)].into_iter().enumerate()
+            {
+                assert_eq!(
+                    bernstein_faces(constant(lower), constant(upper), derivative).is_some(),
+                    faces_index == derivative_index
+                );
+            }
+        }
     }
 
     #[test]

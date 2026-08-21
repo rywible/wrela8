@@ -312,7 +312,11 @@ pub fn brdf(
     let alpha = (material.roughness * material.roughness).max(0.0004);
     let alpha2 = alpha * alpha;
     let denominator = no_h * no_h * (alpha2 - 1.0) + 1.0;
-    let distribution = alpha2 / (PI * denominator.mul_add(denominator, 1.0e-12));
+    // The admitted roughness floor makes `denominator >= alpha2 > 0`.
+    // Adding an absolute epsilon here is not stabilization: at roughness
+    // 0.02 it dominates the squared denominator and removes most of the
+    // physically valid specular lobe.
+    let distribution = alpha2 / (PI * denominator * denominator);
     let lambda = |no_x: f64| {
         let no_x2 = no_x * no_x;
         ((alpha2 * (1.0 - no_x2) / no_x2.max(1.0e-12) + 1.0).sqrt() - 1.0) * 0.5
@@ -525,7 +529,7 @@ mod tests {
         )
         .unwrap();
         for channel in value {
-            assert!((channel - 0.203_718_327_144_588_04).abs() < 1.0e-12);
+            assert!((channel - 0.203_718_327_157_626_03).abs() < 1.0e-12);
         }
     }
 
@@ -600,6 +604,12 @@ mod tests {
                 assert!(integral.into_iter().all(
                     |value| value.is_finite() && value <= 1.0 + WHITE_FURNACE_NUMERIC_RADIUS_V1
                 ));
+                if metallic == 1.0 && roughness == 0.02 {
+                    assert!(
+                        integral.into_iter().all(|value| value >= 0.99),
+                        "minimum-roughness white conductor lost energy: {integral:?}"
+                    );
+                }
             }
         }
     }

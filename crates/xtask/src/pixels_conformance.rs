@@ -132,7 +132,10 @@ fn case_target(case: &str) -> Result<std::path::PathBuf, String> {
 fn source_closure_digest(case: &str, target: &std::path::Path) -> Result<String, String> {
     let fixture = root().join("tests/golden").join(case);
     Ok(key_of(&[
-        ("stdlib", tree_digest(&root().join("stdlib"), &["wr"])?),
+        (
+            "stdlib",
+            tree_digest(&root().join("stdlib"), &["wr", "bin"])?,
+        ),
         ("fixture", tree_digest(&fixture, &["wr", "txt"])?),
         (
             "target",

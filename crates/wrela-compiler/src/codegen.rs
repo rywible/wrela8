@@ -902,6 +902,36 @@ pub const FRAME_SLOT_BYTES: u64 = 8;
 const FRAME_X_IMMEDIATE_MAX_BYTES: usize = 4095 * FRAME_SLOT_BYTES as usize;
 const FRAME_MAX_BYTES: usize = 256 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BasePlusOffsetPlan {
+    Immediate(u16),
+    AddPagesAndLow { pages: u16, low: u16 },
+    MaterializedConstant(u64),
+}
+
+/// Select an address form without narrowing until the form's bounds have
+/// been proved. `scale` is the load/store access width for scaled-immediate
+/// forms; callers asking for a pointer pass `None`.
+fn select_base_plus_offset(byte_offset: u64, scale: Option<u64>) -> BasePlusOffsetPlan {
+    if let Some(scale) = scale
+        && byte_offset % scale == 0
+        && byte_offset / scale < 4096
+    {
+        return BasePlusOffsetPlan::Immediate(
+            u16::try_from(byte_offset).expect("scaled immediate is at most 32760 bytes"),
+        );
+    }
+    let pages = byte_offset >> 12;
+    let low = byte_offset & 0xfff;
+    if pages < 4096 {
+        return BasePlusOffsetPlan::AddPagesAndLow {
+            pages: u16::try_from(pages).expect("page component is 12 bits"),
+            low: u16::try_from(low).expect("low component is 12 bits"),
+        };
+    }
+    BasePlusOffsetPlan::MaterializedConstant(byte_offset)
+}
+
 // Below eight L1D lines the LR spill removal is monotone in the rank model;
 // larger symbolic frames can change residency enough that deleting an
 // equal-sized spill is not a win.
@@ -1246,7 +1276,7 @@ fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
         None
     } else {
         match m.target {
-            crate::cost::MemTarget::Stack { .. } => Some(MEM_SP_REG),
+            crate::cost::MemTarget::Stack { .. } => m.base.or(Some(MEM_SP_REG)),
             crate::cost::MemTarget::FlowFrame { .. } => m.base,
             _ if m.class == MemClass::Stack => Some(MEM_SP_REG),
             _ => Some(((m.key >> 48) & 0xFF) as u8),
@@ -1463,6 +1493,14 @@ impl<'a> FnCtx<'a> {
         }
     }
 
+    fn frame_mem_ref(&self, offset: u64, emitted_base: u8) -> MemRef {
+        if self.is_flowwir() {
+            MemRef::flow_frame(self.mem_function, offset, emitted_base)
+        } else {
+            MemRef::stack_at_base(self.mem_function, offset, emitted_base)
+        }
+    }
+
     fn mov_reg(&mut self, dst: u8, src: u8) {
         if dst == src {
             return;
@@ -1619,10 +1657,10 @@ impl<'a> FnCtx<'a> {
         let off = off + self.slot_bias;
         let base = self.slot_base;
         let (address, immediate, mem) = if off <= FRAME_X_IMMEDIATE_MAX_BYTES {
-            (base, off as u16, self.mem_ref(base, off as u64))
+            (base, off as u16, self.frame_mem_ref(off as u64, base))
         } else {
             self.materialize_slot_address(X_F, off - self.slot_bias);
-            (X_F, 0, self.mem_ref(X_F, 0))
+            (X_F, 0, self.frame_mem_ref(off as u64, X_F))
         };
         self.push_mem(
             encode::enc_ldr_x_imm(reg, address, immediate),
@@ -1671,10 +1709,14 @@ impl<'a> FnCtx<'a> {
         let base = self.slot_base;
         let address_scratch = if reg == X_F { X_E } else { X_F };
         let (address, immediate, mem) = if off <= FRAME_X_IMMEDIATE_MAX_BYTES {
-            (base, off as u16, self.mem_ref(base, off as u64))
+            (base, off as u16, self.frame_mem_ref(off as u64, base))
         } else {
             self.materialize_slot_address(address_scratch, off - self.slot_bias);
-            (address_scratch, 0, self.mem_ref(address_scratch, 0))
+            (
+                address_scratch,
+                0,
+                self.frame_mem_ref(off as u64, address_scratch),
+            )
         };
         self.push_mem(
             encode::enc_str_x_imm(reg, address, immediate),
@@ -1790,11 +1832,11 @@ impl<'a> FnCtx<'a> {
             (
                 self.slot_base,
                 total as u16,
-                self.mem_ref(self.slot_base, total as u64),
+                self.frame_mem_ref(total as u64, self.slot_base),
             )
         } else {
             self.materialize_slot_address(X_F, off);
-            (X_F, 0, self.mem_ref(X_F, 0))
+            (X_F, 0, self.frame_mem_ref(total as u64, X_F))
         };
         let suffix = if double { 'd' } else { 's' };
         self.push_banked_mem(
@@ -1830,12 +1872,12 @@ impl<'a> FnCtx<'a> {
             (
                 self.slot_base,
                 total as u16,
-                self.mem_ref(self.slot_base, total as u64),
+                self.frame_mem_ref(total as u64, self.slot_base),
             )
         } else {
             let scratch = X_F;
             self.materialize_slot_address(scratch, off);
-            (scratch, 0, self.mem_ref(scratch, 0))
+            (scratch, 0, self.frame_mem_ref(total as u64, scratch))
         };
         self.push_banked_mem(
             encode::enc_str_fp_imm(fp_reg, address, immediate, true),
@@ -1856,37 +1898,61 @@ impl<'a> FnCtx<'a> {
     }
 
     fn load_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
-        let byte_off = byte_off as u16;
-        let mem = self.mem_ref(base_reg, byte_off as u64);
+        let byte_off = u64::try_from(byte_off).expect("aggregate offset fits target u64");
+        let mem = self.mem_ref(base_reg, byte_off);
+        let (address, immediate) = self.address_for_offset(base_reg, byte_off, 8, &[reg]);
         self.push_mem(
-            encode::enc_ldr_x_imm(reg, base_reg, byte_off),
+            encode::enc_ldr_x_imm(reg, address, immediate),
             format!(
                 "ldr {}, [{}, #{byte_off}]",
                 reg_name(reg),
-                reg_name(base_reg)
+                reg_name(base_reg),
             ),
             CostRule::Load,
             Some(reg),
-            &[base_reg],
+            &[address],
             Some(mem),
         );
     }
 
     fn store_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
-        let byte_off = byte_off as u16;
-        let mem = self.mem_ref(base_reg, byte_off as u64);
+        let byte_off = u64::try_from(byte_off).expect("aggregate offset fits target u64");
+        let mem = self.mem_ref(base_reg, byte_off);
+        let (address, immediate) = self.address_for_offset(base_reg, byte_off, 8, &[reg]);
         self.push_mem(
-            encode::enc_str_x_imm(reg, base_reg, byte_off),
+            encode::enc_str_x_imm(reg, address, immediate),
             format!(
                 "str {}, [{}, #{byte_off}]",
                 reg_name(reg),
-                reg_name(base_reg)
+                reg_name(base_reg),
             ),
             CostRule::Store,
             None,
-            &[reg, base_reg],
+            &[reg, address],
             Some(mem),
         );
+    }
+
+    fn address_for_offset(
+        &mut self,
+        base: u8,
+        byte_offset: u64,
+        scale: u64,
+        additionally_reserved: &[u8],
+    ) -> (u8, u16) {
+        match select_base_plus_offset(byte_offset, Some(scale)) {
+            BasePlusOffsetPlan::Immediate(immediate) => (base, immediate),
+            plan => {
+                let scratch = [X_F, X_E, X_D, X_C, X_B, X_A]
+                    .into_iter()
+                    .find(|candidate| {
+                        *candidate != base && !additionally_reserved.contains(candidate)
+                    })
+                    .expect("base-plus-offset always has an unreserved compiler scratch");
+                self.emit_base_plus_offset(scratch, base, plan);
+                (scratch, 0)
+            }
+        }
     }
 
     fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
@@ -1914,28 +1980,61 @@ impl<'a> FnCtx<'a> {
     fn materialize_slot_address(&mut self, reg: u8, off: usize) {
         let off = off + self.slot_bias;
         let base = self.slot_base;
-        let mut remaining = off;
-        let mut source = base;
-        while remaining != 0 {
-            let immediate = remaining.min(4095);
-            self.push(
-                encode::enc_add_imm(reg, source, immediate as u16, true),
-                format!("add {}, {}, #{immediate}", reg_name(reg), reg_name(source)),
-                CostRule::Alu,
-                Some(reg),
-                &[source],
-            );
-            source = reg;
-            remaining -= immediate;
-        }
-        if off == 0 {
-            self.push(
-                encode::enc_add_imm(reg, base, 0, true),
-                format!("add {}, {}, #0", reg_name(reg), reg_name(base)),
-                CostRule::Alu,
-                Some(reg),
-                &[base],
-            );
+        self.emit_base_plus_offset(reg, base, select_base_plus_offset(off as u64, None));
+    }
+
+    fn emit_base_plus_offset(&mut self, reg: u8, base: u8, plan: BasePlusOffsetPlan) {
+        match plan {
+            BasePlusOffsetPlan::Immediate(immediate) => {
+                self.push(
+                    encode::enc_add_imm(reg, base, immediate, true),
+                    format!("add {}, {}, #{immediate}", reg_name(reg), reg_name(base)),
+                    CostRule::Alu,
+                    Some(reg),
+                    &[base],
+                );
+            }
+            BasePlusOffsetPlan::AddPagesAndLow { pages, low } => {
+                let mut source = base;
+                if pages != 0 {
+                    self.push(
+                        encode::enc_add_imm_lsl12(reg, base, pages, true),
+                        format!(
+                            "add {}, {}, #{pages}, lsl #12",
+                            reg_name(reg),
+                            reg_name(base)
+                        ),
+                        CostRule::Alu,
+                        Some(reg),
+                        &[base],
+                    );
+                    source = reg;
+                }
+                if low != 0 || pages == 0 {
+                    self.push(
+                        encode::enc_add_imm(reg, source, low, true),
+                        format!("add {}, {}, #{low}", reg_name(reg), reg_name(source)),
+                        CostRule::Alu,
+                        Some(reg),
+                        &[source],
+                    );
+                }
+            }
+            BasePlusOffsetPlan::MaterializedConstant(offset) => {
+                self.load_imm(reg, offset as i64);
+                self.push(
+                    encode::enc_add_reg(reg, base, reg, true),
+                    format!(
+                        "add {}, {}, {}",
+                        reg_name(reg),
+                        reg_name(base),
+                        reg_name(reg)
+                    ),
+                    CostRule::Alu,
+                    Some(reg),
+                    &[base, reg],
+                );
+            }
         }
     }
 
@@ -2146,7 +2245,7 @@ impl<'a> FnCtx<'a> {
             CostRule::Load,
             Some(X_D),
             &[X_B],
-            Some(MemRef::flow_frame(0, src_off as u64, X_B)),
+            Some(self.frame_mem_ref(src_off as u64, X_B)),
         );
         self.push_mem(
             encode::enc_str_x_imm(X_D, X_A, 0),
@@ -2154,7 +2253,7 @@ impl<'a> FnCtx<'a> {
             CostRule::Store,
             None,
             &[X_A, X_D],
-            Some(MemRef::flow_frame(0, dst_off as u64, X_A)),
+            Some(self.frame_mem_ref(dst_off as u64, X_A)),
         );
         for reg in [X_A, X_B] {
             self.push(
@@ -2758,7 +2857,7 @@ fn emit_i32x4_add(ctx: &mut FnCtx, dst_off: usize, lhs_off: usize, rhs_off: usiz
             CostRule::FpLoadQ,
             Some(Reg::fp(vector)),
             &[Reg::gpr(address)],
-            Some(MemRef::flow_frame(0, offset as u64, address)),
+            Some(ctx.frame_mem_ref(offset as u64, address)),
         );
     }
     ctx.push_banked(
@@ -2775,7 +2874,7 @@ fn emit_i32x4_add(ctx: &mut FnCtx, dst_off: usize, lhs_off: usize, rhs_off: usiz
         CostRule::FpStoreQ,
         None,
         &[Reg::gpr(X_C), Reg::fp(2)],
-        Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
+        Some(ctx.frame_mem_ref(dst_off as u64, X_C)),
     );
 }
 
@@ -2788,11 +2887,7 @@ fn emit_i32x4_from_lanes(ctx: &mut FnCtx, dst_off: usize, lanes_off: usize) {
             CostRule::FpLoadQ,
             Some(Reg::fp(vector)),
             &[Reg::gpr(X_A)],
-            Some(MemRef::flow_frame(
-                0,
-                (lanes_off + usize::from(immediate)) as u64,
-                X_A,
-            )),
+            Some(ctx.frame_mem_ref((lanes_off + usize::from(immediate)) as u64, X_A)),
         );
     }
     ctx.push_banked(
@@ -2809,7 +2904,7 @@ fn emit_i32x4_from_lanes(ctx: &mut FnCtx, dst_off: usize, lanes_off: usize) {
         CostRule::FpStoreQ,
         None,
         &[Reg::gpr(X_C), Reg::fp(0)],
-        Some(MemRef::flow_frame(0, dst_off as u64, X_C)),
+        Some(ctx.frame_mem_ref(dst_off as u64, X_C)),
     );
 }
 
@@ -2823,7 +2918,7 @@ fn load_packet(ctx: &mut FnCtx, vector: u8, temp: Temp) {
         CostRule::FpLoadQ,
         Some(Reg::fp(vector)),
         &[Reg::gpr(X_A)],
-        Some(MemRef::flow_frame(ctx.mem_function, offset as u64, X_A)),
+        Some(ctx.frame_mem_ref(offset as u64, X_A)),
     );
 }
 
@@ -2837,7 +2932,7 @@ fn store_packet(ctx: &mut FnCtx, vector: u8, temp: Temp) {
         CostRule::FpStoreQ,
         None,
         &[Reg::gpr(X_C), Reg::fp(vector)],
-        Some(MemRef::flow_frame(ctx.mem_function, offset as u64, X_C)),
+        Some(ctx.frame_mem_ref(offset as u64, X_C)),
     );
 }
 
@@ -10840,6 +10935,38 @@ mod tests {
         let layout = mwir::build_layout_ctx(&module, &Default::default())
             .expect("test source must build a layout ctx");
         (mwir_program, layout)
+    }
+
+    #[test]
+    fn base_plus_offset_selection_preserves_large_effective_addresses() {
+        let effective = |plan| match plan {
+            BasePlusOffsetPlan::Immediate(bytes) => u64::from(bytes),
+            BasePlusOffsetPlan::AddPagesAndLow { pages, low } => {
+                (u64::from(pages) << 12) + u64::from(low)
+            }
+            BasePlusOffsetPlan::MaterializedConstant(bytes) => bytes,
+        };
+        for offset in [
+            0,
+            8,
+            4095 * 8,
+            64 * 1024,
+            128 * 1024,
+            FRAME_MAX_BYTES as u64 - 8,
+            (4095_u64 << 12) + 4095,
+            1_u64 << 40,
+        ] {
+            let plan = select_base_plus_offset(offset, Some(8));
+            assert_eq!(effective(plan), offset, "plan {plan:?}");
+        }
+        assert_eq!(
+            select_base_plus_offset(64 * 1024, Some(8)),
+            BasePlusOffsetPlan::AddPagesAndLow { pages: 16, low: 0 }
+        );
+        assert_eq!(
+            select_base_plus_offset(128 * 1024 + 24, Some(8)),
+            BasePlusOffsetPlan::AddPagesAndLow { pages: 32, low: 24 }
+        );
     }
 
     /// The census's region markers must not change one emitted byte.

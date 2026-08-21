@@ -1,6 +1,9 @@
 use wrela_machine::pixels::{DisplayQueue, PresentedFrame};
 
-use super::{BackendKind, DisplayDevice, HostPresentError, PresentationBackend};
+use super::{
+    BackendKind, DISPLAY_DIAGNOSTIC_HISTORY_LIMIT, DisplayDevice, HostPresentError,
+    PresentationBackend,
+};
 
 #[derive(Debug, Default)]
 pub struct HeadlessBackend {
@@ -19,6 +22,9 @@ impl PresentationBackend for HeadlessBackend {
     }
 
     fn present(&mut self, frame: &PresentedFrame) -> Result<(), HostPresentError> {
+        if self.presented.len() == DISPLAY_DIAGNOSTIC_HISTORY_LIMIT {
+            self.presented.remove(0);
+        }
         self.presented.push(frame.visible_digest);
         Ok(())
     }

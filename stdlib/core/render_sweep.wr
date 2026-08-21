@@ -102,7 +102,10 @@ pub fn monotone_certificate(lower: Iv32, upper: Iv32, derivative: Iv32) -> RootC
 pub fn bernstein_certificate(lower: [Iv32; 3], upper: [Iv32; 3], derivative: Iv32) -> RootCertificateOutcome:
     lower_sign = bernstein_sign(lower)
     upper_sign = bernstein_sign(upper)
-    if lower_sign == 0 or upper_sign == 0 or lower_sign == upper_sign or strict_margin(derivative) == 0:
+    oriented = lower_sign == -1 and upper_sign == 1 and derivative.lower() > 0
+    if lower_sign == 1 and upper_sign == -1 and derivative.upper() < 0:
+        oriented = true
+    if not oriented:
         return .Rejected
     return .Value(RootCertificate(
         correction=Iv32.point(0),
@@ -154,10 +157,15 @@ pub fn bernstein_certificate_subdivided(lower: [Iv32; 3], upper: [Iv32; 3], deri
         cell_upper = [upper0[index], upper1[index], upper2[index]]
         lower_sign = bernstein_sign(cell_lower)
         upper_sign = bernstein_sign(cell_upper)
-        if lower_sign != 0 and upper_sign != 0 and lower_sign != upper_sign:
+        oriented = lower_sign == -1 and upper_sign == 1 and derivative.lower() > 0
+        if lower_sign == 1 and upper_sign == -1 and derivative.upper() < 0:
+            oriented = true
+        if oriented:
             margin = bernstein_face_margin3(cell_lower, cell_upper)
             if margin < minimum_margin:
                 minimum_margin = margin
+        elif lower_sign != 0 and upper_sign != 0 and lower_sign != upper_sign:
+            return .Rejected
         else:
             if depths[index] >= maximum_depth or length + 2 > 16:
                 return .Rejected

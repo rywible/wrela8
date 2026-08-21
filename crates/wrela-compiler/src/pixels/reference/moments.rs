@@ -4,11 +4,10 @@ use super::light::Vec3;
 
 /// Universal unit-radiance response radius for the sealed v1 BRDF.
 ///
-/// The GGX distribution is at most `1 / (pi * 1e-12)`, the specular
-/// denominator is at least `1e-12`, and Fresnel, Smith visibility, and the
-/// outgoing cosine are in `[0, 1]`. The diffuse response is below two. This
-/// deliberately broad box prevents a moment proposal from certifying a byte;
-/// non-flat detail proceeds to the deterministic terminal tap set.
+/// The admitted roughness floor gives the GGX distribution an analytic finite
+/// bound; Smith visibility, Fresnel, and the outgoing cosine are in `[0, 1]`.
+/// This deliberately broad box prevents a moment proposal from certifying a
+/// byte; non-flat detail proceeds to the deterministic terminal tap set.
 pub const BRDF_UNIT_RADIANCE_RADIUS_V1: f64 = 4.0e23;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -749,9 +749,9 @@ fn __wrela_pixels_p9_brdf_channel(
         alpha = 0.0004
     alpha2 = alpha * alpha
     denominator = no_h * no_h * (alpha2 - 1.0) + 1.0
-    distribution_denominator = 3.141592653589793 * (
-        denominator * denominator + 0.000000000001
-    )
+    # roughness >= 0.02 proves denominator >= alpha2 > 0. An absolute
+    # epsilon here would dominate the sharpest admitted lobe.
+    distribution_denominator = 3.141592653589793 * denominator * denominator
     distribution = alpha2 / distribution_denominator
     no_v2 = no_v * no_v
     no_l2 = no_l * no_l
@@ -815,7 +815,7 @@ fn __wrela_pixels_p9_brdf_channel_bounds(
         alpha = 0.0004
     alpha2 = alpha * alpha
     denominator = no_h * no_h * (alpha2 - 1.0) + 1.0
-    distribution = alpha2 / (3.141592653589793 * (denominator * denominator + 0.000000000001))
+    distribution = alpha2 / (3.141592653589793 * denominator * denominator)
     no_v2 = no_v * no_v
     no_l2 = no_l * no_l
     if no_v2 < 0.000000000001:
@@ -1069,9 +1069,7 @@ fn __wrela_pixels_p9_area_brdf_common(
     )
     distribution = __wrela_pixels_p9_iv_mul(
         [alpha2 / 3.141592653589793, alpha2 / 3.141592653589793],
-        __wrela_pixels_p9_iv_reciprocal_positive(
-            __wrela_pixels_p9_iv_add(__wrela_pixels_p9_iv_square(denominator), [0.000000000001, 0.000000000001]),
-        ),
+        __wrela_pixels_p9_iv_reciprocal_positive(__wrela_pixels_p9_iv_square(denominator)),
     )
     no_l_squared = __wrela_pixels_p9_iv_square(no_l)
     if no_l_squared[0] < 0.000000000001:
@@ -1894,9 +1892,10 @@ pub fn __wrela_pixels_p9_hdr_pixel(
             # the v1 roughness floor. For any nonzero variance, carry the
             # universal unit-radiance BRDF-response box until the deterministic
             # four-normal terminal rung below. The bound follows from
-            # D <= 1/(pi*1e-12), the 1e-12 specular denominator floor, and the
-            # [0,1] Fresnel/visibility/cosine contracts; 4e23 also covers the
-            # diffuse maximum. Lighting applies radiance/attenuation afterward.
+            # The analytic roughness floor bounds D, while the positive
+            # Smith/Fresnel/cosine contracts keep this deliberately broad
+            # 4e23 box conservative. Lighting applies radiance/attenuation
+            # afterward.
             material[13] = 0.0
             if variance_x + variance_y > 0.0:
                 material[13] = 400000000000000000000000.0

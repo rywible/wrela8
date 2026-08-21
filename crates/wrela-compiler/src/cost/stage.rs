@@ -318,18 +318,17 @@ fn cost_stage_pieces_from_with_extra_roots(
     let (enqueue_specs, placement) = {
         let root = &checked.programs[&checked.root];
         match &root.image_fn {
-            Some(name) => match crate::eval::interp::eval_image(root, name) {
-                Ok(graph) => {
-                    let specs =
-                        crate::layout::mailbox_enqueue_specs(&graph, &checked.modules, &layout_ctx)
-                            .unwrap_or_default();
-                    let table =
-                        crate::placement::place(&graph, &checked.modules, &layout_ctx, graph.cores)
-                            .unwrap_or_default();
-                    (specs, table)
-                }
-                Err(_) => (Vec::new(), crate::placement::PlacementTable::default()),
-            },
+            Some(name) => {
+                let graph = crate::eval::interp::eval_image(root, name)
+                    .map_err(|error| format!("cost stage image evaluation: {}", error.message))?;
+                let specs =
+                    crate::layout::mailbox_enqueue_specs(&graph, &checked.modules, &layout_ctx)
+                        .map_err(|error| format!("cost stage mailbox construction: {error}"))?;
+                let table =
+                    crate::placement::place(&graph, &checked.modules, &layout_ctx, graph.cores)
+                        .map_err(|error| format!("cost stage placement: {error}"))?;
+                (specs, table)
+            }
             None => (Vec::new(), crate::placement::PlacementTable::default()),
         }
     };
@@ -531,7 +530,7 @@ fn layout_shipped_image(
         &compiled.layout_ctx,
         compiled.graph.cores,
     )
-    .unwrap_or_default();
+    .map_err(|error| format!("shipped image placement: {error}"))?;
     let boot = crate::layout::BootCtx {
         graph: &compiled.graph,
         modules: &compiled.modules,
@@ -633,7 +632,7 @@ pub fn codegen_shipped_from(
         &compiled.layout_ctx,
         compiled.graph.cores,
     )
-    .unwrap_or_default();
+    .map_err(|error| format!("shipped image placement: {error}"))?;
     Ok((compiled.program, placement, TextScope::Image))
 }
 
@@ -751,5 +750,16 @@ mod tests {
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
         let (_, _, scope) = codegen_shipped_program(&case("cost-arith")).expect("closure");
         assert_eq!(scope, TextScope::Closure);
+    }
+
+    #[test]
+    fn cost_stage_fails_when_declared_image_cannot_be_evaluated() {
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        let error = codegen_cost_stage_with_placement(&case("err-image-cores-zero"))
+            .expect_err("an invalid @image must not become an empty cost topology");
+        assert!(
+            error.contains("cost stage image evaluation"),
+            "phase must remain visible in the diagnostic: {error}"
+        );
     }
 }

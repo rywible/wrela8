@@ -45,6 +45,7 @@ pub struct NodeOrigin {
 }
 
 impl NodeOrigin {
+    const MERGED_SITE_SAMPLE_MAX: usize = 32;
     pub fn new(module: impl Into<String>, span: Span, expansion_chain: Vec<OriginSite>) -> Self {
         Self {
             primary: OriginSite {
@@ -69,6 +70,7 @@ impl NodeOrigin {
         sites.retain(|site| site != &self.primary && !self.expansion_chain.contains(site));
         sites.sort();
         sites.dedup();
+        sites.truncate(Self::MERGED_SITE_SAMPLE_MAX);
         self.merged = sites;
     }
 }
@@ -224,6 +226,17 @@ mod tests {
             merged: vec![primary],
         });
         assert_eq!(origin.merged, vec![additional]);
+    }
+
+    #[test]
+    fn merged_origin_diagnostics_have_a_fixed_sample_ceiling() {
+        let mut origin = NodeOrigin::synthetic("primary");
+        for index in 0..100 {
+            origin.merge(&NodeOrigin::synthetic(format!("site-{index:03}")));
+        }
+        assert_eq!(origin.merged.len(), NodeOrigin::MERGED_SITE_SAMPLE_MAX);
+        assert_eq!(origin.merged[0].module, "site-000");
+        assert_eq!(origin.merged[31].module, "site-031");
     }
 
     #[test]

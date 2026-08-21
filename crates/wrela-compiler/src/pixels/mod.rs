@@ -378,13 +378,19 @@ pub fn compile_all(
                     let verified = verify::check_program(rich)?;
                     let encoded = encode::encode(&verified)
                         .map_err(|error| error.diagnostic().message.clone())?;
-                    let decoded = decode::decode(&encoded).map_err(|error| {
-                        format!("pixels::decode: compiler output failed round-trip: {error}")
-                    })?;
-                    if decoded.program() != verified.program() {
-                        return Err(
-                            "pixels::compile: frame-program encode/decode mismatch".to_string()
-                        );
+                    // The builder already produced a verified program. Keep
+                    // the independent round trip in debug/verification builds
+                    // without taxing shipped release compilation.
+                    #[cfg(debug_assertions)]
+                    {
+                        let decoded = decode::decode(&encoded).map_err(|error| {
+                            format!("pixels::decode: compiler output failed round-trip: {error}")
+                        })?;
+                        if decoded.program() != verified.program() {
+                            return Err(
+                                "pixels::compile: frame-program encode/decode mismatch".to_string()
+                            );
+                        }
                     }
                     let mutable_layout = state::layout(structural, projective)?;
                     let generated = glue::generate(renderer_index, config, &verified)?;

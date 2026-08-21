@@ -540,6 +540,9 @@ fn production_stdlib_digest(stdlib: &Path) -> Result<String, String> {
     Ok(key_of(&[
         ("core", tree_digest(&stdlib.join("core"), &["wr"])?),
         ("drivers", tree_digest(&stdlib.join("drivers"), &["wr"])?),
+        // Sealed LUTs and other binary language inputs are semantic stdlib
+        // dependencies even though Rust reaches them through include_bytes!.
+        ("data", tree_digest(&stdlib.join("data"), &["bin"])?),
     ]))
 }
 
@@ -560,7 +563,13 @@ fn compiler_producer_digest() -> Result<String, String> {
                 ));
             }
             Ok(key_of(&[
-                ("contract", "golden-compiler-producer-v1".to_string()),
+                ("contract", "golden-compiler-producer-v2".to_string()),
+                (
+                    "producer-binary",
+                    std::env::current_exe()
+                        .map(|path| file_digest(&path))
+                        .map_err(|error| format!("golden: locate producer executable: {error}"))?,
+                ),
                 (
                     "compiler-source",
                     tree_digest(&root.join("crates/wrela-compiler/src"), &["rs"])?,
@@ -582,6 +591,10 @@ fn compiler_producer_digest() -> Result<String, String> {
                 (
                     "machine-manifest",
                     file_digest(&root.join("crates/wrela-machine/Cargo.toml")),
+                ),
+                (
+                    "sealed-pixels-data",
+                    tree_digest(&root.join("stdlib/data/pixels"), &["bin"])?,
                 ),
                 ("rustc", wrela_compiler::report::sha256_hex(&rustc.stdout)),
                 ("host-os", std::env::consts::OS.to_string()),
@@ -2599,6 +2612,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("core")).expect("create core fixture");
         std::fs::create_dir_all(dir.join("drivers")).expect("create drivers fixture");
+        std::fs::create_dir_all(dir.join("data/pixels")).expect("create data fixture");
         std::fs::write(dir.join("core/base.wr"), "module core.base\n").expect("write core fixture");
         let driver = dir.join("drivers/display.wr");
         std::fs::write(&driver, "module drivers.display\nconst VERSION: u32 = 1\n")
@@ -2696,6 +2710,26 @@ mod tests {
             )
         );
         std::fs::remove_dir_all(&dir).expect("remove stdlib fixture");
+    }
+
+    #[test]
+    fn sealed_binary_changes_invalidate_the_stdlib_identity() {
+        let dir = std::env::temp_dir().join(format!(
+            "wrela-golden-sealed-data-key-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::create_dir_all(dir.join("drivers")).unwrap();
+        std::fs::create_dir_all(dir.join("data/pixels")).unwrap();
+        std::fs::write(dir.join("core/base.wr"), "module core.base\n").unwrap();
+        let lut = dir.join("data/pixels/filmic.bin");
+        std::fs::write(&lut, [0_u8, 1, 2, 3]).unwrap();
+        let before = production_stdlib_digest(&dir).unwrap();
+        std::fs::write(&lut, [0_u8, 1, 2, 4]).unwrap();
+        let after = production_stdlib_digest(&dir).unwrap();
+        assert_ne!(before, after, "every sealed LUT byte is a cache input");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

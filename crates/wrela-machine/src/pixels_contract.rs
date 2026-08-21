@@ -2154,8 +2154,9 @@ fn verify_p9_shading_links(program: &FrameProgramModelV1) -> Result<(), String> 
                 record.stable_id
             ));
         }
-        let summary_scalar_count = usize::try_from(record.operands[6])
-            .map_err(|_| "pixels::verify: shading-summary scalar count exceeds usize".to_string())?;
+        let summary_scalar_count = usize::try_from(record.operands[6]).map_err(|_| {
+            "pixels::verify: shading-summary scalar count exceeds usize".to_string()
+        })?;
         for triple in record.operands[7..7 + summary_scalar_count * 3].chunks_exact(3) {
             if triple[0] >= scalar_count {
                 return Err(format!(

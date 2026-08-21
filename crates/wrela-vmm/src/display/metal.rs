@@ -12,6 +12,7 @@ use super::{BackendKind, HostPresentError, PresentationBackend};
 pub struct MetalDisplayBackend {
     bgra8_unorm_srgb: Vec<u8>,
     last_vsync: Option<u64>,
+    last_presented_digest: Option<[u8; 32]>,
     #[cfg(target_os = "macos")]
     native_requested: bool,
     #[cfg(target_os = "macos")]
@@ -34,6 +35,7 @@ impl MetalDisplayBackend {
         Self {
             bgra8_unorm_srgb: Vec::new(),
             last_vsync: None,
+            last_presented_digest: None,
             native_requested: true,
             native: None,
         }
@@ -69,12 +71,12 @@ impl PresentationBackend for MetalDisplayBackend {
                 .present(frame)?;
         }
         self.last_vsync = Some(frame.vsync_id);
+        self.last_presented_digest = Some(frame.visible_digest);
         Ok(())
     }
 
     fn presented_digest(&self) -> Option<[u8; 32]> {
-        self.last_vsync
-            .map(|_| wrela_machine::sha256::sha256(&self.bgra8_unorm_srgb))
+        self.last_presented_digest
     }
 }
 

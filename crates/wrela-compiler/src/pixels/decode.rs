@@ -452,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "exhaustive wire mutation corpus belongs in verify-deep"]
     fn deterministic_single_bit_wire_field_corpus_is_complete_and_fail_closed() {
         use std::collections::BTreeSet;
 

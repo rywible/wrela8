@@ -46,22 +46,20 @@ pub fn certify_quadratic_discriminant(
 # [accepted, method-tag, minimum strict margin].
 pub fn certify_monotone_root(lower: Iv32, upper: Iv32, derivative: Iv32) -> [i64; 3]:
     face_margin: i64 = 0
-    if lower.upper() < 0 and upper.lower() > 0:
+    derivative_margin: i64 = 0
+    if lower.upper() < 0 and upper.lower() > 0 and derivative.lower() > 0:
         face_margin = -lower.upper().to[i64]()
         if upper.lower().to[i64]() < face_margin:
             face_margin = upper.lower().to[i64]()
-    elif lower.lower() > 0 and upper.upper() < 0:
+        derivative_margin = derivative.lower().to[i64]()
+    elif lower.lower() > 0 and upper.upper() < 0 and derivative.upper() < 0:
         face_margin = lower.lower().to[i64]()
         negative_upper = -upper.upper().to[i64]()
         if negative_upper < face_margin:
             face_margin = negative_upper
+        derivative_margin = -derivative.upper().to[i64]()
     else:
         return [0; 3]
-    derivative_margin: i64 = 0
-    if derivative.lower() > 0:
-        derivative_margin = derivative.lower().to[i64]()
-    elif derivative.upper() < 0:
-        derivative_margin = -derivative.upper().to[i64]()
     if derivative_margin <= 0:
         return [0; 3]
     if face_margin <= 0:

@@ -256,10 +256,10 @@ p7 0000000000000014
 p7 00000000000000f7
 p7 0000000000000064
 test locked_quality_sequence: ok
-test light_motion_outside_declared_rate_is_rejected: ok
+test light_motion_outside_declared_rate_rebuilds: ok
 3 passed, 0 failed
-lane1 turns=33 run_one=97 messages=33
-lane1 hits=0:17,1:8,2:8,3:8
+lane1 turns=36 run_one=108 messages=36
+lane1 hits=0:18,1:9,2:9,3:9
 display v1 renderer=0 frame=0 generation=0 released=none mode=32x16@60 format=1 descriptor=c38d52b8a858e8669d1610ae026bc480b67a4c788ca0da2b52117c2069d8163d visible=c64adaa71ab028a2c741650a1b8dd9039811186cdc4b9d858a9bdc2f4bbd3041 raw=8b18953c37d1b55fe09552607e2e26d738c1230ea2c71704df061d4d4bb4a8f7 vsync=0 checkpoint=0
 display v1 renderer=0 frame=1 generation=1 released=0 mode=32x16@60 format=1 descriptor=380bf7cabb8c4fa5fdc7d481cd0dba3300a727d83f180786956a9106ad7c388b visible=72e66362f1e9dd16408c400b37f08b0aa72885aad9eea77624e6f83df5da5577 raw=706d61253e63de6ba9ee87096ea701241ad5263af8598657e3455a8a24f69aed vsync=1 checkpoint=1
 display v1 renderer=0 frame=2 generation=0 released=1 mode=32x16@60 format=1 descriptor=c38d52b8a858e8669d1610ae026bc480b67a4c788ca0da2b52117c2069d8163d visible=5b84e6a6ce922abf7f03096fdc5939560aef927a0fb8d903e9cfcd05e8426588 raw=0511f26c97ea0606c7e25b247e5be741efac9a5b16c816e70d7869b084ff8650 vsync=2 checkpoint=2
@@ -268,3 +268,4 @@ display v1 renderer=0 frame=4 generation=0 released=1 mode=32x16@60 format=1 des
 display v1 renderer=0 frame=5 generation=1 released=0 mode=32x16@60 format=1 descriptor=380bf7cabb8c4fa5fdc7d481cd0dba3300a727d83f180786956a9106ad7c388b visible=0ea9c86849cc9f15fda5bc38baee6ab547294ddfd9db5860c983a102688322fe raw=c5d5ded389ecba3c778f873e2d37ff9b6e26aacbb332af9de0e8fb132523f5b4 vsync=5 checkpoint=5
 display v1 renderer=0 frame=6 generation=0 released=1 mode=32x16@60 format=1 descriptor=c38d52b8a858e8669d1610ae026bc480b67a4c788ca0da2b52117c2069d8163d visible=5659137e7446a61880faa9d9b63a153429e11517da0b4b32e1854aa35dbc8d29 raw=d40a367590959794782fb1fac2c25740fb4868c42197eb90cada889b16e1bea1 vsync=6 checkpoint=6
 display v1 renderer=0 frame=7 generation=1 released=0 mode=32x16@60 format=1 descriptor=380bf7cabb8c4fa5fdc7d481cd0dba3300a727d83f180786956a9106ad7c388b visible=8a88789222106ece40f80fb651df7751ba340e0c4e7346e6d74f0e54c8da414f raw=b89c3376b7655bae5747d2a727d53c123955b5b208c779fb60b84f0848215b6b vsync=7 checkpoint=7
+display v1 renderer=0 frame=8 generation=0 released=1 mode=32x16@60 format=1 descriptor=c38d52b8a858e8669d1610ae026bc480b67a4c788ca0da2b52117c2069d8163d visible=5ab7886cc90a7c6c74cb7ff9f695775edc1abb9b32cd53b5d9404d4b5f2be304 raw=8444a5d9411ad47f694b06534b73f18cc8756291de1fb12eda59e331ce4ffbd0 vsync=8 checkpoint=8

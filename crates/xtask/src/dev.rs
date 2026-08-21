@@ -150,6 +150,26 @@ fn checked_golden_case_exists(case: &str) -> bool {
         })
 }
 
+/// Conservative artifact dependency closure for the shipped Pixels image.
+///
+/// The renderer is compiled by the generic compiler/backend and imports the
+/// ordinary core/runtime modules, so a list limited to files named `pixels`
+/// is unsound. Over-selecting this focused lane costs time; under-selecting it
+/// can bless stale renderer evidence. Cargo manifests are included because
+/// features and target configuration can change the same producer artifact.
+fn selects_pixels(path: &Path) -> bool {
+    path.starts_with("crates/wrela-compiler/src")
+        || path.starts_with("crates/wrela-machine/src")
+        || path.starts_with("stdlib/core")
+        || path.starts_with("stdlib/drivers")
+        || path.starts_with("stdlib/data/pixels")
+        || path.starts_with("formal/pixels")
+        || path == Path::new("Cargo.toml")
+        || path == Path::new("Cargo.lock")
+        || path == Path::new("crates/wrela-compiler/Cargo.toml")
+        || path == Path::new("crates/wrela-machine/Cargo.toml")
+}
+
 /// Representative Pixels cases whose compile-time dumps `dev` checks.
 ///
 /// Chosen to span the distinct generated-code shapes rather than to be a
@@ -191,13 +211,7 @@ pub(crate) fn dev(args: &[String]) -> Result<(), String> {
     }
 
     let formal = paths.iter().any(|path| path.starts_with("formal/pixels"));
-    let pixels = paths.iter().any(|path| {
-        path.starts_with("crates/wrela-compiler/src/pixels")
-            || path == Path::new("crates/wrela-machine/src/pixels.rs")
-            || path == Path::new("crates/wrela-machine/src/pixels_contract.rs")
-            || path.starts_with("stdlib/core/render")
-            || path.starts_with("formal/pixels")
-    });
+    let pixels = paths.iter().any(|path| selects_pixels(path));
     let rust = paths.iter().any(|path| {
         path.extension().and_then(|extension| extension.to_str()) == Some("rs")
             || path.file_name().and_then(|name| name.to_str()) == Some("Cargo.toml")
@@ -381,5 +395,26 @@ mod tests {
             incremental_paths(&new_head, Some(&previous)),
             BTreeSet::from([PathBuf::from("a.rs"), PathBuf::from("b.rs")])
         );
+    }
+
+    #[test]
+    fn renderer_dependency_mutations_select_pixels_validation() {
+        for path in [
+            "crates/wrela-compiler/src/codegen.rs",
+            "crates/wrela-compiler/src/regalloc.rs",
+            "crates/wrela-compiler/src/relax.rs",
+            "crates/wrela-compiler/src/layout.rs",
+            "crates/wrela-machine/src/pixels.rs",
+            "crates/wrela-machine/src/sha256.rs",
+            "stdlib/data/pixels/filmic_v1_u16.bin",
+            "stdlib/core/math.wr",
+            "crates/wrela-compiler/src/pixels/program.rs",
+        ] {
+            assert!(
+                selects_pixels(Path::new(path)),
+                "missed producer input {path}"
+            );
+        }
+        assert!(!selects_pixels(Path::new("docs/language.md")));
     }
 }

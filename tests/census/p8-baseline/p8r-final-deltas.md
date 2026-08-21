@@ -57,8 +57,10 @@ directories.
   The final integration closes that owned follow-up: each zero-extending
   S-form producer is stored once through its D alias (32,760-byte reach), and
   direct-FP frames cluster floating slots before large aggregates. The final
-  union drops to 51,899 words and 23,270 proxy cycles; the exact transfer count
-  and historical threshold decision remain recorded in `p8r4-direct-fp.md`.
+  union now drops to 17,906 words and 12,078 proxy cycles after large frame
+  offsets are formed with page-scaled additions instead of linear chains; the
+  exact transfer count and historical threshold decision remain recorded in
+  `p8r4-direct-fp.md`.
 - P8R.5 adds a closed packet operation substrate. The P8 renderer consumes
   only its pre-existing integer packet recurrence, so the new operation set is
   measured independently in `p8r5-packet.txt`; decoded-word tests pin every
@@ -75,7 +77,7 @@ remains the authority for truth, displayed-frame digests, and telemetry.
 ```text
 commit_2_threshold_functions = __wrela_pixels_p7_union_silhouette_coverage_at_slack,__wrela_pixels_p7_isolate_smooth_object,__wrela_pixels_p7_collect_roots_box,sqrt_scalar,rsqrt_scalar,raster_rsqrt
 commit_2_proxy_cycle_denominator = 34504
-final_recensus_proxy_cycle_denominator = 31417
+final_recensus_proxy_cycle_denominator = 19369
 ```
 
 The modelled totals are not hardware timing. The schema-4 final census derives
@@ -85,10 +87,10 @@ latency-weighted totals. The machine-checked six-function commit-2 denominator
 is 34,504 proxy cycles: union 26,345, isolate 2,402, roots 5,469, sealed
 `sqrt_scalar` 176, sealed `rsqrt_scalar` 44, and sealed `raster_rsqrt` 68.
 The immutable P8R.4 artifact is the threshold authority. The independently
-regenerated final artifact totals 31,417 cycles: union 23,270, isolate 2,407,
-roots 5,461, sealed `sqrt_scalar` 175, sealed `rsqrt_scalar` 44, and sealed
-`raster_rsqrt` 60. This is 3,087 cycles (8.9%) below the commit-2 checkpoint
-and 1,909 cycles (5.7%) below the P8R.3 six-function total. Keeping both
+regenerated final artifact totals 19,369 cycles: union 12,078, isolate 2,198,
+roots 4,814, sealed `sqrt_scalar` 175, sealed `rsqrt_scalar` 44, and sealed
+`raster_rsqrt` 60. This is 15,135 cycles (43.9%) below the commit-2 checkpoint
+and 13,957 cycles (41.9%) below the P8R.3 six-function total. Keeping both
 structured values above makes a later final-tree change visible without
 rewriting or obscuring the commit-2 decision basis.
 

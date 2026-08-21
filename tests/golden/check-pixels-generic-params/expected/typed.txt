@@ -3069,7 +3069,7 @@ Program
               Int text=1 ty=u32
           Binary op=<= ty=bool
             Local name=tag ty=u32
-            Int text=3 ty=u32
+            Int text=6 ty=u32
         Then
           Return
             EnumConstruct enum=Result variant=Ok ty=Result[u32, RenderError]
@@ -7969,32 +7969,30 @@ Program
                           Int text=2 ty=usize
                   Assign
                     Local name=maximum ty=f32
-                    Binary op=- ty=f32
-                      Call key=sqrt_scalar ty=f32
+                    Call key=sqrt_scalar ty=f32
+                      Binary op=+ ty=f32
                         Binary op=+ ty=f32
-                          Binary op=+ ty=f32
-                            Binary op=* ty=f32
-                              Index ty=f32
-                                Local name=direction ty=[f32; 3]
-                                Int text=0 ty=usize
-                              Index ty=f32
-                                Local name=direction ty=[f32; 3]
-                                Int text=0 ty=usize
-                            Binary op=* ty=f32
-                              Index ty=f32
-                                Local name=direction ty=[f32; 3]
-                                Int text=1 ty=usize
-                              Index ty=f32
-                                Local name=direction ty=[f32; 3]
-                                Int text=1 ty=usize
                           Binary op=* ty=f32
                             Index ty=f32
                               Local name=direction ty=[f32; 3]
-                              Int text=2 ty=usize
+                              Int text=0 ty=usize
                             Index ty=f32
                               Local name=direction ty=[f32; 3]
-                              Int text=2 ty=usize
-                      Float text=0.0002 ty=f32
+                              Int text=0 ty=usize
+                          Binary op=* ty=f32
+                            Index ty=f32
+                              Local name=direction ty=[f32; 3]
+                              Int text=1 ty=usize
+                            Index ty=f32
+                              Local name=direction ty=[f32; 3]
+                              Int text=1 ty=usize
+                        Binary op=* ty=f32
+                          Index ty=f32
+                            Local name=direction ty=[f32; 3]
+                            Int text=2 ty=usize
+                          Index ty=f32
+                            Local name=direction ty=[f32; 3]
+                            Int text=2 ty=usize
                 Elif
                   Binary op=== ty=bool
                     Local name=kind ty=u64
@@ -12362,6 +12360,112 @@ Program
           Float text=1.0 ty=f32
           Local name=t_max ty=f32
           Float text=0.0 ty=f32
+  Fn name=p9_disk_constructor_uses_normal_and_equal_radius_axes ret=unit
+    Body
+      Let name=disk ty=Light
+        Call key=Light.disk ty=Light
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=1.0 ty=f32
+            Field name=y
+              Float text=2.0 ty=f32
+            Field name=z
+              Float text=3.0 ty=f32
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=2.0 ty=f32
+          Float text=3.0 ty=f32
+          StructLiteral name=Rgb ty=Rgb
+            Field name=r
+              Float text=4.0 ty=f32
+            Field name=g
+              Float text=5.0 ty=f32
+            Field name=b
+              Float text=6.0 ty=f32
+      Assert
+        Binary op=== ty=bool
+          Field name=kind ty=usize
+            Local name=disk ty=Light
+          Int text=4 ty=usize
+        Str text="disk constructor retains the sealed disk kind" ty=Static[Str]
+      Assert
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Field name=x ty=f32
+                Field name=axis_u ty=Vec3
+                  Local name=disk ty=Light
+              Float text=0.0 ty=f32
+            Binary op=== ty=bool
+              Field name=y ty=f32
+                Field name=axis_u ty=Vec3
+                  Local name=disk ty=Light
+              Neg ty=f32
+                Float text=3.0 ty=f32
+          Binary op=== ty=bool
+            Field name=z ty=f32
+              Field name=axis_u ty=Vec3
+                Local name=disk ty=Light
+            Float text=0.0 ty=f32
+        Str text="disk first half axis is deterministic" ty=Static[Str]
+      Assert
+        And ty=bool
+          And ty=bool
+            Binary op=== ty=bool
+              Field name=x ty=f32
+                Field name=axis_v ty=Vec3
+                  Local name=disk ty=Light
+              Float text=3.0 ty=f32
+            Binary op=== ty=bool
+              Field name=y ty=f32
+                Field name=axis_v ty=Vec3
+                  Local name=disk ty=Light
+              Float text=0.0 ty=f32
+          Binary op=== ty=bool
+            Field name=z ty=f32
+              Field name=axis_v ty=Vec3
+                Local name=disk ty=Light
+            Float text=0.0 ty=f32
+        Str text="disk second half axis uses the same radius" ty=Static[Str]
+      Assert
+        Call key=Light.__wrela_p9_disk_axes_valid ty=bool
+          Receiver
+            Local name=disk ty=Light
+        Str text="disk axes preserve the one source radius" ty=Static[Str]
+      Let name=invalid ty=Light
+        Call key=Light.disk ty=Light
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=0.0 ty=f32
+          Float text=1.0 ty=f32
+          StructLiteral name=Rgb ty=Rgb
+            Field name=r
+              Float text=1.0 ty=f32
+            Field name=g
+              Float text=1.0 ty=f32
+            Field name=b
+              Float text=1.0 ty=f32
+      Assert
+        Not ty=bool
+          Call key=Light.__wrela_p9_area_axes_valid ty=bool
+            Receiver
+              Local name=invalid ty=Light
+        Str text="a zero disk normal fails closed" ty=Static[Str]
   Fn name=p9_light_rate_boundary_is_closed_and_excess_fails ret=unit
     Body
       Assert
@@ -13580,6 +13684,95 @@ Program
                 Float text=0.00000001 ty=f32
                 Local name=u2 ty=f32
               Local name=v2 ty=f32
+    Method name=__wrela_p9_disk_axes_valid ret=bool
+      Receiver mode=read ty=Light
+      Body
+        If
+          Not ty=bool
+            Call key=Light.__wrela_p9_area_axes_valid ty=bool
+              Receiver
+                Local name=self ty=Light
+          Then
+            Return
+              Bool value=false ty=bool
+        Let name=u2 ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Binary op=* ty=f32
+                Field name=x ty=f32
+                  Field name=axis_u ty=Vec3
+                    Local name=self ty=Light
+                Field name=x ty=f32
+                  Field name=axis_u ty=Vec3
+                    Local name=self ty=Light
+              Binary op=* ty=f32
+                Field name=y ty=f32
+                  Field name=axis_u ty=Vec3
+                    Local name=self ty=Light
+                Field name=y ty=f32
+                  Field name=axis_u ty=Vec3
+                    Local name=self ty=Light
+            Binary op=* ty=f32
+              Field name=z ty=f32
+                Field name=axis_u ty=Vec3
+                  Local name=self ty=Light
+              Field name=z ty=f32
+                Field name=axis_u ty=Vec3
+                  Local name=self ty=Light
+        Let name=v2 ty=f32
+          Binary op=+ ty=f32
+            Binary op=+ ty=f32
+              Binary op=* ty=f32
+                Field name=x ty=f32
+                  Field name=axis_v ty=Vec3
+                    Local name=self ty=Light
+                Field name=x ty=f32
+                  Field name=axis_v ty=Vec3
+                    Local name=self ty=Light
+              Binary op=* ty=f32
+                Field name=y ty=f32
+                  Field name=axis_v ty=Vec3
+                    Local name=self ty=Light
+                Field name=y ty=f32
+                  Field name=axis_v ty=Vec3
+                    Local name=self ty=Light
+            Binary op=* ty=f32
+              Field name=z ty=f32
+                Field name=axis_v ty=Vec3
+                  Local name=self ty=Light
+              Field name=z ty=f32
+                Field name=axis_v ty=Vec3
+                  Local name=self ty=Light
+        Let name=largest ty=f32
+          Local name=u2 ty=f32
+        If
+          Binary op=> ty=bool
+            Local name=v2 ty=f32
+            Local name=largest ty=f32
+          Then
+            Assign
+              Local name=largest ty=f32
+              Local name=v2 ty=f32
+        Let name=difference ty=f32
+          Binary op=- ty=f32
+            Local name=u2 ty=f32
+            Local name=v2 ty=f32
+        If
+          Binary op=< ty=bool
+            Local name=difference ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=difference ty=f32
+              Binary op=- ty=f32
+                Float text=0.0 ty=f32
+                Local name=difference ty=f32
+        Return
+          Binary op=<= ty=bool
+            Local name=difference ty=f32
+            Binary op=* ty=f32
+              Local name=largest ty=f32
+              Float text=0.0001 ty=f32
     Method name=__wrela_p9_in_world ret=bool
       Receiver mode=read ty=Light
       Param name=bounds mode=read ty=RendererFrameBounds
@@ -13787,53 +13980,48 @@ Program
               And ty=bool
                 And ty=bool
                   And ty=bool
-                    And ty=bool
-                      Binary op=>= ty=bool
-                        Field name=x ty=f32
-                          Field name=position ty=Vec3
-                            Local name=self ty=Light
-                        Index ty=f32
-                          Local name=range ty=[f32; 12]
-                          Int text=1 ty=usize
-                      Binary op=<= ty=bool
-                        Field name=x ty=f32
-                          Field name=position ty=Vec3
-                            Local name=self ty=Light
-                        Index ty=f32
-                          Local name=range ty=[f32; 12]
-                          Int text=4 ty=usize
                     Binary op=>= ty=bool
-                      Field name=y ty=f32
+                      Field name=x ty=f32
                         Field name=position ty=Vec3
                           Local name=self ty=Light
                       Index ty=f32
                         Local name=range ty=[f32; 12]
-                        Int text=2 ty=usize
-                  Binary op=<= ty=bool
+                        Int text=1 ty=usize
+                    Binary op=<= ty=bool
+                      Field name=x ty=f32
+                        Field name=position ty=Vec3
+                          Local name=self ty=Light
+                      Index ty=f32
+                        Local name=range ty=[f32; 12]
+                        Int text=4 ty=usize
+                  Binary op=>= ty=bool
                     Field name=y ty=f32
                       Field name=position ty=Vec3
                         Local name=self ty=Light
                     Index ty=f32
                       Local name=range ty=[f32; 12]
-                      Int text=5 ty=usize
-                Binary op=>= ty=bool
-                  Field name=z ty=f32
+                      Int text=2 ty=usize
+                Binary op=<= ty=bool
+                  Field name=y ty=f32
                     Field name=position ty=Vec3
                       Local name=self ty=Light
                   Index ty=f32
                     Local name=range ty=[f32; 12]
-                    Int text=3 ty=usize
-              Binary op=<= ty=bool
+                    Int text=5 ty=usize
+              Binary op=>= ty=bool
                 Field name=z ty=f32
                   Field name=position ty=Vec3
                     Local name=self ty=Light
                 Index ty=f32
                   Local name=range ty=[f32; 12]
-                  Int text=6 ty=usize
-            Call key=Light.__wrela_p9_in_world ty=bool
-              Receiver
-                Local name=self ty=Light
-              Local name=bounds ty=RendererFrameBounds
+                  Int text=3 ty=usize
+            Binary op=<= ty=bool
+              Field name=z ty=f32
+                Field name=position ty=Vec3
+                  Local name=self ty=Light
+              Index ty=f32
+                Local name=range ty=[f32; 12]
+                Int text=6 ty=usize
         Let name=axis_max ty=f32
           Index ty=f32
             Local name=range ty=[f32; 12]
@@ -14029,20 +14217,27 @@ Program
                   Local name=direction_length_squared ty=f32
                   Float text=1.0001 ty=f32
         If
-          Or ty=bool
-            Binary op=== ty=bool
-              Field name=kind ty=usize
-                Local name=self ty=Light
-              Int text=3 ty=usize
-            Binary op=== ty=bool
-              Field name=kind ty=usize
-                Local name=self ty=Light
-              Int text=4 ty=usize
+          Binary op=== ty=bool
+            Field name=kind ty=usize
+              Local name=self ty=Light
+            Int text=3 ty=usize
           Then
             Return
               And ty=bool
                 Local name=in_slot_position ty=bool
                 Call key=Light.__wrela_p9_area_axes_valid ty=bool
+                  Receiver
+                    Local name=self ty=Light
+        If
+          Binary op=== ty=bool
+            Field name=kind ty=usize
+              Local name=self ty=Light
+            Int text=4 ty=usize
+          Then
+            Return
+              And ty=bool
+                Local name=in_slot_position ty=bool
+                Call key=Light.__wrela_p9_disk_axes_valid ty=bool
                   Receiver
                     Local name=self ty=Light
         Return
@@ -14075,8 +14270,8 @@ Program
               Local name=radiance ty=Rgb
     AssocFn name=disk ret=Light
       Param name=center mode=read ty=Vec3
-      Param name=axis_u mode=read ty=Vec3
-      Param name=axis_v mode=read ty=Vec3
+      Param name=normal mode=read ty=Vec3
+      Param name=radius mode=read ty=f32
       Param name=radiance mode=read ty=Rgb
       Body
         Let name=zero ty=Vec3
@@ -14087,6 +14282,234 @@ Program
               Float text=0.0 ty=f32
             Field name=z
               Float text=0.0 ty=f32
+        If
+          Or ty=bool
+            Or ty=bool
+              Or ty=bool
+                Or ty=bool
+                  Not ty=bool
+                    Call key=__wrela_pixels_p5_finite ty=bool
+                      Field name=x ty=f32
+                        Local name=normal ty=Vec3
+                  Not ty=bool
+                    Call key=__wrela_pixels_p5_finite ty=bool
+                      Field name=y ty=f32
+                        Local name=normal ty=Vec3
+                Not ty=bool
+                  Call key=__wrela_pixels_p5_finite ty=bool
+                    Field name=z ty=f32
+                      Local name=normal ty=Vec3
+              Not ty=bool
+                Call key=__wrela_pixels_p5_finite ty=bool
+                  Local name=radius ty=f32
+            Not ty=bool
+              Binary op=> ty=bool
+                Local name=radius ty=f32
+                Float text=0.0 ty=f32
+          Then
+            Return
+              StructLiteral name=Light ty=Light
+                Field name=kind
+                  Int text=4 ty=usize
+                Field name=position
+                  Local name=center ty=Vec3
+                Field name=direction
+                  Local name=zero ty=Vec3
+                Field name=axis_u
+                  Local name=zero ty=Vec3
+                Field name=axis_v
+                  Local name=zero ty=Vec3
+                Field name=radiance
+                  Local name=radiance ty=Rgb
+        Let name=normal_length ty=f32
+          Call key=length3 ty=f32
+            Local name=normal ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=normal_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              StructLiteral name=Light ty=Light
+                Field name=kind
+                  Int text=4 ty=usize
+                Field name=position
+                  Local name=center ty=Vec3
+                Field name=direction
+                  Local name=zero ty=Vec3
+                Field name=axis_u
+                  Local name=zero ty=Vec3
+                Field name=axis_v
+                  Local name=zero ty=Vec3
+                Field name=radiance
+                  Local name=radiance ty=Rgb
+        Let name=unit_normal ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=normal ty=Vec3
+                Local name=normal_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=normal ty=Vec3
+                Local name=normal_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=normal ty=Vec3
+                Local name=normal_length ty=f32
+        Let name=abs_x ty=f32
+          Field name=x ty=f32
+            Local name=unit_normal ty=Vec3
+        If
+          Binary op=< ty=bool
+            Local name=abs_x ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=abs_x ty=f32
+              Binary op=- ty=f32
+                Float text=0.0 ty=f32
+                Local name=abs_x ty=f32
+        Let name=abs_y ty=f32
+          Field name=y ty=f32
+            Local name=unit_normal ty=Vec3
+        If
+          Binary op=< ty=bool
+            Local name=abs_y ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=abs_y ty=f32
+              Binary op=- ty=f32
+                Float text=0.0 ty=f32
+                Local name=abs_y ty=f32
+        Let name=abs_z ty=f32
+          Field name=z ty=f32
+            Local name=unit_normal ty=Vec3
+        If
+          Binary op=< ty=bool
+            Local name=abs_z ty=f32
+            Float text=0.0 ty=f32
+          Then
+            Assign
+              Local name=abs_z ty=f32
+              Binary op=- ty=f32
+                Float text=0.0 ty=f32
+                Local name=abs_z ty=f32
+        Let name=helper ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Float text=0.0 ty=f32
+            Field name=y
+              Float text=0.0 ty=f32
+            Field name=z
+              Float text=1.0 ty=f32
+        If
+          And ty=bool
+            Binary op=<= ty=bool
+              Local name=abs_x ty=f32
+              Local name=abs_y ty=f32
+            Binary op=<= ty=bool
+              Local name=abs_x ty=f32
+              Local name=abs_z ty=f32
+          Then
+            Assign
+              Local name=helper ty=Vec3
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Float text=1.0 ty=f32
+                Field name=y
+                  Float text=0.0 ty=f32
+                Field name=z
+                  Float text=0.0 ty=f32
+          Elif
+            Binary op=<= ty=bool
+              Local name=abs_y ty=f32
+              Local name=abs_z ty=f32
+            Assign
+              Local name=helper ty=Vec3
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Float text=0.0 ty=f32
+                Field name=y
+                  Float text=1.0 ty=f32
+                Field name=z
+                  Float text=0.0 ty=f32
+        Let name=axis_u_seed ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=helper ty=Vec3
+            Local name=unit_normal ty=Vec3
+        Let name=axis_u_length ty=f32
+          Call key=length3 ty=f32
+            Local name=axis_u_seed ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=axis_u_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              StructLiteral name=Light ty=Light
+                Field name=kind
+                  Int text=4 ty=usize
+                Field name=position
+                  Local name=center ty=Vec3
+                Field name=direction
+                  Local name=zero ty=Vec3
+                Field name=axis_u
+                  Local name=zero ty=Vec3
+                Field name=axis_v
+                  Local name=zero ty=Vec3
+                Field name=radiance
+                  Local name=radiance ty=Rgb
+        Let name=axis_u_unit ty=Vec3
+          StructLiteral name=Vec3 ty=Vec3
+            Field name=x
+              Binary op=/ ty=f32
+                Field name=x ty=f32
+                  Local name=axis_u_seed ty=Vec3
+                Local name=axis_u_length ty=f32
+            Field name=y
+              Binary op=/ ty=f32
+                Field name=y ty=f32
+                  Local name=axis_u_seed ty=Vec3
+                Local name=axis_u_length ty=f32
+            Field name=z
+              Binary op=/ ty=f32
+                Field name=z ty=f32
+                  Local name=axis_u_seed ty=Vec3
+                Local name=axis_u_length ty=f32
+        Let name=axis_v_seed ty=Vec3
+          Call key=cross3 ty=Vec3
+            Local name=unit_normal ty=Vec3
+            Local name=axis_u_unit ty=Vec3
+        Let name=axis_v_length ty=f32
+          Call key=length3 ty=f32
+            Local name=axis_v_seed ty=Vec3
+        If
+          Not ty=bool
+            Binary op=> ty=bool
+              Local name=axis_v_length ty=f32
+              Float text=0.0 ty=f32
+          Then
+            Return
+              StructLiteral name=Light ty=Light
+                Field name=kind
+                  Int text=4 ty=usize
+                Field name=position
+                  Local name=center ty=Vec3
+                Field name=direction
+                  Local name=zero ty=Vec3
+                Field name=axis_u
+                  Local name=zero ty=Vec3
+                Field name=axis_v
+                  Local name=zero ty=Vec3
+                Field name=radiance
+                  Local name=radiance ty=Rgb
         Return
           StructLiteral name=Light ty=Light
             Field name=kind
@@ -14096,9 +14519,45 @@ Program
             Field name=direction
               Local name=zero ty=Vec3
             Field name=axis_u
-              Local name=axis_u ty=Vec3
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Binary op=* ty=f32
+                    Field name=x ty=f32
+                      Local name=axis_u_unit ty=Vec3
+                    Local name=radius ty=f32
+                Field name=y
+                  Binary op=* ty=f32
+                    Field name=y ty=f32
+                      Local name=axis_u_unit ty=Vec3
+                    Local name=radius ty=f32
+                Field name=z
+                  Binary op=* ty=f32
+                    Field name=z ty=f32
+                      Local name=axis_u_unit ty=Vec3
+                    Local name=radius ty=f32
             Field name=axis_v
-              Local name=axis_v ty=Vec3
+              StructLiteral name=Vec3 ty=Vec3
+                Field name=x
+                  Binary op=* ty=f32
+                    Binary op=/ ty=f32
+                      Field name=x ty=f32
+                        Local name=axis_v_seed ty=Vec3
+                      Local name=axis_v_length ty=f32
+                    Local name=radius ty=f32
+                Field name=y
+                  Binary op=* ty=f32
+                    Binary op=/ ty=f32
+                      Field name=y ty=f32
+                        Local name=axis_v_seed ty=Vec3
+                      Local name=axis_v_length ty=f32
+                    Local name=radius ty=f32
+                Field name=z
+                  Binary op=* ty=f32
+                    Binary op=/ ty=f32
+                      Field name=z ty=f32
+                        Local name=axis_v_seed ty=Vec3
+                      Local name=axis_v_length ty=f32
+                    Local name=radius ty=f32
             Field name=radiance
               Local name=radiance ty=Rgb
     AssocFn name=point ret=Light
@@ -34609,17 +35068,25 @@ Program
     Body
       Let name=face_margin ty=i64
         Int text=0 ty=i64
+      Let name=derivative_margin ty=i64
+        Int text=0 ty=i64
       If
         And ty=bool
-          Binary op=< ty=bool
-            Call key=Iv32.upper ty=i32
-              Receiver
-                Local name=lower ty=Iv32
-            Int text=0 ty=i32
+          And ty=bool
+            Binary op=< ty=bool
+              Call key=Iv32.upper ty=i32
+                Receiver
+                  Local name=lower ty=Iv32
+              Int text=0 ty=i32
+            Binary op=> ty=bool
+              Call key=Iv32.lower ty=i32
+                Receiver
+                  Local name=upper ty=Iv32
+              Int text=0 ty=i32
           Binary op=> ty=bool
             Call key=Iv32.lower ty=i32
               Receiver
-                Local name=upper ty=Iv32
+                Local name=derivative ty=Iv32
             Int text=0 ty=i32
         Then
           Assign
@@ -34643,17 +35110,29 @@ Program
                   Call key=Iv32.lower ty=i32
                     Receiver
                       Local name=upper ty=Iv32
-        Elif
-          And ty=bool
-            Binary op=> ty=bool
+          Assign
+            Local name=derivative_margin ty=i64
+            ToScalar ty=i64
               Call key=Iv32.lower ty=i32
                 Receiver
-                  Local name=lower ty=Iv32
-              Int text=0 ty=i32
+                  Local name=derivative ty=Iv32
+        Elif
+          And ty=bool
+            And ty=bool
+              Binary op=> ty=bool
+                Call key=Iv32.lower ty=i32
+                  Receiver
+                    Local name=lower ty=Iv32
+                Int text=0 ty=i32
+              Binary op=< ty=bool
+                Call key=Iv32.upper ty=i32
+                  Receiver
+                    Local name=upper ty=Iv32
+                Int text=0 ty=i32
             Binary op=< ty=bool
               Call key=Iv32.upper ty=i32
                 Receiver
-                  Local name=upper ty=Iv32
+                  Local name=derivative ty=Iv32
               Int text=0 ty=i32
           Assign
             Local name=face_margin ty=i64
@@ -34675,33 +35154,6 @@ Program
               Assign
                 Local name=face_margin ty=i64
                 Local name=negative_upper ty=i64
-        Else
-          Return
-            List ty=[i64; 3]
-              Int text=0 ty=i64
-              Int text=0 ty=i64
-              Int text=0 ty=i64
-      Let name=derivative_margin ty=i64
-        Int text=0 ty=i64
-      If
-        Binary op=> ty=bool
-          Call key=Iv32.lower ty=i32
-            Receiver
-              Local name=derivative ty=Iv32
-          Int text=0 ty=i32
-        Then
-          Assign
-            Local name=derivative_margin ty=i64
-            ToScalar ty=i64
-              Call key=Iv32.lower ty=i32
-                Receiver
-                  Local name=derivative ty=Iv32
-        Elif
-          Binary op=< ty=bool
-            Call key=Iv32.upper ty=i32
-              Receiver
-                Local name=derivative ty=Iv32
-            Int text=0 ty=i32
           Assign
             Local name=derivative_margin ty=i64
             Neg ty=i64
@@ -34709,6 +35161,12 @@ Program
                 Call key=Iv32.upper ty=i32
                   Receiver
                     Local name=derivative ty=Iv32
+        Else
+          Return
+            List ty=[i64; 3]
+              Int text=0 ty=i64
+              Int text=0 ty=i64
+              Int text=0 ty=i64
       If
         Binary op=<= ty=bool
           Local name=derivative_margin ty=i64
@@ -48850,12 +49308,8 @@ Program
               Local name=alpha2 ty=f32
               Float text=3.141592653589793 ty=f32
           Call key=__wrela_pixels_p9_iv_reciprocal_positive ty=[f32; 2]
-            Call key=__wrela_pixels_p9_iv_add ty=[f32; 2]
-              Call key=__wrela_pixels_p9_iv_square ty=[f32; 2]
-                Local name=denominator ty=[f32; 2]
-              List ty=[f32; 2]
-                Float text=0.000000000001 ty=f32
-                Float text=0.000000000001 ty=f32
+            Call key=__wrela_pixels_p9_iv_square ty=[f32; 2]
+              Local name=denominator ty=[f32; 2]
       Let name=no_l_squared ty=[f32; 2]
         Call key=__wrela_pixels_p9_iv_square ty=[f32; 2]
           Local name=no_l ty=[f32; 2]
@@ -50269,12 +50723,10 @@ Program
           Float text=1.0 ty=f32
       Let name=distribution_denominator ty=f32
         Binary op=* ty=f32
-          Float text=3.141592653589793 ty=f32
-          Binary op=+ ty=f32
-            Binary op=* ty=f32
-              Local name=denominator ty=f32
-              Local name=denominator ty=f32
-            Float text=0.000000000001 ty=f32
+          Binary op=* ty=f32
+            Float text=3.141592653589793 ty=f32
+            Local name=denominator ty=f32
+          Local name=denominator ty=f32
       Let name=distribution ty=f32
         Binary op=/ ty=f32
           Local name=alpha2 ty=f32
@@ -50547,12 +50999,10 @@ Program
         Binary op=/ ty=f32
           Local name=alpha2 ty=f32
           Binary op=* ty=f32
-            Float text=3.141592653589793 ty=f32
-            Binary op=+ ty=f32
-              Binary op=* ty=f32
-                Local name=denominator ty=f32
-                Local name=denominator ty=f32
-              Float text=0.000000000001 ty=f32
+            Binary op=* ty=f32
+              Float text=3.141592653589793 ty=f32
+              Local name=denominator ty=f32
+            Local name=denominator ty=f32
       Let name=no_v2 ty=f32
         Binary op=* ty=f32
           Local name=no_v ty=f32
@@ -53582,37 +54032,11 @@ Program
           Local name=rounding_channel ty=usize
           Int text=3 ty=usize
         Body
-          Let name=magnitude ty=f32
-            Index ty=f32
-              Local name=color ty=[f32; 3]
-              Local name=rounding_channel ty=usize
           If
             Binary op=< ty=bool
-              Local name=magnitude ty=f32
-              Float text=0.0 ty=f32
-            Then
-              Assign
-                Local name=magnitude ty=f32
-                Binary op=- ty=f32
-                  Float text=0.0 ty=f32
-                  Local name=magnitude ty=f32
-          Let name=rounding_radius ty=f32
-            Float text=0.0 ty=f32
-          Let name=widened_lower ty=f32
-            Binary op=- ty=f32
               Index ty=f32
                 Local name=color ty=[f32; 3]
                 Local name=rounding_channel ty=usize
-              Local name=rounding_radius ty=f32
-          Let name=widened_upper ty=f32
-            Binary op=+ ty=f32
-              Index ty=f32
-                Local name=color ty=[f32; 3]
-                Local name=rounding_channel ty=usize
-              Local name=rounding_radius ty=f32
-          If
-            Binary op=< ty=bool
-              Local name=widened_lower ty=f32
               Index ty=f32
                 Local name=color_lower ty=[f32; 3]
                 Local name=rounding_channel ty=usize
@@ -53621,10 +54045,14 @@ Program
                 Index ty=f32
                   Local name=color_lower ty=[f32; 3]
                   Local name=rounding_channel ty=usize
-                Local name=widened_lower ty=f32
+                Index ty=f32
+                  Local name=color ty=[f32; 3]
+                  Local name=rounding_channel ty=usize
           If
             Binary op=> ty=bool
-              Local name=widened_upper ty=f32
+              Index ty=f32
+                Local name=color ty=[f32; 3]
+                Local name=rounding_channel ty=usize
               Index ty=f32
                 Local name=color_upper ty=[f32; 3]
                 Local name=rounding_channel ty=usize
@@ -53633,7 +54061,9 @@ Program
                 Index ty=f32
                   Local name=color_upper ty=[f32; 3]
                   Local name=rounding_channel ty=usize
-                Local name=widened_upper ty=f32
+                Index ty=f32
+                  Local name=color ty=[f32; 3]
+                  Local name=rounding_channel ty=usize
           Assign
             Local name=rounding_channel ty=usize
             Binary op=+ ty=usize
@@ -55922,44 +56352,62 @@ Program
                             Local name=tap_channel ty=usize
                             Int text=1 ty=usize
                         Float text=0.25 ty=f32
-                  Assign
-                    Index ty=f32
-                      Local name=contribution_bounds ty=[f32; 7]
-                      Binary op=+ ty=usize
-                        Local name=tap_channel ty=usize
-                        Int text=1 ty=usize
-                    Binary op=+ ty=f32
-                      Index ty=f32
-                        Local name=contribution_bounds ty=[f32; 7]
-                        Binary op=+ ty=usize
-                          Local name=tap_channel ty=usize
-                          Int text=1 ty=usize
-                      Binary op=* ty=f32
+                  If
+                    Or ty=bool
+                      Binary op=== ty=bool
+                        Local name=normal_tap ty=usize
+                        Int text=0 ty=usize
+                      Binary op=< ty=bool
                         Index ty=f32
                           Local name=tap_bounds ty=[f32; 7]
                           Binary op=+ ty=usize
                             Local name=tap_channel ty=usize
                             Int text=1 ty=usize
-                        Float text=0.25 ty=f32
-                  Assign
-                    Index ty=f32
-                      Local name=contribution_bounds ty=[f32; 7]
-                      Binary op=+ ty=usize
-                        Local name=tap_channel ty=usize
-                        Int text=4 ty=usize
-                    Binary op=+ ty=f32
-                      Index ty=f32
-                        Local name=contribution_bounds ty=[f32; 7]
-                        Binary op=+ ty=usize
-                          Local name=tap_channel ty=usize
-                          Int text=4 ty=usize
-                      Binary op=* ty=f32
+                        Index ty=f32
+                          Local name=contribution_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=1 ty=usize
+                    Then
+                      Assign
+                        Index ty=f32
+                          Local name=contribution_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=1 ty=usize
+                        Index ty=f32
+                          Local name=tap_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=1 ty=usize
+                  If
+                    Or ty=bool
+                      Binary op=== ty=bool
+                        Local name=normal_tap ty=usize
+                        Int text=0 ty=usize
+                      Binary op=> ty=bool
                         Index ty=f32
                           Local name=tap_bounds ty=[f32; 7]
                           Binary op=+ ty=usize
                             Local name=tap_channel ty=usize
                             Int text=4 ty=usize
-                        Float text=0.25 ty=f32
+                        Index ty=f32
+                          Local name=contribution_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=4 ty=usize
+                    Then
+                      Assign
+                        Index ty=f32
+                          Local name=contribution_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=4 ty=usize
+                        Index ty=f32
+                          Local name=tap_bounds ty=[f32; 7]
+                          Binary op=+ ty=usize
+                            Local name=tap_channel ty=usize
+                            Int text=4 ty=usize
                   Assign
                     Local name=tap_channel ty=usize
                     Binary op=+ ty=usize
@@ -56459,44 +56907,62 @@ Program
                       Local name=tap_channel ty=usize
                       Int text=3 ty=usize
                     Body
-                      Assign
-                        Index ty=f32
-                          Local name=contribution_bounds ty=[f32; 7]
-                          Binary op=+ ty=usize
-                            Local name=tap_channel ty=usize
-                            Int text=1 ty=usize
-                        Binary op=+ ty=f32
-                          Index ty=f32
-                            Local name=contribution_bounds ty=[f32; 7]
-                            Binary op=+ ty=usize
-                              Local name=tap_channel ty=usize
-                              Int text=1 ty=usize
-                          Binary op=* ty=f32
+                      If
+                        Or ty=bool
+                          Binary op=== ty=bool
+                            Local name=normal_tap ty=usize
+                            Int text=0 ty=usize
+                          Binary op=< ty=bool
                             Index ty=f32
                               Local name=tap_bounds ty=[f32; 7]
                               Binary op=+ ty=usize
                                 Local name=tap_channel ty=usize
                                 Int text=1 ty=usize
-                            Float text=0.25 ty=f32
-                      Assign
-                        Index ty=f32
-                          Local name=contribution_bounds ty=[f32; 7]
-                          Binary op=+ ty=usize
-                            Local name=tap_channel ty=usize
-                            Int text=4 ty=usize
-                        Binary op=+ ty=f32
-                          Index ty=f32
-                            Local name=contribution_bounds ty=[f32; 7]
-                            Binary op=+ ty=usize
-                              Local name=tap_channel ty=usize
-                              Int text=4 ty=usize
-                          Binary op=* ty=f32
+                            Index ty=f32
+                              Local name=contribution_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=1 ty=usize
+                        Then
+                          Assign
+                            Index ty=f32
+                              Local name=contribution_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=1 ty=usize
+                            Index ty=f32
+                              Local name=tap_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=1 ty=usize
+                      If
+                        Or ty=bool
+                          Binary op=== ty=bool
+                            Local name=normal_tap ty=usize
+                            Int text=0 ty=usize
+                          Binary op=> ty=bool
                             Index ty=f32
                               Local name=tap_bounds ty=[f32; 7]
                               Binary op=+ ty=usize
                                 Local name=tap_channel ty=usize
                                 Int text=4 ty=usize
-                            Float text=0.25 ty=f32
+                            Index ty=f32
+                              Local name=contribution_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=4 ty=usize
+                        Then
+                          Assign
+                            Index ty=f32
+                              Local name=contribution_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=4 ty=usize
+                            Index ty=f32
+                              Local name=tap_bounds ty=[f32; 7]
+                              Binary op=+ ty=usize
+                                Local name=tap_channel ty=usize
+                                Int text=4 ty=usize
                       Assign
                         Local name=tap_channel ty=usize
                         Binary op=+ ty=usize
@@ -74925,175 +75391,6 @@ Program
                     StructLiteral name=RenderPath ty=RenderPath
                       Field name=component
                         Int text=4 ty=u32
-          Let name=current_light_scalars ty=[f32; 120]
-            Call key=LightFrame.snapshot_scalars ty=[f32; 120]
-              Receiver
-                Field name=lights ty=LightFrame
-                  Local name=frame ty=RenderFrame[Params[f32]]
-          Let name=previous_meta ty=[u64; 3]
-            Call key=__wrela_pixels_p7_frame_snapshot_meta ty=[u64; 3]
-              ToScalar ty=usize
-                Field name=renderer_index ty=u32
-                  Local name=self ty=Renderer[Params[f32]]
-          Let name=previous_light_scalars ty=[f32; 120]
-            List ty=[f32; 120]
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-              Float text=0.0 ty=f32
-          Let name=frame_steps ty=u64
-            Int text=0 ty=u64
-          If
-            Binary op=== ty=bool
-              Index ty=u64
-                Local name=previous_meta ty=[u64; 3]
-                Int text=0 ty=usize
-              Int text=1 ty=u64
-            Then
-              If
-                Binary op=<= ty=bool
-                  Field name=frame_index ty=u64
-                    Local name=frame ty=RenderFrame[Params[f32]]
-                  Index ty=u64
-                    Local name=previous_meta ty=[u64; 3]
-                    Int text=1 ty=usize
-                Then
-                  Return
-                    EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
-                      EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
-                        StructLiteral name=RenderPath ty=RenderPath
-                          Field name=component
-                            Int text=5 ty=u32
-              Assign
-                Local name=frame_steps ty=u64
-                Binary op=- ty=u64
-                  Field name=frame_index ty=u64
-                    Local name=frame ty=RenderFrame[Params[f32]]
-                  Index ty=u64
-                    Local name=previous_meta ty=[u64; 3]
-                    Int text=1 ty=usize
-              Assign
-                Local name=previous_light_scalars ty=[f32; 120]
-                Call key=__wrela_pixels_p7_frame_snapshot_light_scalars ty=[f32; 120]
-                  ToScalar ty=usize
-                    Field name=renderer_index ty=u32
-                      Local name=self ty=Renderer[Params[f32]]
           Let name=index ty=usize
             Int text=0 ty=usize
           While budget=8
@@ -75140,51 +75437,6 @@ Program
                         StructLiteral name=RenderPath ty=RenderPath
                           Field name=component
                             Int text=5 ty=u32
-              If
-                Binary op=== ty=bool
-                  Index ty=u64
-                    Local name=previous_meta ty=[u64; 3]
-                    Int text=0 ty=usize
-                  Int text=1 ty=u64
-                Then
-                  Let name=component ty=usize
-                    Int text=0 ty=usize
-                  While budget=15
-                    Binary op=< ty=bool
-                      Local name=component ty=usize
-                      Int text=15 ty=usize
-                    Body
-                      Let name=scalar_index ty=usize
-                        Binary op=+ ty=usize
-                          Binary op=* ty=usize
-                            Local name=index ty=usize
-                            Int text=15 ty=usize
-                          Local name=component ty=usize
-                      If
-                        Not ty=bool
-                          Call key=__wrela_pixels_p9_light_rate_valid ty=bool
-                            Index ty=f32
-                              Local name=current_light_scalars ty=[f32; 120]
-                              Local name=scalar_index ty=usize
-                            Index ty=f32
-                              Local name=previous_light_scalars ty=[f32; 120]
-                              Local name=scalar_index ty=usize
-                            Index ty=f32
-                              Local name=light_range ty=[f32; 12]
-                              Int text=11 ty=usize
-                            Local name=frame_steps ty=u64
-                        Then
-                          Return
-                            EnumConstruct enum=Result variant=Err ty=Result[unit, RenderError]
-                              EnumConstruct enum=RenderError variant=FrameContractMismatch ty=RenderError
-                                StructLiteral name=RenderPath ty=RenderPath
-                                  Field name=component
-                                    Int text=5 ty=u32
-                      Assign
-                        Local name=component ty=usize
-                        Binary op=+ ty=usize
-                          Local name=component ty=usize
-                          Int text=1 ty=usize
               Let name=expected_kind ty=usize
                 Int text=0 ty=usize
               If

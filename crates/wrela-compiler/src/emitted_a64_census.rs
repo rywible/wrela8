@@ -196,7 +196,7 @@ mod tests {
         // references used only by audits remain in `non_inventory`.
         assert_eq!(
             encode_enc_site_count(),
-            464,
+            466,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

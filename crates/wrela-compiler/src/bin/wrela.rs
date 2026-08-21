@@ -440,6 +440,23 @@ fn run_pixels_stage(
             return;
         }
     };
+    if graph.renderers.is_empty() {
+        if let Some(index) = renderer_index {
+            print_pixels_error(&format!(
+                "renderer index {index} is out of range; image declares 0 renderers"
+            ));
+        } else {
+            print!("{}", wrela_compiler::pixels::dump_zero_renderers(stage));
+        }
+        return;
+    }
+    let selected_index = match select_renderer_index(graph.renderers.len(), renderer_index) {
+        Ok(index) => index,
+        Err(message) => {
+            print_pixels_error(&message);
+            return;
+        }
+    };
     let checked = match eval::image_checks::check_sealed(&graph, program, programs) {
         Ok(checked) => checked,
         Err(error) => {
@@ -456,23 +473,6 @@ fn run_pixels_stage(
         Ok(program_set) => program_set,
         Err(error) => {
             print_sema_error(&eval::image_checks::pixels_error(error));
-            return;
-        }
-    };
-    if graph.renderers.is_empty() {
-        if let Some(index) = renderer_index {
-            print_pixels_error(&format!(
-                "renderer index {index} is out of range; image declares 0 renderers"
-            ));
-        } else {
-            print!("{}", wrela_compiler::pixels::dump_zero_renderers(stage));
-        }
-        return;
-    }
-    let selected_index = match select_renderer_index(graph.renderers.len(), renderer_index) {
-        Ok(index) => index,
-        Err(message) => {
-            print_pixels_error(&message);
             return;
         }
     };

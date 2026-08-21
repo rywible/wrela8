@@ -387,6 +387,14 @@ pub fn enc_add_imm(rd: u8, rn: u8, imm12: u16, sf: bool) -> u32 {
     add_sub_imm(sf, 0, 0, imm12, rn, rd)
 }
 
+/// AArch64 ADD (immediate) with the architectural `LSL #12` selector.
+///
+/// Keeping this separate from [`enc_add_imm`] makes byte-valued call sites
+/// explicit: `imm12` denotes 4096-byte pages here, not bytes.
+pub fn enc_add_imm_lsl12(rd: u8, rn: u8, imm12: u16, sf: bool) -> u32 {
+    add_sub_imm(sf, 0, 0, imm12, rn, rd) | (1 << 22)
+}
+
 pub fn enc_adds_imm(rd: u8, rn: u8, imm12: u16, sf: bool) -> u32 {
     add_sub_imm(sf, 0, 1, imm12, rn, rd)
 }
@@ -1044,6 +1052,7 @@ mod tests {
     fn add_imm_matches_hand_verified_bits() {
         assert_eq!(enc_add_imm(0, 1, 1, true), 0x91000420);
         assert_eq!(enc_add_imm(2, 3, 5, false), 0x11001462);
+        assert_eq!(enc_add_imm_lsl12(0, 1, 1, true), 0x91400420);
     }
 
     #[test]

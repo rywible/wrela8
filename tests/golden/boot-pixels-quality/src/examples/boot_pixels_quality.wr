@@ -277,32 +277,22 @@ fn rate_violation_frame() -> RenderFrame[SceneParams]:
             center=Vec3(x=-0.39, y=0.0, z=-3.0),
             axis_u=Vec3(x=0.05, y=0.0, z=0.0),
             axis_v=Vec3(x=0.0, y=0.05, z=0.0),
-            radiance=Rgb(r=0.0, g=0.015625, b=0.0),
+            radiance=Rgb(r=0.0, g=0.0, b=0.00390625),
         ),
         Light.zero(), Light.zero(), Light.zero(), Light.zero(), Light.zero(),
     ])
     return frame
 
 @test(runtime)
-async fn light_motion_outside_declared_rate_is_rejected(renderer: Actor[Renderer[SceneParams]]):
+async fn light_motion_outside_declared_rate_rebuilds(renderer: Actor[Renderer[SceneParams]]):
     frame = rate_violation_frame()
     result = await renderer.render(frame=take frame)
-    @discard(reason="the rejection assertion owns the renderer result")
+    @discard(reason="the rebuild assertion owns the renderer result")
     match result:
-        case .Err(call_error):
-            @discard(reason="the operation error is the rate-regression assertion")
-            match call_error:
-                case .Op(failure):
-                    @discard(reason="the error variant is the rate-regression assertion")
-                    match failure.error:
-                        case .FrameContractMismatch(path):
-                            assert path.component == 5, "light-rate rejection identifies the light input"
-                        case _:
-                            assert false, "light-rate violation uses the frame-contract diagnostic"
-                case _:
-                    assert false, "light-rate violation reaches the renderer operation"
         case .Ok(_):
-            assert false, "light motion outside the declared rate must be rejected"
+            pass
+        case .Err(_):
+            assert false, "light motion outside the declared reuse rate rebuilds successfully"
 
 @image
 pub fn build() -> Image:

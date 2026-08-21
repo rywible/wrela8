@@ -234,12 +234,14 @@ Module path=render
     fn point_radius(position: read Vec3, radius: read f32, radiance: read Rgb) -> Light
     fn directional(direction: read Vec3, radiance: read Rgb) -> Light
     fn rectangle(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
-    fn disk(center: read Vec3, axis_u: read Vec3, axis_v: read Vec3, radiance: read Rgb) -> Light
+    fn disk(center: read Vec3, normal: read Vec3, radius: read f32, radiance: read Rgb) -> Light
     fn __wrela_p5_matches_kind(read self, expected: read usize) -> bool
     fn __wrela_p5_finite(read self) -> bool
     fn __wrela_p9_in_world(read self, bounds: read RendererFrameBounds) -> bool
     fn __wrela_p9_area_axes_valid(read self) -> bool
+    fn __wrela_p9_disk_axes_valid(read self) -> bool
     fn __wrela_p9_valid(read self, bounds: read RendererFrameBounds, range: read [f32; 12]) -> bool
+  Fn p9_disk_constructor_uses_normal_and_equal_radius_axes() -> unit
   Struct LightFrame data
     field lights: [Light; 8]
     fn empty() -> LightFrame
